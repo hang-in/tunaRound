@@ -6,6 +6,7 @@
 
 | 문서 | paired_plan | 상태 |
 |---|---|---|
+| [v2-handoff_2026-06-29.md](v2-handoff_2026-06-29.md) | v1 전체(Plan 01~06) | active |
 
 ## 재사용 템플릿
 
