@@ -12,7 +12,7 @@ summary: 선형 전사를 in-store 논리 트리로. Session이 messages(Vec<Sto
 
 ## 실행 결과 (2026-06-29, done)
 
-구현 완료(브랜치 `feat/v2-session-model` -> main). 61 테스트(59 pass + 2 ignored 라이브 Redis), `cargo build`/`clippy` 경고 0. Opus 리뷰: 설계 충실, 이중 append 없음 확인(run_round은 임시 path mutate, Session은 반환 round만 트리에 1회 append).
+구현 완료(브랜치 `feat/v2-session-model` -> main). 63 테스트(61 pass + 2 ignored 라이브 Redis), `cargo build`/`clippy` 경고 0. Opus 리뷰: 설계 충실, 이중 append 없음 확인(run_round은 임시 path mutate, Session은 반환 round만 트리에 1회 append).
 
 - Task 1: store 트리 순수함수(path_to_root/next_id/tree_summary) + StoredSession + save_session/load_session(레거시 폴백) (커밋 `7ded26d`).
 - Task 2: Session 선형 transcript -> 트리(messages+head), active_path/append_round 헬퍼, 4개 라운드 분기 통일, 영속 배선 (커밋 `c9510fe`).

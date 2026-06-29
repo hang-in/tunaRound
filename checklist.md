@@ -65,7 +65,7 @@
 
 - [x] Task 1: store 트리 순수함수(path_to_root/next_id/tree_summary) + StoredSession 저장 포맷 (7ded26d)
 - [x] Task 2: Session 트리 리팩토링(messages+head, append-to-tree, 영속) (c9510fe)
-- [x] Task 3: /branches + /checkout 분기 탐색 (5b25827) — Plan 05 완료, 61 테스트(59+2 ignored), build/clippy 클린
+- [x] Task 3: /branches + /checkout 분기 탐색 (5b25827) — Plan 05 완료, 63 테스트(61+2 ignored), build/clippy 클린
 
 ### 후속
 - [ ] Plan 06: REPL Redis 통합 + presence/snapshot 신규 + block_on 브리지(각 분기 session_id, 동시 세션)
