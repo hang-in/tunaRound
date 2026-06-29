@@ -309,4 +309,30 @@ mod tests {
             std::env::remove_var("TUNAROUND_REDIS_URL");
         }
     }
+
+    // 라이브 Redis 필요: TUNAROUND_REDIS_URL 설정 후 `cargo test -- --ignored`.
+    #[tokio::test]
+    #[ignore]
+    async fn command_roundtrip_live() {
+        let url = std::env::var("TUNAROUND_REDIS_URL").expect("set TUNAROUND_REDIS_URL");
+        let bus = RedisBus::open(&url).expect("open");
+        let sid = "test-roundtrip";
+        let id = bus.submit_command(sid, "{\"cmd\":\"hi\"}").await.expect("submit");
+        assert!(!id.is_empty());
+        let msgs = bus.read_commands(sid, "0", 100, 10).await.expect("read");
+        assert!(msgs.iter().any(|m| m.payload.contains("hi")));
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn owner_acquire_then_refresh_live() {
+        let url = std::env::var("TUNAROUND_REDIS_URL").expect("set TUNAROUND_REDIS_URL");
+        let bus = RedisBus::open(&url).expect("open");
+        let sid = "test-owner";
+        let _ = bus.try_acquire_owner(sid, "w1", 30).await.expect("acquire");
+        // 같은 worker는 refresh 성공
+        assert!(bus.refresh_owner(sid, "w1", 30).await.expect("refresh"));
+        // 다른 worker는 refresh 실패
+        assert!(!bus.refresh_owner(sid, "w2", 30).await.expect("refresh2"));
+    }
 }
