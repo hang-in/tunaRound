@@ -1,6 +1,7 @@
 // 터미널 REPL. 명령 파싱·렌더·세션 step. I/O는 main.rs.
 use crate::orchestrator::{run_round, Participant, RunnerRegistry, Utterance};
 use crate::runner::RunMode;
+use crate::store::{StoredMessage, StoredSession};
 
 /// REPL 한 줄 입력의 해석 결과.
 #[derive(Debug, Clone, PartialEq)]
@@ -10,6 +11,8 @@ pub enum Command {
     Conclude(Option<String>),
     Only { engine: String, text: String },
     Write { engine: String, text: String },
+    Branches,
+    Checkout(u64),
     Help,
     Quit,
     Noop,
@@ -30,6 +33,11 @@ pub fn parse_command(line: &str) -> Command {
             "help" | "h" => Command::Help,
             "save" => Command::Save(arg.filter(|s| !s.is_empty())),
             "conclude" => Command::Conclude(arg.filter(|s| !s.is_empty())),
+            "branches" | "tree" => Command::Branches,
+            "checkout" | "co" => match arg.as_deref().and_then(|a| a.trim().parse::<u64>().ok()) {
+                Some(id) => Command::Checkout(id),
+                None => Command::Message(line.to_string()),
+            },
             _ => Command::Message(line.to_string()),
         };
     }
@@ -73,47 +81,69 @@ pub fn render(round: &[Utterance]) -> String {
 
 const DEFAULT_SAVE_PATH: &str = "tunaround-discussion.md";
 
-/// 한 토론 세션. 참가자 + 전사 + 러너 레지스트리를 보유한다.
+/// 한 토론 세션. 참가자 + in-store 트리(messages+head) + 러너 레지스트리를 보유한다.
 pub struct Session {
     participants: Vec<Participant>,
-    transcript: Vec<Utterance>,
+    messages: Vec<StoredMessage>,
+    head: Option<u64>,
     registry: Box<dyn RunnerRegistry>,
 }
 
 impl Session {
     pub fn new(participants: Vec<Participant>, registry: Box<dyn RunnerRegistry>) -> Self {
-        Self { participants, transcript: Vec::new(), registry }
+        Self { participants, messages: Vec::new(), head: None, registry }
     }
 
+    /// 활성 경로(root->head) 전사를 반환한다.
+    fn active_path(&self) -> Vec<Utterance> {
+        crate::store::path_to_root(&self.messages, self.head)
+    }
+
+    /// round 발언들을 head에서 시작하는 체인으로 트리에 append하고 head를 옮긴다.
+    fn append_round(&mut self, round: &[Utterance]) {
+        for u in round {
+            let id = crate::store::next_id(&self.messages);
+            self.messages.push(StoredMessage {
+                id,
+                parent_id: self.head,
+                speaker: u.speaker.clone(),
+                content: u.content.clone(),
+            });
+            self.head = Some(id);
+        }
+    }
+
+    /// 활성 경로의 발언 수를 반환한다(선형 사용 시 기존 transcript.len()과 동일).
     pub fn transcript_len(&self) -> usize {
-        self.transcript.len()
+        self.active_path().len()
     }
 
-    /// 전사를 마크다운 결과 문서로 직렬화(도구가 저장 - 에이전트 파일쓰기는 v2).
+    /// 트리 전체 메시지 수를 반환한다(분기 포함).
+    pub fn message_count(&self) -> usize {
+        self.messages.len()
+    }
+
+    /// 활성 경로를 마크다운 결과 문서로 직렬화.
     pub fn transcript_markdown(&self) -> String {
         let mut out = String::from("# tunaRound 토론 기록\n\n");
-        out.push_str(&render(&self.transcript));
+        out.push_str(&render(&self.active_path()));
         out.push('\n');
         out
     }
 
-    /// 현재 전사를 상태 파일(JSON)로 저장한다.
+    /// 현재 트리를 상태 파일(JSON)로 저장한다.
     pub fn save_state(&self, path: &str) -> std::io::Result<()> {
-        crate::store::save(&crate::store::to_stored(&self.transcript), path)
+        crate::store::save_session(&StoredSession { messages: self.messages.clone(), head: self.head }, path)
     }
 
-    /// 상태 파일에서 전사를 로드해 세션을 복원한다.
+    /// 상태 파일에서 트리를 로드해 세션을 복원한다. 레거시 bare-array 포맷도 지원한다.
     pub fn resume(
         participants: Vec<Participant>,
         registry: Box<dyn RunnerRegistry>,
         path: &str,
     ) -> std::io::Result<Self> {
-        let messages = crate::store::load(path)?;
-        Ok(Self {
-            participants,
-            transcript: crate::store::from_stored(&messages),
-            registry,
-        })
+        let ss = crate::store::load_session(path)?;
+        Ok(Self { participants, messages: ss.messages, head: ss.head, registry })
     }
 
     /// 한 입력을 처리한다. run_round 호출 등 로직만; 실제 I/O는 호출자(main).
@@ -122,15 +152,16 @@ impl Session {
             Command::Quit => StepOutcome::Exit,
             Command::Noop => StepOutcome::Noop,
             Command::Help => StepOutcome::Print(
-                "메시지를 입력하면 두 에이전트가 응답합니다. @engine 메시지로 한 자리만 지목(읽기), @engine! 메시지로 쓰기 턴(에이전트가 레포 편집), /conclude [engine] 종합, /save [경로] 결과 저장, /quit 종료.".into(),
+                "메시지를 입력하면 두 에이전트가 응답합니다. @engine 메시지로 한 자리만 지목(읽기), @engine! 메시지로 쓰기 턴(에이전트가 레포 편집), /conclude [engine] 종합, /save [경로] 결과 저장, /branches 트리 목록, /checkout <id> 분기 전환, /quit 종료.".into(),
             ),
             Command::Save(path) => StepOutcome::Save {
                 path: path.unwrap_or_else(|| DEFAULT_SAVE_PATH.to_string()),
                 markdown: self.transcript_markdown(),
             },
             Command::Message(text) => {
-                match run_round(&self.participants, &mut self.transcript, &text, self.registry.as_ref(), RunMode::ReadOnly) {
-                    Ok(round) => StepOutcome::Print(render(&round)),
+                let mut path = self.active_path();
+                match run_round(&self.participants, &mut path, &text, self.registry.as_ref(), RunMode::ReadOnly) {
+                    Ok(round) => { self.append_round(&round); StepOutcome::Print(render(&round)) }
                     Err(e) => StepOutcome::Print(format!("[에러] {e:?}")),
                 }
             }
@@ -140,8 +171,9 @@ impl Session {
                 if seats.is_empty() {
                     return StepOutcome::Print(format!("그런 자리가 없습니다: {engine}"));
                 }
-                match run_round(&seats, &mut self.transcript, &text, self.registry.as_ref(), RunMode::ReadOnly) {
-                    Ok(round) => StepOutcome::Print(render(&round)),
+                let mut path = self.active_path();
+                match run_round(&seats, &mut path, &text, self.registry.as_ref(), RunMode::ReadOnly) {
+                    Ok(round) => { self.append_round(&round); StepOutcome::Print(render(&round)) }
                     Err(e) => StepOutcome::Print(format!("[에러] {e:?}")),
                 }
             }
@@ -151,8 +183,9 @@ impl Session {
                 if seats.is_empty() {
                     return StepOutcome::Print(format!("그런 자리가 없습니다: {engine}"));
                 }
-                match run_round(&seats, &mut self.transcript, &text, self.registry.as_ref(), RunMode::Write) {
-                    Ok(round) => StepOutcome::Print(render(&round)),
+                let mut path = self.active_path();
+                match run_round(&seats, &mut path, &text, self.registry.as_ref(), RunMode::Write) {
+                    Ok(round) => { self.append_round(&round); StepOutcome::Print(render(&round)) }
                     Err(e) => StepOutcome::Print(format!("[에러] {e:?}")),
                 }
             }
@@ -166,9 +199,19 @@ impl Session {
                     role: Some("synthesizer".into()),
                     instruction: String::new(),
                 }];
-                match run_round(&synth, &mut self.transcript, "지금까지의 토론을 종합해 결론을 정리해줘.", self.registry.as_ref(), RunMode::ReadOnly) {
-                    Ok(round) => StepOutcome::Print(render(&round)),
+                let mut path = self.active_path();
+                match run_round(&synth, &mut path, "지금까지의 토론을 종합해 결론을 정리해줘.", self.registry.as_ref(), RunMode::ReadOnly) {
+                    Ok(round) => { self.append_round(&round); StepOutcome::Print(render(&round)) }
                     Err(e) => StepOutcome::Print(format!("[에러] {e:?}")),
+                }
+            }
+            Command::Branches => StepOutcome::Print(crate::store::tree_summary(&self.messages, self.head)),
+            Command::Checkout(id) => {
+                if self.messages.iter().any(|m| m.id == id) {
+                    self.head = Some(id);
+                    StepOutcome::Print(format!("checkout #{id} (현재 분기 전환). 이어서 메시지를 보내면 분기됩니다."))
+                } else {
+                    StepOutcome::Print(format!("그런 메시지가 없습니다: #{id}"))
                 }
             }
         }

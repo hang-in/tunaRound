@@ -1,7 +1,7 @@
 // store가 stored 메시지를 JSON 파일로 저장/로드 라운드트립하는지 검증.
 use tunaround::orchestrator::{MapRegistry, Participant, Utterance};
 use tunaround::repl::Session;
-use tunaround::store::{from_stored, load, save, to_stored};
+use tunaround::store::{from_stored, load, load_session, save, to_stored};
 
 #[test]
 fn save_then_load_roundtrips() {
@@ -40,7 +40,8 @@ fn session_save_state_then_resume() {
     assert_eq!(resumed.transcript_len(), 1);
 
     resumed.save_state(path).expect("save_state ok");
-    assert_eq!(load(path).expect("reload").len(), 1);
+    // save_state는 이제 StoredSession 포맷으로 저장하므로 load_session으로 확인한다.
+    assert_eq!(load_session(path).expect("reload").messages.len(), 1);
 
     let _ = std::fs::remove_file(path);
 }
