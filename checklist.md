@@ -44,9 +44,14 @@
 - [x] Task 1: 공유 watchdog 헬퍼 src/runner/exec.rs + RunError::Timeout (3414cf2)
 - [x] Task 2: 양 러너를 watchdog 헬퍼로 배선 (idle_timeout 필드, 기본 600s) (78dd033) — Plan 01 완료, 43 테스트 green, build/clippy 클린
 
-## v2 백로그
+## v2 Plan 02: N좌석 로스터 (docs/plans/v2-02-roster.md) — feat/v2-roster -> main
 
-- [ ] 에이전트 쓰기 지목(RunMode::Write 행사) = 협업 코딩
-- [ ] N좌석 로스터(역할×엔진 동적 구성, tunaLlama·opencode 좌석)
-- [ ] Redis 멀티세션 = git-tree 분기 (신규 인프라 - 착수 전 결정 필요)
-- [ ] 리치 프론트(ratatui/web)
+- [x] Task 1: src/roster.rs JSON 로스터 로더 (participants + registry) (af69db9)
+- [x] Task 2: main.rs --roster 플래그 + examples/roster.json (bb23e22) — Plan 02 완료, 48 테스트 green, build/clippy 클린, 스모크 3종 통과
+
+## v2 백로그 (착수 전 결정 필요 - 자율 진행 제외)
+
+- [ ] 에이전트 쓰기 지목(RunMode::Write 행사) = 협업 코딩 — 설계안 작성됨(docs/design/v2-write-delegation-design_2026-06-29.md), 결정 3건 대기
+- [ ] 신규 엔진 러너(tunaLlama·opencode 좌석) — 외부 CLI 통합. 로스터는 이미 N-ready
+- [ ] Redis 멀티세션 = git-tree 분기 — 신규 인프라(Redis) 결정 필요
+- [ ] 리치 프론트(ratatui/web) — 신규 의존성 결정 필요
