@@ -388,4 +388,36 @@ mod tests {
             other => panic!("expected Print, got {other:?}"),
         }
     }
+
+    #[test]
+    fn parses_branches_and_checkout() {
+        assert_eq!(parse_command("/branches"), Command::Branches);
+        assert_eq!(parse_command("/checkout 3"), Command::Checkout(3));
+        assert_eq!(parse_command("/checkout"), Command::Message("/checkout".into())); // 인자 없으면 일반 메시지
+    }
+
+    #[test]
+    fn checkout_then_message_creates_branch() {
+        let mut s = session_with_two_seats(); // claude=제안, codex=리뷰
+        let _ = s.step(Command::Message("주제".into())); // msg 1,2 (head=2)
+        // head를 1로 옮기고 새 메시지 -> 분기(2의 sibling)
+        match s.step(Command::Checkout(1)) {
+            StepOutcome::Print(t) => assert!(t.contains("1")),
+            other => panic!("got {other:?}"),
+        }
+        let _ = s.step(Command::Message("다른 방향".into())); // msg 3,4 (parent=1, 분기)
+        // 트리에 4개 메시지(2개 분기), active path는 1->3->4 (길이 3)
+        assert_eq!(s.message_count(), 4);
+        assert_eq!(s.transcript_len(), 3);
+    }
+
+    #[test]
+    fn checkout_unknown_id_errors() {
+        let mut s = session_with_two_seats();
+        let _ = s.step(Command::Message("주제".into()));
+        match s.step(Command::Checkout(99)) {
+            StepOutcome::Print(t) => assert!(t.contains("없")),
+            other => panic!("got {other:?}"),
+        }
+    }
 }
