@@ -39,6 +39,14 @@
 - [x] Task 1: /conclude synthesizer 종합 (464bf37)
 - [x] Task 2: @engine 자리 지목 (0c4b282) — Plan 06 완료, v1 완료, 38 테스트 green
 
-## v2 (다음 세션)
+## v2 Plan 01: idle watchdog (docs/plans/v2-01-idle-watchdog.md) — feat/v2-idle-watchdog
 
-- [ ] idle watchdog(INV-4) + 에이전트 쓰기 지목(RunMode::Write) + Redis 멀티세션 = git-tree 분기 + N좌석 로스터 + ratatui/web
+- [ ] Task 1: 공유 watchdog 헬퍼 src/runner/exec.rs + RunError::Timeout
+- [ ] Task 2: 양 러너를 watchdog 헬퍼로 배선 (idle_timeout 필드, 기본 600s)
+
+## v2 백로그
+
+- [ ] 에이전트 쓰기 지목(RunMode::Write 행사) = 협업 코딩
+- [ ] N좌석 로스터(역할×엔진 동적 구성, tunaLlama·opencode 좌석)
+- [ ] Redis 멀티세션 = git-tree 분기 (신규 인프라 - 착수 전 결정 필요)
+- [ ] 리치 프론트(ratatui/web)
