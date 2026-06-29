@@ -30,9 +30,9 @@
 
 ## Plan 04: 전사 영속 (docs/plans/v1-04-persistence.md) — feat/v1-store
 
-- [ ] Task 1: store 타입 + 트리-ready 변환
-- [ ] Task 2: JSON save/load 라운드트립
-- [ ] Task 3: Session resume + main 상태파일 인자
+- [x] Task 1: store 타입 + 트리-ready 변환 (21dbfc5)
+- [x] Task 2: JSON save/load 라운드트립 (a5456fd; 32 테스트 green)
+- [x] Task 3: Session resume + main 상태파일 인자 (1cc75bf) — Plan 04 완료, 33 테스트 green, resume 스모크 통과
 
 ## 다음 (v1 마무리 후)
 
