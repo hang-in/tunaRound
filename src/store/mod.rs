@@ -38,6 +38,19 @@ pub fn from_stored(messages: &[StoredMessage]) -> Vec<Utterance> {
         .collect()
 }
 
+/// stored 메시지를 JSON 파일로 저장.
+pub fn save(messages: &[StoredMessage], path: &str) -> std::io::Result<()> {
+    let json = serde_json::to_string_pretty(messages)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    std::fs::write(path, json)
+}
+
+/// JSON 파일에서 stored 메시지를 로드.
+pub fn load(path: &str) -> std::io::Result<Vec<StoredMessage>> {
+    let s = std::fs::read_to_string(path)?;
+    serde_json::from_str(&s).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
