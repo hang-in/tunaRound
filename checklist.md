@@ -54,7 +54,17 @@
 - [x] Task 1: run_round에 mode 파라미터 (behavior-preserving, 호출부 ReadOnly) (9c55b97)
 - [x] Task 2: @engine! 쓰기 지목 (Command::Write + 파싱 + step Write 분기 + /help) (1ae8b49) — Plan 03 완료, 52 테스트 green, build/clippy 클린
 
+## v2 멀티세션 (Redis=git-tree, 3 플랜) — 설계문서 확정, 사용자 GO
+
+### Plan 04: Redis session_bus 포팅 (docs/plans/v2-04-session-bus.md) — feat/v2-session-bus
+
+- [ ] Task 1: 의존성(tokio/redis/futures) + session_bus 포팅 (room->session, pure 테스트 2)
+- [ ] Task 2: 라이브 Redis 왕복 통합 테스트 (#[ignore])
+
+### 후속
+- [ ] Plan 05: 세션 모델(브랜치=세션, store parent_id 실사용, 멀티세션 전환)
+- [ ] Plan 06: REPL 통합 + presence/snapshot 신규 + block_on 브리지
+
 ## v2 백로그 (착수 전 결정 필요)
 - [ ] 신규 엔진 러너(tunaLlama·opencode 좌석) — 외부 CLI 통합. 로스터는 이미 N-ready
-- [ ] Redis 멀티세션 = git-tree 분기 — 신규 인프라(Redis) 결정 필요
 - [ ] 리치 프론트(ratatui/web) — 신규 의존성 결정 필요
