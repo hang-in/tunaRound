@@ -165,10 +165,8 @@ mod tests {
         assert_eq!(out.content, "답 확장");
     }
 
-    // NOTE: Step 1 실측 결과 --full-auto 없음.
-    // Write mode → --sandbox workspace-write (실제 codex 플래그로 변경)
     #[test]
-    fn args_write_mode_uses_full_auto() {
+    fn args_write_mode_uses_workspace_write() {
         let input = RunInput {
             prompt: "p".into(),
             model: None,
