@@ -6,7 +6,7 @@
 
 | 문서 | 우선순위 | 상태 | 요약 |
 |---|---|---|---|
-| [v1-01-agent-runner.md](v1-01-agent-runner.md) | P0 | draft | 스캐폴드 + Codex 러너(argv·JSONL 파싱·dedup·read/write 모드), 순수함수 TDD |
+| [v1-01-agent-runner.md](v1-01-agent-runner.md) | P0 | done | 스캐폴드 + Codex 러너(argv·JSONL 파싱·dedup·read/write 모드), 순수함수 TDD. 브랜치 feat/v1-agent-runner |
 
 ## 부분 완료 / 보류
 

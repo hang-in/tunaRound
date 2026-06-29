@@ -1,7 +1,7 @@
 ---
 title: "tunaRound v1 Plan 01: 프로젝트 스캐폴드 + 에이전트 러너 (Codex)"
 type: plan
-status: draft
+status: done
 priority: P0
 updated_at: 2026-06-29
 owner: shared
@@ -21,6 +21,14 @@ summary: Rust 프로젝트 스캐폴드 + Runner trait 경계 + Codex 러너(exe
 > 규율: docs/reference/development-guidelines.md (TDD red->green, 선제 설계 5규칙, 품질 셀프리뷰). 설계 근거: docs/design/tunaRound-v1-design_2026-06-29.md. 포팅 출처: tunaFlow `src-tauri/src/agents/codex.rs`(실측 완료).
 
 ---
+
+## 실행 결과 / 교정 (2026-06-29, done)
+
+구현 완료(브랜치 `feat/v1-agent-runner`). 전체 10 테스트 green, `cargo build`/`clippy` 클린. 아래는 실행 중 plan과 달라진 점이니 재실행 시 이 교정을 따른다.
+
+- **Codex 샌드박스 플래그(Task 4).** plan의 `--full-auto`는 실재하지 않음(`codex exec --help` 실측). 실제는 **Write = `--sandbox workspace-write`**, **ReadOnly = `--sandbox read-only`**. Task 4 코드/테스트는 이 값으로 구현됨.
+- **lib.rs 위치(Task 1).** plan 원안은 lib.rs를 Task 5에 뒀으나 컴파일 순서상 **Task 1에서 `src/lib.rs`(`pub mod runner;`) 생성**, `pub mod codex;`는 Task 2에서 추가. edition은 cargo 기본값 2024.
+- 커밋: 5330063 -> c9628e8 -> f2872b4 -> c1a5a41 -> fcc3411 -> e7949f9.
 
 ## 범위
 
