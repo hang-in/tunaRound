@@ -15,6 +15,8 @@ const DEFAULT_EVENT_MAXLEN: usize = 2_000;
 pub trait SessionBus {
     fn submit_command_json(&self, session_id: &str, payload: &str);
     fn publish_event_json(&self, session_id: &str, payload: &str);
+    /// hot_snapshot 키에 세션 전체 상태를 fire-and-forget으로 저장한다.
+    fn snapshot_json(&self, session_id: &str, payload: &str);
 }
 
 /// Redis keys for one session.
@@ -176,6 +178,20 @@ impl RedisBus {
         con.set(keys.command_cursor, stream_id).await
     }
 
+    /// hot_snapshot 키에 세션 상태(JSON)를 저장한다.
+    pub async fn set_snapshot(&self, session_id: &str, payload: &str) -> redis::RedisResult<()> {
+        let mut con = self.client.get_multiplexed_async_connection().await?;
+        let keys = Self::keys(session_id);
+        con.set(keys.hot_snapshot, payload).await
+    }
+
+    /// hot_snapshot 키에서 세션 상태(JSON)를 읽는다.
+    pub async fn get_snapshot(&self, session_id: &str) -> redis::RedisResult<Option<String>> {
+        let mut con = self.client.get_multiplexed_async_connection().await?;
+        let keys = Self::keys(session_id);
+        con.get(keys.hot_snapshot).await
+    }
+
     pub async fn subscribe_events(
         &self,
         session_id: &str,
@@ -231,6 +247,7 @@ impl RedisBus {
 enum RedisBusMessage {
     Command { session_id: String, payload: String },
     Event { session_id: String, payload: String },
+    Snapshot { session_id: String, payload: String },
 }
 
 /// 동기 호출자(REPL 스레드)가 쓰는 fire-and-forget async writer. tokio 태스크가 실제 Redis 쓰기를 수행한다.
@@ -250,6 +267,9 @@ impl RedisBusHandle {
                     }
                     RedisBusMessage::Event { session_id, payload } => {
                         bus.publish_event(&session_id, &payload).await.map(|_| ())
+                    }
+                    RedisBusMessage::Snapshot { session_id, payload } => {
+                        bus.set_snapshot(&session_id, &payload).await
                     }
                 };
                 if let Err(e) = result {
@@ -275,6 +295,13 @@ impl SessionBus for RedisBusHandle {
 
     fn publish_event_json(&self, session_id: &str, payload: &str) {
         let _ = self.tx.send(RedisBusMessage::Event {
+            session_id: session_id.to_string(),
+            payload: payload.to_string(),
+        });
+    }
+
+    fn snapshot_json(&self, session_id: &str, payload: &str) {
+        let _ = self.tx.send(RedisBusMessage::Snapshot {
             session_id: session_id.to_string(),
             payload: payload.to_string(),
         });
@@ -320,6 +347,17 @@ mod tests {
         assert!(!id.is_empty());
         let msgs = bus.read_commands(sid, "0", 100, 10).await.expect("read");
         assert!(msgs.iter().any(|m| m.payload.contains("hi")));
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn snapshot_set_get_live() {
+        let url = std::env::var("TUNAROUND_REDIS_URL").expect("set TUNAROUND_REDIS_URL");
+        let bus = RedisBus::open(&url).expect("open");
+        let sid = "test-snapshot";
+        bus.set_snapshot(sid, "{\"messages\":[],\"head\":null}").await.expect("set");
+        let got = bus.get_snapshot(sid).await.expect("get");
+        assert_eq!(got.as_deref(), Some("{\"messages\":[],\"head\":null}"));
     }
 
     #[tokio::test]
