@@ -1,6 +1,8 @@
 // Codex exec --json argv·파싱·dedup 순수함수 + CodexRunner.
 
-use super::{RunInput, RunMode, RunOutput};
+use super::{RunError, RunInput, RunMode, RunOutput, Runner};
+use std::io::{Read, Write};
+use std::process::{Command, Stdio};
 
 /// Codex `exec --json` JSONL에서 (본문, 토큰)을 추출한다.
 /// item.completed+agent_message → 본문(dedup), turn.completed → 토큰 누적,
@@ -21,14 +23,12 @@ pub(crate) fn parse_codex_stream(stdout: &str) -> RunOutput {
         };
         match event.get("type").and_then(|v| v.as_str()).unwrap_or("") {
             "item.completed" => {
-                if let Some(item) = event.get("item") {
-                    if item.get("type").and_then(|v| v.as_str()) == Some("agent_message") {
-                        if let Some(text) = item.get("text").and_then(|v| v.as_str()) {
-                            if !text.is_empty() {
-                                push_agent_text_dedup(&mut texts, text);
-                            }
-                        }
-                    }
+                if let Some(item) = event.get("item")
+                    && item.get("type").and_then(|v| v.as_str()) == Some("agent_message")
+                    && let Some(text) = item.get("text").and_then(|v| v.as_str())
+                    && !text.is_empty()
+                {
+                    push_agent_text_dedup(&mut texts, text);
                 }
             }
             "turn.completed" => {
@@ -76,6 +76,79 @@ fn build_codex_args(input: &RunInput) -> Vec<String> {
     }
     args.push("-".into());
     args
+}
+
+/// Codex CLI 러너. `bin`은 실행 파일 경로(테스트는 가짜 스크립트 주입).
+pub struct CodexRunner {
+    bin: String,
+}
+
+impl CodexRunner {
+    pub fn new() -> Self {
+        Self { bin: "codex".to_string() }
+    }
+    pub fn with_bin(bin: &str) -> Self {
+        Self { bin: bin.to_string() }
+    }
+}
+
+impl Default for CodexRunner {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Runner for CodexRunner {
+    fn run(&self, input: &RunInput) -> Result<RunOutput, RunError> {
+        let mut cmd = Command::new(&self.bin);
+        cmd.args(build_codex_args(input));
+        if let Some(dir) = &input.project_path {
+            cmd.current_dir(dir);
+        }
+        cmd.stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| RunError::Spawn(format!("codex spawn 실패 ({}): {e}", self.bin)))?;
+
+        // 프롬프트를 stdin으로 흘리고 닫는다(별 스레드 - 큰 prompt 데드락 회피).
+        if let Some(mut stdin) = child.stdin.take() {
+            let bytes = input.prompt.clone().into_bytes();
+            std::thread::spawn(move || {
+                let _ = stdin.write_all(&bytes);
+            });
+        }
+
+        let mut stdout = String::new();
+        if let Some(mut pipe) = child.stdout.take() {
+            pipe.read_to_string(&mut stdout)
+                .map_err(|e| RunError::Io(format!("codex stdout 읽기 실패: {e}")))?;
+        }
+        let mut stderr = String::new();
+        if let Some(mut pipe) = child.stderr.take() {
+            let _ = pipe.read_to_string(&mut stderr);
+        }
+        let status = child
+            .wait()
+            .map_err(|e| RunError::Io(format!("codex wait 실패: {e}")))?;
+
+        if !status.success() {
+            let detail = if stderr.trim().is_empty() {
+                format!("exit {:?}", status.code())
+            } else {
+                stderr.trim().to_string()
+            };
+            return Err(RunError::Spawn(format!("codex 실패: {detail}")));
+        }
+
+        let out = parse_codex_stream(&stdout);
+        if out.content.is_empty() {
+            return Err(RunError::Empty("codex 응답 없음".into()));
+        }
+        Ok(out)
+    }
 }
 
 /// Codex는 한 턴에 agent_message를 여러 번 emit한다(reasoning 후 재방출).
