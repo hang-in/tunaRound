@@ -1,8 +1,8 @@
 // Claude Code를 stream-json으로 구동하는 러너. argv·NDJSON 파서·ClaudeRunner.
 
+use super::exec::{run_with_watchdog, ExecSpec};
 use super::{RunError, RunInput, RunMode, RunOutput, Runner};
-use std::io::Read;
-use std::process::{Command, Stdio};
+use std::time::Duration;
 
 /// `claude -p` argv 조립. 프롬프트는 `-p <arg>`로 전달(stdin 아님).
 /// 모드에 따라 도구 권한을 분리한다(쓰기 하드 분리). 실측 플래그는 Step 1 참조.
@@ -68,14 +68,20 @@ pub(crate) fn parse_claude_stream(stdout: &str) -> Result<RunOutput, RunError> {
 /// Claude Code 러너. `bin`은 실행 파일 경로(테스트는 가짜 스크립트). 프롬프트는 argv라 stdin 불필요.
 pub struct ClaudeRunner {
     bin: String,
+    idle_timeout: Duration,
 }
 
 impl ClaudeRunner {
     pub fn new() -> Self {
-        Self { bin: "claude".to_string() }
+        Self { bin: "claude".to_string(), idle_timeout: Duration::from_secs(600) }
     }
     pub fn with_bin(bin: &str) -> Self {
-        Self { bin: bin.to_string() }
+        Self { bin: bin.to_string(), idle_timeout: Duration::from_secs(600) }
+    }
+    /// 테스트/설정용 idle 타임아웃 주입.
+    pub fn with_idle_timeout(mut self, d: Duration) -> Self {
+        self.idle_timeout = d;
+        self
     }
 }
 
@@ -87,35 +93,15 @@ impl Default for ClaudeRunner {
 
 impl Runner for ClaudeRunner {
     fn run(&self, input: &RunInput) -> Result<RunOutput, RunError> {
-        let mut cmd = Command::new(&self.bin);
-        cmd.args(build_claude_args(input));
-        if let Some(dir) = &input.project_path {
-            cmd.current_dir(dir);
-        }
-        cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
-
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| RunError::Spawn(format!("claude spawn 실패 ({}): {e}", self.bin)))?;
-
-        let mut stdout = String::new();
-        if let Some(mut pipe) = child.stdout.take() {
-            pipe.read_to_string(&mut stdout)
-                .map_err(|e| RunError::Io(format!("claude stdout 읽기 실패: {e}")))?;
-        }
-        let mut stderr = String::new();
-        if let Some(mut pipe) = child.stderr.take() {
-            let _ = pipe.read_to_string(&mut stderr);
-        }
-        let status = child.wait().map_err(|e| RunError::Io(format!("claude wait 실패: {e}")))?;
-        if !status.success() {
-            let detail = if stderr.trim().is_empty() {
-                format!("exit {:?}", status.code())
-            } else {
-                stderr.trim().to_string()
-            };
-            return Err(RunError::Spawn(format!("claude 실패: {detail}")));
-        }
+        let spec = ExecSpec {
+            bin: self.bin.clone(),
+            args: build_claude_args(input),
+            cwd: input.project_path.clone(),
+            stdin: None,
+            idle_timeout: self.idle_timeout,
+            label: "claude".to_string(),
+        };
+        let stdout = run_with_watchdog(&spec)?;
         parse_claude_stream(&stdout)
     }
 }
@@ -177,5 +163,18 @@ mod tests {
         let joined = build_claude_args(&input).join(" ");
         assert!(joined.contains("--dangerously-skip-permissions"));
         assert!(joined.contains("--model claude-x"));
+    }
+
+    #[test]
+    fn runner_propagates_timeout_via_helper() {
+        // 가짜 스크립트: 인자 무시하고 sleep. tmp에 작성.
+        let dir = std::env::temp_dir();
+        let script = dir.join("tuna_fake_sleep_claude.sh");
+        std::fs::write(&script, "#!/bin/sh\nexec sleep 5\n").unwrap();
+        let _ = std::process::Command::new("chmod").args(["+x", script.to_str().unwrap()]).status();
+        let r = ClaudeRunner::with_bin(script.to_str().unwrap())
+            .with_idle_timeout(std::time::Duration::from_millis(150));
+        let input = RunInput { prompt: "x".into(), model: None, project_path: None, mode: RunMode::ReadOnly };
+        assert!(matches!(r.run(&input), Err(RunError::Timeout(_))));
     }
 }

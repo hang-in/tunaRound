@@ -1,8 +1,8 @@
 // Codex exec --json argv·파싱·dedup 순수함수 + CodexRunner.
 
+use super::exec::{run_with_watchdog, ExecSpec};
 use super::{RunError, RunInput, RunMode, RunOutput, Runner};
-use std::io::{Read, Write};
-use std::process::{Command, Stdio};
+use std::time::Duration;
 
 /// Codex `exec --json` JSONL에서 (본문, 토큰)을 추출한다.
 /// item.completed+agent_message → 본문(dedup), turn.completed → 토큰 누적,
@@ -81,14 +81,20 @@ fn build_codex_args(input: &RunInput) -> Vec<String> {
 /// Codex CLI 러너. `bin`은 실행 파일 경로(테스트는 가짜 스크립트 주입).
 pub struct CodexRunner {
     bin: String,
+    idle_timeout: Duration,
 }
 
 impl CodexRunner {
     pub fn new() -> Self {
-        Self { bin: "codex".to_string() }
+        Self { bin: "codex".to_string(), idle_timeout: Duration::from_secs(600) }
     }
     pub fn with_bin(bin: &str) -> Self {
-        Self { bin: bin.to_string() }
+        Self { bin: bin.to_string(), idle_timeout: Duration::from_secs(600) }
+    }
+    /// 테스트/설정용 idle 타임아웃 주입.
+    pub fn with_idle_timeout(mut self, d: Duration) -> Self {
+        self.idle_timeout = d;
+        self
     }
 }
 
@@ -100,49 +106,15 @@ impl Default for CodexRunner {
 
 impl Runner for CodexRunner {
     fn run(&self, input: &RunInput) -> Result<RunOutput, RunError> {
-        let mut cmd = Command::new(&self.bin);
-        cmd.args(build_codex_args(input));
-        if let Some(dir) = &input.project_path {
-            cmd.current_dir(dir);
-        }
-        cmd.stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| RunError::Spawn(format!("codex spawn 실패 ({}): {e}", self.bin)))?;
-
-        // 프롬프트를 stdin으로 흘리고 닫는다(별 스레드 - 큰 prompt 데드락 회피).
-        if let Some(mut stdin) = child.stdin.take() {
-            let bytes = input.prompt.clone().into_bytes();
-            std::thread::spawn(move || {
-                let _ = stdin.write_all(&bytes);
-            });
-        }
-
-        let mut stdout = String::new();
-        if let Some(mut pipe) = child.stdout.take() {
-            pipe.read_to_string(&mut stdout)
-                .map_err(|e| RunError::Io(format!("codex stdout 읽기 실패: {e}")))?;
-        }
-        let mut stderr = String::new();
-        if let Some(mut pipe) = child.stderr.take() {
-            let _ = pipe.read_to_string(&mut stderr);
-        }
-        let status = child
-            .wait()
-            .map_err(|e| RunError::Io(format!("codex wait 실패: {e}")))?;
-
-        if !status.success() {
-            let detail = if stderr.trim().is_empty() {
-                format!("exit {:?}", status.code())
-            } else {
-                stderr.trim().to_string()
-            };
-            return Err(RunError::Spawn(format!("codex 실패: {detail}")));
-        }
-
+        let spec = ExecSpec {
+            bin: self.bin.clone(),
+            args: build_codex_args(input),
+            cwd: input.project_path.clone(),
+            stdin: Some(input.prompt.clone()),
+            idle_timeout: self.idle_timeout,
+            label: "codex".to_string(),
+        };
+        let stdout = run_with_watchdog(&spec)?;
         let out = parse_codex_stream(&stdout);
         if out.content.is_empty() {
             return Err(RunError::Empty("codex 응답 없음".into()));
@@ -264,5 +236,19 @@ mod tests {
         let joined = args.join(" ");
         assert!(joined.contains("--sandbox read-only"));
         assert!(joined.contains("--model gpt-x"));
+    }
+
+    #[test]
+    fn runner_propagates_timeout_via_helper() {
+        // codex 형식 argv로는 sh가 못 돌므로, with_bin에 무출력 sleep 스크립트를 주입한다.
+        // 가짜 스크립트: 인자 무시하고 stdin 안 읽고 sleep. tmp에 작성.
+        let dir = std::env::temp_dir();
+        let script = dir.join("tuna_fake_sleep.sh");
+        std::fs::write(&script, "#!/bin/sh\nexec sleep 5\n").unwrap();
+        let _ = std::process::Command::new("chmod").args(["+x", script.to_str().unwrap()]).status();
+        let r = CodexRunner::with_bin(script.to_str().unwrap())
+            .with_idle_timeout(std::time::Duration::from_millis(150));
+        let input = RunInput { prompt: "x".into(), model: None, project_path: None, mode: RunMode::ReadOnly };
+        assert!(matches!(r.run(&input), Err(RunError::Timeout(_))));
     }
 }
