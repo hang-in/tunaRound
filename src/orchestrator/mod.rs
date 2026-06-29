@@ -2,6 +2,11 @@
 pub mod roles;
 pub mod prompt;
 
+use std::collections::HashMap;
+
+use crate::orchestrator::prompt::build_round_prompt;
+use crate::runner::{RunError, RunInput, RunMode, Runner};
+
 /// 토론 한 자리. 엔진(어떤 러너로 구동) + 역할 + 추가 지시.
 #[derive(Debug, Clone)]
 pub struct Participant {
@@ -25,4 +30,67 @@ impl Participant {
 pub struct Utterance {
     pub speaker: String,
     pub content: String,
+}
+
+/// 엔진 이름 → 러너 조회 경계. 오케스트레이터는 이 trait에만 의존한다.
+pub trait RunnerRegistry {
+    fn get(&self, engine: &str) -> Option<&dyn Runner>;
+}
+
+/// HashMap 기반 기본 레지스트리. 테스트는 FakeRunner를 넣는다.
+pub struct MapRegistry {
+    runners: HashMap<String, Box<dyn Runner>>,
+}
+
+impl MapRegistry {
+    pub fn new() -> Self {
+        Self { runners: HashMap::new() }
+    }
+    pub fn insert(&mut self, engine: &str, runner: Box<dyn Runner>) {
+        self.runners.insert(engine.to_string(), runner);
+    }
+}
+
+impl Default for MapRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl RunnerRegistry for MapRegistry {
+    fn get(&self, engine: &str) -> Option<&dyn Runner> {
+        self.runners.get(engine).map(|b| b.as_ref())
+    }
+}
+
+/// 한 라운드를 구동한다. 사람 주도이므로 topic = 사용자 메시지.
+/// 각 자리를 순서대로 호출하되, 뒤 자리는 같은 라운드 앞 응답을 본다(순차-인지).
+/// transcript는 이전 라운드들이며, 이번 라운드 응답이 끝에 append된다.
+pub fn run_round(
+    participants: &[Participant],
+    transcript: &mut Vec<Utterance>,
+    topic: &str,
+    registry: &dyn RunnerRegistry,
+) -> Result<Vec<Utterance>, RunError> {
+    let prior: Vec<Utterance> = transcript.clone();
+    let mut same_round: Vec<Utterance> = Vec::new();
+
+    for part in participants {
+        let prompt = build_round_prompt(part, topic, &prior, &same_round);
+        let runner = registry
+            .get(&part.engine)
+            .ok_or_else(|| RunError::Spawn(format!("엔진 러너 없음: {}", part.engine)))?;
+        // v1 토론 턴은 읽기 전용(쓰기 지목은 Plan 05 REPL에서 mode 분기).
+        let input = RunInput {
+            prompt,
+            model: None,
+            project_path: None,
+            mode: RunMode::ReadOnly,
+        };
+        let out = runner.run(&input)?;
+        same_round.push(Utterance { speaker: part.label(), content: out.content });
+    }
+
+    transcript.extend(same_round.iter().cloned());
+    Ok(same_round)
 }
