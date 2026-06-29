@@ -6,6 +6,7 @@ use crate::orchestrator::{run_round, Participant, RunnerRegistry, Utterance};
 pub enum Command {
     Message(String),
     Save(Option<String>),
+    Conclude(Option<String>),
     Help,
     Quit,
     Noop,
@@ -25,6 +26,7 @@ pub fn parse_command(line: &str) -> Command {
             "quit" | "exit" | "q" => Command::Quit,
             "help" | "h" => Command::Help,
             "save" => Command::Save(arg.filter(|s| !s.is_empty())),
+            "conclude" => Command::Conclude(arg.filter(|s| !s.is_empty())),
             _ => Command::Message(line.to_string()),
         };
     }
@@ -112,6 +114,21 @@ impl Session {
                     Err(e) => StepOutcome::Print(format!("[에러] {e:?}")),
                 }
             }
+            Command::Conclude(engine) => {
+                let eng = engine.or_else(|| self.participants.first().map(|p| p.engine.clone()));
+                let Some(eng) = eng else {
+                    return StepOutcome::Print("종합할 참가자가 없습니다.".into());
+                };
+                let synth = vec![Participant {
+                    engine: eng,
+                    role: Some("synthesizer".into()),
+                    instruction: String::new(),
+                }];
+                match run_round(&synth, &mut self.transcript, "지금까지의 토론을 종합해 결론을 정리해줘.", self.registry.as_ref()) {
+                    Ok(round) => StepOutcome::Print(render(&round)),
+                    Err(e) => StepOutcome::Print(format!("[에러] {e:?}")),
+                }
+            }
         }
     }
 }
@@ -173,6 +190,24 @@ mod tests {
             other => panic!("expected Print, got {other:?}"),
         }
         assert_eq!(s.transcript_len(), 2);
+    }
+
+    #[test]
+    fn parses_conclude() {
+        assert_eq!(parse_command("/conclude"), Command::Conclude(None));
+        assert_eq!(parse_command("/conclude claude"), Command::Conclude(Some("claude".into())));
+    }
+
+    #[test]
+    fn step_conclude_runs_synthesizer_and_grows_transcript() {
+        let mut s = session_with_two_seats();
+        let _ = s.step(Command::Message("주제?".into())); // 전사 2개 채움
+        let before = s.transcript_len();
+        match s.step(Command::Conclude(None)) {
+            StepOutcome::Print(text) => assert!(text.contains("제안")), // 기본 엔진=claude FakeRunner reply
+            other => panic!("expected Print, got {other:?}"),
+        }
+        assert_eq!(s.transcript_len(), before + 1); // 종합 1발언 추가
     }
 
     #[test]
