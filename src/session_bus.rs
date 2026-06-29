@@ -8,11 +8,10 @@ use tokio::sync::mpsc;
 const DEFAULT_COMMAND_MAXLEN: usize = 10_000;
 const DEFAULT_EVENT_MAXLEN: usize = 2_000;
 
-/// Minimal bus boundary used by web/runtime code.
+/// 최소 버스 경계. REPL/런타임이 세션 commands/events를 흘려보낼 때 쓴다.
 ///
-/// Implementations may be in-process, Redis-backed, or test doubles. The
-/// payload is JSON owned by the web protocol layer; `LiveSession` should not
-/// learn Redis details.
+/// 구현은 in-process, Redis 기반, 또는 테스트 더블일 수 있다. payload는 호출자가
+/// 소유한 JSON이며, 세션 로직은 이 trait 뒤로 격리돼 Redis 세부를 몰라도 된다.
 pub trait SessionBus {
     fn submit_command_json(&self, session_id: &str, payload: &str);
     fn publish_event_json(&self, session_id: &str, payload: &str);
@@ -234,7 +233,7 @@ enum RedisBusMessage {
     Event { session_id: String, payload: String },
 }
 
-/// Fire-and-forget async writer used by the blocking web engine thread.
+/// 동기 호출자(REPL 스레드)가 쓰는 fire-and-forget async writer. tokio 태스크가 실제 Redis 쓰기를 수행한다.
 #[derive(Clone)]
 pub struct RedisBusHandle {
     tx: mpsc::UnboundedSender<RedisBusMessage>,
