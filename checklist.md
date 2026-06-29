@@ -22,8 +22,13 @@
 - [x] Task 2: 라운드 프롬프트 조립 (순차-인지) + Participant/Utterance (123ee5d)
 - [x] Task 3: run_round + RunnerRegistry (c9af140) — Plan 03 완료, 24 테스트 green, build/clippy 클린
 
+## Plan 05: thin REPL (docs/plans/v1-05-repl.md) — feat/v1-repl (돌아가는 앱, Plan 04보다 먼저)
+
+- [ ] Task 1: 명령 파싱
+- [ ] Task 2: render + Session.step (fake registry)
+- [ ] Task 3: main.rs 실 러너 REPL
+
 ## 다음 plan (미작성)
 
 - [ ] Plan 04: 전사·영속 (트리-ready)
-- [ ] Plan 05: thin REPL 프론트
-- [ ] Hardening: 양 러너 idle watchdog(INV-4) + 실 CLI 스모크
+- [ ] Hardening: 양 러너 idle watchdog(INV-4) + consensus 합성(/conclude) + 자리/쓰기 지목 + 실 CLI 스모크
