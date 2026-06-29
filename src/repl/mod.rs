@@ -166,6 +166,12 @@ impl Session {
         crate::store::save_session(&StoredSession { messages: self.messages.clone(), head: self.head }, path)
     }
 
+    /// 현재 트리를 StoredSession JSON으로 직렬화한다(종료 시 Redis 동기 스냅샷 flush용).
+    pub fn snapshot_json(&self) -> String {
+        serde_json::to_string(&StoredSession { messages: self.messages.clone(), head: self.head })
+            .unwrap_or_default()
+    }
+
     /// 상태 파일에서 트리를 로드해 세션을 복원한다. 레거시 bare-array 포맷도 지원한다.
     pub fn resume(
         participants: Vec<Participant>,

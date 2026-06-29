@@ -202,4 +202,16 @@ fn main() {
             Err(e) => println!("[세션 저장 실패] {e}"),
         }
     }
+
+    // bus 미러는 fire-and-forget이라 마지막 라운드 스냅샷이 종료 시 유실될 수 있다.
+    // resume 정확성을 위해 종료 직전 최종 스냅샷을 동기로 1회 기록한다(Redis 있을 때만).
+    if session.message_count() > 0 {
+        let flush_bus = {
+            let _g = rt.enter();
+            tunaround::session_bus::RedisBus::open_from_env()
+        };
+        if let Some(rb) = flush_bus {
+            let _ = rt.block_on(rb.set_snapshot(&sid, &session.snapshot_json()));
+        }
+    }
 }
