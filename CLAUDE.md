@@ -20,9 +20,9 @@
 
 ## 현재 상태 (2026-06-29)
 
-- **v1 완료 + v2 진행 중.** v1 본체(러너 Codex+Claude + 오케스트레이터 + thin REPL + 전사 영속) + hardening. v2는 **Plan 01 idle watchdog(INV-4)·Plan 02 N좌석 로스터 done.** 48 테스트 green, build/clippy 클린, 실 에이전트 스모크 통과.
-- 현행 spec: [docs/design/tunaRound-v1-design_2026-06-29.md](docs/design/tunaRound-v1-design_2026-06-29.md). 진행 현황은 [docs/plans/index.md](docs/plans/index.md)(v1 Plan 01~06, v2 Plan 01~02 done).
-- 모든 변경 로컬 main(미푸시). **남은 v2는 전부 착수 전 사용자 결정 필요**: 협업 코딩(쓰기 지목 - 설계안 [docs/design/v2-write-delegation-design_2026-06-29.md](docs/design/v2-write-delegation-design_2026-06-29.md), 결정 3건) / Redis 멀티세션=git-tree(신규 인프라) / 리치 프론트 ratatui·web(신규 의존성) / 신규 엔진 러너(tunaLlama·opencode 좌석).
+- **v1 완료 + v2 진행 중.** v1 본체(러너 Codex+Claude + 오케스트레이터 + thin REPL + 전사 영속) + hardening. v2는 **Plan 01 idle watchdog(INV-4)·Plan 02 N좌석 로스터·Plan 03 협업 코딩(`@engine!` 쓰기 지목) done.** 52 테스트 green, build/clippy 클린, 실 에이전트 스모크 통과. 이제 토론 + 실제 협업 코딩 도구.
+- 현행 spec: [docs/design/tunaRound-v1-design_2026-06-29.md](docs/design/tunaRound-v1-design_2026-06-29.md). 진행 현황은 [docs/plans/index.md](docs/plans/index.md)(v1 Plan 01~06, v2 Plan 01~03 done).
+- 변경은 origin/main 동기화(푸시됨). **남은 v2는 전부 착수 전 인프라·의존성 결정 필요**: Redis 멀티세션=git-tree(신규 인프라) / 리치 프론트 ratatui·web(신규 의존성) / 신규 엔진 러너 좌석(tunaLlama·opencode, 외부 CLI). 로스터는 이미 N-ready라 엔진 러너만 추가하면 좌석 확장.
 
 ## 무엇을 만드나 (요약)
 
@@ -43,5 +43,5 @@
 ## 다음 세션 첫 행동
 
 1. `cargo run`으로 앱 동작 확인(claude/codex CLI 필요). 진행 현황은 [docs/plans/index.md](docs/plans/index.md), 결정 로그는 `context-notes.md`.
-2. 다음 = **남은 v2 결정부터**: 협업 코딩 설계안([docs/design/v2-write-delegation-design_2026-06-29.md](docs/design/v2-write-delegation-design_2026-06-29.md))의 결정 3건(claude 쓰기 권한 수위 / 쓰기 대상 디렉토리 / 실행 전 확인)을 사용자와 정한 뒤 v2-03 Plan으로 분해. Redis/프론트/신규엔진은 인프라·의존성 결정 후.
+2. 다음 = **남은 v2 중 택1**(각각 결정 필요): Redis 멀티세션=git-tree 분기(신규 인프라 Redis) / 리치 프론트 ratatui·web(신규 의존성) / 신규 엔진 러너 좌석(tunaLlama·opencode, 외부 CLI). 출처는 tunaSalon(session_bus.rs, render_chat). 결정 후 brainstorming -> plan -> subagent-driven.
 3. 작업 추적은 `checklist.md`·`context-notes.md`(규율 #7). 위임은 Sonnet 서브에이전트 + Opus 리뷰(subagent-driven).
