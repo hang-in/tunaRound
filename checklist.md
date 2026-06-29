@@ -71,7 +71,8 @@
 
 - [x] Task 1: session_bus snapshot 지원(set/get + snapshot_json fire-and-forget) (e72c867)
 - [x] Task 2: Session 미러 통합(Option<bus>+session_id, append_round 미러, new_with_bus) (c46121c)
-- [x] Task 3: main.rs tokio 런타임 + --observe(관찰) + --session(재개) + owner lease (eb470b8, 정리 389fe09) — Plan 06 완료, 66 테스트(63+3 ignored), build/clippy 클린. observe/resume 라이브는 수동 검증 필요
+- [x] Task 3: main.rs tokio 런타임 + --observe(관찰) + --session(재개) + owner lease (eb470b8, 정리 389fe09) — Plan 06 완료, 66 테스트(63+3 ignored), build/clippy 클린
+- [x] 라이브 검증(2026-06-30, 로컬 Redis): bus 3 #[ignore] / resume / observe / 3라운드 컨텍스트 유지 전부 통과. **버그 발견·수정**: 종료 시 마지막 snapshot 유실 -> 동기 flush (fix/v2-06-snapshot-flush, 50edea4)
 
 ## v2 백로그 (착수 전 결정 필요)
 - [ ] 신규 엔진 러너(tunaLlama·opencode 좌석) — 외부 CLI 통합. 로스터는 이미 N-ready

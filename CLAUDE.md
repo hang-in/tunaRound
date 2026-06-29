@@ -23,7 +23,7 @@
 - **v1 완료 + v2 멀티세션 완성.** v1 본체 + hardening. v2 done: **01 idle watchdog · 02 N좌석 로스터 · 03 협업 코딩(`@engine!`) · 04 session_bus 토대 · 05 세션 모델(in-store 트리, `/branches`·`/checkout`) · 06 Redis 통합(`--observe`/`--session`, 미러+관찰+재개).** 66 테스트(63 pass + 라이브 Redis 3 #[ignore]), build/clippy 클린. 토론 + 협업 코딩 + 분기 토론 트리 + 멀티프로세스 동시 세션.
 - 현행 spec: [docs/design/tunaRound-v1-design_2026-06-29.md](docs/design/tunaRound-v1-design_2026-06-29.md). 진행 현황은 [docs/plans/index.md](docs/plans/index.md)(v1 Plan 01~06, v2 Plan 01~06 done).
 - 변경은 origin/main 동기화(푸시됨). **설계문서 멀티세션 v2 로드맵 완성.** 남은 v2 백로그(각각 착수 전 결정 필요): 리치 프론트 ratatui·web(신규 의존성, tunaSalon `render_chat` 포팅) / 신규 엔진 러너 좌석(tunaLlama·opencode, 외부 CLI).
-- **미검증(수동 필요):** Plan 06 observe/resume 라이브 동작은 라이브 Redis + 2 터미널로 1회 확인 필요(`TUNAROUND_REDIS_URL=... cargo run -- --session demo` / `... --observe demo`). 자동 테스트는 write-path만 덮음.
+- **라이브 검증 완료(2026-06-30, 로컬 Redis):** bus #[ignore] 3 / resume / observe / 실 3라운드 컨텍스트 유지 전부 통과. 실 라운드로 버그 1건 발견·수정(종료 시 마지막 snapshot 유실 -> 동기 flush, fix/v2-06-snapshot-flush). 검증법: `TUNAROUND_REDIS_URL=redis://127.0.0.1/ cargo run -- --session demo` / 다른 터미널 `... --observe demo`. redis-server 끄기: `redis-cli shutdown nosave`.
 
 ## 무엇을 만드나 (요약)
 

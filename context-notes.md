@@ -149,3 +149,14 @@
 - 리뷰 정리: --session 재개의 중복 RedisBusHandle spawn 제거(bus_boxed 재사용, 389fe09).
 - **검증 한계:** observe/resume 라이브는 라이브 Redis+2터미널 필요라 자동검증 불가(수동 1회 확인 필요). 자동 테스트는 FakeBus write-path+파싱만.
 - **멀티세션 완성(04 토대+05 트리+06 통합).** v2 설계문서 멀티세션 로드맵 끝. 남은 v2 백로그(결정 필요): 리치 프론트 ratatui·web / 신규 엔진 러너 좌석(tunaLlama·opencode).
+
+## v2 Plan 06 라이브 검증 + 버그 수정 (2026-06-30)
+
+- 로컬 Redis(brew 8.8.0) 설치 후 실 검증. bus 3 #[ignore] / resume(--session) / observe(--observe) / 실 3라운드 컨텍스트 유지 전부 통과. git 청결(ReadOnly).
+- **실 라운드로만 잡힌 버그:** mirror가 fire-and-forget이라 /quit 시 마지막 라운드 snapshot 유실(events=3, snapshot=2). resume 정확성 결함.
+- **수정:** 종료 직전 `session.snapshot_json()`을 동기 `set_snapshot`으로 1회 기록(Session::snapshot_json 추가). 1라운드 재검증 통과(snapshot이 라운드 보존). 브랜치 `fix/v2-06-snapshot-flush`(50edea4). 잔여: per-round 이벤트는 best-effort(관찰자는 라운드 중 수신), resume는 종료 flush로 보장.
+- redis-server는 검증 후에도 기동 상태(brew 설치). 끄려면 `redis-cli shutdown nosave`.
+
+## 설계 방향 리뷰 (2026-06-30) — 결정 보류
+
+- 사용자가 "로컬 멀티세션 broker(PTY로 claude/codex 라이브 세션 + Redis stream + 수동 라우팅)" 설계 대화를 검토 요청. 내 결론: **이건 tunaRound 현재 one-shot 재주입 모델과 다른 패러다임**(PTY 라이브 세션 = 컨텍스트가 에이전트 내부). PTY는 tunaRound가 의도적으로 피한 파싱 복잡도(턴 종료 판정 등)를 되살림. local-first·manual-first·ctx-handle 순서는 옳음. **추천 = 하이브리드**(one-shot 유지 + ctx-handle + side-by-side UI + draft→approve relay, PTY 없이). "tunaRound 피벗 vs 별도 tunaSalon v0" 결정 필요. 아직 미결.
