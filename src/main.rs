@@ -16,7 +16,27 @@ fn main() {
         Participant { engine: "claude".into(), role: Some("proposer".into()), instruction: String::new() },
         Participant { engine: "codex".into(), role: Some("reviewer".into()), instruction: String::new() },
     ];
-    let mut session = Session::new(participants, Box::new(registry));
+    // 선택 상태파일: `cargo run -- <state.json>` 있으면 시작 시 resume, 종료 시 저장.
+    let state_path: Option<String> = std::env::args().nth(1);
+    let resume_existing = state_path
+        .as_deref()
+        .map(|p| std::path::Path::new(p).exists())
+        .unwrap_or(false);
+    let mut session = if resume_existing {
+        let p = state_path.as_deref().unwrap();
+        match Session::resume(participants, Box::new(registry), p) {
+            Ok(s) => {
+                println!("(이어받음: {p})");
+                s
+            }
+            Err(e) => {
+                eprintln!("[resume 실패: {e}] 종료합니다.");
+                std::process::exit(1);
+            }
+        }
+    } else {
+        Session::new(participants, Box::new(registry))
+    };
 
     println!("tunaRound - 메시지를 입력하세요. /help, /save, /quit.");
     let stdin = io::stdin();
@@ -35,6 +55,12 @@ fn main() {
                 Err(e) => println!("[저장 실패] {e}"),
             },
             StepOutcome::Exit => break,
+        }
+    }
+    if let Some(p) = &state_path {
+        match session.save_state(p) {
+            Ok(()) => println!("세션 저장됨: {p}"),
+            Err(e) => println!("[세션 저장 실패] {e}"),
         }
     }
 }

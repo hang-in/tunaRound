@@ -75,6 +75,25 @@ impl Session {
         out
     }
 
+    /// 현재 전사를 상태 파일(JSON)로 저장한다.
+    pub fn save_state(&self, path: &str) -> std::io::Result<()> {
+        crate::store::save(&crate::store::to_stored(&self.transcript), path)
+    }
+
+    /// 상태 파일에서 전사를 로드해 세션을 복원한다.
+    pub fn resume(
+        participants: Vec<Participant>,
+        registry: Box<dyn RunnerRegistry>,
+        path: &str,
+    ) -> std::io::Result<Self> {
+        let messages = crate::store::load(path)?;
+        Ok(Self {
+            participants,
+            transcript: crate::store::from_stored(&messages),
+            registry,
+        })
+    }
+
     /// 한 입력을 처리한다. run_round 호출 등 로직만; 실제 I/O는 호출자(main).
     pub fn step(&mut self, cmd: Command) -> StepOutcome {
         match cmd {
