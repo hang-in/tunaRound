@@ -20,9 +20,9 @@
 
 ## 현재 상태 (2026-06-29)
 
-- **v1 완료 + v2 진행 중.** v1 본체 + hardening. v2 done: **Plan 01 idle watchdog · 02 N좌석 로스터 · 03 협업 코딩(`@engine!` 쓰기 지목) · 04 Redis session_bus 포팅(멀티세션 토대).** 56 테스트 green(라이브 Redis 2개 #[ignore]), build/clippy 클린. 이제 토론 + 실제 협업 코딩 도구.
-- 현행 spec: [docs/design/tunaRound-v1-design_2026-06-29.md](docs/design/tunaRound-v1-design_2026-06-29.md). 진행 현황은 [docs/plans/index.md](docs/plans/index.md)(v1 Plan 01~06, v2 Plan 01~04 done).
-- 변경은 origin/main 동기화(푸시됨). **진행 중: 멀티세션(Redis=git-tree, 설계문서 확정).** 04 토대 done -> 다음 Plan 05 세션모델(브랜치=세션, store parent_id 실사용) -> Plan 06 REPL통합+presence/snapshot 신규. 백로그(결정 필요): 리치 프론트 ratatui·web / 신규 엔진 러너 좌석(tunaLlama·opencode).
+- **v1 완료 + v2 진행 중.** v1 본체 + hardening. v2 done: **01 idle watchdog · 02 N좌석 로스터 · 03 협업 코딩(`@engine!`) · 04 Redis session_bus 토대 · 05 세션 모델(in-store 트리, `/branches`·`/checkout`).** 61 테스트 green(라이브 Redis 2 #[ignore]), build/clippy 클린. 토론 + 협업 코딩 + 단일 프로세스 분기 토론 동작.
+- 현행 spec: [docs/design/tunaRound-v1-design_2026-06-29.md](docs/design/tunaRound-v1-design_2026-06-29.md). 진행 현황은 [docs/plans/index.md](docs/plans/index.md)(v1 Plan 01~06, v2 Plan 01~05 done).
+- 변경은 origin/main 동기화(푸시됨). **진행 중: 멀티세션(Redis=git-tree).** 04 토대+05 트리모델 done -> **다음 Plan 06: REPL Redis 통합 + presence/snapshot 신규 + async<->sync block_on 브리지(멀티프로세스 동시 세션).** Plan 06은 net-new presence라 가장 무거움, 착수 전 설계 필요. 백로그(결정 필요): 리치 프론트 ratatui·web / 신규 엔진 러너 좌석.
 
 ## 무엇을 만드나 (요약)
 
@@ -43,5 +43,5 @@
 ## 다음 세션 첫 행동
 
 1. `cargo run`으로 앱 동작 확인(claude/codex CLI 필요). 진행 현황은 [docs/plans/index.md](docs/plans/index.md), 결정 로그는 `context-notes.md`.
-2. 다음 = **멀티세션 Plan 05(세션 모델, 브랜치=세션)**: store parent_id 트리 실사용 + 멀티세션 레지스트리/전환. 그다음 Plan 06(REPL 통합 + presence/snapshot 신규 + block_on 브리지). 착수 전 design 문서 v2 섹션 + claude-mem으로 기결정 확인(재론 금지).
+2. 다음 = **멀티세션 Plan 06**(REPL Redis 통합 + presence/snapshot 신규 + async<->sync block_on 브리지). session_bus(Plan 04)·트리모델(Plan 05) 위에 각 분기에 session_id 부여 + 멀티프로세스 동시 세션. net-new presence라 착수 전 설계 필요. 착수 전 design 문서 v2 섹션 + claude-mem으로 기결정 확인(재론 금지).
 3. 작업 추적은 `checklist.md`·`context-notes.md`(규율 #7). 위임은 Sonnet 서브에이전트 + Opus 리뷰(subagent-driven).

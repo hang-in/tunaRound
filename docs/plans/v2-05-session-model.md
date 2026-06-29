@@ -1,7 +1,7 @@
 ---
 title: "tunaRound v2 Plan 05: 세션 모델 (브랜치=세션, in-store 논리 트리)"
 type: plan
-status: in_progress
+status: done
 priority: P1
 updated_at: 2026-06-29
 owner: shared
@@ -9,6 +9,17 @@ summary: 선형 전사를 in-store 논리 트리로. Session이 messages(Vec<Sto
 ---
 
 # tunaRound v2 Plan 05: 세션 모델 Implementation Plan
+
+## 실행 결과 (2026-06-29, done)
+
+구현 완료(브랜치 `feat/v2-session-model` -> main). 61 테스트(59 pass + 2 ignored 라이브 Redis), `cargo build`/`clippy` 경고 0. Opus 리뷰: 설계 충실, 이중 append 없음 확인(run_round은 임시 path mutate, Session은 반환 round만 트리에 1회 append).
+
+- Task 1: store 트리 순수함수(path_to_root/next_id/tree_summary) + StoredSession + save_session/load_session(레거시 폴백) (커밋 `7ded26d`).
+- Task 2: Session 선형 transcript -> 트리(messages+head), active_path/append_round 헬퍼, 4개 라운드 분기 통일, 영속 배선 (커밋 `c9510fe`).
+- Task 3: /branches(tree_summary) + /checkout <id>(head 이동) + 파싱 + /help (커밋 `5b25827`).
+- 일탈(정당): Branches/Checkout variant를 Task 2에서 선구현(step exhaustive match). integration `store_roundtrip.rs`의 resume 검증을 load_session().messages.len()으로 갱신(save_state가 StoredSession 포맷으로 변경됨, 예고된 위험).
+
+---
 
 > **For agentic workers:** REQUIRED SUB-SKILL: superpowers:subagent-driven-development + test-driven-development. Steps use checkbox (`- [ ]`). TDD red->green.
 > 결정: 사용자 확정 "in-store 논리 트리"(옵션 A). 설계문서 L63·L100·L108(브랜치=세션, 트리-ready, 분기 UI=v2). 아키텍처 재론 금지.

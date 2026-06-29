@@ -61,11 +61,11 @@
 - [x] Task 1: 의존성(tokio/redis/futures) + session_bus 포팅 (room->session, pure 테스트 2) (0783179)
 - [x] Task 2: 라이브 Redis 왕복 통합 테스트 (#[ignore]) (86aa482) — Plan 04 완료, 56 테스트(49+2 ignored+5), build/clippy 클린. 리뷰 주석정리 11e1f52
 
-### Plan 05: 세션 모델 (docs/plans/v2-05-session-model.md) — feat/v2-session-model
+### Plan 05: 세션 모델 (docs/plans/v2-05-session-model.md) — feat/v2-session-model -> main
 
-- [ ] Task 1: store 트리 순수함수(path_to_root/next_id/tree_summary) + StoredSession 저장 포맷
-- [ ] Task 2: Session 트리 리팩토링(messages+head, append-to-tree, 영속)
-- [ ] Task 3: /branches + /checkout 분기 탐색
+- [x] Task 1: store 트리 순수함수(path_to_root/next_id/tree_summary) + StoredSession 저장 포맷 (7ded26d)
+- [x] Task 2: Session 트리 리팩토링(messages+head, append-to-tree, 영속) (c9510fe)
+- [x] Task 3: /branches + /checkout 분기 탐색 (5b25827) — Plan 05 완료, 61 테스트(59+2 ignored), build/clippy 클린
 
 ### 후속
 - [ ] Plan 06: REPL Redis 통합 + presence/snapshot 신규 + block_on 브리지(각 분기 session_id, 동시 세션)
