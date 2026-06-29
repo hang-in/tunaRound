@@ -1,6 +1,6 @@
 // Claude Code를 stream-json으로 구동하는 러너. argv·NDJSON 파서·ClaudeRunner.
 
-use super::{RunInput, RunMode};
+use super::{RunError, RunInput, RunMode, RunOutput};
 
 /// `claude -p` argv 조립. 프롬프트는 `-p <arg>`로 전달(stdin 아님).
 /// 모드에 따라 도구 권한을 분리한다(쓰기 하드 분리). 실측 플래그는 Step 1 참조.
@@ -29,9 +29,81 @@ fn build_claude_args(input: &RunInput) -> Vec<String> {
     args
 }
 
+/// claude stream-json NDJSON에서 최종 결과를 뽑는다.
+/// `result` 라인의 content + 토큰(INV-3: top-level total → nested usage fallback).
+/// is_error → Err(Agent), result 라인 없음 → Err(Empty). 비-JSON 라인은 무시.
+pub(crate) fn parse_claude_stream(stdout: &str) -> Result<RunOutput, RunError> {
+    for line in stdout.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(ev) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if ev.get("type").and_then(|v| v.as_str()) != Some("result") {
+            continue;
+        }
+        let result_text = ev.get("result").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        if ev.get("is_error").and_then(|v| v.as_bool()).unwrap_or(false) {
+            return Err(RunError::Agent(result_text));
+        }
+        let usage = ev.get("usage");
+        let pick = |top: &str, nested: &str| -> i64 {
+            ev.get(top).and_then(|v| v.as_i64())
+                .or_else(|| usage.and_then(|u| u.get(nested)).and_then(|v| v.as_i64()))
+                .unwrap_or(0)
+        };
+        return Ok(RunOutput {
+            content: result_text,
+            input_tokens: pick("total_input_tokens", "input_tokens"),
+            output_tokens: pick("total_output_tokens", "output_tokens"),
+        });
+    }
+    Err(RunError::Empty("claude result 라인 없음".into()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_takes_result_line_content_and_tokens() {
+        let stdout = concat!(
+            r#"{"type":"system"}"#, "\n",
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"중간"}]}}"#, "\n",
+            r#"{"type":"result","result":"최종 결론입니다.","total_input_tokens":10,"total_output_tokens":20}"#, "\n",
+        );
+        let out = parse_claude_stream(stdout).expect("ok");
+        assert_eq!(out.content, "최종 결론입니다.");
+        assert_eq!(out.input_tokens, 10);
+        assert_eq!(out.output_tokens, 20);
+    }
+
+    #[test]
+    fn parse_token_fallback_to_nested_usage() {
+        let stdout = concat!(
+            r#"{"type":"result","result":"답","usage":{"input_tokens":3,"output_tokens":4}}"#, "\n",
+        );
+        let out = parse_claude_stream(stdout).expect("ok");
+        assert_eq!(out.input_tokens, 3);
+        assert_eq!(out.output_tokens, 4);
+    }
+
+    #[test]
+    fn parse_is_error_returns_agent_err() {
+        let stdout = concat!(
+            r#"{"type":"result","is_error":true,"result":"rate limit"}"#, "\n",
+        );
+        let err = parse_claude_stream(stdout).unwrap_err();
+        assert_eq!(err, RunError::Agent("rate limit".into()));
+    }
+
+    #[test]
+    fn parse_no_result_line_returns_empty_err() {
+        let stdout = r#"{"type":"system"}"#;
+        assert!(matches!(parse_claude_stream(stdout), Err(RunError::Empty(_))));
+    }
 
     #[test]
     fn args_have_stream_json_and_prompt() {

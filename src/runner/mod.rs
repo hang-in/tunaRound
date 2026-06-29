@@ -31,6 +31,7 @@ pub enum RunError {
     Spawn(String),
     Io(String),
     Empty(String),
+    Agent(String),
 }
 
 /// 엔진 경계. 오케스트레이터는 concrete 엔진이 아니라 이 trait에 의존한다.
