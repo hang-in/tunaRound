@@ -135,11 +135,8 @@ fn main() {
                     match serde_json::from_str::<tunaround::store::StoredSession>(&json) {
                         Ok(ss) => {
                             println!("(Redis snapshot 재개: {sid})");
-                            let _g2 = rt.enter();
-                            let bus2 = tunaround::session_bus::RedisBusHandle::spawn_from_env()
-                                .map(|h| Box::new(h) as Box<dyn tunaround::session_bus::SessionBus>);
-                            drop(_g2);
-                            let mut s = Session::new_with_bus(participants, Box::new(registry), sid.clone(), bus2);
+                            // 위에서 만든 bus_boxed를 재사용한다(중복 핸들 spawn 방지).
+                            let mut s = Session::new_with_bus(participants, Box::new(registry), sid.clone(), bus_boxed);
                             s.seed_from(ss);
                             // owner lease 시도.
                             let worker_id = std::process::id().to_string();
