@@ -1,5 +1,6 @@
 // 터미널 REPL. 명령 파싱·렌더·세션 step. I/O는 main.rs.
 use crate::orchestrator::{run_round, Participant, RunnerRegistry, Utterance};
+use crate::runner::RunMode;
 
 /// REPL 한 줄 입력의 해석 결과.
 #[derive(Debug, Clone, PartialEq)]
@@ -119,7 +120,7 @@ impl Session {
                 markdown: self.transcript_markdown(),
             },
             Command::Message(text) => {
-                match run_round(&self.participants, &mut self.transcript, &text, self.registry.as_ref()) {
+                match run_round(&self.participants, &mut self.transcript, &text, self.registry.as_ref(), RunMode::ReadOnly) {
                     Ok(round) => StepOutcome::Print(render(&round)),
                     Err(e) => StepOutcome::Print(format!("[에러] {e:?}")),
                 }
@@ -130,7 +131,7 @@ impl Session {
                 if seats.is_empty() {
                     return StepOutcome::Print(format!("그런 자리가 없습니다: {engine}"));
                 }
-                match run_round(&seats, &mut self.transcript, &text, self.registry.as_ref()) {
+                match run_round(&seats, &mut self.transcript, &text, self.registry.as_ref(), RunMode::ReadOnly) {
                     Ok(round) => StepOutcome::Print(render(&round)),
                     Err(e) => StepOutcome::Print(format!("[에러] {e:?}")),
                 }
@@ -145,7 +146,7 @@ impl Session {
                     role: Some("synthesizer".into()),
                     instruction: String::new(),
                 }];
-                match run_round(&synth, &mut self.transcript, "지금까지의 토론을 종합해 결론을 정리해줘.", self.registry.as_ref()) {
+                match run_round(&synth, &mut self.transcript, "지금까지의 토론을 종합해 결론을 정리해줘.", self.registry.as_ref(), RunMode::ReadOnly) {
                     Ok(round) => StepOutcome::Print(render(&round)),
                     Err(e) => StepOutcome::Print(format!("[에러] {e:?}")),
                 }
