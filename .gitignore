@@ -1,0 +1,14 @@
+# Rust
+/target
+**/*.rs.bk
+
+# 환경/비밀
+.env
+.env.local
+
+# OS
+.DS_Store
+
+# 에디터
+.idea/
+*.swp
