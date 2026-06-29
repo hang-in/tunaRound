@@ -1,4 +1,5 @@
 // 에이전트 CLI를 한 턴 구동하고 결과를 돌려주는 러너 레이어의 경계.
+pub mod claude;
 pub mod codex;
 
 /// 한 턴 입력. v1은 매 턴 전사를 prompt에 주입하므로 resume 토큰은 두지 않는다.
