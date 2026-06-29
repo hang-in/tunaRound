@@ -67,11 +67,11 @@
 - [x] Task 2: Session 트리 리팩토링(messages+head, append-to-tree, 영속) (c9510fe)
 - [x] Task 3: /branches + /checkout 분기 탐색 (5b25827) — Plan 05 완료, 63 테스트(61+2 ignored), build/clippy 클린
 
-### Plan 06: Redis 멀티세션 통합 (docs/plans/v2-06-redis-integration.md) — feat/v2-redis-integration
+### Plan 06: Redis 멀티세션 통합 (docs/plans/v2-06-redis-integration.md) — feat/v2-redis-integration -> main
 
-- [ ] Task 1: session_bus snapshot 지원(set/get + snapshot_json fire-and-forget)
-- [ ] Task 2: Session 미러 통합(Option<bus>+session_id, append_round 미러, new_with_bus)
-- [ ] Task 3: main.rs tokio 런타임 + --observe(관찰) + --session(재개) + owner lease (라이브=수동 검증)
+- [x] Task 1: session_bus snapshot 지원(set/get + snapshot_json fire-and-forget) (e72c867)
+- [x] Task 2: Session 미러 통합(Option<bus>+session_id, append_round 미러, new_with_bus) (c46121c)
+- [x] Task 3: main.rs tokio 런타임 + --observe(관찰) + --session(재개) + owner lease (eb470b8, 정리 389fe09) — Plan 06 완료, 66 테스트(63+3 ignored), build/clippy 클린. observe/resume 라이브는 수동 검증 필요
 
 ## v2 백로그 (착수 전 결정 필요)
 - [ ] 신규 엔진 러너(tunaLlama·opencode 좌석) — 외부 CLI 통합. 로스터는 이미 N-ready
