@@ -1,0 +1,41 @@
+{
+  "_comment": "tunaRound role routing. default 에서 프로젝트 관례로 조정함: codex 비사용, 구현 primary=Sonnet, 벌크만 tunaLlama.",
+  "_schema_version": 1,
+
+  "architect": {
+    "agent": "claude-main",
+    "fallback": null,
+    "description": "Plan 작성, 작업 지시서, 스펙·리뷰·검증. 메인 Opus 세션이 직접 수행."
+  },
+
+  "developer": {
+    "agent": "claude-sonnet-subagent",
+    "context_prepend": ["docs/index.md", "CLAUDE.md", "paired_plan"],
+    "fallback": "claude-main",
+    "bulk_delegate": {
+      "agent": "tunaLlama",
+      "tool": "tuna_generate_code",
+      "when": "보일러플레이트·반복 코드·문서 초안·테스트 스캐폴드 1차 생성. 이후 Opus 리뷰."
+    },
+    "description": "구현. 정확성 민감 코어(러너·오케스트레이터)는 Sonnet 서브에이전트. 저비용 벌크/초안만 tunaLlama 로 위임."
+  },
+
+  "reviewer": {
+    "agent": "claude-sonnet-subagent",
+    "subagent_type": "code-reviewer",
+    "fallback": "claude-main",
+    "description": "코드 리뷰. 메인과 독립된 시선. tunaRound 는 codex 비사용 관례라 default 의 codex-cli 대신 Sonnet subagent 사용. plan/prompt 리뷰는 doc-reviewer agent."
+  },
+
+  "researcher": {
+    "agent": "claude-sonnet-subagent",
+    "subagent_type": "general-purpose",
+    "description": "외부 자료 조사 (출처 레포 실측, 라이브러리 문서 등). broad search."
+  },
+
+  "_notes": {
+    "override": "이 파일을 직접 편집해 override. plugin 디렉터리는 손대지 말 것.",
+    "deviation_from_default": "default 는 developer=tunaLlama, reviewer=codex-cli. tunaRound 는 codex 비사용 + 구현 정확성 우선이라 둘 다 Sonnet 으로 조정.",
+    "fallback_chain": "agent 불가 시 fallback. fallback 도 없으면 claude-main 직접 수행."
+  }
+}
