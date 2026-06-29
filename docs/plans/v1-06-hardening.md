@@ -1,7 +1,7 @@
 ---
 title: "tunaRound v1 Plan 06: Hardening (consensus 합성 + 자리 지목)"
 type: plan
-status: draft
+status: done
 priority: P1
 updated_at: 2026-06-29
 owner: shared
@@ -21,6 +21,15 @@ summary: v1 사용자 경험 완성용 hardening 2종. /conclude(synthesizer 역
 > 규율: docs/reference/development-guidelines.md. 설계 §4(자리/쓰기 지목), roles.rs의 `synthesizer`. 비포함(v2): idle watchdog(INV-4, 동기 러너 refactor), 에이전트 쓰기 지목(RunMode::Write 실제 행사 = 협업 코딩).
 
 ---
+
+## 실행 결과 (2026-06-29, done)
+
+구현 완료(브랜치 `feat/v1-hardening` -> main). 38 테스트 green, `cargo build`/`clippy` 클린. 둘 다 run_round 재사용, additive(기존 Command 불변).
+
+- `/conclude [engine]`: synthesizer 역할 1자리로 토론 종합, 전사에 추가(기본 엔진=첫 참가자).
+- `@engine <msg>`: 그 자리만 응답. 미등록 엔진은 안내. `@engine`만이면 일반 메시지로 폴스루.
+- /help 텍스트도 갱신.
+- 커밋: 464bf37 -> 0c4b282.
 
 ## 범위
 

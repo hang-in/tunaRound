@@ -36,8 +36,8 @@
 
 ## Plan 06: Hardening (docs/plans/v1-06-hardening.md) — feat/v1-hardening
 
-- [ ] Task 1: /conclude synthesizer 종합
-- [ ] Task 2: @engine 자리 지목
+- [x] Task 1: /conclude synthesizer 종합 (464bf37)
+- [x] Task 2: @engine 자리 지목 (0c4b282) — Plan 06 완료, v1 완료, 38 테스트 green
 
 ## v2 (다음 세션)
 
