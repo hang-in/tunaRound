@@ -9,6 +9,7 @@ pub enum Command {
     Save(Option<String>),
     Conclude(Option<String>),
     Only { engine: String, text: String },
+    Write { engine: String, text: String },
     Help,
     Quit,
     Noop,
@@ -34,12 +35,20 @@ pub fn parse_command(line: &str) -> Command {
     }
     if let Some(rest) = line.strip_prefix('@') {
         let mut it = rest.splitn(2, char::is_whitespace);
-        let engine = it.next().unwrap_or("").to_string();
+        let mut engine = it.next().unwrap_or("").to_string();
         let text = it.next().map(|s| s.trim().to_string()).unwrap_or_default();
-        if !engine.is_empty() && !text.is_empty() {
-            return Command::Only { engine, text };
+        let write = engine.ends_with('!');
+        if write {
+            engine.pop(); // trailing '!' 제거
         }
-        return Command::Message(line.to_string()); // "@codex"만 있으면 일반 메시지
+        if !engine.is_empty() && !text.is_empty() {
+            return if write {
+                Command::Write { engine, text }
+            } else {
+                Command::Only { engine, text }
+            };
+        }
+        return Command::Message(line.to_string()); // "@codex"·"@codex!"만이면 일반 메시지
     }
     Command::Message(line.to_string())
 }
@@ -113,7 +122,7 @@ impl Session {
             Command::Quit => StepOutcome::Exit,
             Command::Noop => StepOutcome::Noop,
             Command::Help => StepOutcome::Print(
-                "메시지를 입력하면 두 에이전트가 응답합니다. @engine 메시지로 한 자리만 지목, /conclude [engine] 종합, /save [경로] 결과 저장, /quit 종료.".into(),
+                "메시지를 입력하면 두 에이전트가 응답합니다. @engine 메시지로 한 자리만 지목(읽기), @engine! 메시지로 쓰기 턴(에이전트가 레포 편집), /conclude [engine] 종합, /save [경로] 결과 저장, /quit 종료.".into(),
             ),
             Command::Save(path) => StepOutcome::Save {
                 path: path.unwrap_or_else(|| DEFAULT_SAVE_PATH.to_string()),
@@ -132,6 +141,17 @@ impl Session {
                     return StepOutcome::Print(format!("그런 자리가 없습니다: {engine}"));
                 }
                 match run_round(&seats, &mut self.transcript, &text, self.registry.as_ref(), RunMode::ReadOnly) {
+                    Ok(round) => StepOutcome::Print(render(&round)),
+                    Err(e) => StepOutcome::Print(format!("[에러] {e:?}")),
+                }
+            }
+            Command::Write { engine, text } => {
+                let seats: Vec<Participant> =
+                    self.participants.iter().filter(|p| p.engine == engine).cloned().collect();
+                if seats.is_empty() {
+                    return StepOutcome::Print(format!("그런 자리가 없습니다: {engine}"));
+                }
+                match run_round(&seats, &mut self.transcript, &text, self.registry.as_ref(), RunMode::Write) {
                     Ok(round) => StepOutcome::Print(render(&round)),
                     Err(e) => StepOutcome::Print(format!("[에러] {e:?}")),
                 }
@@ -268,6 +288,59 @@ mod tests {
     fn step_only_unknown_engine_errors() {
         let mut s = session_with_two_seats();
         match s.step(Command::Only { engine: "gemini".into(), text: "?".into() }) {
+            StepOutcome::Print(text) => assert!(text.contains("자리가 없")),
+            other => panic!("expected Print, got {other:?}"),
+        }
+    }
+
+    struct ModeEchoRunner;
+    impl Runner for ModeEchoRunner {
+        fn run(&self, i: &RunInput) -> Result<RunOutput, RunError> {
+            Ok(RunOutput { content: format!("mode={:?}", i.mode), input_tokens: 0, output_tokens: 0 })
+        }
+    }
+
+    fn session_with_mode_echo() -> Session {
+        let mut reg = MapRegistry::new();
+        reg.insert("codex", Box::new(ModeEchoRunner));
+        let participants = vec![
+            Participant { engine: "codex".into(), role: Some("coder".into()), instruction: String::new() },
+        ];
+        Session::new(participants, Box::new(reg))
+    }
+
+    #[test]
+    fn parses_at_engine_bang_as_write() {
+        assert_eq!(parse_command("@codex! 이 함수 고쳐줘"), Command::Write { engine: "codex".into(), text: "이 함수 고쳐줘".into() });
+        // 읽기 지목은 그대로
+        assert_eq!(parse_command("@codex 봐줘"), Command::Only { engine: "codex".into(), text: "봐줘".into() });
+        // bang만 있고 메시지 없으면 일반 메시지
+        assert_eq!(parse_command("@codex!"), Command::Message("@codex!".into()));
+    }
+
+    #[test]
+    fn step_write_uses_write_mode_on_single_seat() {
+        let mut s = session_with_mode_echo();
+        match s.step(Command::Write { engine: "codex".into(), text: "고쳐줘".into() }) {
+            StepOutcome::Print(text) => assert!(text.contains("Write"), "got: {text}"),
+            other => panic!("expected Print, got {other:?}"),
+        }
+        assert_eq!(s.transcript_len(), 1);
+    }
+
+    #[test]
+    fn step_only_stays_readonly() {
+        let mut s = session_with_mode_echo();
+        match s.step(Command::Only { engine: "codex".into(), text: "봐줘".into() }) {
+            StepOutcome::Print(text) => assert!(text.contains("ReadOnly"), "got: {text}"),
+            other => panic!("expected Print, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn step_write_unknown_engine_errors() {
+        let mut s = session_with_mode_echo();
+        match s.step(Command::Write { engine: "gemini".into(), text: "x".into() }) {
             StepOutcome::Print(text) => assert!(text.contains("자리가 없")),
             other => panic!("expected Print, got {other:?}"),
         }
