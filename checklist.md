@@ -34,6 +34,11 @@
 - [x] Task 2: JSON save/load 라운드트립 (a5456fd; 32 테스트 green)
 - [x] Task 3: Session resume + main 상태파일 인자 (1cc75bf) — Plan 04 완료, 33 테스트 green, resume 스모크 통과
 
-## 다음 (v1 마무리 후)
+## Plan 06: Hardening (docs/plans/v1-06-hardening.md) — feat/v1-hardening
 
-- [ ] Hardening: 양 러너 idle watchdog(INV-4) + consensus 합성(/conclude) + 자리/쓰기 지목 + 실 CLI 스모크
+- [ ] Task 1: /conclude synthesizer 종합
+- [ ] Task 2: @engine 자리 지목
+
+## v2 (다음 세션)
+
+- [ ] idle watchdog(INV-4) + 에이전트 쓰기 지목(RunMode::Write) + Redis 멀티세션 = git-tree 분기 + N좌석 로스터 + ratatui/web

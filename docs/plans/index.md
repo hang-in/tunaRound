@@ -11,6 +11,7 @@
 | [v1-03-orchestrator.md](v1-03-orchestrator.md) | P0 | done | 토론 오케스트레이터(roles + build_round_prompt 순차-인지 + run_round/RunnerRegistry, FakeRunner). main 머지됨 |
 | [v1-05-repl.md](v1-05-repl.md) | P0 | done | thin REPL(명령 파싱 + Session.step + main.rs 실 러너). 돌아가는 앱(`cargo run`). main 머지됨 |
 | [v1-04-persistence.md](v1-04-persistence.md) | P1 | done | 전사 영속(StoredMessage id/parent 트리-ready + JSON save/load) + Session resume + main 상태파일 인자. main 머지됨 |
+| [v1-06-hardening.md](v1-06-hardening.md) | P1 | draft | Hardening: /conclude(synthesizer 종합) + @engine(자리 지목). run_round 재사용 additive. 브랜치 feat/v1-hardening |
 
 ## 부분 완료 / 보류
 
