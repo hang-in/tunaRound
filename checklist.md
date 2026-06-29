@@ -28,7 +28,12 @@
 - [x] Task 2: render + Session.step (d5e3dfc; 5 repl 테스트 green)
 - [x] Task 3: main.rs 실 러너 REPL (10dda04) — Plan 05 완료, 돌아가는 앱, 스모크 통과, 29 테스트 green
 
-## 다음 plan (미작성)
+## Plan 04: 전사 영속 (docs/plans/v1-04-persistence.md) — feat/v1-store
 
-- [ ] Plan 04: 전사·영속 (트리-ready)
+- [ ] Task 1: store 타입 + 트리-ready 변환
+- [ ] Task 2: JSON save/load 라운드트립
+- [ ] Task 3: Session resume + main 상태파일 인자
+
+## 다음 (v1 마무리 후)
+
 - [ ] Hardening: 양 러너 idle watchdog(INV-4) + consensus 합성(/conclude) + 자리/쓰기 지목 + 실 CLI 스모크
