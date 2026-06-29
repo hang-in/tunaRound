@@ -1,10 +1,13 @@
 ---
 type: design-spec
-status: approved
+status: superseded
 updated_at: 2026-06-29
+superseded_by: tunaRound-v1-design_2026-06-29.md
 ---
 
-# tunaRound v1 설계 (spec)
+# tunaRound v1 설계 (spec) [SUPERSEDED]
+
+> ⚠️ 이 문서는 자동토론 전제의 옛 설계입니다. 2026-06-29 사람 주도 피벗으로 [tunaRound-v1-design_2026-06-29.md](tunaRound-v1-design_2026-06-29.md)가 supersede했습니다. 현행 spec을 보세요.
 
 > 표기 규칙: 존댓말, em-dash 금지(일반 대시/콜론). 이 spec은 brainstorming(2026-06-29)에서 사용자 승인된 설계입니다. 다음 단계는 writing-plans -> 구현입니다.
 
