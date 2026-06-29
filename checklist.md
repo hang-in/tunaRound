@@ -24,9 +24,9 @@
 
 ## Plan 05: thin REPL (docs/plans/v1-05-repl.md) — feat/v1-repl (돌아가는 앱, Plan 04보다 먼저)
 
-- [ ] Task 1: 명령 파싱
-- [ ] Task 2: render + Session.step (fake registry)
-- [ ] Task 3: main.rs 실 러너 REPL
+- [x] Task 1: 명령 파싱 (e35683d)
+- [x] Task 2: render + Session.step (d5e3dfc; 5 repl 테스트 green)
+- [x] Task 3: main.rs 실 러너 REPL (10dda04) — Plan 05 완료, 돌아가는 앱, 스모크 통과, 29 테스트 green
 
 ## 다음 plan (미작성)
 
