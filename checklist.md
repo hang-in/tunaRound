@@ -16,9 +16,14 @@
 - [x] Task 2: stream-json 파서 + RunError::Agent (032e550; 전체 스위트 green, codex 무영향)
 - [x] Task 3: ClaudeRunner 통합 (2b18382) — Plan 02 완료, 17 테스트 green, build/clippy 클린
 
+## Plan 03: 토론 오케스트레이터 (docs/plans/v1-03-orchestrator.md) — feat/v1-orchestrator
+
+- [ ] Task 1: 역할 지시문 (roles)
+- [ ] Task 2: 라운드 프롬프트 조립 (순차-인지) + Participant/Utterance
+- [ ] Task 3: run_round + RunnerRegistry (FakeRunner)
+
 ## 다음 plan (미작성)
 
-- [ ] Plan 03: 토론 오케스트레이터
 - [ ] Plan 04: 전사·영속 (트리-ready)
 - [ ] Plan 05: thin REPL 프론트
 - [ ] Hardening: 양 러너 idle watchdog(INV-4) + 실 CLI 스모크
