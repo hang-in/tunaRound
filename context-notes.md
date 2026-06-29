@@ -171,3 +171,11 @@
 ## v2 Plan 07 바운드 자동 교환 착수 (2026-06-30)
 
 - `/debate <n> <주제>`: 사람 발화 1개 -> run_round을 N회 반복(라운드1=주제, 라운드2~N=연속 프롬프트 반박/심화/수렴) -> 누적 출력. 기본 3턴, 최대 10 clamp(비용 폭주 방지). 각 라운드는 기존 append_round(트리·Redis 미러 그대로). 새 인프라 0. fake 러너 TDD.
+- **완료(2026-06-30):** 브랜치 `feat/v2-bounded-debate`(c5b9339, 01b8860) -> main. 69 테스트(66+3 ignored), build/clippy 클린.
+
+## 북극성: 계층형 공유 맥락 + 능동 검색 (2026-06-30)
+
+- 사용자 핵심 요구: 에이전트가 서로 맥락을 **능동적으로 기억·검색**, 단기(세션)~프로젝트 모든 층. Redis·SQLite 적극, 필요시 vector DB. 설계문서 `docs/design/v2-context-memory-direction_2026-06-30.md`.
+- 핵심 전환: "전사 통째 재주입" -> "검색해 관련 슬라이스만 주입(RAG)". 현재 build_round_prompt가 통째 재주입 = 스케일 병목.
+- **재주입 vs Redis 구분(사용자 질문):** Redis(Plan 06)는 cross-process 전송/캐시 + 라이브일 뿐, 프롬프트 조립을 안 바꿈 = 재주입 자체를 안 줄임. 재주입 감소 = (a)handle(참조 전달, 온디맨드 expand: Redis 강점) + (b)관련성 검색(vanilla Redis는 전문/의미검색 없음 -> SQLite FTS / vector / RediSearch). 둘 다 아직 미구현(현 Redis는 미러/observe/resume만).
+- 저장소 계층: Redis=핫+handle+pubsub / SQLite=시스템오브레코드+FTS 백본 / vector=의미검색 입증 시 마지막. 첫 스텝 = 미정(재주입감소 먼저 vs SQLite+FTS 먼저, 사용자와 조율 중).

@@ -74,10 +74,10 @@
 - [x] Task 3: main.rs tokio 런타임 + --observe(관찰) + --session(재개) + owner lease (eb470b8, 정리 389fe09) — Plan 06 완료, 66 테스트(63+3 ignored), build/clippy 클린
 - [x] 라이브 검증(2026-06-30, 로컬 Redis): bus 3 #[ignore] / resume / observe / 3라운드 컨텍스트 유지 전부 통과. **버그 발견·수정**: 종료 시 마지막 snapshot 유실 -> 동기 flush (fix/v2-06-snapshot-flush, 50edea4)
 
-## v2 Plan 07: 바운드 자동 교환 (docs/plans/v2-07-bounded-debate.md) — feat/v2-bounded-debate
+## v2 Plan 07: 바운드 자동 교환 (docs/plans/v2-07-bounded-debate.md) — feat/v2-bounded-debate -> main
 
-- [ ] Task 1: /debate 파싱 (N턴, 기본 3, 최대 10)
-- [ ] Task 2: Session::step 바운드 자동 교환 루프 (run_round N회)
+- [x] Task 1: /debate 파싱 (N턴, 기본 3, 최대 10) (c5b9339)
+- [x] Task 2: Session::step 바운드 자동 교환 루프 (run_round N회) (01b8860) — Plan 07 완료, 69 테스트(66+3 ignored), build/clippy 클린
 
 ## v2 백로그 (착수 전 결정 필요)
 - [ ] 분리 터미널 A2A 협업(MCP+버스, 자율 핸드오프) — turn-triggering 난제, 큰 과제

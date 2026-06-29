@@ -22,7 +22,8 @@
 
 - **v1 완료 + v2 멀티세션 완성.** v1 본체 + hardening. v2 done: **01 idle watchdog · 02 N좌석 로스터 · 03 협업 코딩(`@engine!`) · 04 session_bus 토대 · 05 세션 모델(in-store 트리, `/branches`·`/checkout`) · 06 Redis 통합(`--observe`/`--session`, 미러+관찰+재개).** 66 테스트(63 pass + 라이브 Redis 3 #[ignore]), build/clippy 클린. 토론 + 협업 코딩 + 분기 토론 트리 + 멀티프로세스 동시 세션.
 - 현행 spec: [docs/design/tunaRound-v1-design_2026-06-29.md](docs/design/tunaRound-v1-design_2026-06-29.md). 진행 현황은 [docs/plans/index.md](docs/plans/index.md)(v1 Plan 01~06, v2 Plan 01~06 done).
-- 변경은 origin/main 동기화(푸시됨). **설계문서 멀티세션 v2 로드맵 완성.** 남은 v2 백로그(각각 착수 전 결정 필요): 리치 프론트 ratatui·web(신규 의존성, tunaSalon `render_chat` 포팅) / 신규 엔진 러너 좌석(tunaLlama·opencode, 외부 CLI).
+- 변경은 origin/main 동기화(푸시됨). **멀티세션 v2 완성 + `/debate`(바운드 자동 교환, Plan 07) 추가.** 69 테스트.
+- **북극성(2026-06-30):** 계층형 공유 맥락 + 능동 검색 - 에이전트가 단기(세션)~프로젝트 모든 층 맥락을 능동 기억·검색. 핵심 전환 "전사 통째 재주입 -> RAG(검색 슬라이스 주입)". 설계 [docs/design/v2-context-memory-direction_2026-06-30.md](docs/design/v2-context-memory-direction_2026-06-30.md). 첫 스텝 조율 중(재주입 감소: handle+windowing vs SQLite+FTS 백본). 백로그: 분리터미널 A2A 협업(turn-triggering) / 리치 프론트 / 신규 엔진 러너.
 - **라이브 검증 완료(2026-06-30, 로컬 Redis):** bus #[ignore] 3 / resume / observe / 실 3라운드 컨텍스트 유지 전부 통과. 실 라운드로 버그 1건 발견·수정(종료 시 마지막 snapshot 유실 -> 동기 flush, fix/v2-06-snapshot-flush). 검증법: `TUNAROUND_REDIS_URL=redis://127.0.0.1/ cargo run -- --session demo` / 다른 터미널 `... --observe demo`. redis-server 끄기: `redis-cli shutdown nosave`.
 
 ## 무엇을 만드나 (요약)
