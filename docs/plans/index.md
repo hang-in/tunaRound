@@ -6,7 +6,8 @@
 
 | 문서 | 우선순위 | 상태 | 요약 |
 |---|---|---|---|
-| [v1-01-agent-runner.md](v1-01-agent-runner.md) | P0 | done | 스캐폴드 + Codex 러너(argv·JSONL 파싱·dedup·read/write 모드), 순수함수 TDD. 브랜치 feat/v1-agent-runner |
+| [v1-01-agent-runner.md](v1-01-agent-runner.md) | P0 | done | 스캐폴드 + Codex 러너(argv·JSONL 파싱·dedup·read/write 모드), 순수함수 TDD. main 머지됨 |
+| [v1-02-claude-runner.md](v1-02-claude-runner.md) | P0 | draft | Claude 러너(stream-json NDJSON, result 라인 content + INV-3 토큰 fallback, RunError::Agent). 브랜치 feat/v1-claude-runner |
 
 ## 부분 완료 / 보류
 
