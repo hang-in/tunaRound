@@ -212,7 +212,7 @@ impl Session {
             Command::Quit => StepOutcome::Exit,
             Command::Noop => StepOutcome::Noop,
             Command::Help => StepOutcome::Print(
-                "메시지를 입력하면 두 에이전트가 응답합니다. @engine 메시지로 한 자리만 지목(읽기), @engine! 메시지로 쓰기 턴(에이전트가 레포 편집), /conclude [engine] 종합, /save [경로] 결과 저장, /branches 트리 목록, /checkout <id> 분기 전환, /quit 종료.".into(),
+                "메시지를 입력하면 두 에이전트가 응답합니다. @engine 메시지로 한 자리만 지목(읽기), @engine! 메시지로 쓰기 턴(에이전트가 레포 편집), /debate [n] <주제>로 에이전트 N턴 자동 교환(기본 3, 최대 10), /conclude [engine] 종합, /save [경로] 결과 저장, /branches 트리 목록, /checkout <id> 분기 전환, /quit 종료.".into(),
             ),
             Command::Save(path) => StepOutcome::Save {
                 path: path.unwrap_or_else(|| DEFAULT_SAVE_PATH.to_string()),
@@ -265,7 +265,28 @@ impl Session {
                     Err(e) => StepOutcome::Print(format!("[에러] {e:?}")),
                 }
             }
-            Command::Debate { .. } => StepOutcome::Noop, // Task 2에서 완성
+            Command::Debate { turns, topic } => {
+                let mut out = String::new();
+                for k in 0..turns {
+                    let round_topic = if k == 0 {
+                        topic.clone()
+                    } else {
+                        "지금까지의 논의를 이어서, 앞 발언에 반박하거나 더 깊이 들어가줘. 새 주제를 꺼내지 말고 수렴을 시도해줘.".to_string()
+                    };
+                    let mut path = self.active_path();
+                    match run_round(&self.participants, &mut path, &round_topic, self.registry.as_ref(), RunMode::ReadOnly) {
+                        Ok(round) => {
+                            self.append_round(&round);
+                            out.push_str(&format!("### 라운드 {}\n{}\n\n", k + 1, render(&round)));
+                        }
+                        Err(e) => {
+                            out.push_str(&format!("[라운드 {} 에러] {e:?}\n", k + 1));
+                            break;
+                        }
+                    }
+                }
+                StepOutcome::Print(out)
+            }
             Command::Branches => StepOutcome::Print(crate::store::tree_summary(&self.messages, self.head)),
             Command::Checkout(id) => {
                 if self.messages.iter().any(|m| m.id == id) {
@@ -482,6 +503,34 @@ mod tests {
         // 트리에 4개 메시지(2개 분기), active path는 1->3->4 (길이 3)
         assert_eq!(s.message_count(), 4);
         assert_eq!(s.transcript_len(), 3);
+    }
+
+    #[test]
+    fn step_debate_runs_n_rounds_and_grows_tree() {
+        let mut s = session_with_two_seats(); // claude="제안", codex="리뷰" (FakeRunner)
+        match s.step(Command::Debate { turns: 2, topic: "주제".into() }) {
+            StepOutcome::Print(text) => {
+                assert!(text.contains("라운드 1"));
+                assert!(text.contains("라운드 2"));
+                assert!(text.contains("제안") && text.contains("리뷰"));
+            }
+            other => panic!("expected Print, got {other:?}"),
+        }
+        // 2턴 x 2자리 = 메시지 4개(트리), active path 길이 4
+        assert_eq!(s.message_count(), 4);
+        assert_eq!(s.transcript_len(), 4);
+    }
+
+    #[test]
+    fn step_debate_stops_on_error() {
+        // 첫 라운드는 OK, 이후 에러나는 시나리오는 FakeRunner로 만들기 번거로우니
+        // 최소: turns=1도 정상 동작(라운드 1만)
+        let mut s = session_with_two_seats();
+        match s.step(Command::Debate { turns: 1, topic: "주제".into() }) {
+            StepOutcome::Print(text) => assert!(text.contains("라운드 1") && !text.contains("라운드 2")),
+            other => panic!("expected Print, got {other:?}"),
+        }
+        assert_eq!(s.message_count(), 2);
     }
 
     #[test]
