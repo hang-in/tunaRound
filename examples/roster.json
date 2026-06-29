@@ -1,0 +1,6 @@
+{
+  "seats": [
+    { "engine": "claude", "role": "proposer", "instruction": "" },
+    { "engine": "codex", "role": "reviewer", "instruction": "" }
+  ]
+}
