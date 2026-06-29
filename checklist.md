@@ -18,9 +18,9 @@
 
 ## Plan 03: 토론 오케스트레이터 (docs/plans/v1-03-orchestrator.md) — feat/v1-orchestrator
 
-- [ ] Task 1: 역할 지시문 (roles)
-- [ ] Task 2: 라운드 프롬프트 조립 (순차-인지) + Participant/Utterance
-- [ ] Task 3: run_round + RunnerRegistry (FakeRunner)
+- [x] Task 1: 역할 지시문 (roles) (3a13954)
+- [x] Task 2: 라운드 프롬프트 조립 (순차-인지) + Participant/Utterance (123ee5d)
+- [x] Task 3: run_round + RunnerRegistry (c9af140) — Plan 03 완료, 24 테스트 green, build/clippy 클린
 
 ## 다음 plan (미작성)
 
