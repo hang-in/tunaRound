@@ -12,6 +12,7 @@ pub enum Command {
     Conclude(Option<String>),
     Only { engine: String, text: String },
     Write { engine: String, text: String },
+    Debate { turns: usize, topic: String },
     Branches,
     Checkout(u64),
     Help,
@@ -39,6 +40,29 @@ pub fn parse_command(line: &str) -> Command {
                 Some(id) => Command::Checkout(id),
                 None => Command::Message(line.to_string()),
             },
+            "debate" => {
+                const DEFAULT_TURNS: usize = 3;
+                const MAX_TURNS: usize = 10;
+                match arg.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+                    None => Command::Message(line.to_string()), // 주제 없음
+                    Some(rest) => {
+                        // 첫 토큰이 숫자면 turns, 나머지가 topic. 아니면 전체가 topic(기본 turns).
+                        let mut it = rest.splitn(2, char::is_whitespace);
+                        let first = it.next().unwrap_or("");
+                        match first.parse::<usize>() {
+                            Ok(n) => {
+                                let topic = it.next().map(|s| s.trim().to_string()).unwrap_or_default();
+                                if topic.is_empty() {
+                                    Command::Message(line.to_string()) // 숫자만, 주제 없음
+                                } else {
+                                    Command::Debate { turns: n.clamp(1, MAX_TURNS), topic }
+                                }
+                            }
+                            Err(_) => Command::Debate { turns: DEFAULT_TURNS, topic: rest.to_string() },
+                        }
+                    }
+                }
+            }
             _ => Command::Message(line.to_string()),
         };
     }
@@ -241,6 +265,7 @@ impl Session {
                     Err(e) => StepOutcome::Print(format!("[에러] {e:?}")),
                 }
             }
+            Command::Debate { .. } => StepOutcome::Noop, // Task 2에서 완성
             Command::Branches => StepOutcome::Print(crate::store::tree_summary(&self.messages, self.head)),
             Command::Checkout(id) => {
                 if self.messages.iter().any(|m| m.id == id) {
@@ -290,6 +315,18 @@ mod tests {
     #[test]
     fn blank_is_noop() {
         assert_eq!(parse_command("   "), Command::Noop);
+    }
+
+    #[test]
+    fn parses_debate() {
+        assert_eq!(parse_command("/debate 3 이 설계 괜찮나"), Command::Debate { turns: 3, topic: "이 설계 괜찮나".into() });
+        // 숫자 생략 -> 기본 3턴
+        assert_eq!(parse_command("/debate 주제만"), Command::Debate { turns: 3, topic: "주제만".into() });
+        // 상한 clamp(최대 10)
+        assert_eq!(parse_command("/debate 50 큰주제"), Command::Debate { turns: 10, topic: "큰주제".into() });
+        // 주제 없음 -> 일반 메시지로 폴스루
+        assert_eq!(parse_command("/debate"), Command::Message("/debate".into()));
+        assert_eq!(parse_command("/debate 3"), Command::Message("/debate 3".into())); // 숫자만, 주제 없음
     }
 
     #[test]
