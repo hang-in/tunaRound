@@ -20,9 +20,9 @@
 
 ## 현재 상태 (2026-06-29)
 
-- **v1 완료 + v2 진행 중.** v1 본체(러너 Codex+Claude + 오케스트레이터 + thin REPL + 전사 영속) + hardening. v2는 **Plan 01 idle watchdog(INV-4)·Plan 02 N좌석 로스터·Plan 03 협업 코딩(`@engine!` 쓰기 지목) done.** 52 테스트 green, build/clippy 클린, 실 에이전트 스모크 통과. 이제 토론 + 실제 협업 코딩 도구.
-- 현행 spec: [docs/design/tunaRound-v1-design_2026-06-29.md](docs/design/tunaRound-v1-design_2026-06-29.md). 진행 현황은 [docs/plans/index.md](docs/plans/index.md)(v1 Plan 01~06, v2 Plan 01~03 done).
-- 변경은 origin/main 동기화(푸시됨). **남은 v2는 전부 착수 전 인프라·의존성 결정 필요**: Redis 멀티세션=git-tree(신규 인프라) / 리치 프론트 ratatui·web(신규 의존성) / 신규 엔진 러너 좌석(tunaLlama·opencode, 외부 CLI). 로스터는 이미 N-ready라 엔진 러너만 추가하면 좌석 확장.
+- **v1 완료 + v2 진행 중.** v1 본체 + hardening. v2 done: **Plan 01 idle watchdog · 02 N좌석 로스터 · 03 협업 코딩(`@engine!` 쓰기 지목) · 04 Redis session_bus 포팅(멀티세션 토대).** 56 테스트 green(라이브 Redis 2개 #[ignore]), build/clippy 클린. 이제 토론 + 실제 협업 코딩 도구.
+- 현행 spec: [docs/design/tunaRound-v1-design_2026-06-29.md](docs/design/tunaRound-v1-design_2026-06-29.md). 진행 현황은 [docs/plans/index.md](docs/plans/index.md)(v1 Plan 01~06, v2 Plan 01~04 done).
+- 변경은 origin/main 동기화(푸시됨). **진행 중: 멀티세션(Redis=git-tree, 설계문서 확정).** 04 토대 done -> 다음 Plan 05 세션모델(브랜치=세션, store parent_id 실사용) -> Plan 06 REPL통합+presence/snapshot 신규. 백로그(결정 필요): 리치 프론트 ratatui·web / 신규 엔진 러너 좌석(tunaLlama·opencode).
 
 ## 무엇을 만드나 (요약)
 
@@ -43,5 +43,5 @@
 ## 다음 세션 첫 행동
 
 1. `cargo run`으로 앱 동작 확인(claude/codex CLI 필요). 진행 현황은 [docs/plans/index.md](docs/plans/index.md), 결정 로그는 `context-notes.md`.
-2. 다음 = **남은 v2 중 택1**(각각 결정 필요): Redis 멀티세션=git-tree 분기(신규 인프라 Redis) / 리치 프론트 ratatui·web(신규 의존성) / 신규 엔진 러너 좌석(tunaLlama·opencode, 외부 CLI). 출처는 tunaSalon(session_bus.rs, render_chat). 결정 후 brainstorming -> plan -> subagent-driven.
+2. 다음 = **멀티세션 Plan 05(세션 모델, 브랜치=세션)**: store parent_id 트리 실사용 + 멀티세션 레지스트리/전환. 그다음 Plan 06(REPL 통합 + presence/snapshot 신규 + block_on 브리지). 착수 전 design 문서 v2 섹션 + claude-mem으로 기결정 확인(재론 금지).
 3. 작업 추적은 `checklist.md`·`context-notes.md`(규율 #7). 위임은 Sonnet 서브에이전트 + Opus 리뷰(subagent-driven).

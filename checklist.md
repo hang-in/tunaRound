@@ -56,10 +56,10 @@
 
 ## v2 멀티세션 (Redis=git-tree, 3 플랜) — 설계문서 확정, 사용자 GO
 
-### Plan 04: Redis session_bus 포팅 (docs/plans/v2-04-session-bus.md) — feat/v2-session-bus
+### Plan 04: Redis session_bus 포팅 (docs/plans/v2-04-session-bus.md) — feat/v2-session-bus -> main
 
-- [ ] Task 1: 의존성(tokio/redis/futures) + session_bus 포팅 (room->session, pure 테스트 2)
-- [ ] Task 2: 라이브 Redis 왕복 통합 테스트 (#[ignore])
+- [x] Task 1: 의존성(tokio/redis/futures) + session_bus 포팅 (room->session, pure 테스트 2) (0783179)
+- [x] Task 2: 라이브 Redis 왕복 통합 테스트 (#[ignore]) (86aa482) — Plan 04 완료, 56 테스트(49+2 ignored+5), build/clippy 클린. 리뷰 주석정리 11e1f52
 
 ### 후속
 - [ ] Plan 05: 세션 모델(브랜치=세션, store parent_id 실사용, 멀티세션 전환)
