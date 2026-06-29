@@ -1,7 +1,7 @@
 ---
 title: "tunaRound v1 Plan 02: Claude 러너 (stream-json)"
 type: plan
-status: draft
+status: done
 priority: P0
 updated_at: 2026-06-29
 owner: shared
@@ -21,6 +21,14 @@ summary: Claude Code를 `claude -p --output-format stream-json`로 구동하는 
 > 규율: docs/reference/development-guidelines.md. 설계: docs/design/tunaRound-v1-design_2026-06-29.md §10(tunaFlow `claude.rs` 실측). 선행: Plan 01(done) - `src/runner/mod.rs`의 RunInput/RunOutput/RunMode/RunError/Runner, `src/runner/codex.rs` 패턴.
 
 ---
+
+## 실행 결과 (2026-06-29, done)
+
+구현 완료(브랜치 `feat/v1-claude-runner` -> main 머지). 전체 17 테스트 green(15 unit + 2 integration), `cargo build`/`clippy` 클린.
+
+- **claude 플래그(Task 1, #10).** `claude --help` 실측 결과 plan 가정이 전부 확인됨. Write=`--dangerously-skip-permissions`, ReadOnly=`--disallowedTools Write,Edit,Bash`, `--output-format stream-json`(+`-p`/`--verbose`). 교정 불필요.
+- **`RunError::Agent` 추가(Task 2).** claude in-band 에러(result 라인 is_error) 모델. Codex 무영향.
+- 커밋: 80ca2cb -> 032e550 -> 2b18382.
 
 ## 범위
 
