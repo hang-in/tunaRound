@@ -1,6 +1,6 @@
 // Codex exec --json argv·파싱·dedup 순수함수 + CodexRunner.
 
-use super::RunOutput;
+use super::{RunInput, RunMode, RunOutput};
 
 /// Codex `exec --json` JSONL에서 (본문, 토큰)을 추출한다.
 /// item.completed+agent_message → 본문(dedup), turn.completed → 토큰 누적,
@@ -46,6 +46,36 @@ pub(crate) fn parse_codex_stream(stdout: &str) -> RunOutput {
         input_tokens,
         output_tokens,
     }
+}
+
+/// `codex exec` argv 조립. 모드에 따라 샌드박스 권한을 분리한다(쓰기 하드 분리).
+/// 프롬프트는 stdin(`-`)으로 전달하므로 argv에 넣지 않는다.
+/// Step 1 실측(2026-06-29): codex --full-auto 없음.
+///   Write  → --sandbox workspace-write
+///   ReadOnly → --sandbox read-only
+fn build_codex_args(input: &RunInput) -> Vec<String> {
+    let mut args: Vec<String> = vec![
+        "exec".into(),
+        "--json".into(),
+        "--skip-git-repo-check".into(),
+        "--color=never".into(),
+    ];
+    match input.mode {
+        RunMode::Write => {
+            args.push("--sandbox".into());
+            args.push("workspace-write".into());
+        }
+        RunMode::ReadOnly => {
+            args.push("--sandbox".into());
+            args.push("read-only".into());
+        }
+    }
+    if let Some(model) = &input.model {
+        args.push("--model".into());
+        args.push(model.clone());
+    }
+    args.push("-".into());
+    args
 }
 
 /// Codex는 한 턴에 agent_message를 여러 번 emit한다(reasoning 후 재방출).
@@ -133,5 +163,35 @@ mod tests {
         );
         let out = parse_codex_stream(stdout);
         assert_eq!(out.content, "답 확장");
+    }
+
+    // NOTE: Step 1 실측 결과 --full-auto 없음.
+    // Write mode → --sandbox workspace-write (실제 codex 플래그로 변경)
+    #[test]
+    fn args_write_mode_uses_full_auto() {
+        let input = RunInput {
+            prompt: "p".into(),
+            model: None,
+            project_path: None,
+            mode: RunMode::Write,
+        };
+        let args = build_codex_args(&input);
+        let joined = args.join(" ");
+        assert!(joined.contains("--sandbox workspace-write"));
+        assert_eq!(args.last().unwrap(), "-"); // prompt via stdin
+    }
+
+    #[test]
+    fn args_readonly_mode_uses_sandbox_readonly() {
+        let input = RunInput {
+            prompt: "p".into(),
+            model: Some("gpt-x".into()),
+            project_path: None,
+            mode: RunMode::ReadOnly,
+        };
+        let args = build_codex_args(&input);
+        let joined = args.join(" ");
+        assert!(joined.contains("--sandbox read-only"));
+        assert!(joined.contains("--model gpt-x"));
     }
 }
