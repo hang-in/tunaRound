@@ -6,6 +6,7 @@
 
 | 문서 | 우선순위 | 상태 | 요약 |
 |---|---|---|---|
+| [v2-06-redis-integration.md](v2-06-redis-integration.md) | P1 | in_progress | v2 멀티세션 통합: Redis 미러(이벤트+스냅샷) + `--observe` 라이브 관찰 + `--session` 재개 + owner lease. write path sync, read path block_on. observe/resume 라이브는 수동 검증 |
 | [v2-05-session-model.md](v2-05-session-model.md) | P1 | done | v2 세션 모델: in-store 논리 트리(Session messages+head, parent_id 실사용), /branches·/checkout 분기 탐색. 저장 포맷 StoredSession(레거시 폴백). 61 테스트, main 머지됨. 단일 프로세스 분기 토론 동작 |
 | [v2-04-session-bus.md](v2-04-session-bus.md) | P1 | done | v2 멀티세션 토대: tunaSalon Redis session_bus 포팅(room->session), tokio/redis/futures 신규 의존. 격리 모듈, 라이브 Redis 테스트 #[ignore]. 56 테스트, main 머지됨. 멀티세션 3플랜의 1단계(다음 05 세션모델/06 통합) |
 | [v2-03-write-delegation.md](v2-03-write-delegation.md) | P1 | done | v2 협업 코딩: `@engine!` 쓰기 지목, run_round mode 파라미터, Session::step Write 분기. 쓰기 인프라(러너 인자)는 v1 구현 재사용. 52 테스트, main 머지됨 |
