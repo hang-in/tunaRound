@@ -1,6 +1,7 @@
 // 에이전트 CLI를 한 턴 구동하고 결과를 돌려주는 러너 레이어의 경계.
 pub mod claude;
 pub mod codex;
+pub(crate) mod exec;
 
 /// 한 턴 입력. v1은 매 턴 전사를 prompt에 주입하므로 resume 토큰은 두지 않는다.
 #[derive(Debug, Clone)]
@@ -32,6 +33,7 @@ pub enum RunError {
     Io(String),
     Empty(String),
     Agent(String),
+    Timeout(String),
 }
 
 /// 엔진 경계. 오케스트레이터는 concrete 엔진이 아니라 이 trait에 의존한다.
