@@ -6,6 +6,7 @@
 
 | 문서 | 우선순위 | 상태 | 요약 |
 |---|---|---|---|
+| [v2-03-write-delegation.md](v2-03-write-delegation.md) | P1 | in_progress | v2 협업 코딩: `@engine!` 쓰기 지목, run_round mode 파라미터, Session::step Write 분기. 쓰기 인프라(러너 인자)는 v1 구현. 결정 확정(권한 현행/cwd/확인없음) |
 | [v2-02-roster.md](v2-02-roster.md) | P1 | done | v2 설정 구동 N좌석 로스터: JSON 로스터 -> participants+registry, main.rs --roster 플래그. 오케스트레이터 N-ready 활용, 48 테스트, main 머지됨 |
 | [v2-01-idle-watchdog.md](v2-01-idle-watchdog.md) | P0 | done | v2 idle watchdog(INV-4): 공유 헬퍼 exec.rs + RunError::Timeout + 양 러너 배선. 무출력 행 방지, stderr 동시 배수. 43 테스트, main 머지됨 |
 | [v1-01-agent-runner.md](v1-01-agent-runner.md) | P0 | done | 스캐폴드 + Codex 러너(argv·JSONL 파싱·dedup·read/write 모드), 순수함수 TDD. main 머지됨 |
