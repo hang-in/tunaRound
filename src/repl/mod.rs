@@ -7,6 +7,7 @@ pub enum Command {
     Message(String),
     Save(Option<String>),
     Conclude(Option<String>),
+    Only { engine: String, text: String },
     Help,
     Quit,
     Noop,
@@ -29,6 +30,15 @@ pub fn parse_command(line: &str) -> Command {
             "conclude" => Command::Conclude(arg.filter(|s| !s.is_empty())),
             _ => Command::Message(line.to_string()),
         };
+    }
+    if let Some(rest) = line.strip_prefix('@') {
+        let mut it = rest.splitn(2, char::is_whitespace);
+        let engine = it.next().unwrap_or("").to_string();
+        let text = it.next().map(|s| s.trim().to_string()).unwrap_or_default();
+        if !engine.is_empty() && !text.is_empty() {
+            return Command::Only { engine, text };
+        }
+        return Command::Message(line.to_string()); // "@codex"만 있으면 일반 메시지
     }
     Command::Message(line.to_string())
 }
@@ -102,7 +112,7 @@ impl Session {
             Command::Quit => StepOutcome::Exit,
             Command::Noop => StepOutcome::Noop,
             Command::Help => StepOutcome::Print(
-                "메시지를 입력하면 두 에이전트가 응답합니다. /save [경로] 결과 저장, /quit 종료.".into(),
+                "메시지를 입력하면 두 에이전트가 응답합니다. @engine 메시지로 한 자리만 지목, /conclude [engine] 종합, /save [경로] 결과 저장, /quit 종료.".into(),
             ),
             Command::Save(path) => StepOutcome::Save {
                 path: path.unwrap_or_else(|| DEFAULT_SAVE_PATH.to_string()),
@@ -110,6 +120,17 @@ impl Session {
             },
             Command::Message(text) => {
                 match run_round(&self.participants, &mut self.transcript, &text, self.registry.as_ref()) {
+                    Ok(round) => StepOutcome::Print(render(&round)),
+                    Err(e) => StepOutcome::Print(format!("[에러] {e:?}")),
+                }
+            }
+            Command::Only { engine, text } => {
+                let seats: Vec<Participant> =
+                    self.participants.iter().filter(|p| p.engine == engine).cloned().collect();
+                if seats.is_empty() {
+                    return StepOutcome::Print(format!("그런 자리가 없습니다: {engine}"));
+                }
+                match run_round(&seats, &mut self.transcript, &text, self.registry.as_ref()) {
                     Ok(round) => StepOutcome::Print(render(&round)),
                     Err(e) => StepOutcome::Print(format!("[에러] {e:?}")),
                 }
@@ -219,6 +240,35 @@ mod tests {
         match s.step(Command::Save(Some("x.md".into()))) {
             StepOutcome::Save { path, .. } => assert_eq!(path, "x.md"),
             other => panic!("expected Save, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parses_at_engine_target() {
+        assert_eq!(parse_command("@codex 이거 봐줘"), Command::Only { engine: "codex".into(), text: "이거 봐줘".into() });
+        // @만 있고 메시지 없으면 일반 메시지로 취급
+        assert_eq!(parse_command("@codex"), Command::Message("@codex".into()));
+    }
+
+    #[test]
+    fn step_only_targets_single_seat() {
+        let mut s = session_with_two_seats();
+        match s.step(Command::Only { engine: "codex".into(), text: "리뷰만".into() }) {
+            StepOutcome::Print(text) => {
+                assert!(text.contains("리뷰"));   // codex FakeRunner reply
+                assert!(!text.contains("제안"));  // claude는 응답 안 함
+            }
+            other => panic!("expected Print, got {other:?}"),
+        }
+        assert_eq!(s.transcript_len(), 1);
+    }
+
+    #[test]
+    fn step_only_unknown_engine_errors() {
+        let mut s = session_with_two_seats();
+        match s.step(Command::Only { engine: "gemini".into(), text: "?".into() }) {
+            StepOutcome::Print(text) => assert!(text.contains("자리가 없")),
+            other => panic!("expected Print, got {other:?}"),
         }
     }
 }
