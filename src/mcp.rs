@@ -114,6 +114,83 @@ impl ServerHandler for TunaSearchServer {
     }
 }
 
+/// HTTP MCP 서버를 기동한다. serve 피처 전용.
+#[cfg(feature = "serve")]
+pub async fn start_http_mcp_server(
+    addr: &str,
+    retriever: Arc<dyn ContextRetriever>,
+    reader: Option<Arc<dyn TranscriptReader>>,
+    token: Option<String>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    serve_http_mcp_on_listener(listener, retriever, reader, token).await
+}
+
+/// 이미 바인드된 TcpListener로 HTTP MCP 서버를 서빙한다(테스트에서도 재사용).
+#[cfg(feature = "serve")]
+pub async fn serve_http_mcp_on_listener(
+    listener: tokio::net::TcpListener,
+    retriever: Arc<dyn ContextRetriever>,
+    reader: Option<Arc<dyn TranscriptReader>>,
+    token: Option<String>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use axum::{
+        Router,
+        extract::Request,
+        http::{StatusCode, header::AUTHORIZATION},
+        middleware::{self, Next},
+        response::IntoResponse,
+    };
+    use rmcp::transport::streamable_http_server::{
+        StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
+    };
+
+    let retriever2 = retriever.clone();
+    let reader2 = reader.clone();
+    // service_factory: 요청마다 새 TunaSearchServer 인스턴스를 생성한다(Clone 불필요, Arc 공유).
+    let service: StreamableHttpService<TunaSearchServer, LocalSessionManager> =
+        StreamableHttpService::new(
+            move || {
+                let mut s = TunaSearchServer::new(retriever2.clone());
+                if let Some(r) = &reader2 {
+                    s = s.with_transcript_reader(r.clone());
+                }
+                Ok(s)
+            },
+            Default::default(), // Arc::new(LocalSessionManager::default())
+            // 원격 에이전트 접속을 위해 호스트 제한을 해제하고 bearer 토큰으로 인증한다.
+            StreamableHttpServerConfig::default().disable_allowed_hosts(),
+        );
+
+    let router: Router = if let Some(tok) = token {
+        let tok = Arc::new(tok);
+        let bearer = middleware::from_fn(move |request: Request, next: Next| {
+            let tok = tok.clone();
+            async move {
+                let auth = request
+                    .headers()
+                    .get(AUTHORIZATION)
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("");
+                let expected = format!("Bearer {tok}");
+                if auth == expected {
+                    next.run(request).await
+                } else {
+                    StatusCode::UNAUTHORIZED.into_response()
+                }
+            }
+        });
+        Router::new().nest_service("/mcp", service).layer(bearer)
+    } else {
+        Router::new().nest_service("/mcp", service)
+    };
+
+    let bound_addr = listener.local_addr()?;
+    eprintln!("[serve-mcp] HTTP MCP 서버 기동: {bound_addr}");
+    axum::serve(listener, router).await?;
+    Ok(())
+}
+
 /// stdin/stdout을 전송으로 사용하는 stdio MCP 서버를 기동한다.
 pub async fn start_mcp_server(
     retriever: Arc<dyn ContextRetriever>,
@@ -134,6 +211,106 @@ pub async fn start_mcp_server(
 mod tests {
     use super::*;
     use rmcp::handler::server::wrapper::Parameters;
+
+    // HTTP MCP 서버 통합 테스트: serve 피처 전용.
+    #[cfg(feature = "serve")]
+    mod http_serve {
+        use super::super::*;
+
+        struct NullRetriever;
+        impl crate::orchestrator::ContextRetriever for NullRetriever {
+            fn retrieve(&self, _q: &str, _limit: usize) -> Vec<crate::orchestrator::Utterance> {
+                vec![]
+            }
+        }
+
+        /// initialize 요청 본문(MCP 2025-03-26 프로토콜).
+        const INIT_BODY: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}"#;
+
+        #[tokio::test]
+        async fn http_mcp_bearer_auth() {
+            // 포트 :0 으로 바인드해 OS가 빈 포트를 할당하도록 한다(포트 경합 없음).
+            let listener =
+                tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind 실패");
+            let port = listener.local_addr().unwrap().port();
+
+            let retriever = Arc::new(NullRetriever) as Arc<dyn crate::orchestrator::ContextRetriever>;
+            let token = Some("secret-tok".to_string());
+
+            tokio::spawn(async move {
+                let _ = serve_http_mcp_on_listener(listener, retriever, None, token).await;
+            });
+            // axum이 accept를 시작할 시간을 준다.
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+            let client = reqwest::Client::new();
+            let url = format!("http://127.0.0.1:{port}/mcp");
+
+            // 토큰 없음 → 401.
+            let resp = client
+                .post(&url)
+                .header("Content-Type", "application/json")
+                .header("Accept", "application/json, text/event-stream")
+                .body(INIT_BODY)
+                .send()
+                .await
+                .expect("요청 실패");
+            assert_eq!(resp.status(), 401, "토큰 없이 401이어야 함");
+
+            // 잘못된 토큰 → 401.
+            let resp = client
+                .post(&url)
+                .header("Content-Type", "application/json")
+                .header("Accept", "application/json, text/event-stream")
+                .header("Authorization", "Bearer wrongtoken")
+                .body(INIT_BODY)
+                .send()
+                .await
+                .expect("요청 실패");
+            assert_eq!(resp.status(), 401, "잘못된 토큰으로 401이어야 함");
+
+            // 올바른 토큰 → 200(MCP initialize 핸드셰이크 성공).
+            let resp = client
+                .post(&url)
+                .header("Content-Type", "application/json")
+                .header("Accept", "application/json, text/event-stream")
+                .header("Authorization", "Bearer secret-tok")
+                .body(INIT_BODY)
+                .send()
+                .await
+                .expect("요청 실패");
+            assert_eq!(resp.status(), 200, "올바른 토큰으로 200이어야 함");
+        }
+
+        #[tokio::test]
+        async fn http_mcp_no_token_allows_all() {
+            // token=None이면 미들웨어 없이 모든 요청 통과.
+            let listener =
+                tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind 실패");
+            let port = listener.local_addr().unwrap().port();
+
+            let retriever = Arc::new(NullRetriever) as Arc<dyn crate::orchestrator::ContextRetriever>;
+
+            tokio::spawn(async move {
+                let _ = serve_http_mcp_on_listener(listener, retriever, None, None).await;
+            });
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+            let client = reqwest::Client::new();
+            let url = format!("http://127.0.0.1:{port}/mcp");
+
+            // token=None 이므로 인증 헤더 없이도 200.
+            let resp = client
+                .post(&url)
+                .header("Content-Type", "application/json")
+                .header("Accept", "application/json, text/event-stream")
+                .body(INIT_BODY)
+                .send()
+                .await
+                .expect("요청 실패");
+            assert_eq!(resp.status(), 200, "token=None이면 200이어야 함");
+        }
+    }
 
     struct FakeRetriever(Vec<Utterance>);
 
