@@ -6,6 +6,7 @@
 
 | 문서 | 우선순위 | 상태 | 요약 |
 |---|---|---|---|
+| [v2-17-http-engine-runner.md](v2-17-http-engine-runner.md) | P1 | done | OpenAI 호환 HTTP 엔진 러너: 한 러너로 ollama/lmstudio/openai/cloud 커버. 로스터 base_url/model/api_key_env, engine 이름 키로 다모델 다좌석. engines feature. 라이브: Ollama gemma4:e2b 응답 확인. 기본 101/engines 106 pass. e1373f9 |
 | [v2-16-reinjection-cap.md](v2-16-reinjection-cap.md) | P1 | done | 재주입 축소: --recent-turns N으로 prior를 최근 N턴만 재주입(나머지는 검색 주입이 담당). opt-in(기본 None=현행 통째 재주입 불변). 북극성 스케일 페이오프. 기본 76/전체 101 pass. 2834a1d |
 | [v2-15-windows-cli-resolve.md](v2-15-windows-cli-resolve.md) | P0 | done | gotcha #4: 러너 Windows CLI 해석(resolve_bin, PATH .exe/.cmd/.bat). codex.cmd가 spawn됨(Rust .cmd 자동 래핑). 비Windows·확장자 bin 불변. **라이브: codex 실제 spawn·응답 확인.** 8d02088 |
 | [v2-14-agent-search-mcp.md](v2-14-agent-search-mcp.md) | P1 | done | 에이전트 능동 검색 MCP: rmcp search_context 서버 + --mcp-search stdio + **claude(--mcp-config)·codex(-c mcp_servers) 양 자리 배선.** 라이브: MCP search_context가 실 발언 반환 + codex 비파괴 확인. mcp 95 pass. a65feba+a5a185d+c892548 |

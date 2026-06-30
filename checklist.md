@@ -136,6 +136,12 @@
 - [x] Task 1: Session.recent_turns + prior_for_prompt(최근 N턴 캡) + step 5곳 배선 + main --recent-turns (2834a1d; Sonnet) — opt-in(기본 None=현행 통째 재주입 불변), 기본 76/전체 101 pass, clippy 클린. 북극성 스케일 페이오프(통째 재주입 -> 최근 N턴 + 검색 슬라이스)
 - 후속: ctx-handle/요약 carry-forward, 토큰예산 동적 캡, 기본화는 품질 측정 후.
 
+### Plan 17: HTTP 엔진 러너 (docs/plans/v2-17-http-engine-runner.md) — done
+
+- [x] Task 1: OpenAI 호환 HTTP chat 러너(`runner/http.rs`, pure builder/parser + Runner) + 로스터 SeatConfig(base_url/model/api_key_env) + build_registry HTTP 분기 (e1373f9; Sonnet) — engines feature(reqwest). 기본 101/engines 106 pass, no-default 빌드 OK, clippy 클린. **라이브: Ollama /v1/chat/completions(gemma4:e2b) 응답 확인 = 로컬 LLM 좌석 동작**
+- 한 러너로 ollama·ollama cloud·lmstudio·openai 커버(engine 이름이 키라 다모델 다좌석). HTTP 좌석은 레포 직독 없음(프롬프트 맥락만). opencode CLI 러너 + HTTP 좌석 search_context는 후속.
+- UI(리치 프론트)는 보류 결정(2026-06-30): 코어 아닌 폴리시. 필요 페인(분기트리/observe/맥락투명성) 입증 시 경량 ratatui.
+
 ### 후속 (검색 레이어 폴리시)
 - [x] load_session `.ok()` 에러 삼킴 보정(QueryReturnedNoRows만 None, 나머지 전파) + indexer let-chain clippy 정리 (cd7e4e5)
 - [~] indexer/retriever 토크나이저·embedder Arc 공유 — **백로그(저가치)**: 중복은 startup 1회 인스턴스뿐, 라운드당 추가비용 없음. 시그니처 3곳 churn > 메모리 1회 절약. 보류.
