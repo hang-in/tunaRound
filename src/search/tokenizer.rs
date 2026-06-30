@@ -65,6 +65,81 @@ impl Tokenizer for LinderaKoTokenizer {
     }
 }
 
+// ─── KiwiTokenizer ────────────────────────────────────────────────────────────
+
+#[cfg(all(
+    not(target_os = "windows"),
+    not(all(target_os = "linux", target_arch = "aarch64"))
+))]
+mod kiwi_impl {
+    use super::*;
+
+    /// kiwi_rs::Kiwi를 스레드 간 이동 가능하게 감싸는 뉴타입 래퍼.
+    pub(super) struct KiwiWrapper(pub(super) kiwi_rs::Kiwi);
+
+    // SAFETY: kiwi_rs::Kiwi는 C 포인터 래퍼. 동시 접근은 아래 Mutex로 직렬화.
+    unsafe impl Send for KiwiWrapper {}
+
+    /// kiwi-rs 기반 한국어 형태소 분석 토크나이저.
+    /// 첫 사용 시 `Kiwi::init()`이 모델(~50MB)을 ~/.cache/kiwi에 다운로드한다.
+    /// 스레드 안전성은 `Mutex<KiwiWrapper>`가 보장한다.
+    pub struct KiwiTokenizer {
+        pub(super) kiwi: std::sync::Mutex<KiwiWrapper>,
+    }
+
+    impl KiwiTokenizer {
+        pub fn new() -> Result<Self, String> {
+            let kiwi = kiwi_rs::Kiwi::init()
+                .map_err(|e| format!("kiwi-rs init failed: {e}"))?;
+            Ok(Self {
+                kiwi: std::sync::Mutex::new(KiwiWrapper(kiwi)),
+            })
+        }
+    }
+
+    impl Tokenizer for KiwiTokenizer {
+        fn tokenize(&self, text: &str) -> Vec<String> {
+            if text.is_empty() {
+                return Vec::new();
+            }
+
+            let guard = match self.kiwi.lock() {
+                Ok(g) => g,
+                Err(e) => e.into_inner(),
+            };
+            match guard.0.tokenize(text) {
+                Ok(tokens) => {
+                    let result: Vec<String> = tokens
+                        .into_iter()
+                        .filter(|t| {
+                            // Keep NNG, NNP, NNB (명사), VV (동사), VA (형용사), SL (외국어)
+                            matches!(
+                                t.tag.as_str(),
+                                "NNG" | "NNP" | "NNB" | "VV" | "VA" | "SL"
+                            )
+                        })
+                        .map(|t| t.form.to_lowercase())
+                        .filter(|s| s.chars().count() > 1)
+                        .collect();
+
+                    if result.is_empty() {
+                        tokenize_fallback(text)
+                    } else {
+                        result
+                    }
+                }
+                Err(_) => tokenize_fallback(text),
+            }
+        }
+    }
+}
+
+#[cfg(all(
+    not(target_os = "windows"),
+    not(all(target_os = "linux", target_arch = "aarch64"))
+))]
+pub use kiwi_impl::KiwiTokenizer;
+
 // ─── SimpleTokenizer ──────────────────────────────────────────────────────────
 
 /// 공백·ASCII구두점 기반 단순 폴백 토크나이저.
@@ -78,13 +153,26 @@ impl Tokenizer for SimpleTokenizer {
 
 // ─── Factory ─────────────────────────────────────────────────────────────────
 
-/// 기본 백엔드 상수: Kiwi 메인, lindera 폴백 의도를 코드에 명시.
+/// 기본 백엔드 상수: Kiwi 메인, lindera 폴백.
 pub const DEFAULT_BACKEND: &str = "kiwi";
 
-/// 백엔드 이름으로 토크나이저를 생성한다. Task 1: lindera 경로만 활성.
-/// (Task 2에서 kiwi 메인 분기 추가 예정)
-pub fn create_tokenizer(_backend: &str) -> Result<Box<dyn Tokenizer>, String> {
-    Ok(Box::new(LinderaKoTokenizer::new()?))
+/// 백엔드 이름으로 토크나이저를 생성한다.
+/// "kiwi"를 요청하면 KiwiTokenizer를 시도하고, 초기화 실패 시 lindera로 자동 폴백한다.
+pub fn create_tokenizer(backend: &str) -> Result<Box<dyn Tokenizer>, String> {
+    match backend {
+        #[cfg(all(
+            not(target_os = "windows"),
+            not(all(target_os = "linux", target_arch = "aarch64"))
+        ))]
+        "kiwi" => match KiwiTokenizer::new() {
+            Ok(t) => Ok(Box::new(t)),
+            Err(e) => {
+                eprintln!("[tunaRound] kiwi-rs 초기화 실패, lindera 폴백: {e}");
+                Ok(Box::new(LinderaKoTokenizer::new()?))
+            }
+        },
+        _ => Ok(Box::new(LinderaKoTokenizer::new()?)),
+    }
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -143,5 +231,24 @@ mod tests {
                 && t.contains(&"world".to_string())
                 && t.contains(&"ab".to_string())
         );
+    }
+
+    #[test]
+    fn create_tokenizer_kiwi_returns_working_tokenizer() {
+        // kiwi 모델/네트워크 없으면 lindera로 폴백되어도 OK. 한국어 토큰이 나오면 통과.
+        let tok = create_tokenizer("kiwi").expect("kiwi or lindera fallback");
+        let tokens = tok.tokenize("아키텍처를 설계한다");
+        assert!(!tokens.is_empty());
+    }
+
+    #[cfg(all(
+        not(target_os = "windows"),
+        not(all(target_os = "linux", target_arch = "aarch64"))
+    ))]
+    #[test]
+    #[ignore] // 수동: kiwi 모델 ~50MB 다운로드 필요
+    fn kiwi_tokenizes_korean_live() {
+        let tok = KiwiTokenizer::new().expect("kiwi init (model download)");
+        assert!(!tok.tokenize("아키텍처를 설계한다").is_empty());
     }
 }
