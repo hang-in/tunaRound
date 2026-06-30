@@ -1,5 +1,8 @@
 // 전사 영속의 직렬화 형식과 변환. 트리-ready(id/parent), v1은 선형 체인.
 
+#[cfg(feature = "sqlite")]
+pub mod sqlite;
+
 use serde::{Deserialize, Serialize};
 
 use crate::orchestrator::Utterance;
