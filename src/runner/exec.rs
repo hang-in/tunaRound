@@ -25,10 +25,48 @@ impl Drop for WatchdogGuard {
     }
 }
 
+/// Windows에서 확장자 없는 bin을 PATH 디렉토리들에서 .exe/.cmd/.bat/.com 순으로 찾아 풀경로 반환.
+/// 이미 확장자/경로가 있거나 못 찾으면 None(원본 유지). 순수 함수(테스트용).
+#[cfg(windows)]
+fn resolve_bin_in(bin: &str, dirs: &[std::path::PathBuf]) -> Option<String> {
+    use std::path::Path;
+    if bin.contains('/') || bin.contains('\\') || Path::new(bin).extension().is_some() {
+        return None;
+    }
+    const EXTS: [&str; 4] = ["exe", "cmd", "bat", "com"];
+    for dir in dirs {
+        for ext in EXTS {
+            let cand = dir.join(format!("{bin}.{ext}"));
+            if cand.is_file() {
+                return cand.to_str().map(|s| s.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// spawn용 bin 해석. Windows에서 PATH를 뒤져 풀경로화(.cmd 래핑 가능케). 그 외/실패 시 원본.
+fn resolve_bin(bin: &str) -> String {
+    #[cfg(windows)]
+    {
+        if let Ok(path) = std::env::var("PATH") {
+            let dirs: Vec<std::path::PathBuf> = std::env::split_paths(&path).collect();
+            if let Some(found) = resolve_bin_in(bin, &dirs) {
+                return found;
+            }
+        }
+        bin.to_string()
+    }
+    #[cfg(not(windows))]
+    {
+        bin.to_string()
+    }
+}
+
 /// 자식을 spawn해 idle watchdog로 감시하며 stdout를 라인 단위로 수집한다.
 /// 무출력이 idle_timeout을 넘으면 자식을 kill하고 `RunError::Timeout`. 성공 시 stdout 수집본을 돌려준다.
 pub(crate) fn run_with_watchdog(spec: &ExecSpec) -> Result<String, RunError> {
-    let mut cmd = Command::new(&spec.bin);
+    let mut cmd = Command::new(resolve_bin(&spec.bin));
     cmd.args(&spec.args);
     if let Some(dir) = &spec.cwd {
         cmd.current_dir(dir);
@@ -191,5 +229,32 @@ mod tests {
         // 무출력이지만 즉시 비정상 종료 -> Timeout 아님(Spawn).
         let out = run_with_watchdog(&spec(&["exit 3"], 2000));
         assert!(matches!(out, Err(RunError::Spawn(_))));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn resolve_finds_cmd_in_dir() {
+        let dir = std::env::temp_dir().join("tuna_resolve_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let cmd = dir.join("mytool.cmd");
+        std::fs::write(&cmd, "@echo off\r\n").unwrap();
+        // 확장자 없는 "mytool" -> dir의 mytool.cmd 풀경로.
+        let got = resolve_bin_in("mytool", std::slice::from_ref(&dir));
+        assert_eq!(got.as_deref(), Some(cmd.to_str().unwrap()));
+        let _ = std::fs::remove_file(&cmd);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn resolve_keeps_bin_with_extension() {
+        // 이미 .cmd면 탐색 안 하고 None(=원본 유지 신호).
+        assert!(resolve_bin_in("foo.cmd", &[]).is_none());
+    }
+
+    #[test]
+    fn resolve_bin_noop_for_pathed() {
+        // 경로/확장자 있으면 원본 그대로(크로스플랫폼 불변 가지).
+        let p = "some/dir/tool.sh";
+        assert_eq!(resolve_bin(p), p);
     }
 }
