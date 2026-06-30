@@ -37,17 +37,25 @@ pub struct TunaSearchServer {
     tool_router: ToolRouter<Self>,
     retriever: Arc<dyn ContextRetriever>,
     reader: Option<Arc<dyn TranscriptReader>>,
+    /// session_id 파라미터 생략 시 기본으로 사용할 세션 id.
+    default_session: String,
 }
 
 impl TunaSearchServer {
-    /// retriever Arc를 받아 새 서버 인스턴스를 반환한다(reader=None, 기존 시그니처 유지).
+    /// retriever Arc를 받아 새 서버 인스턴스를 반환한다(reader=None, default_session="default", 기존 시그니처 유지).
     pub fn new(retriever: Arc<dyn ContextRetriever>) -> Self {
-        Self { tool_router: Self::tool_router(), retriever, reader: None }
+        Self { tool_router: Self::tool_router(), retriever, reader: None, default_session: "default".to_string() }
     }
 
     /// 전사 리더를 연결한 빌더 메서드(기존 new 시그니처 무영향).
     pub fn with_transcript_reader(mut self, reader: Arc<dyn TranscriptReader>) -> Self {
         self.reader = Some(reader);
+        self
+    }
+
+    /// session_id 파라미터 생략 시 사용할 기본 세션 id를 설정한다.
+    pub fn with_default_session(mut self, session: String) -> Self {
+        self.default_session = session;
         self
     }
 }
@@ -82,7 +90,7 @@ impl TunaSearchServer {
                 "전사 리더 미연결".to_string(),
             )]));
         };
-        let sid = p.session_id.unwrap_or_else(|| "default".to_string());
+        let sid = p.session_id.unwrap_or_else(|| self.default_session.clone());
         let utts = reader.read_transcript(&sid, p.max_turns);
         let text = if utts.is_empty() {
             "전사 없음".to_string()
@@ -110,8 +118,9 @@ impl ServerHandler for TunaSearchServer {
 pub async fn start_mcp_server(
     retriever: Arc<dyn ContextRetriever>,
     reader: Option<Arc<dyn TranscriptReader>>,
+    default_session: String,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let mut server = TunaSearchServer::new(retriever);
+    let mut server = TunaSearchServer::new(retriever).with_default_session(default_session);
     if let Some(r) = reader {
         server = server.with_transcript_reader(r);
     }
@@ -205,5 +214,70 @@ mod tests {
         let call_result = result.unwrap();
         let text = format!("{:?}", call_result.content);
         assert!(text.contains("전사 리더 미연결"), "reader=None 안내 불일치: {text}");
+    }
+
+    /// session_id를 캡처해 검증하는 전사 리더.
+    struct CapturingTranscriptReader {
+        captured: std::sync::Mutex<Option<String>>,
+        utts: Vec<Utterance>,
+    }
+
+    impl CapturingTranscriptReader {
+        fn new(utts: Vec<Utterance>) -> Self {
+            Self { captured: std::sync::Mutex::new(None), utts }
+        }
+        fn last_session_id(&self) -> Option<String> {
+            self.captured.lock().unwrap().clone()
+        }
+    }
+
+    impl crate::orchestrator::TranscriptReader for CapturingTranscriptReader {
+        fn read_transcript(&self, session_id: &str, _max_turns: Option<usize>) -> Vec<Utterance> {
+            *self.captured.lock().unwrap() = Some(session_id.to_string());
+            self.utts.clone()
+        }
+    }
+
+    #[tokio::test]
+    async fn read_transcript_without_session_id_uses_default_session() {
+        // session_id 파라미터 생략 시 default_session이 TranscriptReader에 전달된다.
+        let capturing = Arc::new(CapturingTranscriptReader::new(vec![
+            Utterance { speaker: "claude".into(), content: "안녕".into() },
+        ]));
+        let server = TunaSearchServer::new(Arc::new(FakeRetriever(vec![])))
+            .with_transcript_reader(capturing.clone() as Arc<dyn crate::orchestrator::TranscriptReader>)
+            .with_default_session("session-xyz".to_string());
+        let result = server
+            .read_transcript(Parameters(TranscriptParams {
+                session_id: None, // 생략 → default_session 사용.
+                max_turns: None,
+            }))
+            .await;
+        assert!(result.is_ok(), "Ok여야 함: {result:?}");
+        assert_eq!(
+            capturing.last_session_id().as_deref(),
+            Some("session-xyz"),
+            "default_session이 TranscriptReader에 전달되어야 함"
+        );
+    }
+
+    #[tokio::test]
+    async fn read_transcript_explicit_session_id_overrides_default() {
+        // session_id 명시 시 default_session이 아닌 명시 id가 사용된다.
+        let capturing = Arc::new(CapturingTranscriptReader::new(vec![]));
+        let server = TunaSearchServer::new(Arc::new(FakeRetriever(vec![])))
+            .with_transcript_reader(capturing.clone() as Arc<dyn crate::orchestrator::TranscriptReader>)
+            .with_default_session("should-not-appear".to_string());
+        let _ = server
+            .read_transcript(Parameters(TranscriptParams {
+                session_id: Some("explicit-session".into()),
+                max_turns: None,
+            }))
+            .await;
+        assert_eq!(
+            capturing.last_session_id().as_deref(),
+            Some("explicit-session"),
+            "명시 session_id가 우선되어야 함"
+        );
     }
 }

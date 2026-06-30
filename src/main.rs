@@ -8,13 +8,15 @@ use tunaround::runner::claude::ClaudeRunner;
 use tunaround::runner::codex::CodexRunner;
 
 fn main() {
-    // 인자: [--roster <path>] [--observe <id>] [--session <id>] [--mcp-search] [--db <path>] [<state.json>]
+    // 인자: [--roster <path>] [--observe <id>] [--session <id>] [--mcp-search] [--db <path>] [--session-id <id>] [<state.json>]
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut roster_path: Option<String> = None;
     let mut state_path: Option<String> = None;
     let mut observe_id: Option<String> = None;
     let mut redis_session_id: Option<String> = None;
     let mut recent_turns: Option<usize> = None;
+    // MCP 서버 모드에서 --session-id로 받은 기본 세션 id(없으면 "default").
+    let mut mcp_session_id: Option<String> = None;
     #[cfg(feature = "sqlite")]
     let mut db_path: Option<String> = None;
     #[cfg(feature = "mcp")]
@@ -32,6 +34,10 @@ fn main() {
             }
             "--session" => {
                 redis_session_id = args.get(i + 1).cloned();
+                i += 2;
+            }
+            "--session-id" => {
+                mcp_session_id = args.get(i + 1).cloned();
                 i += 2;
             }
             "--db" => {
@@ -148,12 +154,16 @@ fn main() {
         let transcript_reader = tunaround::store::retriever::SqliteTranscriptReader::new(store2);
         let reader_arc: Option<std::sync::Arc<dyn tunaround::orchestrator::TranscriptReader>> =
             Some(std::sync::Arc::new(transcript_reader));
-        if let Err(e) = rt.block_on(tunaround::mcp::start_mcp_server(retriever_arc, reader_arc)) {
+        let mcp_default_session = mcp_session_id.clone().unwrap_or_else(|| "default".to_string());
+        if let Err(e) = rt.block_on(tunaround::mcp::start_mcp_server(retriever_arc, reader_arc, mcp_default_session)) {
             eprintln!("[mcp-search] 서버 오류: {e}");
             std::process::exit(1);
         }
         return;
     }
+
+    // session_id: --session <id> 값 또는 "default". 러너 생성 전에 계산한다.
+    let sid = redis_session_id.clone().unwrap_or_else(|| "default".to_string());
 
     // 로스터 파일이 있으면 동적 좌석, 없으면 기본 2자리(claude proposer + codex reviewer).
     let (participants, registry): (Vec<Participant>, MapRegistry) = match &roster_path {
@@ -179,12 +189,12 @@ fn main() {
         None => {
             let mut reg = MapRegistry::new();
             #[cfg(feature = "mcp")]
-            let claude_runner = ClaudeRunner::new().with_search_db(db_path.clone());
+            let claude_runner = ClaudeRunner::new().with_search_db(db_path.clone()).with_search_session(Some(sid.clone()));
             #[cfg(not(feature = "mcp"))]
             let claude_runner = ClaudeRunner::new();
             reg.insert("claude", Box::new(claude_runner));
             #[cfg(feature = "mcp")]
-            let codex_runner = CodexRunner::new().with_search_db(db_path.clone());
+            let codex_runner = CodexRunner::new().with_search_db(db_path.clone()).with_search_session(Some(sid.clone()));
             #[cfg(not(feature = "mcp"))]
             let codex_runner = CodexRunner::new();
             reg.insert("codex", Box::new(codex_runner));
@@ -295,9 +305,6 @@ fn main() {
     };
     #[cfg(not(feature = "sqlite"))]
     let retriever: Option<Box<dyn tunaround::orchestrator::ContextRetriever>> = None;
-
-    // session_id: --session <id> 값 또는 "default".
-    let sid = redis_session_id.clone().unwrap_or_else(|| "default".to_string());
 
     // 세션 초기 상태 결정(우선순위: 파일 resume > Redis snapshot > 신규).
     let resume_existing = state_path

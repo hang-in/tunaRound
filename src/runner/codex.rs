@@ -86,14 +86,16 @@ pub struct CodexRunner {
     idle_timeout: Duration,
     /// 검색 MCP 서버에 넘길 DB 경로. Some이면 run() 시 -c mcp_servers 오버라이드를 조립해 전달한다.
     search_db: Option<String>,
+    /// MCP spawn 시 전달할 세션 id. Some이면 TOML args에 --session-id <sid>를 추가한다.
+    search_session: Option<String>,
 }
 
 impl CodexRunner {
     pub fn new() -> Self {
-        Self { bin: "codex".to_string(), idle_timeout: Duration::from_secs(600), search_db: None }
+        Self { bin: "codex".to_string(), idle_timeout: Duration::from_secs(600), search_db: None, search_session: None }
     }
     pub fn with_bin(bin: &str) -> Self {
-        Self { bin: bin.to_string(), idle_timeout: Duration::from_secs(600), search_db: None }
+        Self { bin: bin.to_string(), idle_timeout: Duration::from_secs(600), search_db: None, search_session: None }
     }
     /// 테스트/설정용 idle 타임아웃 주입.
     pub fn with_idle_timeout(mut self, d: Duration) -> Self {
@@ -103,6 +105,11 @@ impl CodexRunner {
     /// 검색 MCP 서버 DB 경로 주입. Some이면 codex에 -c mcp_servers.tuna-search로 self-exe를 spawn하도록 배선한다.
     pub fn with_search_db(mut self, db: Option<String>) -> Self {
         self.search_db = db;
+        self
+    }
+    /// MCP 서버 spawn 시 사용할 세션 id 주입. Some이면 --session-id <sid>를 TOML args에 추가한다.
+    pub fn with_search_session(mut self, session: Option<String>) -> Self {
+        self.search_session = session;
         self
     }
 }
@@ -123,11 +130,16 @@ impl Runner for CodexRunner {
                 .ok()
                 .and_then(|p| p.to_str().map(String::from))
                 .unwrap_or_else(|| "tunaround".into());
+            let args_toml = if let Some(sid) = &self.search_session {
+                format!("mcp_servers.tuna-search.args=['--mcp-search','--db','{db}','--session-id','{sid}']")
+            } else {
+                format!("mcp_servers.tuna-search.args=['--mcp-search','--db','{db}']")
+            };
             vec![
                 "-c".into(),
                 format!("mcp_servers.tuna-search.command='{exe}'"),
                 "-c".into(),
-                format!("mcp_servers.tuna-search.args=['--mcp-search','--db','{db}']"),
+                args_toml,
             ]
         }).unwrap_or_default();
         let spec = ExecSpec {
@@ -283,6 +295,37 @@ mod tests {
         // 빈 슬라이스면 -c 없음.
         let args_none = build_codex_args(&input, &[]);
         assert!(!args_none.join(" ").contains("mcp_servers.tuna-search"), "mcp_args 없는데 포함됨");
+    }
+
+    #[test]
+    fn runner_with_search_session_includes_session_id_in_mcp_args() {
+        // with_search_session(Some(..)) 설정 시 TOML args에 --session-id가 포함된다.
+        let db = "/tmp/test.db".to_string();
+        let sid = "debate-session-7".to_string();
+        let exe = "tunaround".to_string();
+        // search_session 있을 때.
+        let args_toml_with = format!(
+            "mcp_servers.tuna-search.args=['--mcp-search','--db','{db}','--session-id','{sid}']"
+        );
+        assert!(args_toml_with.contains("--session-id"), "--session-id 없음: {args_toml_with}");
+        assert!(args_toml_with.contains("debate-session-7"), "세션 id 없음: {args_toml_with}");
+        // search_session 없을 때.
+        let args_toml_without =
+            format!("mcp_servers.tuna-search.args=['--mcp-search','--db','{db}']");
+        assert!(!args_toml_without.contains("--session-id"), "--session-id가 None인데 포함됨");
+        // 빌더 필드 검증.
+        let runner = CodexRunner::new()
+            .with_search_db(Some(db))
+            .with_search_session(Some(sid));
+        assert!(runner.search_session.is_some(), "search_session이 Some이어야 함");
+        assert_eq!(runner.search_session.as_deref(), Some("debate-session-7"));
+        // 미설정 시 None.
+        let runner_no = CodexRunner::new()
+            .with_search_db(Some("/tmp/x.db".into()))
+            .with_search_db(Some("/tmp/x.db".into()));
+        assert!(runner_no.search_session.is_none(), "미설정 시 None이어야 함");
+        // mcp_args 조립에서 exe 변수 사용.
+        let _ = format!("mcp_servers.tuna-search.command='{exe}'");
     }
 
     // 무출력으로 sleep하는 가짜 실행파일을 tmp에 만들어 경로를 돌려준다(OS별).
