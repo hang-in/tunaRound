@@ -124,11 +124,12 @@ pub struct Session {
     session_id: String,
     indexer: Option<Box<dyn crate::store::indexer::MessageIndexer>>,
     retriever: Option<Box<dyn crate::orchestrator::ContextRetriever>>,
+    recent_turns: Option<usize>,
 }
 
 impl Session {
     pub fn new(participants: Vec<Participant>, registry: Box<dyn RunnerRegistry>) -> Self {
-        Self { participants, messages: Vec::new(), head: None, registry, bus: None, session_id: "default".to_string(), indexer: None, retriever: None }
+        Self { participants, messages: Vec::new(), head: None, registry, bus: None, session_id: "default".to_string(), indexer: None, retriever: None, recent_turns: None }
     }
 
     /// bus + session_id 있는 생성자. 매 라운드 후 Redis 미러를 활성화한다.
@@ -138,7 +139,7 @@ impl Session {
         session_id: String,
         bus: Option<Box<dyn SessionBus>>,
     ) -> Self {
-        Self { participants, messages: Vec::new(), head: None, registry, bus, session_id, indexer: None, retriever: None }
+        Self { participants, messages: Vec::new(), head: None, registry, bus, session_id, indexer: None, retriever: None, recent_turns: None }
     }
 
     /// bus + indexer 동시 배선 생성자. SQLite 색인 활성화용.
@@ -149,13 +150,28 @@ impl Session {
         bus: Option<Box<dyn SessionBus>>,
         indexer: Option<Box<dyn crate::store::indexer::MessageIndexer>>,
     ) -> Self {
-        Self { participants, messages: Vec::new(), head: None, registry, bus, session_id, indexer, retriever: None }
+        Self { participants, messages: Vec::new(), head: None, registry, bus, session_id, indexer, retriever: None, recent_turns: None }
     }
 
     /// retriever를 설정하는 빌더 메서드(단일 적용, self를 소비 후 반환).
     pub fn with_retriever(mut self, retriever: Option<Box<dyn crate::orchestrator::ContextRetriever>>) -> Self {
         self.retriever = retriever;
         self
+    }
+
+    /// recent_turns를 설정하는 빌더 메서드(None=기본, 현행 통째 재주입 유지).
+    pub fn with_recent_turns(mut self, n: Option<usize>) -> Self {
+        self.recent_turns = n;
+        self
+    }
+
+    /// run_round에 넘길 prior 슬라이스. recent_turns Some(n)이면 활성 경로 마지막 n턴만, 아니면 전체.
+    pub fn prior_for_prompt(&self) -> Vec<Utterance> {
+        let p = self.active_path();
+        match self.recent_turns {
+            Some(n) if p.len() > n => p[p.len() - n..].to_vec(),
+            _ => p,
+        }
     }
 
     /// topic으로 retriever를 검색하고 활성 경로 중복을 제외한 슬라이스를 반환한다.
@@ -227,6 +243,12 @@ impl Session {
         out
     }
 
+    /// 테스트 전용: active_path를 공개 접근한다(외부 노출 목적 아님).
+    #[cfg(test)]
+    pub fn active_path_pub_for_test(&self) -> Vec<Utterance> {
+        self.active_path()
+    }
+
     /// 현재 트리를 상태 파일(JSON)로 저장한다.
     pub fn save_state(&self, path: &str) -> std::io::Result<()> {
         crate::store::save_session(&StoredSession { messages: self.messages.clone(), head: self.head }, path)
@@ -245,7 +267,7 @@ impl Session {
         path: &str,
     ) -> std::io::Result<Self> {
         let ss = crate::store::load_session(path)?;
-        Ok(Self { participants, messages: ss.messages, head: ss.head, registry, bus: None, session_id: "default".to_string(), indexer: None, retriever: None })
+        Ok(Self { participants, messages: ss.messages, head: ss.head, registry, bus: None, session_id: "default".to_string(), indexer: None, retriever: None, recent_turns: None })
     }
 
     /// 한 입력을 처리한다. run_round 호출 등 로직만; 실제 I/O는 호출자(main).
@@ -262,7 +284,7 @@ impl Session {
             },
             Command::Message(text) => {
                 let retrieved = self.retrieve_for(&text);
-                let mut path = self.active_path();
+                let mut path = self.prior_for_prompt();
                 match run_round(&self.participants, &mut path, &text, self.registry.as_ref(), RunMode::ReadOnly, &retrieved) {
                     Ok(round) => { self.append_round(&round); StepOutcome::Print(render(&round)) }
                     Err(e) => StepOutcome::Print(format!("[에러] {e:?}")),
@@ -275,7 +297,7 @@ impl Session {
                     return StepOutcome::Print(format!("그런 자리가 없습니다: {engine}"));
                 }
                 let retrieved = self.retrieve_for(&text);
-                let mut path = self.active_path();
+                let mut path = self.prior_for_prompt();
                 match run_round(&seats, &mut path, &text, self.registry.as_ref(), RunMode::ReadOnly, &retrieved) {
                     Ok(round) => { self.append_round(&round); StepOutcome::Print(render(&round)) }
                     Err(e) => StepOutcome::Print(format!("[에러] {e:?}")),
@@ -288,7 +310,7 @@ impl Session {
                     return StepOutcome::Print(format!("그런 자리가 없습니다: {engine}"));
                 }
                 let retrieved = self.retrieve_for(&text);
-                let mut path = self.active_path();
+                let mut path = self.prior_for_prompt();
                 match run_round(&seats, &mut path, &text, self.registry.as_ref(), RunMode::Write, &retrieved) {
                     Ok(round) => { self.append_round(&round); StepOutcome::Print(render(&round)) }
                     Err(e) => StepOutcome::Print(format!("[에러] {e:?}")),
@@ -305,7 +327,7 @@ impl Session {
                     instruction: String::new(),
                 }];
                 let retrieved = self.retrieve_for("지금까지의 토론을 종합해 결론을 정리해줘.");
-                let mut path = self.active_path();
+                let mut path = self.prior_for_prompt();
                 match run_round(&synth, &mut path, "지금까지의 토론을 종합해 결론을 정리해줘.", self.registry.as_ref(), RunMode::ReadOnly, &retrieved) {
                     Ok(round) => { self.append_round(&round); StepOutcome::Print(render(&round)) }
                     Err(e) => StepOutcome::Print(format!("[에러] {e:?}")),
@@ -320,7 +342,7 @@ impl Session {
                         "지금까지의 논의를 이어서, 앞 발언에 반박하거나 더 깊이 들어가줘. 새 주제를 꺼내지 말고 수렴을 시도해줘.".to_string()
                     };
                     let retrieved = self.retrieve_for(&round_topic);
-                    let mut path = self.active_path();
+                    let mut path = self.prior_for_prompt();
                     match run_round(&self.participants, &mut path, &round_topic, self.registry.as_ref(), RunMode::ReadOnly, &retrieved) {
                         Ok(round) => {
                             self.append_round(&round);
@@ -735,5 +757,26 @@ mod tests {
             StepOutcome::Print(t) => { assert!(t.contains("검색 시스템 설계")); assert!(t.contains("claude/proposer")); }
             other => panic!("got {other:?}"),
         }
+    }
+
+    #[test]
+    fn prior_for_prompt_uncapped_by_default() {
+        let mut s = session_with_two_seats();
+        let _ = s.step(Command::Message("주제1".into())); // 발언 2개
+        let _ = s.step(Command::Message("주제2".into())); // 총 4개
+        // 기본(None) = prior_for_prompt가 활성 경로 전체와 길이 동일.
+        assert_eq!(s.prior_for_prompt().len(), s.transcript_len());
+    }
+
+    #[test]
+    fn prior_for_prompt_caps_to_recent_n() {
+        let mut s = session_with_two_seats().with_recent_turns(Some(2));
+        let _ = s.step(Command::Message("주제1".into()));
+        let _ = s.step(Command::Message("주제2".into())); // 활성 경로 4턴
+        let prior = s.prior_for_prompt();
+        assert_eq!(prior.len(), 2); // 최근 2턴만 재주입
+        // 마지막 발언이 활성 경로 전체의 마지막 발언과 동일해야 한다.
+        let full = s.active_path_pub_for_test();
+        assert_eq!(prior.last().map(|u| &u.content), full.last().map(|u| &u.content));
     }
 }

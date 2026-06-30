@@ -14,6 +14,7 @@ fn main() {
     let mut state_path: Option<String> = None;
     let mut observe_id: Option<String> = None;
     let mut redis_session_id: Option<String> = None;
+    let mut recent_turns: Option<usize> = None;
     #[cfg(feature = "sqlite")]
     let mut db_path: Option<String> = None;
     #[cfg(feature = "mcp")]
@@ -36,6 +37,12 @@ fn main() {
             "--db" => {
                 #[cfg(feature = "sqlite")]
                 { db_path = args.get(i + 1).cloned(); }
+                i += 2;
+            }
+            "--recent-turns" => {
+                if let Some(v) = args.get(i + 1).and_then(|s| s.parse::<usize>().ok()) {
+                    recent_turns = Some(v);
+                }
                 i += 2;
             }
             "--mcp-search" => {
@@ -327,8 +334,8 @@ fn main() {
         Session::new_with_indexer(participants, Box::new(registry), sid.clone(), bus_boxed, indexer)
     };
 
-    // retriever 1회 배선(session 생성 if/else 이후 단일 적용).
-    let mut session = session.with_retriever(retriever);
+    // retriever + recent_turns 1회 배선(session 생성 if/else 이후 단일 적용).
+    let mut session = session.with_retriever(retriever).with_recent_turns(recent_turns);
 
     println!("tunaRound - 메시지를 입력하세요. /help, /save, /quit.");
     let stdin = io::stdin();
