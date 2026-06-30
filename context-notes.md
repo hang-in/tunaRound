@@ -334,3 +334,10 @@
 - **Batch A 커밋(1b13ac7)**: (1) get_message `.ok()`→QueryReturnedNoRows만 None·실에러 전파 (2) path_to_root id→msg HashMap(O(N²)→O(N))+visited 순환가드 (3) codex TOML single→double-quote basic+이스케이프(toml_basic, 주입 차단) (4) DefaultHasher→FNV-1a 인라인(버전무관 결정적). 신규 5테스트, 기본 123/전체 129.
 - **⚠ codex pull 권한 버그 발견(Stage 2 정정)**: codex 변경 라이브 검증 중, **codex exec도 MCP 도구 호출을 승인 막음**(read_transcript "사용자 취소" 3회). **이전 "codex는 exec 비대화형이라 자동승인=무수정" 판단은 틀림.** Task 3 재측정의 codex 응답은 same_round+레포 보충이었고 실제 pull 아니었음. 즉 **pull은 현재 claude만 작동, codex 좌석은 전사 못 당김.**
 - **codex 권한 후속 수정 후보**: `codex exec`에 세밀 승인은 `--dangerously-bypass-approvals-and-sandbox`(샌드박스까지 제거=ReadOnly 부적합)뿐 보이고, `-c approval_policy="never"`(승인 안 물음, 샌드박스는 유지) 추정 → 검증 필요. ReadOnly 좌석은 MCP 허용+쓰기 차단 동시 필요. Batch B(리팩토링) 전 우선 처리 권고(shipped 기능 버그).
+
+## 2026-06-30 codex pull 권한 = claude 전용 pull로 결정(검증)
+
+- **시도**: codex.rs에 `-c approval_policy="never"` 추가 → **라이브에서 codex read_transcript 여전히 "사용자 취소"**. approval_policy가 codex MCP 도구 승인을 관장 안 하거나 값이 다름. codex exec엔 -a/--ask-for-approval 플래그 없음(-c config만), granular MCP 승인 키 미발견. 추정 되돌림.
+- **결정(정직한 폴백)**: `is_mcp_capable` → **claude 전용**. codex는 pull 모드에서 push 폴백(전사 전체 주입=grounded). 혼합 모드(claude pull + codex push) 라이브 검증: claude 432(pull) / codex 2024→6015(push), codex가 "첫 주제" 정확 답변=grounded, "사용자 취소" 사라짐.
+- **codex pull 활성화 = 후속**: codex 승인 설정 심층 조사(mcp 서버 trust? config 키?) 또는 Stage 3e 영속 codex(app-server, 승인 모델 다를 수 있음). 그 전엔 claude만 pull 이득, codex는 정확하지만 push.
+- **신규 테스트**: orchestrator pull_capable_is_claude_only.

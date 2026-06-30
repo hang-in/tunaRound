@@ -15,9 +15,11 @@ pub enum ContextMode {
     Pull,
 }
 
-/// MCP 도구 보유 좌석 판별. claude·codex만 read_transcript·search_context 도구를 갖는다.
+/// pull(전사 당기기)이 실제로 검증된 좌석 판별. 현재는 claude뿐이다.
+/// codex exec는 MCP 도구 호출을 승인 모델이 막아(헤드리스 "사용자 취소") read_transcript가
+/// 안 되므로 pull 대상에서 빼고 push로 폴백한다. codex pull 활성화는 후속(승인 설정 조사).
 pub fn is_mcp_capable(engine: &str) -> bool {
-    matches!(engine, "claude" | "codex")
+    matches!(engine, "claude")
 }
 
 /// 토론 한 자리. 엔진(어떤 러너로 구동) + 역할 + 추가 지시.
@@ -129,4 +131,18 @@ pub fn run_round(
 
     transcript.extend(same_round.iter().cloned());
     Ok(same_round)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_mcp_capable;
+
+    #[test]
+    fn pull_capable_is_claude_only() {
+        // pull은 claude만 검증됨. codex는 승인 블록으로 push 폴백, 그 외도 push.
+        assert!(is_mcp_capable("claude"));
+        assert!(!is_mcp_capable("codex"));
+        assert!(!is_mcp_capable("ollama"));
+        assert!(!is_mcp_capable("opencode"));
+    }
 }
