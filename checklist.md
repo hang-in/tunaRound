@@ -94,6 +94,12 @@
 - 비포함(다음 슬라이스): REPL/main 영속 SQLite 전환, Redis 스냅샷 조정, 검색 주입(RAG), 벡터/하이브리드
 - 리뷰 노트(후속 폴리시): load_session head 조회 `.ok()`가 실DB에러도 삼킴(QueryReturnedNoRows만 None 처리 권장) · 트랜잭션은 unchecked_transaction()이 더 관용적
 
+### Plan 10: SQLite 라이브 배선 (docs/plans/v2-10-sqlite-wiring.md) — done
+
+- [x] Task 1: MessageIndexer trait + SqliteIndexer(sqlite feature) + Session indexer 배선(append_round 훅) + tokenize_fallback 비게이트화 (e21cf43; Sonnet 위임. Rc→Arc<Mutex>, Connection !Sync라 Mutex<SqliteStore>)
+- [x] Task 2: main --db 배선(3분기 일관 전달, feature-gated) + 색인 roundtrip 테스트(persist->재오픈->search) (5d79a0a; Sonnet 위임) — Plan 10 완료, sqlite 74/sqlite+morphology 81 pass, 기본 불변, clippy 3조합 클린, 스모크 OK. **origin 푸시됨**(README와 함께)
+- 패턴: SessionBus 미러 답습(Option 필드 + append_round). 추가적(JSON/Redis 미접촉), sqlite off=None=불변. 검색 소비(RAG)는 Plan 11.
+
 ### 후속 (검색 레이어)
 - [ ] 벡터: 원격 Ollama(SSH 터널 11435, bge-m3 dim 1024) reqwest 임베더 + ANN
 - [ ] 하이브리드 융합(BM25+벡터) + 검색 주입(통째 재주입 -> 관련 슬라이스, build_round_prompt RAG화)

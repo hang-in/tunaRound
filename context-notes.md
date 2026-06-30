@@ -209,3 +209,12 @@
 - **Plan 09 완료(2026-06-30):** Task 1 `c61cf11`(Sonnet 위임: 스키마/마이그레이션/save_session/load_session) + Task 2 `181f46a`(Opus: FTS 검색 테스트). **Windows rusqlite bundled 컴파일 OK(21초, MSVC C:\BuildTools 자동탐지).** sqlite 68/sqlite+morphology 75 pass, 기본 61 불변, clippy 양 조합 클린. **핵심 실증**: `morpheme_indexing_matches_inflected_form` 통과 = "검색을" 형태소 색인 -> "검색" 쿼리 매칭(Windows lindera 경로). 미푸시.
 - **잠재 와트(기록):** `exec.rs` 러너 테스트는 `bin:"sh"` 의존 -> Git Bash(sh on PATH)에선 green, 순수 PowerShell(sh 미발견)에선 spawn 실패. 정본 검증은 Bash 경유. 서브에이전트가 PowerShell로 돌려 "2 fail" 오인했던 원인.
 - **Plan 09 다음 슬라이스:** (a) 영속을 SQLite로 전환(시스템오브레코드, REPL/main + Redis 스냅샷 조정) (b) `build_round_prompt` RAG화(통째 재주입 -> 검색 슬라이스) (c) 벡터(원격 Ollama bge-m3 dim 1024) -> 하이브리드.
+
+## Plan 10 SQLite 라이브 배선 완료 (2026-06-30)
+
+- **방식:** 기존 SessionBus 미러 패턴 답습. `MessageIndexer` trait(비게이트) + `SqliteIndexer`(sqlite feature, `Mutex<SqliteStore>` + tokenize closure 주입) + Session `indexer: Option<Box<dyn ...>>` 필드 + `append_round` 훅 + main `--db <path>`. 추가적(JSON save/load·Redis 미접촉), sqlite off/--db 없음=None=기존 동작 불변.
+- **커밋:** Task 1 `e21cf43`(trait+indexer+Session, Sonnet) + Task 2 `5d79a0a`(main --db 3분기 배선 + roundtrip 테스트, Sonnet). sqlite 74/sqlite+morphology 81 pass, clippy 3조합 클린, 스모크 OK. **origin 푸시됨**(README `5c31a1d`와 함께, 63fc071..5c31a1d).
+- **이탈(타당):** Send+Sync 위해 Rc→Arc<Mutex> / Connection !Sync라 Mutex<SqliteStore> / 통합테스트는 indexer.rs 단위테스트로(FakeRunner cross-crate 불가 회피) / `--db` 변수 cfg(sqlite) 게이트(unused 경고 억제).
+- **절차 교훈:** README를 쓰는 사이 Task 2가 커밋돼 `git push`(README만 의도)가 Task 1·2 코드까지 함께 올림. 또 Task 2를 리뷰 전 푸시 -> 사후 독립검증(빌드/테스트/clippy)으로 그린 확인. **다음부턴 서브에이전트 진행 중 푸시 자제 또는 완료·리뷰 후 푸시.**
+- **다음 = Plan 11 검색 주입(RAG):** `build_round_prompt`가 통째 재주입 대신 SqliteStore.search로 관련 슬라이스만 주입. 북극성 핵심. 인덱스는 Plan 10으로 라이브로 채워짐.
+- **검색 토크나이저(서브에이전트 보고):** `cargo`는 Bash 툴로 돌릴 것(Git Bash sh 있어 exec.rs sh 테스트 통과; PowerShell이면 2건 거짓 실패).
