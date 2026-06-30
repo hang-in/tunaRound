@@ -320,3 +320,10 @@
 - **codex 서버 모드(사용자 지적)**: codex는 `codex mcp-server`(codex를 MCP 서버로), `codex app-server`(영속 데몬, experimental), `codex mcp`(외부 MCP 관리)가 있음. 우리 러너는 `codex exec`(stateless, codex=우리 tuna-search의 MCP 클라이언트). **app-server/mcp-server = (A) Stage 3 영속 에이전트 세션 경로**(매턴 stateless exec 대신 영속 데몬). 후속 검토.
 - **재측정 검증(실 claude/codex, pull, 3턴, 3턴째=합의요약 과제)**: "권한 막힘" 0회. 두 에이전트가 **전사 특정 내용 정확 인용**(codex "전사와 관련 맥락을 확인해" + env_clear/close-on-exec/Tailscale 등 앞턴 결정 요약; claude가 transcript.read scope 등 참조). 프롬프트 평평(claude 433/431/441, codex 2401/3307/2132) vs push(9770/12489). **토큰 80~95%↓ + grounding 유지 = (A) push→pull 페이오프 실증.**
 - **Stage 2 작동 검증 완료.** half-a2a 척추 동작. 남은 폴리시: --recent-turns+carried 병행 시 동작, 포인터 문구 튜닝, pull 기본화 결정(품질 더 측정 후). get_roster/post_turn은 Stage 1 후속.
+
+## 2026-06-30 Stage 2 pull 하더닝 - carried 요약 항상 켜기(안전망)
+
+- **변경(repl/mod.rs carry_forward_digest)**: 모드 분기. Pull이면 전사 전체를 요약 대상(prior 통째 안 넣으니), Push면 기존(recent_turns 밖 드롭만). MAX_CARRY=1500 캡 그대로라 평평. Push 기본 동작 불변(기존 4테스트 통과 + 신규 pull 테스트 1).
+- **이유**: 직전 측정은 carried 빈 상태라 pull이 순수 에이전트 당김에만 의존(강한 모델이라 됐으나 안전망 0). 이제 pull은 요약 baseline 항상 보유 → 게으른 pull에도 연속성.
+- **재측정(실 claude/codex, pull, 4턴)**: claude 435→566→696→855(요약 턴당 ~130자 누적, 1500서 캡 예정=유계). codex 2262~3283(same_round 변동). push(9770/12489 무한증가) 대비 여전히 평평/유계. grounding 유지(앞턴 결정 참조). **안전망 + 토큰 페이오프 동시 성립.**
+- 남은 폴리시: 더 다양/긴 시나리오·약한 좌석 측정 후 pull 기본화 결정. 포인터 문구 튜닝. 이후 Stage 3(영속 에이전트=codex app-server, 원격/토폴로지, post_turn/get_roster 흡수).

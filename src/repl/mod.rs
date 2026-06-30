@@ -206,19 +206,24 @@ impl Session {
         }
     }
 
-    /// 드롭된 옛 턴을 결정적 압축 요약으로 반환한다(LLM·임베더 미사용).
-    /// recent_turns None(기본)이면 드롭 없음 → 빈 문자열. path.len()<=n이면 마찬가지로 빈 문자열.
-    /// 초과 시 최근 드롭 턴 우선 유지, 맨 앞에 "(이전 N턴 생략)" 표기.
+    /// 프롬프트에서 빠진 전사를 결정적 압축 요약으로 반환한다(LLM·임베더 미사용).
+    /// Pull 모드: 전사 전체가 프롬프트에서 빠지므로 전체를 요약한다(안전망, MAX_CARRY로 평평하게 캡).
+    /// Push 모드: recent_turns 밖으로 드롭된 옛 턴만 요약(None이거나 path<=n이면 드롭 없음 → 빈 문자열).
+    /// 초과 시 최근 턴 우선 유지, 맨 앞에 "(이전 N턴 생략)" 표기.
     pub fn carry_forward_digest(&self) -> String {
-        let n = match self.recent_turns {
-            Some(n) => n,
-            None => return String::new(),
-        };
         let path = self.active_path();
-        if path.len() <= n {
+        let dropped: &[Utterance] = match self.context_mode {
+            // Pull: prior를 통째로 안 넣으니 전사 전체가 요약 대상이다.
+            ContextMode::Pull => &path,
+            // Push: recent_turns 밖만 드롭. 미캡(None)이거나 path<=n이면 드롭 없음.
+            ContextMode::Push => match self.recent_turns {
+                Some(n) if path.len() > n => &path[..path.len() - n],
+                _ => return String::new(),
+            },
+        };
+        if dropped.is_empty() {
             return String::new();
         }
-        let dropped = &path[..path.len() - n];
         // 드롭 턴마다 한 줄: "- [speaker] {first_clause}".
         let lines: Vec<String> = dropped
             .iter()
@@ -958,5 +963,23 @@ mod tests {
             digest.len(),
             super::MAX_CARRY
         );
+    }
+
+    #[test]
+    fn carry_forward_digest_pull_summarizes_whole_path() {
+        // Pull 모드: recent_turns 없이도 전사 전체를 요약(안전망). Push 기본과 대비.
+        use crate::orchestrator::ContextMode;
+        let mut s = session_with_two_seats().with_context_mode(ContextMode::Pull);
+        let _ = s.step(Command::Message("주제1".into())); // path 2
+        let digest = s.carry_forward_digest();
+        assert!(!digest.is_empty(), "pull 모드는 전사 전체를 요약해야 함");
+        assert!(
+            digest.contains("claude/proposer") || digest.contains("codex/reviewer"),
+            "speaker 없음: {digest}"
+        );
+        // 같은 전사라도 Push(미캡)면 빈 문자열이어야 한다(대조).
+        let mut s2 = session_with_two_seats();
+        let _ = s2.step(Command::Message("주제1".into()));
+        assert_eq!(s2.carry_forward_digest(), "", "push 미캡은 빈 요약");
     }
 }
