@@ -8,7 +8,7 @@ use tunaround::runner::claude::ClaudeRunner;
 use tunaround::runner::codex::CodexRunner;
 
 fn main() {
-    // 인자: [--roster <path>] [--observe <id>] [--session <id>] [<state.json>]
+    // 인자: [--roster <path>] [--observe <id>] [--session <id>] [--mcp-search] [--db <path>] [<state.json>]
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut roster_path: Option<String> = None;
     let mut state_path: Option<String> = None;
@@ -16,6 +16,8 @@ fn main() {
     let mut redis_session_id: Option<String> = None;
     #[cfg(feature = "sqlite")]
     let mut db_path: Option<String> = None;
+    #[cfg(feature = "mcp")]
+    let mut mcp_search = false;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -35,6 +37,11 @@ fn main() {
                 #[cfg(feature = "sqlite")]
                 { db_path = args.get(i + 1).cloned(); }
                 i += 2;
+            }
+            "--mcp-search" => {
+                #[cfg(feature = "mcp")]
+                { mcp_search = true; }
+                i += 1;
             }
             other => {
                 if state_path.is_none() {
@@ -71,6 +78,54 @@ fn main() {
             }
             let _ = subscriber.await;
         });
+        return;
+    }
+
+    // --mcp-search 모드: REPL 대신 stdio MCP 검색 서버 기동(mcp 피처 전용).
+    #[cfg(feature = "mcp")]
+    if mcp_search {
+        let db_str = match &db_path {
+            Some(p) => p.clone(),
+            None => {
+                eprintln!("[mcp-search] --db <경로> 필요");
+                std::process::exit(1);
+            }
+        };
+        let store = match tunaround::store::sqlite::SqliteStore::open(&db_str) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("[mcp-search] DB 열기 실패: {e}");
+                std::process::exit(1);
+            }
+        };
+        #[cfg(feature = "morphology")]
+        let tok: Box<dyn Fn(&str) -> String + Send + Sync> = {
+            match tunaround::search::tokenizer::create_tokenizer("kiwi") {
+                Ok(t) => Box::new(move |s: &str| t.tokenize_for_fts(s)),
+                Err(e) => {
+                    eprintln!("[mcp-search] 토크나이저 실패, 폴백: {e}");
+                    Box::new(|s: &str| tunaround::search::tokenize_fallback(s).join(" "))
+                }
+            }
+        };
+        #[cfg(not(feature = "morphology"))]
+        let tok: Box<dyn Fn(&str) -> String + Send + Sync> =
+            Box::new(|s: &str| tunaround::search::tokenize_fallback(s).join(" "));
+        #[cfg(feature = "semantic")]
+        let emb: Option<Box<dyn tunaround::store::embedding::Embedder>> = {
+            let endpoint = std::env::var("TUNAROUND_OLLAMA_URL")
+                .unwrap_or_else(|_| "http://127.0.0.1:11435".to_string());
+            Some(Box::new(tunaround::store::embedding::OllamaEmbedder::new(&endpoint, "bge-m3")))
+        };
+        #[cfg(not(feature = "semantic"))]
+        let emb: Option<Box<dyn tunaround::store::embedding::Embedder>> = None;
+        let retriever = tunaround::store::retriever::SqliteRetriever::new(store, tok, emb);
+        let retriever_arc =
+            std::sync::Arc::new(retriever) as std::sync::Arc<dyn tunaround::orchestrator::ContextRetriever>;
+        if let Err(e) = rt.block_on(tunaround::mcp::start_mcp_server(retriever_arc)) {
+            eprintln!("[mcp-search] 서버 오류: {e}");
+            std::process::exit(1);
+        }
         return;
     }
 

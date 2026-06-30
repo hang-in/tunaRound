@@ -38,7 +38,7 @@ pub trait RunnerRegistry {
 }
 
 /// topic으로 관련 과거 맥락 슬라이스를 끌어오는 경계(RunnerRegistry와 동형, 비게이트).
-pub trait ContextRetriever {
+pub trait ContextRetriever: Send + Sync {
     fn retrieve(&self, query: &str, limit: usize) -> Vec<Utterance>;
 }
 
