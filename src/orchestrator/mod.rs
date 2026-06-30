@@ -77,6 +77,14 @@ pub struct RosterSeat {
     pub role: Option<String>,
 }
 
+/// front=core 병합용: REPL이 코어 DB를 권위로 삼아 로드/추가하는 경계(Plan 27 옵션 B).
+/// load_session은 외부 post_turn까지 포함한 최신 트리를, append_turn은 DB id 권위로 발언을 추가한다.
+/// 이 경계가 연결되면 REPL은 매 라운드 DB를 adopt해 외부 쓰기와 충돌·클로버 없이 공존한다.
+pub trait CoreSync: Send + Sync {
+    fn load_session(&self, session_id: &str) -> Option<crate::store::StoredSession>;
+    fn append_turn(&self, session_id: &str, speaker: &str, content: &str) -> Result<u64, String>;
+}
+
 /// HashMap 기반 기본 레지스트리. 테스트는 FakeRunner를 넣는다.
 pub struct MapRegistry {
     runners: HashMap<String, Box<dyn Runner>>,

@@ -163,11 +163,14 @@ pub struct Session {
     recent_turns: Option<usize>,
     /// 컨텍스트 전달 모드. 기본 Push(=현행 동작 불변), Pull은 --pull-context 플래그로 활성화.
     context_mode: ContextMode,
+    /// front=core 병합 경계(Plan 27 옵션 B). Some이면 DB가 권위: 매 라운드 adopt + append_turn 쓰기.
+    /// None(기본)이면 기존 인메모리 트리 + indexer 전량 persist(동작 불변).
+    core_sync: Option<Box<dyn crate::orchestrator::CoreSync>>,
 }
 
 impl Session {
     pub fn new(participants: Vec<Participant>, registry: Box<dyn RunnerRegistry>) -> Self {
-        Self { participants, messages: Vec::new(), head: None, registry, bus: None, session_id: "default".to_string(), indexer: None, retriever: None, recent_turns: None, context_mode: ContextMode::Push }
+        Self { participants, messages: Vec::new(), head: None, registry, bus: None, session_id: "default".to_string(), indexer: None, retriever: None, recent_turns: None, core_sync: None, context_mode: ContextMode::Push }
     }
 
     /// bus + session_id 있는 생성자. 매 라운드 후 Redis 미러를 활성화한다.
@@ -177,7 +180,7 @@ impl Session {
         session_id: String,
         bus: Option<Box<dyn SessionBus>>,
     ) -> Self {
-        Self { participants, messages: Vec::new(), head: None, registry, bus, session_id, indexer: None, retriever: None, recent_turns: None, context_mode: ContextMode::Push }
+        Self { participants, messages: Vec::new(), head: None, registry, bus, session_id, indexer: None, retriever: None, recent_turns: None, core_sync: None, context_mode: ContextMode::Push }
     }
 
     /// bus + indexer 동시 배선 생성자. SQLite 색인 활성화용.
@@ -188,7 +191,7 @@ impl Session {
         bus: Option<Box<dyn SessionBus>>,
         indexer: Option<Box<dyn crate::store::indexer::MessageIndexer>>,
     ) -> Self {
-        Self { participants, messages: Vec::new(), head: None, registry, bus, session_id, indexer, retriever: None, recent_turns: None, context_mode: ContextMode::Push }
+        Self { participants, messages: Vec::new(), head: None, registry, bus, session_id, indexer, retriever: None, recent_turns: None, core_sync: None, context_mode: ContextMode::Push }
     }
 
     /// retriever를 설정하는 빌더 메서드(단일 적용, self를 소비 후 반환).
@@ -207,6 +210,22 @@ impl Session {
     pub fn with_context_mode(mut self, m: ContextMode) -> Self {
         self.context_mode = m;
         self
+    }
+
+    /// front=core 병합 경계를 설정하는 빌더 메서드(--core 전용). None=기존 동작 불변.
+    pub fn with_core_sync(mut self, cs: Option<Box<dyn crate::orchestrator::CoreSync>>) -> Self {
+        self.core_sync = cs;
+        self
+    }
+
+    /// core-sync 모드에서 코어 DB(권위)의 최신 트리를 인메모리에 채택한다(외부 post_turn 흡수).
+    /// core_sync 미연결이면 no-op(기존 동작 불변). DB에 세션 없으면 그대로 둔다.
+    fn adopt_from_core(&mut self) {
+        let Some(cs) = &self.core_sync else { return };
+        if let Some(ss) = cs.load_session(&self.session_id) {
+            self.messages = ss.messages;
+            self.head = ss.head;
+        }
     }
 
     /// recent_turns를 적용해 prior 슬라이스를 반환한다. path를 받으므로 active_path 재호출 없음.
@@ -328,6 +347,26 @@ impl Session {
 
     /// round 발언들을 head에서 시작하는 체인으로 트리에 append하고 head를 옮긴다.
     fn append_round(&mut self, round: &[Utterance]) {
+        // core-sync 모드: DB가 id 권위. append_turn으로 쓰고 DB 트리를 adopt(외부 post_turn 흡수).
+        // 전량 persist(indexer)를 생략해 외부 쓰기 클로버를 구조적으로 차단한다(Plan 27 옵션 B).
+        if let Some(cs) = &self.core_sync {
+            for u in round {
+                if let Err(e) = cs.append_turn(&self.session_id, &u.speaker, &u.content) {
+                    eprintln!("[core-sync] append 실패: {e}");
+                }
+            }
+            // 쓰기 후 DB 권위 트리를 채택(이번 라운드 + 사이에 들어온 외부 post 포함).
+            self.adopt_from_core();
+            // bus 미러는 스냅샷만(DB가 색인 권위, adopt 후 증분 슬라이스는 인덱스가 안 맞음).
+            if let Some(bus) = &self.bus {
+                let snap = StoredSession { messages: self.messages.clone(), head: self.head };
+                if let Ok(s) = serde_json::to_string(&snap) {
+                    bus.snapshot_json(&self.session_id, &s);
+                }
+            }
+            return;
+        }
+
         let start = self.messages.len();
         for u in round {
             let id = crate::store::next_id(&self.messages);
@@ -396,11 +435,13 @@ impl Session {
         path: &str,
     ) -> std::io::Result<Self> {
         let ss = crate::store::load_session(path)?;
-        Ok(Self { participants, messages: ss.messages, head: ss.head, registry, bus: None, session_id: "default".to_string(), indexer: None, retriever: None, recent_turns: None, context_mode: ContextMode::Push })
+        Ok(Self { participants, messages: ss.messages, head: ss.head, registry, bus: None, session_id: "default".to_string(), indexer: None, retriever: None, recent_turns: None, core_sync: None, context_mode: ContextMode::Push })
     }
 
     /// 한 입력을 처리한다. run_round 호출 등 로직만; 실제 I/O는 호출자(main).
     pub fn step(&mut self, cmd: Command) -> StepOutcome {
+        // core-sync 모드: 명령 처리 전 코어 DB 권위 트리를 채택(외부 post_turn을 이번 라운드 prior에 반영).
+        self.adopt_from_core();
         match cmd {
             Command::Quit => StepOutcome::Exit,
             Command::Noop => StepOutcome::Noop,
@@ -541,6 +582,89 @@ mod tests {
             Participant { engine: "codex".into(), role: Some("reviewer".into()), instruction: String::new() },
         ];
         Session::new(participants, Box::new(reg))
+    }
+
+    /// 공유 트리를 흉내내는 가짜 CoreSync(외부 post_turn 시뮬레이션용). DB id 권위를 모사.
+    #[derive(Clone)]
+    struct FakeCoreSync {
+        db: std::sync::Arc<std::sync::Mutex<StoredSession>>,
+    }
+    impl FakeCoreSync {
+        fn new() -> Self {
+            Self { db: std::sync::Arc::new(std::sync::Mutex::new(StoredSession { messages: vec![], head: None })) }
+        }
+        fn append_inner(&self, speaker: &str, content: &str) -> u64 {
+            let mut db = self.db.lock().unwrap();
+            let new_id = db.messages.iter().map(|m| m.id).max().unwrap_or(0) + 1;
+            let parent = db.head;
+            db.messages.push(StoredMessage { id: new_id, parent_id: parent, speaker: speaker.into(), content: content.into() });
+            db.head = Some(new_id);
+            new_id
+        }
+        /// 다른 프론트/에이전트의 post_turn을 흉내낸다(REPL 밖에서 DB에 직접 추가).
+        fn external_post(&self, speaker: &str, content: &str) -> u64 {
+            self.append_inner(speaker, content)
+        }
+        fn len(&self) -> usize {
+            self.db.lock().unwrap().messages.len()
+        }
+    }
+    impl crate::orchestrator::CoreSync for FakeCoreSync {
+        fn load_session(&self, _sid: &str) -> Option<StoredSession> {
+            let db = self.db.lock().unwrap();
+            if db.messages.is_empty() { None } else { Some(db.clone()) }
+        }
+        fn append_turn(&self, _sid: &str, speaker: &str, content: &str) -> Result<u64, String> {
+            Ok(self.append_inner(speaker, content))
+        }
+    }
+
+    fn core_sync_session(cs: FakeCoreSync) -> Session {
+        let mut reg = MapRegistry::new();
+        reg.insert("claude", Box::new(FakeRunner { reply: "제안".into() }));
+        reg.insert("codex", Box::new(FakeRunner { reply: "리뷰".into() }));
+        let participants = vec![
+            Participant { engine: "claude".into(), role: Some("proposer".into()), instruction: String::new() },
+            Participant { engine: "codex".into(), role: Some("reviewer".into()), instruction: String::new() },
+        ];
+        Session::new(participants, Box::new(reg)).with_core_sync(Some(Box::new(cs)))
+    }
+
+    #[test]
+    fn core_sync_round_writes_through_to_db() {
+        // core-sync 모드: 라운드 발언이 DB(CoreSync)에 append되고 인메모리도 그걸 채택.
+        let cs = FakeCoreSync::new();
+        let mut s = core_sync_session(cs.clone());
+        let _ = s.step(Command::Message("설계 논의".into()));
+        // 2좌석 응답 2건이 DB에 기록.
+        assert_eq!(cs.len(), 2, "라운드 발언이 DB에 써져야 함");
+        assert_eq!(s.message_count(), 2, "인메모리도 DB를 채택");
+    }
+
+    #[test]
+    fn core_sync_adopts_external_post_and_does_not_clobber() {
+        // 외부 post_turn(다른 프론트)이 들어와도 REPL이 다음 step에서 흡수하고, REPL 턴이 덮지 않는다.
+        let cs = FakeCoreSync::new();
+        let mut s = core_sync_session(cs.clone());
+
+        // 1라운드: REPL 발언 2건(DB id 1,2).
+        let _ = s.step(Command::Message("첫 주제".into()));
+        assert_eq!(cs.len(), 2);
+
+        // 외부 참가자가 post_turn으로 발언 추가(DB id 3).
+        cs.external_post("remote/agent", "외부에서 추가한 발언");
+        assert_eq!(cs.len(), 3);
+
+        // 2라운드: step 시작에 adopt → 외부 발언이 prior에 들어오고, REPL 2건이 더해짐(id 4,5).
+        let _ = s.step(Command::Message("이어서".into()));
+        assert_eq!(cs.len(), 5, "외부 발언 보존 + REPL 2건 추가(클로버 없음)");
+        // 인메모리 트리에 외부 발언이 포함되어야 한다.
+        let path = s.active_path();
+        assert!(
+            path.iter().any(|u| u.content == "외부에서 추가한 발언"),
+            "외부 post_turn이 활성 경로에 흡수되어야 함: {:?}",
+            path.iter().map(|u| u.content.as_str()).collect::<Vec<_>>()
+        );
     }
 
     #[test]

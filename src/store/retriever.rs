@@ -4,7 +4,7 @@
 pub use sqlite_retriever::SqliteRetriever;
 
 #[cfg(feature = "sqlite")]
-pub use sqlite_transcript::{SqliteTranscriptReader, SqliteTranscriptWriter};
+pub use sqlite_transcript::{SqliteCoreSync, SqliteTranscriptReader, SqliteTranscriptWriter};
 
 #[cfg(feature = "sqlite")]
 mod sqlite_retriever {
@@ -169,6 +169,31 @@ mod sqlite_transcript {
     }
 
     impl crate::orchestrator::TranscriptWriter for SqliteTranscriptWriter {
+        fn append_turn(&self, session_id: &str, speaker: &str, content: &str) -> Result<u64, String> {
+            let store = self.store.lock().unwrap_or_else(|e| e.into_inner());
+            store.append_turn(session_id, speaker, content, |t| (self.tok)(t))
+        }
+    }
+
+    /// front=core 병합용 CoreSync 구현: REPL이 코어 DB를 권위로 로드/추가한다(Plan 27 옵션 B).
+    /// load_session으로 외부 post_turn까지 포함한 트리를 읽고, append_turn으로 DB id 권위 추가.
+    pub struct SqliteCoreSync {
+        store: std::sync::Mutex<SqliteStore>,
+        tok: Box<dyn Fn(&str) -> String + Send + Sync>,
+    }
+
+    impl SqliteCoreSync {
+        /// SqliteStore + 색인용 토크나이저 closure를 받아 새 core-sync를 반환한다.
+        pub fn new(store: SqliteStore, tok: Box<dyn Fn(&str) -> String + Send + Sync>) -> Self {
+            Self { store: std::sync::Mutex::new(store), tok }
+        }
+    }
+
+    impl crate::orchestrator::CoreSync for SqliteCoreSync {
+        fn load_session(&self, session_id: &str) -> Option<crate::store::StoredSession> {
+            let store = self.store.lock().unwrap_or_else(|e| e.into_inner());
+            store.load_session(session_id).ok().flatten()
+        }
         fn append_turn(&self, session_id: &str, speaker: &str, content: &str) -> Result<u64, String> {
             let store = self.store.lock().unwrap_or_else(|e| e.into_inner());
             store.append_turn(session_id, speaker, content, |t| (self.tok)(t))
