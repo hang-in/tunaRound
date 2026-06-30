@@ -124,6 +124,7 @@
 - [x] Task 1: rmcp search_context 서버(SqliteRetriever 래핑) + main --mcp-search stdio 모드 (a65feba; Sonnet) — **rmcp Windows 빌드 OK**(1.3.0->1.8.0, 10초). ContextRetriever에 Send+Sync 추가. mcp 88 pass
 - [x] Task 2: claude --mcp-config 배선(self-exe를 --mcp-search --db로 spawn, serde_json 조립) + with_search_db + main cfg(mcp) (a5a185d; Sonnet) — mcp 89 pass, clippy 클린
 - [x] Task 3: 라이브 검증(2026-06-30) — **실 claude+codex 라운드 정상 응답(gotcha #4 수정으로 codex spawn OK)** → SQLite 색인 → **MCP 서버 직접 JSON-RPC(initialize+tools/call)로 search_context("발제자")가 실 색인 발언 반환**. 전 체인 입증. 에이전트 자율호출은 모델 행동(별도). morphology/semantic 빌드면 형태소+벡터 품질↑
+- [x] Task 4(codex): codex에 -c mcp_servers 오버라이드 배선(claude와 동형, TOML 리터럴로 Windows 경로 안전, 영속 config 미변경) (c892548; Sonnet) — 기본 77/mcp 95 pass, clippy 클린. **라이브: codex가 -c MCP 인자 받고도 정상 응답(비파괴 확인)**. 이제 두 자리 모두 search_context 보유
 - 단일 툴 search_context. 로스터·다중툴(recall/get)은 후속.
 
 ## Plan 15: 러너 Windows CLI 해석 (docs/plans/v2-15-windows-cli-resolve.md) — done (gotcha #4)
