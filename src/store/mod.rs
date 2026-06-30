@@ -3,6 +3,8 @@
 #[cfg(feature = "sqlite")]
 pub mod sqlite;
 
+pub mod indexer;
+
 use serde::{Deserialize, Serialize};
 
 use crate::orchestrator::Utterance;

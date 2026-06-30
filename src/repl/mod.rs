@@ -114,11 +114,12 @@ pub struct Session {
     registry: Box<dyn RunnerRegistry>,
     bus: Option<Box<dyn SessionBus>>,
     session_id: String,
+    indexer: Option<Box<dyn crate::store::indexer::MessageIndexer>>,
 }
 
 impl Session {
     pub fn new(participants: Vec<Participant>, registry: Box<dyn RunnerRegistry>) -> Self {
-        Self { participants, messages: Vec::new(), head: None, registry, bus: None, session_id: "default".to_string() }
+        Self { participants, messages: Vec::new(), head: None, registry, bus: None, session_id: "default".to_string(), indexer: None }
     }
 
     /// bus + session_id 있는 생성자. 매 라운드 후 Redis 미러를 활성화한다.
@@ -128,7 +129,18 @@ impl Session {
         session_id: String,
         bus: Option<Box<dyn SessionBus>>,
     ) -> Self {
-        Self { participants, messages: Vec::new(), head: None, registry, bus, session_id }
+        Self { participants, messages: Vec::new(), head: None, registry, bus, session_id, indexer: None }
+    }
+
+    /// bus + indexer 동시 배선 생성자. SQLite 색인 활성화용.
+    pub fn new_with_indexer(
+        participants: Vec<Participant>,
+        registry: Box<dyn RunnerRegistry>,
+        session_id: String,
+        bus: Option<Box<dyn SessionBus>>,
+        indexer: Option<Box<dyn crate::store::indexer::MessageIndexer>>,
+    ) -> Self {
+        Self { participants, messages: Vec::new(), head: None, registry, bus, session_id, indexer }
     }
 
     /// Redis snapshot에서 트리 상태를 주입한다. main이 --session 재개 시 호출.
@@ -164,6 +176,9 @@ impl Session {
             if let Ok(s) = serde_json::to_string(&snap) {
                 bus.snapshot_json(&self.session_id, &s);
             }
+        }
+        if let Some(idx) = &self.indexer {
+            idx.persist(&self.session_id, &StoredSession { messages: self.messages.clone(), head: self.head });
         }
     }
 
@@ -203,7 +218,7 @@ impl Session {
         path: &str,
     ) -> std::io::Result<Self> {
         let ss = crate::store::load_session(path)?;
-        Ok(Self { participants, messages: ss.messages, head: ss.head, registry, bus: None, session_id: "default".to_string() })
+        Ok(Self { participants, messages: ss.messages, head: ss.head, registry, bus: None, session_id: "default".to_string(), indexer: None })
     }
 
     /// 한 입력을 처리한다. run_round 호출 등 로직만; 실제 I/O는 호출자(main).
@@ -574,6 +589,37 @@ mod tests {
     #[test]
     fn no_bus_means_no_mirror_and_normal_behavior() {
         let mut s = session_with_two_seats(); // bus 없음
+        let _ = s.step(Command::Message("주제".into()));
+        assert_eq!(s.transcript_len(), 2); // 기존 동작 불변
+    }
+
+    #[derive(Default)]
+    struct IdxCalls { persists: usize, last_session: String, last_len: usize }
+    struct FakeIndexer(std::sync::Arc<std::sync::Mutex<IdxCalls>>);
+    impl crate::store::indexer::MessageIndexer for FakeIndexer {
+        fn persist(&self, session_id: &str, ss: &StoredSession) {
+            let mut c = self.0.lock().unwrap();
+            c.persists += 1; c.last_session = session_id.to_string(); c.last_len = ss.messages.len();
+        }
+    }
+
+    #[test]
+    fn round_persists_to_indexer_when_present() {
+        let calls = std::sync::Arc::new(std::sync::Mutex::new(IdxCalls::default()));
+        let mut reg = MapRegistry::new();
+        reg.insert("claude", Box::new(FakeRunner { reply: "제안".into() }));
+        let participants = vec![Participant { engine: "claude".into(), role: Some("proposer".into()), instruction: String::new() }];
+        let mut s = Session::new_with_indexer(participants, Box::new(reg), "sess-i".into(), None, Some(Box::new(FakeIndexer(std::sync::Arc::clone(&calls)))));
+        let _ = s.step(Command::Message("주제".into()));
+        let c = calls.lock().unwrap();
+        assert_eq!(c.persists, 1);
+        assert_eq!(c.last_session, "sess-i");
+        assert_eq!(c.last_len, 1); // 1자리 1발언
+    }
+
+    #[test]
+    fn no_indexer_means_normal_behavior() {
+        let mut s = session_with_two_seats(); // indexer 없음
         let _ = s.step(Command::Message("주제".into()));
         assert_eq!(s.transcript_len(), 2); // 기존 동작 불변
     }
