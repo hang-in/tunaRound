@@ -1,5 +1,5 @@
 // 터미널 REPL. 명령 파싱·렌더·세션 step. I/O는 main.rs.
-use crate::orchestrator::{run_round, Participant, RunnerRegistry, Utterance};
+use crate::orchestrator::{run_round, ContextMode, Participant, RunnerRegistry, Utterance};
 use crate::runner::RunMode;
 use crate::session_bus::SessionBus;
 use crate::store::{StoredMessage, StoredSession};
@@ -149,11 +149,13 @@ pub struct Session {
     indexer: Option<Box<dyn crate::store::indexer::MessageIndexer>>,
     retriever: Option<Box<dyn crate::orchestrator::ContextRetriever>>,
     recent_turns: Option<usize>,
+    /// 컨텍스트 전달 모드. 기본 Push(=현행 동작 불변), Pull은 --pull-context 플래그로 활성화.
+    context_mode: ContextMode,
 }
 
 impl Session {
     pub fn new(participants: Vec<Participant>, registry: Box<dyn RunnerRegistry>) -> Self {
-        Self { participants, messages: Vec::new(), head: None, registry, bus: None, session_id: "default".to_string(), indexer: None, retriever: None, recent_turns: None }
+        Self { participants, messages: Vec::new(), head: None, registry, bus: None, session_id: "default".to_string(), indexer: None, retriever: None, recent_turns: None, context_mode: ContextMode::Push }
     }
 
     /// bus + session_id 있는 생성자. 매 라운드 후 Redis 미러를 활성화한다.
@@ -163,7 +165,7 @@ impl Session {
         session_id: String,
         bus: Option<Box<dyn SessionBus>>,
     ) -> Self {
-        Self { participants, messages: Vec::new(), head: None, registry, bus, session_id, indexer: None, retriever: None, recent_turns: None }
+        Self { participants, messages: Vec::new(), head: None, registry, bus, session_id, indexer: None, retriever: None, recent_turns: None, context_mode: ContextMode::Push }
     }
 
     /// bus + indexer 동시 배선 생성자. SQLite 색인 활성화용.
@@ -174,7 +176,7 @@ impl Session {
         bus: Option<Box<dyn SessionBus>>,
         indexer: Option<Box<dyn crate::store::indexer::MessageIndexer>>,
     ) -> Self {
-        Self { participants, messages: Vec::new(), head: None, registry, bus, session_id, indexer, retriever: None, recent_turns: None }
+        Self { participants, messages: Vec::new(), head: None, registry, bus, session_id, indexer, retriever: None, recent_turns: None, context_mode: ContextMode::Push }
     }
 
     /// retriever를 설정하는 빌더 메서드(단일 적용, self를 소비 후 반환).
@@ -186,6 +188,12 @@ impl Session {
     /// recent_turns를 설정하는 빌더 메서드(None=기본, 현행 통째 재주입 유지).
     pub fn with_recent_turns(mut self, n: Option<usize>) -> Self {
         self.recent_turns = n;
+        self
+    }
+
+    /// context_mode를 설정하는 빌더 메서드. Pull이면 MCP 가능 좌석에 포인터 프롬프트를 사용한다.
+    pub fn with_context_mode(mut self, m: ContextMode) -> Self {
+        self.context_mode = m;
         self
     }
 
@@ -346,7 +354,7 @@ impl Session {
         path: &str,
     ) -> std::io::Result<Self> {
         let ss = crate::store::load_session(path)?;
-        Ok(Self { participants, messages: ss.messages, head: ss.head, registry, bus: None, session_id: "default".to_string(), indexer: None, retriever: None, recent_turns: None })
+        Ok(Self { participants, messages: ss.messages, head: ss.head, registry, bus: None, session_id: "default".to_string(), indexer: None, retriever: None, recent_turns: None, context_mode: ContextMode::Push })
     }
 
     /// 한 입력을 처리한다. run_round 호출 등 로직만; 실제 I/O는 호출자(main).
@@ -365,7 +373,8 @@ impl Session {
                 let retrieved = self.retrieve_for(&text);
                 let mut path = self.prior_for_prompt();
                 let carried = self.carry_forward_digest();
-                match run_round(&self.participants, &mut path, &text, self.registry.as_ref(), RunMode::ReadOnly, &retrieved, &carried) {
+                let tlen = self.transcript_len();
+                match run_round(&self.participants, &mut path, &text, self.registry.as_ref(), RunMode::ReadOnly, &retrieved, &carried, self.context_mode, tlen) {
                     Ok(round) => { self.append_round(&round); StepOutcome::Print(render(&round)) }
                     Err(e) => StepOutcome::Print(format!("[에러] {e:?}")),
                 }
@@ -379,7 +388,8 @@ impl Session {
                 let retrieved = self.retrieve_for(&text);
                 let mut path = self.prior_for_prompt();
                 let carried = self.carry_forward_digest();
-                match run_round(&seats, &mut path, &text, self.registry.as_ref(), RunMode::ReadOnly, &retrieved, &carried) {
+                let tlen = self.transcript_len();
+                match run_round(&seats, &mut path, &text, self.registry.as_ref(), RunMode::ReadOnly, &retrieved, &carried, self.context_mode, tlen) {
                     Ok(round) => { self.append_round(&round); StepOutcome::Print(render(&round)) }
                     Err(e) => StepOutcome::Print(format!("[에러] {e:?}")),
                 }
@@ -393,7 +403,8 @@ impl Session {
                 let retrieved = self.retrieve_for(&text);
                 let mut path = self.prior_for_prompt();
                 let carried = self.carry_forward_digest();
-                match run_round(&seats, &mut path, &text, self.registry.as_ref(), RunMode::Write, &retrieved, &carried) {
+                let tlen = self.transcript_len();
+                match run_round(&seats, &mut path, &text, self.registry.as_ref(), RunMode::Write, &retrieved, &carried, self.context_mode, tlen) {
                     Ok(round) => { self.append_round(&round); StepOutcome::Print(render(&round)) }
                     Err(e) => StepOutcome::Print(format!("[에러] {e:?}")),
                 }
@@ -411,7 +422,8 @@ impl Session {
                 let retrieved = self.retrieve_for("지금까지의 토론을 종합해 결론을 정리해줘.");
                 let mut path = self.prior_for_prompt();
                 let carried = self.carry_forward_digest();
-                match run_round(&synth, &mut path, "지금까지의 토론을 종합해 결론을 정리해줘.", self.registry.as_ref(), RunMode::ReadOnly, &retrieved, &carried) {
+                let tlen = self.transcript_len();
+                match run_round(&synth, &mut path, "지금까지의 토론을 종합해 결론을 정리해줘.", self.registry.as_ref(), RunMode::ReadOnly, &retrieved, &carried, self.context_mode, tlen) {
                     Ok(round) => { self.append_round(&round); StepOutcome::Print(render(&round)) }
                     Err(e) => StepOutcome::Print(format!("[에러] {e:?}")),
                 }
@@ -427,7 +439,8 @@ impl Session {
                     let retrieved = self.retrieve_for(&round_topic);
                     let mut path = self.prior_for_prompt();
                     let carried = self.carry_forward_digest();
-                    match run_round(&self.participants, &mut path, &round_topic, self.registry.as_ref(), RunMode::ReadOnly, &retrieved, &carried) {
+                    let tlen = self.transcript_len();
+                    match run_round(&self.participants, &mut path, &round_topic, self.registry.as_ref(), RunMode::ReadOnly, &retrieved, &carried, self.context_mode, tlen) {
                         Ok(round) => {
                             self.append_round(&round);
                             out.push_str(&format!("### 라운드 {}\n{}\n\n", k + 1, render(&round)));
@@ -899,6 +912,26 @@ mod tests {
             digest.contains("제안") || digest.contains("리뷰"),
             "gist 없음: {digest}"
         );
+    }
+
+    #[test]
+    fn with_context_mode_pull_does_not_break_step() {
+        // with_context_mode(Pull) 후 step이 정상 동작하는지(스모크). FakeRunner 엔진이므로 동작 동일.
+        let mut s = session_with_two_seats().with_context_mode(crate::orchestrator::ContextMode::Pull);
+        match s.step(Command::Message("테스트".into())) {
+            StepOutcome::Print(text) => {
+                assert!(text.contains("제안") || text.contains("리뷰"), "출력 없음: {text}");
+            }
+            other => panic!("expected Print, got {other:?}"),
+        }
+        assert_eq!(s.transcript_len(), 2);
+    }
+
+    #[test]
+    fn default_context_mode_is_push() {
+        // 기본(미설정) context_mode는 Push여야 한다.
+        let s = session_with_two_seats();
+        assert_eq!(s.context_mode, crate::orchestrator::ContextMode::Push);
     }
 
     #[test]

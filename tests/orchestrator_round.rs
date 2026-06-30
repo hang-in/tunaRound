@@ -1,5 +1,5 @@
 // run_round가 자리들을 구동하고 전사를 누적하는지 FakeRunner로 검증(실 CLI 없음).
-use tunaround::orchestrator::{run_round, MapRegistry, Participant, Utterance};
+use tunaround::orchestrator::{run_round, ContextMode, MapRegistry, Participant, Utterance};
 use tunaround::runner::{RunError, RunInput, RunMode, RunOutput, Runner};
 
 /// 고정 응답을 내는 가짜 러너.
@@ -24,7 +24,7 @@ fn run_round_drives_seats_and_accumulates_transcript() {
     ];
     let mut transcript: Vec<Utterance> = Vec::new();
 
-    let round = run_round(&participants, &mut transcript, "이 설계 어떤가요?", &reg, RunMode::ReadOnly, &[], "").expect("ok");
+    let round = run_round(&participants, &mut transcript, "이 설계 어떤가요?", &reg, RunMode::ReadOnly, &[], "", ContextMode::Push, 0).expect("ok");
 
     assert_eq!(round.len(), 2);
     assert_eq!(round[0].content, "아키텍트 의견");

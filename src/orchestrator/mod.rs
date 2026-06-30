@@ -7,6 +7,19 @@ use std::collections::HashMap;
 use crate::orchestrator::prompt::build_round_prompt;
 use crate::runner::{RunError, RunInput, RunMode, Runner};
 
+/// 컨텍스트 전달 방식. Push(기본)=지금처럼 프롬프트에 직접 주입, Pull=포인터만 주고 에이전트가 도구로 당겨옴.
+#[derive(Clone, Copy, PartialEq, Debug, Default)]
+pub enum ContextMode {
+    #[default]
+    Push,
+    Pull,
+}
+
+/// MCP 도구 보유 좌석 판별. claude·codex만 read_transcript·search_context 도구를 갖는다.
+pub fn is_mcp_capable(engine: &str) -> bool {
+    matches!(engine, "claude" | "codex")
+}
+
 /// 토론 한 자리. 엔진(어떤 러너로 구동) + 역할 + 추가 지시.
 #[derive(Debug, Clone)]
 pub struct Participant {
@@ -80,6 +93,8 @@ impl RunnerRegistry for MapRegistry {
 /// mode는 호출자가 지정(말하기=ReadOnly, 사람이 지목한 쓰기 턴=Write).
 /// retrieved는 검색으로 끌어온 과거 맥락 슬라이스(비면 무영향, 동작 불변).
 /// carried는 드롭된 옛 턴의 압축 요약(비면 이월 섹션 없음, behavior-preserving).
+/// ctx_mode=Pull이고 MCP 가능 좌석이면 포인터 프롬프트로 대체. transcript_len은 포인터 힌트용.
+#[allow(clippy::too_many_arguments)]
 pub fn run_round(
     participants: &[Participant],
     transcript: &mut Vec<Utterance>,
@@ -88,12 +103,17 @@ pub fn run_round(
     mode: RunMode,
     retrieved: &[Utterance],
     carried: &str,
+    ctx_mode: ContextMode,
+    transcript_len: usize,
 ) -> Result<Vec<Utterance>, RunError> {
     let prior: Vec<Utterance> = transcript.clone();
     let mut same_round: Vec<Utterance> = Vec::new();
 
     for part in participants {
-        let prompt = build_round_prompt(part, topic, &prior, &same_round, retrieved, carried);
+        // Pull 모드이고 MCP 도구 보유 좌석이면 포인터 프롬프트, 아니면 Push(기존 동일).
+        let pull = ctx_mode == ContextMode::Pull && is_mcp_capable(&part.engine);
+        let prompt = build_round_prompt(part, topic, &prior, &same_round, retrieved, carried, pull, transcript_len);
+        eprintln!("[ctx] seat={} mode={} prompt_chars={}", part.engine, if pull { "pull" } else { "push" }, prompt.chars().count());
         let runner = registry
             .get(&part.engine)
             .ok_or_else(|| RunError::Spawn(format!("엔진 러너 없음: {}", part.engine)))?;

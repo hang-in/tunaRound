@@ -17,9 +17,12 @@ fn join_utterances(utts: &[Utterance]) -> String {
 }
 
 /// 한 자리의 라운드 프롬프트를 조립한다.
-/// 순서: 역할 지시 → (이월 요약) → (검색 맥락) → (이전 라운드) → (이번 라운드 앞 자리 = 순차-인지) → 주제.
+/// 순서(push): 역할 지시 → (이월 요약) → (검색 맥락) → (이전 라운드) → (이번 라운드 앞 자리 = 순차-인지) → 주제.
+/// 순서(pull): 역할 지시 → (이월 요약) → 포인터 섹션 → (이번 라운드 앞 자리) → 주제.
 /// 빈 컨텍스트면 주제만. role/instruction이 없으면 해당 섹션 생략.
-/// carried 비면 이월 섹션 없음(behavior-preserving). retrieved 비면 검색 섹션 없음.
+/// carried 비면 이월 섹션 없음(behavior-preserving). retrieved 비면 검색 섹션 없음(push 모드).
+/// pull=true이면 retrieved·prior 섹션을 생략하고 포인터로 대체. pull=false(기본)면 현행과 완전 동일.
+#[allow(clippy::too_many_arguments)]
 pub fn build_round_prompt(
     participant: &Participant,
     topic: &str,
@@ -27,17 +30,31 @@ pub fn build_round_prompt(
     same_round: &[Utterance],
     retrieved: &[Utterance],
     carried: &str,
+    pull: bool,
+    transcript_len: usize,
 ) -> String {
     let mut sections: Vec<String> = Vec::new();
-    // [v1.x] consensus carry-forward: carried가 비어있지 않으면 이전 논의 이월 요약 섹션 주입.
-    if !carried.is_empty() {
-        sections.push(format!("이전 논의 요약(이월):\n\n{}", carried));
-    }
-    if !retrieved.is_empty() {
-        sections.push(format!("참고할 만한 과거 맥락(검색):\n\n{}", join_utterances(retrieved)));
-    }
-    if !prior.is_empty() {
-        sections.push(format!("이전 라운드 응답:\n\n{}", join_utterances(prior)));
+    if pull {
+        // pull 모드: retrieved·prior 섹션 생략. carried 이월 요약은 유지, 그 다음에 포인터 주입.
+        if !carried.is_empty() {
+            sections.push(format!("이전 논의 요약(이월):\n\n{}", carried));
+        }
+        sections.push(format!(
+            "이전 토론 전사(약 {}턴)는 read_transcript(session_id, max_turns?)로, 관련 과거 맥락은 search_context(query)로 직접 읽을 수 있습니다. 답변 전 필요한 만큼 읽으세요.",
+            transcript_len
+        ));
+    } else {
+        // push 모드(기본): 현행과 완전 동일.
+        // [v1.x] consensus carry-forward: carried가 비어있지 않으면 이전 논의 이월 요약 섹션 주입.
+        if !carried.is_empty() {
+            sections.push(format!("이전 논의 요약(이월):\n\n{}", carried));
+        }
+        if !retrieved.is_empty() {
+            sections.push(format!("참고할 만한 과거 맥락(검색):\n\n{}", join_utterances(retrieved)));
+        }
+        if !prior.is_empty() {
+            sections.push(format!("이전 라운드 응답:\n\n{}", join_utterances(prior)));
+        }
     }
     if !same_round.is_empty() {
         sections.push(format!("이번 라운드 다른 에이전트 답변:\n\n{}", join_utterances(same_round)));
@@ -79,7 +96,7 @@ mod tests {
 
     #[test]
     fn prompt_includes_role_directive_and_topic() {
-        let out = build_round_prompt(&p("claude", Some("reviewer")), "이 설계 어떤가요?", &[], &[], &[], "");
+        let out = build_round_prompt(&p("claude", Some("reviewer")), "이 설계 어떤가요?", &[], &[], &[], "", false, 0);
         assert!(out.contains("## Your role"));
         assert!(out.contains("verdict"));
         assert!(out.contains("이 설계 어떤가요?"));
@@ -88,7 +105,7 @@ mod tests {
     #[test]
     fn prompt_sequential_aware_includes_same_round_responses() {
         let same = vec![Utterance { speaker: "claude/architect".into(), content: "API부터 잡자".into() }];
-        let out = build_round_prompt(&p("codex", Some("reviewer")), "주제", &[], &same, &[], "");
+        let out = build_round_prompt(&p("codex", Some("reviewer")), "주제", &[], &same, &[], "", false, 0);
         assert!(out.contains("이번 라운드 다른 에이전트 답변"));
         assert!(out.contains("API부터 잡자"));
         assert!(out.contains("claude/architect"));
@@ -97,7 +114,7 @@ mod tests {
     #[test]
     fn prompt_includes_prior_rounds() {
         let prior = vec![Utterance { speaker: "codex".into(), content: "지난 결론".into() }];
-        let out = build_round_prompt(&p("claude", None), "주제", &prior, &[], &[], "");
+        let out = build_round_prompt(&p("claude", None), "주제", &prior, &[], &[], "", false, 0);
         assert!(out.contains("이전 라운드 응답"));
         assert!(out.contains("지난 결론"));
     }
@@ -106,14 +123,14 @@ mod tests {
     fn prompt_appends_instruction() {
         let mut part = p("claude", Some("proposer"));
         part.instruction = "API 설계에 집중".into();
-        let out = build_round_prompt(&part, "주제", &[], &[], &[], "");
+        let out = build_round_prompt(&part, "주제", &[], &[], &[], "", false, 0);
         assert!(out.contains("API 설계에 집중"));
     }
 
     #[test]
     fn prompt_includes_retrieved_context_section() {
         let retrieved = vec![Utterance { speaker: "codex/reviewer".into(), content: "과거 분기 결론".into() }];
-        let out = build_round_prompt(&p("claude", None), "주제", &[], &[], &retrieved, "");
+        let out = build_round_prompt(&p("claude", None), "주제", &[], &[], &retrieved, "", false, 0);
         assert!(out.contains("참고할 만한 과거 맥락"));
         assert!(out.contains("과거 분기 결론"));
     }
@@ -121,14 +138,14 @@ mod tests {
     #[test]
     fn prompt_empty_retrieved_is_unchanged() {
         // retrieved=&[] -> 검색 섹션 없음(기존과 동일).
-        let out = build_round_prompt(&p("claude", None), "주제", &[], &[], &[], "");
+        let out = build_round_prompt(&p("claude", None), "주제", &[], &[], &[], "", false, 0);
         assert!(!out.contains("참고할 만한 과거 맥락"));
     }
 
     #[test]
     fn prompt_carried_empty_means_no_carry_section() {
         // carried="" -> "이전 논의 요약" 섹션 없음(기존 동작 불변).
-        let out = build_round_prompt(&p("claude", None), "주제", &[], &[], &[], "");
+        let out = build_round_prompt(&p("claude", None), "주제", &[], &[], &[], "", false, 0);
         assert!(!out.contains("이전 논의 요약"));
     }
 
@@ -138,7 +155,7 @@ mod tests {
         let retrieved = vec![Utterance { speaker: "p".into(), content: "검색결과".into() }];
         let prior = vec![Utterance { speaker: "p".into(), content: "이전발언".into() }];
         let carried = "초기 합의 요약";
-        let out = build_round_prompt(&p("claude", None), "주제", &prior, &[], &retrieved, carried);
+        let out = build_round_prompt(&p("claude", None), "주제", &prior, &[], &retrieved, carried, false, 0);
         assert!(out.contains("이전 논의 요약(이월)"), "이월 섹션 없음");
         assert!(out.contains(carried), "carried 내용 없음");
         let pos_carry = out.find("이전 논의 요약(이월)").unwrap();
@@ -146,5 +163,41 @@ mod tests {
         let pos_prior = out.find("이전 라운드 응답").unwrap();
         assert!(pos_carry < pos_retrieved, "이월 요약이 검색보다 뒤에 있음");
         assert!(pos_carry < pos_prior, "이월 요약이 prior보다 뒤에 있음");
+    }
+
+    // --- pull 모드 테스트 ---
+
+    #[test]
+    fn pull_prompt_includes_pointer_no_prior_no_retrieved() {
+        // pull=true이면 포인터 섹션 포함, "이전 라운드 응답"·"참고할 만한 과거 맥락" 없음.
+        let prior = vec![Utterance { speaker: "codex".into(), content: "지난 결론".into() }];
+        let retrieved = vec![Utterance { speaker: "p".into(), content: "검색결과".into() }];
+        let out = build_round_prompt(&p("claude", None), "주제", &prior, &[], &retrieved, "", true, 10);
+        assert!(out.contains("read_transcript"), "포인터 없음");
+        assert!(out.contains("search_context"), "search_context 포인터 없음");
+        assert!(out.contains("10턴"), "전사 길이 힌트 없음");
+        assert!(!out.contains("이전 라운드 응답"), "prior 섹션이 남아 있음");
+        assert!(!out.contains("참고할 만한 과거 맥락"), "retrieved 섹션이 남아 있음");
+    }
+
+    #[test]
+    fn pull_prompt_preserves_carried_and_same_round_and_topic() {
+        // pull=true여도 carried 이월 요약, same_round, topic은 유지.
+        let same = vec![Utterance { speaker: "codex".into(), content: "앞 발언".into() }];
+        let out = build_round_prompt(&p("claude", None), "이 설계 어떤가", &[], &same, &[], "합의 요약", true, 5);
+        assert!(out.contains("이전 논의 요약(이월)"), "이월 섹션 없음");
+        assert!(out.contains("합의 요약"), "carried 내용 없음");
+        assert!(out.contains("이번 라운드 다른 에이전트 답변"), "same_round 없음");
+        assert!(out.contains("앞 발언"), "same_round 내용 없음");
+        assert!(out.contains("이 설계 어떤가"), "topic 없음");
+    }
+
+    #[test]
+    fn push_false_is_fully_behavior_preserving() {
+        // pull=false(기본)이면 기존과 완전 동일. 포인터 없음.
+        let prior = vec![Utterance { speaker: "codex".into(), content: "결론".into() }];
+        let out = build_round_prompt(&p("claude", None), "주제", &prior, &[], &[], "", false, 99);
+        assert!(out.contains("이전 라운드 응답"), "prior 섹션 없음");
+        assert!(!out.contains("read_transcript"), "포인터가 push 모드에 나타남");
     }
 }

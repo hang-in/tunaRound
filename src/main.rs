@@ -2,13 +2,13 @@
 
 use std::io::{self, Write};
 
-use tunaround::orchestrator::{MapRegistry, Participant};
+use tunaround::orchestrator::{ContextMode, MapRegistry, Participant};
 use tunaround::repl::{parse_command, Session, StepOutcome};
 use tunaround::runner::claude::ClaudeRunner;
 use tunaround::runner::codex::CodexRunner;
 
 fn main() {
-    // 인자: [--roster <path>] [--observe <id>] [--session <id>] [--mcp-search] [--db <path>] [--session-id <id>] [<state.json>]
+    // 인자: [--roster <path>] [--observe <id>] [--session <id>] [--mcp-search] [--db <path>] [--session-id <id>] [--pull-context] [<state.json>]
     let args: Vec<String> = std::env::args().skip(1).collect();
     let mut roster_path: Option<String> = None;
     let mut state_path: Option<String> = None;
@@ -17,6 +17,8 @@ fn main() {
     let mut recent_turns: Option<usize> = None;
     // MCP 서버 모드에서 --session-id로 받은 기본 세션 id(없으면 "default").
     let mut mcp_session_id: Option<String> = None;
+    // Pull 컨텍스트 모드 활성화 플래그. --db 없으면 무의미하므로 경고 후 Push 유지.
+    let mut pull_context = false;
     #[cfg(feature = "sqlite")]
     let mut db_path: Option<String> = None;
     #[cfg(feature = "mcp")]
@@ -54,6 +56,10 @@ fn main() {
             "--mcp-search" => {
                 #[cfg(feature = "mcp")]
                 { mcp_search = true; }
+                i += 1;
+            }
+            "--pull-context" => {
+                pull_context = true;
                 i += 1;
             }
             other => {
@@ -377,8 +383,24 @@ fn main() {
         Session::new_with_indexer(participants, Box::new(registry), sid.clone(), bus_boxed, indexer)
     };
 
-    // retriever + recent_turns 1회 배선(session 생성 if/else 이후 단일 적용).
-    let mut session = session.with_retriever(retriever).with_recent_turns(recent_turns);
+    // --pull-context 적용. --db 없으면(MCP 백엔드 없음) pull 무의미 → 경고 후 Push 유지.
+    let context_mode = if pull_context {
+        #[cfg(feature = "sqlite")]
+        let has_db = db_path.is_some();
+        #[cfg(not(feature = "sqlite"))]
+        let has_db = false;
+        if !has_db {
+            eprintln!("[경고] --pull-context는 --db 없이는 무의미합니다. Push 모드를 유지합니다.");
+            ContextMode::Push
+        } else {
+            ContextMode::Pull
+        }
+    } else {
+        ContextMode::Push
+    };
+
+    // retriever + recent_turns + context_mode 1회 배선(session 생성 if/else 이후 단일 적용).
+    let mut session = session.with_retriever(retriever).with_recent_turns(recent_turns).with_context_mode(context_mode);
 
     println!("tunaRound - 메시지를 입력하세요. /help, /save, /quit.");
     let stdin = io::stdin();
