@@ -57,7 +57,8 @@ pub fn build_participants_checked(roster: &Roster) -> Result<Vec<Participant>, S
 
 /// 로스터의 distinct 엔진마다 러너를 만들어 레지스트리를 구성한다.
 /// 알려진 엔진: claude, codex. 그 외는 에러.
-pub fn build_registry(roster: &Roster) -> Result<MapRegistry, String> {
+/// search_db가 Some이면 각 러너에 검색 MCP 서버를 배선한다.
+pub fn build_registry(roster: &Roster, search_db: Option<&str>) -> Result<MapRegistry, String> {
     let mut reg = MapRegistry::new();
     let mut seen: Vec<String> = Vec::new();
     for seat in &roster.seats {
@@ -65,8 +66,14 @@ pub fn build_registry(roster: &Roster) -> Result<MapRegistry, String> {
             continue;
         }
         match seat.engine.as_str() {
-            "claude" => reg.insert("claude", Box::new(ClaudeRunner::new())),
-            "codex" => reg.insert("codex", Box::new(CodexRunner::new())),
+            "claude" => reg.insert(
+                "claude",
+                Box::new(ClaudeRunner::new().with_search_db(search_db.map(String::from))),
+            ),
+            "codex" => reg.insert(
+                "codex",
+                Box::new(CodexRunner::new().with_search_db(search_db.map(String::from))),
+            ),
             other => return Err(format!("알 수 없는 엔진: {other} (지원: claude, codex)")),
         }
         seen.push(seat.engine.clone());
@@ -108,14 +115,21 @@ mod tests {
     fn build_registry_known_engines_ok() {
         let roster =
             parse_roster(r#"{"seats":[{"engine":"claude"},{"engine":"codex"}]}"#).unwrap();
-        assert!(build_registry(&roster).is_ok());
+        assert!(build_registry(&roster, None).is_ok());
     }
 
     #[test]
     fn build_registry_unknown_engine_errors() {
         let roster = parse_roster(r#"{"seats":[{"engine":"gemini"}]}"#).unwrap();
-        let err = build_registry(&roster).err().unwrap();
+        let err = build_registry(&roster, None).err().unwrap();
         assert!(err.contains("gemini"));
+    }
+
+    #[test]
+    fn build_registry_with_search_db_ok() {
+        let roster =
+            parse_roster(r#"{"seats":[{"engine":"claude"},{"engine":"codex"}]}"#).unwrap();
+        assert!(build_registry(&roster, Some("x.db")).is_ok());
     }
 
     #[test]

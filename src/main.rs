@@ -147,7 +147,11 @@ fn main() {
                 Ok(v) => v,
                 Err(e) => { eprintln!("[로스터 실패] {e}"); std::process::exit(1); }
             };
-            let reg = match tunaround::roster::build_registry(&roster) {
+            #[cfg(feature = "mcp")]
+            let roster_search_db: Option<&str> = db_path.as_deref();
+            #[cfg(not(feature = "mcp"))]
+            let roster_search_db: Option<&str> = None;
+            let reg = match tunaround::roster::build_registry(&roster, roster_search_db) {
                 Ok(r) => r,
                 Err(e) => { eprintln!("[로스터 실패] {e}"); std::process::exit(1); }
             };
