@@ -327,3 +327,10 @@
 - **이유**: 직전 측정은 carried 빈 상태라 pull이 순수 에이전트 당김에만 의존(강한 모델이라 됐으나 안전망 0). 이제 pull은 요약 baseline 항상 보유 → 게으른 pull에도 연속성.
 - **재측정(실 claude/codex, pull, 4턴)**: claude 435→566→696→855(요약 턴당 ~130자 누적, 1500서 캡 예정=유계). codex 2262~3283(same_round 변동). push(9770/12489 무한증가) 대비 여전히 평평/유계. grounding 유지(앞턴 결정 참조). **안전망 + 토큰 페이오프 동시 성립.**
 - 남은 폴리시: 더 다양/긴 시나리오·약한 좌석 측정 후 pull 기본화 결정. 포인터 문구 튜닝. 이후 Stage 3(영속 에이전트=codex app-server, 원격/토폴로지, post_turn/get_roster 흡수).
+
+## 2026-06-30 코드리뷰 + Batch A + codex pull 권한 버그 발견(이전 판단 정정)
+
+- **코드 전반 리뷰(리뷰 에이전트 + Opus 검증)**: 확정 버그 4 + 잠재 3 + 반증 2. 상세는 세션 로그.
+- **Batch A 커밋(1b13ac7)**: (1) get_message `.ok()`→QueryReturnedNoRows만 None·실에러 전파 (2) path_to_root id→msg HashMap(O(N²)→O(N))+visited 순환가드 (3) codex TOML single→double-quote basic+이스케이프(toml_basic, 주입 차단) (4) DefaultHasher→FNV-1a 인라인(버전무관 결정적). 신규 5테스트, 기본 123/전체 129.
+- **⚠ codex pull 권한 버그 발견(Stage 2 정정)**: codex 변경 라이브 검증 중, **codex exec도 MCP 도구 호출을 승인 막음**(read_transcript "사용자 취소" 3회). **이전 "codex는 exec 비대화형이라 자동승인=무수정" 판단은 틀림.** Task 3 재측정의 codex 응답은 same_round+레포 보충이었고 실제 pull 아니었음. 즉 **pull은 현재 claude만 작동, codex 좌석은 전사 못 당김.**
+- **codex 권한 후속 수정 후보**: `codex exec`에 세밀 승인은 `--dangerously-bypass-approvals-and-sandbox`(샌드박스까지 제거=ReadOnly 부적합)뿐 보이고, `-c approval_policy="never"`(승인 안 물음, 샌드박스는 유지) 추정 → 검증 필요. ReadOnly 좌석은 MCP 허용+쓰기 차단 동시 필요. Batch B(리팩토링) 전 우선 처리 권고(shipped 기능 버그).
