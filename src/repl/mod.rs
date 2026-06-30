@@ -106,6 +106,9 @@ pub fn render(round: &[Utterance]) -> String {
 
 const DEFAULT_SAVE_PATH: &str = "tunaround-discussion.md";
 
+/// retrieve_for가 검색 시 끌어올 최대 슬라이스 수.
+const RETRIEVE_K: usize = 5;
+
 /// 한 토론 세션. 참가자 + in-store 트리(messages+head) + 러너 레지스트리를 보유한다.
 pub struct Session {
     participants: Vec<Participant>,
@@ -115,11 +118,12 @@ pub struct Session {
     bus: Option<Box<dyn SessionBus>>,
     session_id: String,
     indexer: Option<Box<dyn crate::store::indexer::MessageIndexer>>,
+    retriever: Option<Box<dyn crate::orchestrator::ContextRetriever>>,
 }
 
 impl Session {
     pub fn new(participants: Vec<Participant>, registry: Box<dyn RunnerRegistry>) -> Self {
-        Self { participants, messages: Vec::new(), head: None, registry, bus: None, session_id: "default".to_string(), indexer: None }
+        Self { participants, messages: Vec::new(), head: None, registry, bus: None, session_id: "default".to_string(), indexer: None, retriever: None }
     }
 
     /// bus + session_id 있는 생성자. 매 라운드 후 Redis 미러를 활성화한다.
@@ -129,7 +133,7 @@ impl Session {
         session_id: String,
         bus: Option<Box<dyn SessionBus>>,
     ) -> Self {
-        Self { participants, messages: Vec::new(), head: None, registry, bus, session_id, indexer: None }
+        Self { participants, messages: Vec::new(), head: None, registry, bus, session_id, indexer: None, retriever: None }
     }
 
     /// bus + indexer 동시 배선 생성자. SQLite 색인 활성화용.
@@ -140,7 +144,25 @@ impl Session {
         bus: Option<Box<dyn SessionBus>>,
         indexer: Option<Box<dyn crate::store::indexer::MessageIndexer>>,
     ) -> Self {
-        Self { participants, messages: Vec::new(), head: None, registry, bus, session_id, indexer }
+        Self { participants, messages: Vec::new(), head: None, registry, bus, session_id, indexer, retriever: None }
+    }
+
+    /// retriever를 설정하는 빌더 메서드(단일 적용, self를 소비 후 반환).
+    pub fn with_retriever(mut self, retriever: Option<Box<dyn crate::orchestrator::ContextRetriever>>) -> Self {
+        self.retriever = retriever;
+        self
+    }
+
+    /// topic으로 retriever를 검색하고 활성 경로 중복을 제외한 슬라이스를 반환한다.
+    /// retriever 없으면 빈 Vec(기존 동작 불변).
+    fn retrieve_for(&self, topic: &str) -> Vec<Utterance> {
+        let Some(r) = &self.retriever else { return Vec::new(); };
+        let active = self.active_path();
+        r.retrieve(topic, RETRIEVE_K)
+            .into_iter()
+            // 활성 경로에 이미 있는 내용은 중복이므로 제외.
+            .filter(|u| !active.iter().any(|a| a.content == u.content))
+            .collect()
     }
 
     /// Redis snapshot에서 트리 상태를 주입한다. main이 --session 재개 시 호출.
@@ -218,7 +240,7 @@ impl Session {
         path: &str,
     ) -> std::io::Result<Self> {
         let ss = crate::store::load_session(path)?;
-        Ok(Self { participants, messages: ss.messages, head: ss.head, registry, bus: None, session_id: "default".to_string(), indexer: None })
+        Ok(Self { participants, messages: ss.messages, head: ss.head, registry, bus: None, session_id: "default".to_string(), indexer: None, retriever: None })
     }
 
     /// 한 입력을 처리한다. run_round 호출 등 로직만; 실제 I/O는 호출자(main).
@@ -234,8 +256,9 @@ impl Session {
                 markdown: self.transcript_markdown(),
             },
             Command::Message(text) => {
+                let retrieved = self.retrieve_for(&text);
                 let mut path = self.active_path();
-                match run_round(&self.participants, &mut path, &text, self.registry.as_ref(), RunMode::ReadOnly, &[]) {
+                match run_round(&self.participants, &mut path, &text, self.registry.as_ref(), RunMode::ReadOnly, &retrieved) {
                     Ok(round) => { self.append_round(&round); StepOutcome::Print(render(&round)) }
                     Err(e) => StepOutcome::Print(format!("[에러] {e:?}")),
                 }
@@ -246,8 +269,9 @@ impl Session {
                 if seats.is_empty() {
                     return StepOutcome::Print(format!("그런 자리가 없습니다: {engine}"));
                 }
+                let retrieved = self.retrieve_for(&text);
                 let mut path = self.active_path();
-                match run_round(&seats, &mut path, &text, self.registry.as_ref(), RunMode::ReadOnly, &[]) {
+                match run_round(&seats, &mut path, &text, self.registry.as_ref(), RunMode::ReadOnly, &retrieved) {
                     Ok(round) => { self.append_round(&round); StepOutcome::Print(render(&round)) }
                     Err(e) => StepOutcome::Print(format!("[에러] {e:?}")),
                 }
@@ -258,8 +282,9 @@ impl Session {
                 if seats.is_empty() {
                     return StepOutcome::Print(format!("그런 자리가 없습니다: {engine}"));
                 }
+                let retrieved = self.retrieve_for(&text);
                 let mut path = self.active_path();
-                match run_round(&seats, &mut path, &text, self.registry.as_ref(), RunMode::Write, &[]) {
+                match run_round(&seats, &mut path, &text, self.registry.as_ref(), RunMode::Write, &retrieved) {
                     Ok(round) => { self.append_round(&round); StepOutcome::Print(render(&round)) }
                     Err(e) => StepOutcome::Print(format!("[에러] {e:?}")),
                 }
@@ -274,8 +299,9 @@ impl Session {
                     role: Some("synthesizer".into()),
                     instruction: String::new(),
                 }];
+                let retrieved = self.retrieve_for("지금까지의 토론을 종합해 결론을 정리해줘.");
                 let mut path = self.active_path();
-                match run_round(&synth, &mut path, "지금까지의 토론을 종합해 결론을 정리해줘.", self.registry.as_ref(), RunMode::ReadOnly, &[]) {
+                match run_round(&synth, &mut path, "지금까지의 토론을 종합해 결론을 정리해줘.", self.registry.as_ref(), RunMode::ReadOnly, &retrieved) {
                     Ok(round) => { self.append_round(&round); StepOutcome::Print(render(&round)) }
                     Err(e) => StepOutcome::Print(format!("[에러] {e:?}")),
                 }
@@ -288,8 +314,9 @@ impl Session {
                     } else {
                         "지금까지의 논의를 이어서, 앞 발언에 반박하거나 더 깊이 들어가줘. 새 주제를 꺼내지 말고 수렴을 시도해줘.".to_string()
                     };
+                    let retrieved = self.retrieve_for(&round_topic);
                     let mut path = self.active_path();
-                    match run_round(&self.participants, &mut path, &round_topic, self.registry.as_ref(), RunMode::ReadOnly, &[]) {
+                    match run_round(&self.participants, &mut path, &round_topic, self.registry.as_ref(), RunMode::ReadOnly, &retrieved) {
                         Ok(round) => {
                             self.append_round(&round);
                             out.push_str(&format!("### 라운드 {}\n{}\n\n", k + 1, render(&round)));
@@ -556,6 +583,42 @@ mod tests {
             StepOutcome::Print(t) => assert!(t.contains("없")),
             other => panic!("got {other:?}"),
         }
+    }
+
+    struct FakeRetriever { results: Vec<Utterance> }
+    impl crate::orchestrator::ContextRetriever for FakeRetriever {
+        fn retrieve(&self, _query: &str, _limit: usize) -> Vec<Utterance> {
+            self.results.clone()
+        }
+    }
+
+    #[test]
+    fn retrieve_for_deduplicates_active_path_content() {
+        let mut s = session_with_two_seats(); // claude="제안", codex="리뷰"
+        let _ = s.step(Command::Message("초기 주제".into()));
+        // 활성 경로에 "제안", "리뷰" 두 발언이 있다.
+        let active = s.active_path();
+        let dup_content = active[0].content.clone(); // "제안" - 활성경로 중복
+
+        let retriever = FakeRetriever {
+            results: vec![
+                Utterance { speaker: "past/speaker".into(), content: dup_content },
+                Utterance { speaker: "past/other".into(), content: "고유 맥락 발언".into() },
+            ],
+        };
+        let s = s.with_retriever(Some(Box::new(retriever)));
+
+        let retrieved = s.retrieve_for("테스트 쿼리");
+        // 활성경로 중복("제안")은 제외하고 신규("고유 맥락 발언")만 남아야 한다.
+        assert_eq!(retrieved.len(), 1, "dedup 후 1개여야 함: {:?}", retrieved);
+        assert_eq!(retrieved[0].content, "고유 맥락 발언");
+    }
+
+    #[test]
+    fn retrieve_for_returns_empty_without_retriever() {
+        let s = session_with_two_seats(); // retriever 없음
+        let result = s.retrieve_for("어떤 주제");
+        assert!(result.is_empty(), "retriever 없으면 빈 결과");
     }
 
     use std::cell::RefCell;

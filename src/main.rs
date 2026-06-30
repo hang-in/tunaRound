@@ -141,6 +141,37 @@ fn main() {
     #[cfg(not(feature = "sqlite"))]
     let indexer: Option<Box<dyn tunaround::store::indexer::MessageIndexer>> = None;
 
+    // SQLite retriever 생성(feature-gated). indexer와 별개의 읽기 연결(WAL 동시 reader OK).
+    #[cfg(feature = "sqlite")]
+    let retriever: Option<Box<dyn tunaround::orchestrator::ContextRetriever>> = match &db_path {
+        Some(p) => match tunaround::store::sqlite::SqliteStore::open(p) {
+            Ok(store) => {
+                #[cfg(feature = "morphology")]
+                let tok2: Box<dyn Fn(&str) -> String + Send + Sync> = {
+                    match tunaround::search::tokenizer::create_tokenizer("kiwi") {
+                        Ok(t) => Box::new(move |s: &str| t.tokenize_for_fts(s)),
+                        Err(e) => {
+                            eprintln!("[tunaRound] retriever 토크나이저 실패, 폴백: {e}");
+                            Box::new(|s: &str| tunaround::search::tokenize_fallback(s).join(" "))
+                        }
+                    }
+                };
+                #[cfg(not(feature = "morphology"))]
+                let tok2: Box<dyn Fn(&str) -> String + Send + Sync> =
+                    Box::new(|s: &str| tunaround::search::tokenize_fallback(s).join(" "));
+                Some(Box::new(tunaround::store::retriever::SqliteRetriever::new(store, tok2))
+                    as Box<dyn tunaround::orchestrator::ContextRetriever>)
+            }
+            Err(e) => {
+                eprintln!("[tunaRound] retriever --db 열기 실패: {e}");
+                None
+            }
+        },
+        None => None,
+    };
+    #[cfg(not(feature = "sqlite"))]
+    let retriever: Option<Box<dyn tunaround::orchestrator::ContextRetriever>> = None;
+
     // session_id: --session <id> 값 또는 "default".
     let sid = redis_session_id.clone().unwrap_or_else(|| "default".to_string());
 
@@ -150,7 +181,7 @@ fn main() {
         .map(|p| std::path::Path::new(p).exists())
         .unwrap_or(false);
 
-    let mut session = if resume_existing {
+    let session = if resume_existing {
         // 파일에서 트리 상태를 로드하고 new_with_bus로 bus를 연결한다.
         let p = state_path.as_deref().unwrap();
         match tunaround::store::load_session(p) {
@@ -214,6 +245,9 @@ fn main() {
     } else {
         Session::new_with_indexer(participants, Box::new(registry), sid.clone(), bus_boxed, indexer)
     };
+
+    // retriever 1회 배선(session 생성 if/else 이후 단일 적용).
+    let mut session = session.with_retriever(retriever);
 
     println!("tunaRound - 메시지를 입력하세요. /help, /save, /quit.");
     let stdin = io::stdin();

@@ -4,6 +4,7 @@
 pub mod sqlite;
 
 pub mod indexer;
+pub mod retriever;
 
 use serde::{Deserialize, Serialize};
 
