@@ -114,6 +114,22 @@ impl ServerHandler for TunaSearchServer {
     }
 }
 
+/// 코어 bind 주소(`host:port`)를 로컬 좌석이 접속할 HTTP MCP URL로 변환한다.
+/// 와일드카드 host(0.0.0.0 / :: / [::])는 loopback(127.0.0.1)으로 치환하고 `/mcp` 경로를 붙인다.
+#[cfg(feature = "serve")]
+pub fn core_local_url(addr: &str) -> String {
+    // 마지막 ':'로 host/port 분리. IPv6 "[::]:8771"도 마지막 ':'가 port 앞이라 host="[::]"가 된다.
+    let (host, port) = match addr.rsplit_once(':') {
+        Some((h, p)) => (h, p),
+        None => return format!("http://{addr}/mcp"), // 포트 없음(비정상): 그대로 감싼다.
+    };
+    let host = match host {
+        "0.0.0.0" | "::" | "[::]" => "127.0.0.1",
+        other => other,
+    };
+    format!("http://{host}:{port}/mcp")
+}
+
 /// HTTP MCP 서버를 기동한다. serve 피처 전용.
 #[cfg(feature = "serve")]
 pub async fn start_http_mcp_server(
@@ -226,6 +242,15 @@ mod tests {
 
         /// initialize 요청 본문(MCP 2025-03-26 프로토콜).
         const INIT_BODY: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}"#;
+
+        #[test]
+        fn core_local_url_maps_wildcards_to_loopback() {
+            // 와일드카드 host는 loopback으로, 일반 host는 그대로.
+            assert_eq!(core_local_url("0.0.0.0:8771"), "http://127.0.0.1:8771/mcp");
+            assert_eq!(core_local_url("[::]:8771"), "http://127.0.0.1:8771/mcp");
+            assert_eq!(core_local_url("127.0.0.1:8771"), "http://127.0.0.1:8771/mcp");
+            assert_eq!(core_local_url("192.0.2.20:9000"), "http://192.0.2.20:9000/mcp");
+        }
 
         #[tokio::test]
         async fn http_mcp_bearer_auth() {

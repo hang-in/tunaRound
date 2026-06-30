@@ -15,7 +15,8 @@ fn main() {
     let mut observe_id: Option<String> = None;
     let mut redis_session_id: Option<String> = None;
     let mut recent_turns: Option<usize> = None;
-    // MCP 서버 모드에서 --session-id로 받은 기본 세션 id(없으면 "default").
+    // MCP 서버 모드에서 --session-id로 받은 기본 세션 id(없으면 "default"). mcp 피처 전용.
+    #[cfg(feature = "mcp")]
     let mut mcp_session_id: Option<String> = None;
     // Pull 컨텍스트 모드 활성화 플래그. --db 없으면 무의미하므로 경고 후 Push 유지.
     let mut pull_context = false;
@@ -23,9 +24,12 @@ fn main() {
     let mut db_path: Option<String> = None;
     #[cfg(feature = "mcp")]
     let mut mcp_search = false;
-    // --serve-mcp <addr>: HTTP MCP 서버 상주 모드(serve 피처 전용).
+    // --serve-mcp <addr>: HTTP MCP 서버 상주 모드(헤드리스, REPL 없음. serve 피처 전용).
     #[cfg(feature = "serve")]
     let mut serve_mcp_addr: Option<String> = None;
+    // --core <addr>: front=core 단일 프로세스(REPL + in-process HTTP MCP 코어. serve 피처 전용).
+    #[cfg(feature = "serve")]
+    let mut core_addr: Option<String> = None;
     // --token <tok>: bearer 토큰 인증(serve 모드 전용).
     #[cfg(feature = "serve")]
     let mut serve_token: Option<String> = None;
@@ -49,7 +53,8 @@ fn main() {
                 i += 2;
             }
             "--session-id" => {
-                mcp_session_id = args.get(i + 1).cloned();
+                #[cfg(feature = "mcp")]
+                { mcp_session_id = args.get(i + 1).cloned(); }
                 i += 2;
             }
             "--db" => {
@@ -71,6 +76,11 @@ fn main() {
             "--serve-mcp" => {
                 #[cfg(feature = "serve")]
                 { serve_mcp_addr = args.get(i + 1).cloned(); }
+                i += 2;
+            }
+            "--core" => {
+                #[cfg(feature = "serve")]
+                { core_addr = args.get(i + 1).cloned(); }
                 i += 2;
             }
             "--token" => {
@@ -210,47 +220,7 @@ fn main() {
             #[cfg(not(feature = "sqlite"))]
             { eprintln!("[serve-mcp] sqlite 피처 없음"); std::process::exit(1); }
         };
-        let store = match tunaround::store::sqlite::SqliteStore::open(&db_str) {
-            Ok(s) => s,
-            Err(e) => { eprintln!("[serve-mcp] DB 열기 실패: {e}"); std::process::exit(1); }
-        };
-        #[cfg(feature = "morphology")]
-        let tok: Box<dyn Fn(&str) -> String + Send + Sync> = {
-            match tunaround::search::tokenizer::create_tokenizer("kiwi") {
-                Ok(t) => Box::new(move |s: &str| t.fts_query(s)),
-                Err(e) => {
-                    eprintln!("[serve-mcp] 토크나이저 실패, 폴백: {e}");
-                    Box::new(|s: &str| {
-                        let mut toks = tunaround::search::tokenize_fallback(s);
-                        toks.sort(); toks.dedup();
-                        toks.into_iter().map(|t| format!("{t}*")).collect::<Vec<_>>().join(" ")
-                    })
-                }
-            }
-        };
-        #[cfg(not(feature = "morphology"))]
-        let tok: Box<dyn Fn(&str) -> String + Send + Sync> = Box::new(|s: &str| {
-            let mut toks = tunaround::search::tokenize_fallback(s);
-            toks.sort(); toks.dedup();
-            toks.into_iter().map(|t| format!("{t}*")).collect::<Vec<_>>().join(" ")
-        });
-        #[cfg(feature = "semantic")]
-        let emb: Option<Box<dyn tunaround::store::embedding::Embedder>> = {
-            let endpoint = std::env::var("TUNAROUND_OLLAMA_URL")
-                .unwrap_or_else(|_| "http://127.0.0.1:11435".to_string());
-            Some(Box::new(tunaround::store::embedding::OllamaEmbedder::new(&endpoint, "bge-m3")))
-        };
-        #[cfg(not(feature = "semantic"))]
-        let emb: Option<Box<dyn tunaround::store::embedding::Embedder>> = None;
-        let store2 = match tunaround::store::sqlite::SqliteStore::open(&db_str) {
-            Ok(s) => s,
-            Err(e) => { eprintln!("[serve-mcp] 전사 리더 DB 열기 실패: {e}"); std::process::exit(1); }
-        };
-        let retriever = tunaround::store::retriever::SqliteRetriever::new(store, tok, emb);
-        let retriever_arc = std::sync::Arc::new(retriever) as std::sync::Arc<dyn tunaround::orchestrator::ContextRetriever>;
-        let transcript_reader = tunaround::store::retriever::SqliteTranscriptReader::new(store2);
-        let reader_arc: Option<std::sync::Arc<dyn tunaround::orchestrator::TranscriptReader>> =
-            Some(std::sync::Arc::new(transcript_reader));
+        let (retriever_arc, reader_arc) = build_http_mcp_backends("serve-mcp", &db_str);
         if let Err(e) = rt.block_on(tunaround::mcp::start_http_mcp_server(
             addr, retriever_arc, reader_arc, serve_token.clone(),
         )) {
@@ -258,6 +228,42 @@ fn main() {
             std::process::exit(1);
         }
         return;
+    }
+
+    // --core <addr> 모드: REPL + in-process HTTP MCP 코어(front=core 단일 프로세스. serve 피처 전용).
+    // serve-mcp(헤드리스)와 달리 return하지 않고, 로컬 좌석을 자기 코어에 HTTP로 배선한 뒤 REPL로 진행한다.
+    #[cfg(feature = "serve")]
+    if let Some(addr) = core_addr.clone() {
+        let db_str = match &db_path {
+            Some(p) => p.clone(),
+            None => { eprintln!("[core] --core는 --db <경로>가 필요합니다"); std::process::exit(1); }
+        };
+        let (retriever_arc, reader_arc) = build_http_mcp_backends("core", &db_str);
+        // bind 동기 선행: 포트 경합을 REPL 진입 전에 fail-fast.
+        let listener = match rt.block_on(tokio::net::TcpListener::bind(&addr)) {
+            Ok(l) => l,
+            Err(e) => { eprintln!("[core] 바인드 실패({addr}): {e}"); std::process::exit(1); }
+        };
+        let serve_tok = serve_token.clone();
+        // HTTP MCP 코어를 rt 워커 스레드에 백그라운드 서빙(메인은 블로킹 REPL).
+        rt.spawn(async move {
+            if let Err(e) = tunaround::mcp::serve_http_mcp_on_listener(
+                listener, retriever_arc, reader_arc, serve_tok,
+            ).await {
+                eprintln!("[core] HTTP MCP 서버 종료: {e}");
+            }
+        });
+        // 로컬 좌석을 in-process 코어에 배선(명시 --search-url이 있으면 그쪽 우선).
+        if search_url.is_some() {
+            eprintln!("[core] 명시 --search-url이 있어 로컬 좌석은 그 URL을 사용합니다(코어는 {addr}에서 원격용으로 서빙).");
+        } else {
+            let local_url = tunaround::mcp::core_local_url(&addr);
+            eprintln!("[core] 로컬 좌석을 in-process 코어에 배선: {local_url}");
+            search_url = Some(local_url);
+            if search_token.is_none() {
+                search_token = serve_token.clone();
+            }
+        }
     }
 
     // session_id: --session <id> 값 또는 "default". 러너 생성 전에 계산한다.
@@ -544,4 +550,67 @@ fn main() {
             let _ = rt.block_on(rb.set_snapshot(&sid, &session.snapshot_json()));
         }
     }
+}
+
+/// HTTP MCP 코어용 retriever + 전사 리더를 --db 경로로 빌드한다(--serve-mcp / --core 공용).
+/// serve→mcp→sqlite라 sqlite는 항상 켜짐. 실패 시 ctx 프리픽스로 에러를 찍고 종료한다.
+#[cfg(feature = "serve")]
+fn build_http_mcp_backends(
+    ctx: &str,
+    db_str: &str,
+) -> (
+    std::sync::Arc<dyn tunaround::orchestrator::ContextRetriever>,
+    Option<std::sync::Arc<dyn tunaround::orchestrator::TranscriptReader>>,
+) {
+    let store = match tunaround::store::sqlite::SqliteStore::open(db_str) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("[{ctx}] DB 열기 실패: {e}");
+            std::process::exit(1);
+        }
+    };
+    #[cfg(feature = "morphology")]
+    let tok: Box<dyn Fn(&str) -> String + Send + Sync> = {
+        match tunaround::search::tokenizer::create_tokenizer("kiwi") {
+            Ok(t) => Box::new(move |s: &str| t.fts_query(s)),
+            Err(e) => {
+                eprintln!("[{ctx}] 토크나이저 실패, 폴백: {e}");
+                Box::new(|s: &str| {
+                    let mut toks = tunaround::search::tokenize_fallback(s);
+                    toks.sort();
+                    toks.dedup();
+                    toks.into_iter().map(|t| format!("{t}*")).collect::<Vec<_>>().join(" ")
+                })
+            }
+        }
+    };
+    #[cfg(not(feature = "morphology"))]
+    let tok: Box<dyn Fn(&str) -> String + Send + Sync> = Box::new(|s: &str| {
+        let mut toks = tunaround::search::tokenize_fallback(s);
+        toks.sort();
+        toks.dedup();
+        toks.into_iter().map(|t| format!("{t}*")).collect::<Vec<_>>().join(" ")
+    });
+    #[cfg(feature = "semantic")]
+    let emb: Option<Box<dyn tunaround::store::embedding::Embedder>> = {
+        let endpoint = std::env::var("TUNAROUND_OLLAMA_URL")
+            .unwrap_or_else(|_| "http://127.0.0.1:11435".to_string());
+        Some(Box::new(tunaround::store::embedding::OllamaEmbedder::new(&endpoint, "bge-m3")))
+    };
+    #[cfg(not(feature = "semantic"))]
+    let emb: Option<Box<dyn tunaround::store::embedding::Embedder>> = None;
+    let store2 = match tunaround::store::sqlite::SqliteStore::open(db_str) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("[{ctx}] 전사 리더 DB 열기 실패: {e}");
+            std::process::exit(1);
+        }
+    };
+    let retriever = tunaround::store::retriever::SqliteRetriever::new(store, tok, emb);
+    let retriever_arc = std::sync::Arc::new(retriever)
+        as std::sync::Arc<dyn tunaround::orchestrator::ContextRetriever>;
+    let transcript_reader = tunaround::store::retriever::SqliteTranscriptReader::new(store2);
+    let reader_arc: Option<std::sync::Arc<dyn tunaround::orchestrator::TranscriptReader>> =
+        Some(std::sync::Arc::new(transcript_reader));
+    (retriever_arc, reader_arc)
 }

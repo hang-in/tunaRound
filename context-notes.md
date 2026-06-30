@@ -2,6 +2,17 @@
 
 > 작업 중 결정과 근거. 계속 append. (규율 #7) 다음 세션이 결정을 재유도하지 않게.
 
+## 2026-06-30 (세션4) Stage 3a-3 front=core 착수 (Plan 26)
+
+- **목표**: 3a-2의 2프로세스(`--serve-mcp` 코어 + REPL `--search-url`)를 1프로세스로 통합. `--core <addr>` = REPL이 자기 안에서 HTTP MCP 코어를 띄우고 로컬 좌석이 거기에 HTTP pull. 원격 프론트/에이전트도 같은 주소 공존.
+- **왜 가벼운가**: 배선 전부 기존. `with_search_url`(3a-2)·`build_registry` 4-arg·`serve_http_mcp_on_listener`(3a-1) 다 있음. 러너 `run` 동기 + REPL 동기라 HTTP 서버를 rt 워커에 spawn하고 메인 블로킹 루프와 공존 가능(확인). 작업 = main.rs `--core` 분기 + `core_local_url` 순수함수.
+- **결정**: (1) `--serve-mcp`(헤드리스 순수 서버)는 불변, `--core`(REPL+서빙) 신규 = 의미 분리. (2) bind 동기 선행(rt.block_on bind)으로 포트 경합 fail-fast 후 spawn. (3) 로컬 좌석 URL = addr의 0.0.0.0/[::]→127.0.0.1 + /mcp. (4) `--core`+명시 `--search-url` 동시면 명시 우선(경고). (5) `--db` 필수.
+- **동시성 근거**: Runtime::new=multi-thread. rt.spawn(server)=워커 스레드, 메인=블로킹 REPL. REPL indexer가 core.db 쓰고 HTTP reader가 core.db 읽음 = WAL 동시(2프로세스 e2e와 동일, 동일 프로세스 2커넥션). 루프 중 block_on 없음(runner subprocess 동기).
+- **구현 완료**: main.rs `--core <addr>` 분기(bind 동기 선행 fail-fast → rt.spawn 서빙 → search_url/token 자동 배선 → REPL). serve 두 분기(`--serve-mcp`/`--core`)가 `build_http_mcp_backends(ctx, db)` 헬퍼 공유(중복 제거). mcp.rs `core_local_url`(0.0.0.0/[::]→127.0.0.1+/mcp) 순수함수+단위테스트. 곁다리: 기존 `mcp_session_id` 미사용 경고(mcp 없는 기본빌드)를 mcp 게이트로 정리.
+- **검증**: 기본 137 / serve 146 pass, clippy 클린(기본+serve), 경고 0. **스모크 e2e**: `--core 127.0.0.1:8788 --db core.db --token TOK123 --pull-context` 단일 프로세스가 HTTP MCP 코어 바인드(`서버 기동 127.0.0.1:8788`) + 로컬좌석 자동배선(`http://127.0.0.1:8788/mcp`) + REPL 동시 구동, bearer 인증(no-token 401 / token 200) 확인. 서버 future=rt워커 / REPL=메인 블로킹 공존 실증.
+- **남은 검증(선택)**: 실 claude 좌석이 in-process 코어에서 read_transcript pull하는 풀 라이브 e2e. HTTP 경로·배선은 3a-2(검증됨)와 동일, 차이는 코어가 동일 프로세스라는 점뿐(스모크가 그 신규 통합점 커버). 비용=실 에이전트 spawn.
+- **알려진 사소점**: `serve_http_mcp_on_listener` 기동 로그가 `[serve-mcp]` 프리픽스 고정이라 `--core`에서도 그렇게 찍힘(기능 무관, 공용 fn 시그니처 보존 위해 방치).
+
 ## 2026-06-29 실행 준비
 
 - 스택 Rust+tokio 확정. 단 Plan 01 러너는 **동기 `std::process`**(v1 순차)라 tokio 미사용. tokio는 concurrency가 실제로 필요할 때 도입(YAGNI).
