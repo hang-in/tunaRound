@@ -10,7 +10,7 @@
 - **동시성 근거**: Runtime::new=multi-thread. rt.spawn(server)=워커 스레드, 메인=블로킹 REPL. REPL indexer가 core.db 쓰고 HTTP reader가 core.db 읽음 = WAL 동시(2프로세스 e2e와 동일, 동일 프로세스 2커넥션). 루프 중 block_on 없음(runner subprocess 동기).
 - **구현 완료**: main.rs `--core <addr>` 분기(bind 동기 선행 fail-fast → rt.spawn 서빙 → search_url/token 자동 배선 → REPL). serve 두 분기(`--serve-mcp`/`--core`)가 `build_http_mcp_backends(ctx, db)` 헬퍼 공유(중복 제거). mcp.rs `core_local_url`(0.0.0.0/[::]→127.0.0.1+/mcp) 순수함수+단위테스트. 곁다리: 기존 `mcp_session_id` 미사용 경고(mcp 없는 기본빌드)를 mcp 게이트로 정리.
 - **검증**: 기본 137 / serve 146 pass, clippy 클린(기본+serve), 경고 0. **스모크 e2e**: `--core 127.0.0.1:8788 --db core.db --token TOK123 --pull-context` 단일 프로세스가 HTTP MCP 코어 바인드(`서버 기동 127.0.0.1:8788`) + 로컬좌석 자동배선(`http://127.0.0.1:8788/mcp`) + REPL 동시 구동, bearer 인증(no-token 401 / token 200) 확인. 서버 future=rt워커 / REPL=메인 블로킹 공존 실증.
-- **남은 검증(선택)**: 실 claude 좌석이 in-process 코어에서 read_transcript pull하는 풀 라이브 e2e. HTTP 경로·배선은 3a-2(검증됨)와 동일, 차이는 코어가 동일 프로세스라는 점뿐(스모크가 그 신규 통합점 커버). 비용=실 에이전트 spawn.
+- **풀 라이브 e2e 통과(결정적)**: 단일 `--core 127.0.0.1:8790 --db e2e.db --token TOKE2E --pull-context`로 실 claude+codex 2턴. turn1=사용자가 "이벤트소싱 vs CRUD, 근거=감사추적" 제시(claude+codex 응답). turn2=`@claude`(Only, pull). **claude가 프롬프트 604자(포인터만, 전사 인라인 없음)인데 "방금 전사를 확인했습니다"며 자기 turn1 발언을 verbatim 인용**("감사 추적만으로는...80% 확보됩니다") = 604자로는 불가 → **in-process 코어에 read_transcript 호출해 당긴 것 확정**. [ctx]: claude pull 513/604(평평) vs codex push 1511(전사 인라인). "권한 막힘/취소" 0회(bearer+allowedTools 정상). **3a-3 = half-a2a 척추가 단일 front=core 프로세스로 라이브 동작.**
 - **알려진 사소점**: `serve_http_mcp_on_listener` 기동 로그가 `[serve-mcp]` 프리픽스 고정이라 `--core`에서도 그렇게 찍힘(기능 무관, 공용 fn 시그니처 보존 위해 방치).
 
 ## 2026-06-29 실행 준비
