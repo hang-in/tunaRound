@@ -63,6 +63,34 @@ fn corpus() -> StoredSession {
     }
 }
 
+/// 평가 질의 셋. (질의, gold msg_id, 종류). *표 = FTS 어휘·의미공백이라 벡터·확장·리랭커 측정점.
+/// FTS·벡터·하이브리드 측정이 같은 gold를 공유하도록 모듈 레벨에 둔다.
+type EvalQuery = (&'static str, &'static [u64], &'static str);
+const QUERIES: &[EvalQuery] = &[
+    ("토큰",               &[1, 2, 3],    "정확"),
+    ("인증을",             &[1],          "굴절(조사)"),
+    ("임베딩",             &[6, 8],       "외래어 정확"),
+    ("외래어 색인",        &[6, 7],       "다중어(AND면 깨질 후보)"),
+    ("로그인 방식",        &[1, 4],       "동의어(인증/OAuth)"),
+    ("재주입을 줄이는 방법", &[9, 10, 11], "다중어+굴절"),
+    ("프로세스 공유 재개", &[12, 13],     "다중어(AND면 0건 후보)"),
+    ("로컬 LLM 좌석",      &[15],         "외래어+다중어"),
+    ("쓰기 권한",          &[16],         "정확"),
+    ("결론 문서 기록",     &[17],         "다중어"),
+    // 확장 셋(40발언). *표 = FTS 어휘공백/동의어라 리랭커·벡터·쿼리확장 가치 측정점.
+    ("분기 비교",          &[21, 22],     "다중어"),
+    ("세션 복원",          &[23, 24],     "*동의어(복원↔불러오기): 23 누락 후보"),
+    ("응답 없는 좌석 타임아웃", &[25, 26], "다중어"),
+    ("쓰기 권한 샌드박스", &[16, 29],     "다중어"),
+    ("점진 출시",          &[19, 31, 32], "*동의어(출시↔배포)"),
+    ("원격 접속 인증",     &[33, 34],     "*어휘공백: 33은 신원확인이라 누락 후보"),
+    ("코어 백엔드 호스팅", &[34, 35],     "*어휘공백(백엔드/호스팅)"),
+    ("관련도 순 재정렬",   &[37],         "*동의어(재정렬↔다시 정렬)"),
+    ("동의어 질의 확장",   &[38],         "*어휘공백: 38은 '비슷한 말로 넓히면' 누락 후보"),
+    ("다음 발언자 결정",   &[26, 40],     "다중어"),
+    ("오래 기억하는 방법", &[9, 11, 39],  "*의미공백(기억 단어 부재): 벡터 측정점"),
+];
+
 /// recall@k = |retrieved ∩ gold| / |gold|
 fn recall_at_k(retrieved: &[u64], gold: &[u64], k: usize) -> f64 {
     let top_k: Vec<u64> = retrieved.iter().take(k).copied().collect();
@@ -99,30 +127,7 @@ fn fts_recall_baseline() {
     store.save_session("q", &ss, |t| tok.fts_index(t)).expect("save_session");
 
     // (질의 텍스트, gold msg_id 집합, 종류 설명)
-    let queries: &[(&str, &[u64], &str)] = &[
-        ("토큰",               &[1, 2, 3],    "정확"),
-        ("인증을",             &[1],          "굴절(조사)"),
-        ("임베딩",             &[6, 8],       "외래어 정확"),
-        ("외래어 색인",        &[6, 7],       "다중어(AND면 깨질 후보)"),
-        ("로그인 방식",        &[1, 4],       "동의어(인증/OAuth)"),
-        ("재주입을 줄이는 방법", &[9, 10, 11], "다중어+굴절"),
-        ("프로세스 공유 재개", &[12, 13],     "다중어(AND면 0건 후보)"),
-        ("로컬 LLM 좌석",      &[15],         "외래어+다중어"),
-        ("쓰기 권한",          &[16],         "정확"),
-        ("결론 문서 기록",     &[17],         "다중어"),
-        // 확장 셋(40발언). *표 = FTS 어휘공백/동의어라 리랭커·벡터·쿼리확장 가치 측정점.
-        ("분기 비교",          &[21, 22],     "다중어"),
-        ("세션 복원",          &[23, 24],     "*동의어(복원↔불러오기): 23 누락 후보"),
-        ("응답 없는 좌석 타임아웃", &[25, 26], "다중어"),
-        ("쓰기 권한 샌드박스", &[16, 29],     "다중어"),
-        ("점진 출시",          &[19, 31, 32], "*동의어(출시↔배포)"),
-        ("원격 접속 인증",     &[33, 34],     "*어휘공백: 33은 신원확인이라 누락 후보"),
-        ("코어 백엔드 호스팅", &[34, 35],     "*어휘공백(백엔드/호스팅)"),
-        ("관련도 순 재정렬",   &[37],         "*동의어(재정렬↔다시 정렬)"),
-        ("동의어 질의 확장",   &[38],         "*어휘공백: 38은 '비슷한 말로 넓히면' 누락 후보"),
-        ("다음 발언자 결정",   &[26, 40],     "다중어"),
-        ("오래 기억하는 방법", &[9, 11, 39],  "*의미공백(기억 단어 부재): 벡터 측정점"),
-    ];
+    let queries = QUERIES;
 
     const K3: usize = 3;
     const K5: usize = 5;
@@ -190,4 +195,77 @@ fn fts_recall_baseline() {
     // 확장 셋(21질의/40발언) 측정값 floor. 어휘·의미공백 질의 포함이라 easy셋(0.90)보다 낮음.
     assert!(mean_r5 >= 0.85, "mean recall@5 회귀: {mean_r5:.3} < 0.85 (확장셋 baseline 0.857)");
     assert!(mean_p5 >= 0.58, "mean precision@5 회귀: {mean_p5:.3} < 0.58 (확장셋 baseline 0.592)");
+}
+
+/// 벡터·하이브리드 리콜 측정(수동, semantic+Ollama 터널). FTS가 못 메운 어휘·의미공백 질의
+/// (*표 Q들)를 벡터/하이브리드가 회복하는지 같은 gold로 잰다.
+#[cfg(feature = "semantic")]
+#[test]
+#[ignore] // 수동: Ollama 터널(11435). cargo test --features "semantic morphology" --test search_recall -- --ignored --nocapture
+fn vector_hybrid_recall() {
+    use tunaround::orchestrator::ContextRetriever;
+    use tunaround::store::embedding::{Embedder, OllamaEmbedder};
+    use tunaround::store::retriever::SqliteRetriever;
+
+    const ENDPOINT: &str = "http://127.0.0.1:11435";
+    let path = std::env::temp_dir().join("tuna_recall_sem.db");
+    let _ = std::fs::remove_file(&path);
+    let p = path.to_str().unwrap();
+
+    let tok = create_tokenizer("lindera").expect("tokenizer");
+    let store_w = SqliteStore::open(p).unwrap();
+    let ss = corpus();
+    store_w.save_session("q", &ss, |t| tok.fts_index(t)).unwrap();
+    let embedder = OllamaEmbedder::new(ENDPOINT, "bge-m3");
+    store_w.index_vectors("q", &ss, &embedder).expect("index vectors (터널 확인)");
+
+    // 하이브리드 결과는 Utterance라 id가 없어 content->id 역매핑.
+    let id_of = |content: &str| -> Option<u64> {
+        ss.messages.iter().find(|m| m.content == content).map(|m| m.id)
+    };
+
+    let store_r = SqliteStore::open(p).unwrap();
+    let tok2 = create_tokenizer("lindera").unwrap();
+    let retriever = SqliteRetriever::new(
+        SqliteStore::open(p).unwrap(),
+        Box::new(move |t: &str| tok2.fts_query(t)),
+        Some(Box::new(OllamaEmbedder::new(ENDPOINT, "bge-m3"))),
+    );
+
+    const K: usize = 5;
+    let (mut sv_r, mut sv_m, mut sh_r, mut sh_m) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
+
+    println!();
+    println!("{:-<92}", "");
+    println!("{:<22} {:>6} {:>6} {:>6} {:>6}  종류", "질의", "vecR", "vecM", "hybR", "hybM");
+    println!("{:-<92}", "");
+    for (q, gold, kind) in QUERIES {
+        let qv = embedder.embed(q).expect("embed");
+        let vec_ids: Vec<u64> = store_r
+            .vector_search(&qv, K)
+            .unwrap_or_default()
+            .iter()
+            .map(|(_, mid, _)| *mid)
+            .collect();
+        let hyb_ids: Vec<u64> = retriever
+            .retrieve(q, K)
+            .iter()
+            .filter_map(|u| id_of(&u.content))
+            .collect();
+        let (vr, vm) = (recall_at_k(&vec_ids, gold, K), mrr(&vec_ids, gold));
+        let (hr, hm) = (recall_at_k(&hyb_ids, gold, K), mrr(&hyb_ids, gold));
+        sv_r += vr;
+        sv_m += vm;
+        sh_r += hr;
+        sh_m += hm;
+        println!("{q:<22} {vr:>6.3} {vm:>6.3} {hr:>6.3} {hm:>6.3}  {kind}");
+    }
+    let n = QUERIES.len() as f64;
+    println!("{:-<92}", "");
+    println!(
+        "{:<22} {:>6.3} {:>6.3} {:>6.3} {:>6.3}  (mean, n={})",
+        "MEAN", sv_r / n, sv_m / n, sh_r / n, sh_m / n, QUERIES.len()
+    );
+    println!("{:-<92}", "");
+    let _ = std::fs::remove_file(&path);
 }
