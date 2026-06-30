@@ -14,6 +14,8 @@ fn main() {
     let mut state_path: Option<String> = None;
     let mut observe_id: Option<String> = None;
     let mut redis_session_id: Option<String> = None;
+    #[cfg(feature = "sqlite")]
+    let mut db_path: Option<String> = None;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -27,6 +29,11 @@ fn main() {
             }
             "--session" => {
                 redis_session_id = args.get(i + 1).cloned();
+                i += 2;
+            }
+            "--db" => {
+                #[cfg(feature = "sqlite")]
+                { db_path = args.get(i + 1).cloned(); }
                 i += 2;
             }
             other => {
@@ -103,6 +110,37 @@ fn main() {
     drop(_g);
     let bus_boxed = bus_handle.map(|h| Box::new(h) as Box<dyn tunaround::session_bus::SessionBus>);
 
+    // SQLite 인덱서 생성(feature-gated). --db 없거나 sqlite off면 None=기존 동작 불변.
+    #[cfg(feature = "sqlite")]
+    let indexer: Option<Box<dyn tunaround::store::indexer::MessageIndexer>> = match &db_path {
+        Some(p) => match tunaround::store::sqlite::SqliteStore::open(p) {
+            Ok(store) => {
+                #[cfg(feature = "morphology")]
+                let tok: Box<dyn Fn(&str) -> String + Send + Sync> = {
+                    match tunaround::search::tokenizer::create_tokenizer("kiwi") {
+                        Ok(t) => Box::new(move |s: &str| t.tokenize_for_fts(s)),
+                        Err(e) => {
+                            eprintln!("[tunaRound] 토크나이저 실패, 폴백: {e}");
+                            Box::new(|s: &str| tunaround::search::tokenize_fallback(s).join(" "))
+                        }
+                    }
+                };
+                #[cfg(not(feature = "morphology"))]
+                let tok: Box<dyn Fn(&str) -> String + Send + Sync> =
+                    Box::new(|s: &str| tunaround::search::tokenize_fallback(s).join(" "));
+                Some(Box::new(tunaround::store::indexer::SqliteIndexer::new(store, tok))
+                    as Box<dyn tunaround::store::indexer::MessageIndexer>)
+            }
+            Err(e) => {
+                eprintln!("[tunaRound] --db 열기 실패: {e}");
+                None
+            }
+        },
+        None => None,
+    };
+    #[cfg(not(feature = "sqlite"))]
+    let indexer: Option<Box<dyn tunaround::store::indexer::MessageIndexer>> = None;
+
     // session_id: --session <id> 값 또는 "default".
     let sid = redis_session_id.clone().unwrap_or_else(|| "default".to_string());
 
@@ -118,7 +156,7 @@ fn main() {
         match tunaround::store::load_session(p) {
             Ok(ss) => {
                 println!("(이어받음: {p})");
-                let mut s = Session::new_with_bus(participants, Box::new(registry), sid.clone(), bus_boxed);
+                let mut s = Session::new_with_indexer(participants, Box::new(registry), sid.clone(), bus_boxed, indexer);
                 s.seed_from(ss);
                 s
             }
@@ -136,7 +174,7 @@ fn main() {
                         Ok(ss) => {
                             println!("(Redis snapshot 재개: {sid})");
                             // 위에서 만든 bus_boxed를 재사용한다(중복 핸들 spawn 방지).
-                            let mut s = Session::new_with_bus(participants, Box::new(registry), sid.clone(), bus_boxed);
+                            let mut s = Session::new_with_indexer(participants, Box::new(registry), sid.clone(), bus_boxed, indexer);
                             s.seed_from(ss);
                             // owner lease 시도.
                             let worker_id = std::process::id().to_string();
@@ -160,21 +198,21 @@ fn main() {
                         }
                         Err(e) => {
                             eprintln!("[snapshot 파싱 실패: {e}] 신규 세션 시작.");
-                            Session::new_with_bus(participants, Box::new(registry), sid.clone(), bus_boxed)
+                            Session::new_with_indexer(participants, Box::new(registry), sid.clone(), bus_boxed, indexer)
                         }
                     }
                 }
                 _ => {
                     eprintln!("[snapshot 없음] 신규 세션 시작.");
-                    Session::new_with_bus(participants, Box::new(registry), sid.clone(), bus_boxed)
+                    Session::new_with_indexer(participants, Box::new(registry), sid.clone(), bus_boxed, indexer)
                 }
             }
         } else {
             eprintln!("[--session] TUNAROUND_REDIS_URL 없음: 로컬 단일세션으로 시작.");
-            Session::new_with_bus(participants, Box::new(registry), sid.clone(), bus_boxed)
+            Session::new_with_indexer(participants, Box::new(registry), sid.clone(), bus_boxed, indexer)
         }
     } else {
-        Session::new_with_bus(participants, Box::new(registry), sid.clone(), bus_boxed)
+        Session::new_with_indexer(participants, Box::new(registry), sid.clone(), bus_boxed, indexer)
     };
 
     println!("tunaRound - 메시지를 입력하세요. /help, /save, /quit.");
