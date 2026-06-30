@@ -120,24 +120,34 @@ impl Default for CodexRunner {
     }
 }
 
+/// TOML basic 문자열로 안전 인용(역슬래시·큰따옴표 이스케이프). 인자 주입 방지.
+fn toml_basic(s: &str) -> String {
+    format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
+}
+
 impl Runner for CodexRunner {
     fn run(&self, input: &RunInput) -> Result<RunOutput, RunError> {
         // search_db가 Some이면 -c mcp_servers.tuna-search 오버라이드 쌍을 조립한다.
-        // TOML 리터럴 문자열(작은따옴표)로 Windows 백슬래시 경로 안전.
-        // 한계: exe/db 경로에 작은따옴표가 포함된 경우 TOML 파싱 오류 가능(일반 Windows 경로 OK).
+        // TOML basic(큰따옴표) 문자열로 역슬래시·큰따옴표를 이스케이프해 주입을 방지한다.
         let mcp_args: Vec<String> = self.search_db.as_ref().map(|db| {
             let exe = std::env::current_exe()
                 .ok()
                 .and_then(|p| p.to_str().map(String::from))
                 .unwrap_or_else(|| "tunaround".into());
-            let args_toml = if let Some(sid) = &self.search_session {
-                format!("mcp_servers.tuna-search.args=['--mcp-search','--db','{db}','--session-id','{sid}']")
-            } else {
-                format!("mcp_servers.tuna-search.args=['--mcp-search','--db','{db}']")
-            };
+            let mut items = vec![
+                "--mcp-search".to_string(),
+                "--db".to_string(),
+                db.clone(),
+            ];
+            if let Some(sid) = &self.search_session {
+                items.push("--session-id".into());
+                items.push(sid.clone());
+            }
+            let arr = items.iter().map(|a| toml_basic(a)).collect::<Vec<_>>().join(",");
+            let args_toml = format!("mcp_servers.tuna-search.args=[{arr}]");
             vec![
                 "-c".into(),
-                format!("mcp_servers.tuna-search.command='{exe}'"),
+                format!("mcp_servers.tuna-search.command={}", toml_basic(&exe)),
                 "-c".into(),
                 args_toml,
             ]
@@ -284,9 +294,9 @@ mod tests {
         };
         let mcp_args = vec![
             "-c".to_string(),
-            "mcp_servers.tuna-search.command='/usr/bin/tunaround'".to_string(),
+            "mcp_servers.tuna-search.command=\"/usr/bin/tunaround\"".to_string(),
             "-c".to_string(),
-            "mcp_servers.tuna-search.args=['--mcp-search','--db','/tmp/t.db']".to_string(),
+            "mcp_servers.tuna-search.args=[\"--mcp-search\",\"--db\",\"/tmp/t.db\"]".to_string(),
         ];
         let args = build_codex_args(&input, &mcp_args);
         let joined = args.join(" ");
@@ -302,16 +312,20 @@ mod tests {
         // with_search_session(Some(..)) 설정 시 TOML args에 --session-id가 포함된다.
         let db = "/tmp/test.db".to_string();
         let sid = "debate-session-7".to_string();
-        let exe = "tunaround".to_string();
-        // search_session 있을 때.
+        // toml_basic으로 조립한 결과 포맷: double-quote.
+        let items_with = vec!["--mcp-search", "--db", &db, "--session-id", &sid];
         let args_toml_with = format!(
-            "mcp_servers.tuna-search.args=['--mcp-search','--db','{db}','--session-id','{sid}']"
+            "mcp_servers.tuna-search.args=[{}]",
+            items_with.iter().map(|a| toml_basic(a)).collect::<Vec<_>>().join(",")
         );
         assert!(args_toml_with.contains("--session-id"), "--session-id 없음: {args_toml_with}");
         assert!(args_toml_with.contains("debate-session-7"), "세션 id 없음: {args_toml_with}");
         // search_session 없을 때.
-        let args_toml_without =
-            format!("mcp_servers.tuna-search.args=['--mcp-search','--db','{db}']");
+        let items_without = vec!["--mcp-search", "--db", &db];
+        let args_toml_without = format!(
+            "mcp_servers.tuna-search.args=[{}]",
+            items_without.iter().map(|a| toml_basic(a)).collect::<Vec<_>>().join(",")
+        );
         assert!(!args_toml_without.contains("--session-id"), "--session-id가 None인데 포함됨");
         // 빌더 필드 검증.
         let runner = CodexRunner::new()
@@ -324,8 +338,27 @@ mod tests {
             .with_search_db(Some("/tmp/x.db".into()))
             .with_search_db(Some("/tmp/x.db".into()));
         assert!(runner_no.search_session.is_none(), "미설정 시 None이어야 함");
-        // mcp_args 조립에서 exe 변수 사용.
-        let _ = format!("mcp_servers.tuna-search.command='{exe}'");
+    }
+
+    #[test]
+    fn toml_basic_escapes_special_characters() {
+        // 작은따옴표는 그대로 통과(TOML basic 이스케이프 불필요).
+        assert_eq!(toml_basic("a'b"), "\"a'b\"");
+        // 큰따옴표는 이스케이프.
+        assert_eq!(toml_basic("a\"b"), "\"a\\\"b\"");
+        // 역슬래시는 이스케이프(Windows 경로).
+        assert_eq!(toml_basic("C:\\path"), "\"C:\\\\path\"");
+        // 주입 시도: 닫힘 큰따옴표+추가 원소가 배열을 조기 종결하지 않음.
+        let evil = "\",\"--evil";
+        let quoted = toml_basic(evil);
+        // 결과 전체가 하나의 quoted 원소여야 한다(배열에 넣어도 원소 수 = 1).
+        assert!(quoted.starts_with('"'), "시작 따옴표 없음");
+        assert!(quoted.ends_with('"'), "끝 따옴표 없음");
+        // 원소 내부에 비이스케이프 큰따옴표가 없어야 한다(첫·끝 제외).
+        let inner = &quoted[1..quoted.len() - 1];
+        // \" 이스케이프 시퀀스를 제거한 뒤 남는 " 가 없어야 한다(비이스케이프 주입 방지).
+        let without_escaped = inner.replace("\\\"", "");
+        assert!(!without_escaped.contains('"'), "비이스케이프 큰따옴표: {inner}");
     }
 
     // 무출력으로 sleep하는 가짜 실행파일을 tmp에 만들어 경로를 돌려준다(OS별).

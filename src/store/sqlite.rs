@@ -257,14 +257,15 @@ impl SqliteStore {
         msg_id: u64,
     ) -> Result<Option<(String, String)>, String> {
         let msg_id_i64 = msg_id as i64;
-        let row: Option<(String, String)> = self
-            .conn
-            .query_row(
-                "SELECT speaker, content FROM messages WHERE session_id=?1 AND msg_id=?2",
-                rusqlite::params![session_id, msg_id_i64],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .ok();
+        let row = match self.conn.query_row(
+            "SELECT speaker, content FROM messages WHERE session_id=?1 AND msg_id=?2",
+            rusqlite::params![session_id, msg_id_i64],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        ) {
+            Ok(r) => Some(r),
+            Err(rusqlite::Error::QueryReturnedNoRows) => None,
+            Err(e) => return Err(format!("sqlite: {e}")),
+        };
         Ok(row)
     }
 
@@ -317,18 +318,14 @@ impl SqliteStore {
         ss: &StoredSession,
         embedder: &dyn crate::store::embedding::Embedder,
     ) -> Result<(), String> {
-        use std::hash::{DefaultHasher, Hash, Hasher};
-
         self.conn
             .execute_batch("BEGIN;")
             .map_err(|e| format!("sqlite: {e}"))?;
 
         let result = (|| -> Result<(), String> {
             for msg in &ss.messages {
-                // content_hash 계산(DefaultHasher, hex 문자열).
-                let mut hasher = DefaultHasher::new();
-                msg.content.hash(&mut hasher);
-                let content_hash = format!("{:x}", hasher.finish());
+                // content_hash 계산(FNV-1a 64bit, 버전 무관 결정적).
+                let content_hash = content_hash(&msg.content);
 
                 let msg_id = msg.id as i64;
 
@@ -431,6 +428,16 @@ impl SqliteStore {
     }
 }
 
+/// FNV-1a 64bit. Rust 버전 무관 결정적이라 content_hash 안정(임베딩 재색인 방지).
+fn content_hash(s: &str) -> String {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in s.as_bytes() {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{h:016x}")
+}
+
 /// cosine 유사도. norm 0이면 0 반환.
 #[cfg(feature = "sqlite")]
 fn cosine_similarity(a: &[f32], b: &[f32]) -> f64 {
@@ -518,6 +525,40 @@ mod tests {
         let db = SqliteStore::open_memory().unwrap();
         db.save_session("s1", &ss(), |t| t.to_string()).unwrap();
         assert!(db.search("존재하지않는단어xyz", 10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn get_message_returns_some_for_existing_and_none_for_missing() {
+        let db = SqliteStore::open_memory().unwrap();
+        db.save_session("gm", &ss(), |t| t.to_string()).unwrap();
+        // 존재하는 msg_id=1 -> Some.
+        let found = db.get_message("gm", 1).expect("DB 에러 없어야 함");
+        assert!(found.is_some(), "msg_id=1은 Some이어야 함");
+        let (spk, ct) = found.unwrap();
+        assert_eq!(spk, "claude/proposer");
+        assert_eq!(ct, "검색 시스템 설계");
+        // 없는 msg_id=999 -> Ok(None), 에러 아님.
+        let missing = db.get_message("gm", 999).expect("DB 에러 없어야 함");
+        assert!(missing.is_none(), "없는 msg_id는 None이어야 함");
+        // 없는 세션 -> Ok(None).
+        let no_session = db.get_message("no-such-session", 1).expect("DB 에러 없어야 함");
+        assert!(no_session.is_none(), "없는 세션은 None이어야 함");
+    }
+
+    #[test]
+    fn content_hash_is_deterministic_and_unique() {
+        // 같은 입력 -> 같은 해시(결정성).
+        let h1 = content_hash("hello world");
+        let h2 = content_hash("hello world");
+        assert_eq!(h1, h2, "같은 입력은 같은 해시여야 함");
+        // 다른 입력 -> 다른 해시.
+        let h3 = content_hash("hello world!");
+        assert_ne!(h1, h3, "다른 입력은 다른 해시여야 함");
+        // 빈 문자열도 결정적.
+        let he = content_hash("");
+        assert_eq!(he, content_hash(""), "빈 문자열 결정성");
+        // 16자리 hex 포맷.
+        assert_eq!(h1.len(), 16, "FNV-1a 64bit는 16자리 hex");
     }
 
     #[test]

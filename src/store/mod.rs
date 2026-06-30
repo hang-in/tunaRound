@@ -145,13 +145,20 @@ pub struct StoredSession {
 }
 
 /// head에서 parent_id를 따라 root까지 거슬러 올라간 경로(루트->head 순)를 전사로 반환.
+/// HashMap O(1) 조회 + HashSet 순환 가드로 무한루프를 방지한다.
 pub fn path_to_root(messages: &[StoredMessage], head: Option<u64>) -> Vec<Utterance> {
+    use std::collections::{HashMap, HashSet};
+    let by_id: HashMap<u64, &StoredMessage> = messages.iter().map(|m| (m.id, m)).collect();
     let mut chain: Vec<&StoredMessage> = Vec::new();
+    let mut seen: HashSet<u64> = HashSet::new();
     let mut cur = head;
     while let Some(id) = cur {
-        match messages.iter().find(|m| m.id == id) {
+        if !seen.insert(id) {
+            break; // 순환 가드
+        }
+        match by_id.get(&id) {
             Some(m) => {
-                chain.push(m);
+                chain.push(*m);
                 cur = m.parent_id;
             }
             None => break,
@@ -227,6 +234,19 @@ mod tests {
         let branch = path_to_root(&msgs, Some(4));
         assert_eq!(branch.iter().map(|u| u.content.clone()).collect::<Vec<_>>(), vec!["1","2","4"]);
         assert!(path_to_root(&msgs, None).is_empty());
+    }
+
+    #[test]
+    fn path_to_root_cycle_guard_terminates() {
+        // 순환: id=1.parent=Some(2), id=2.parent=Some(1). head=Some(1).
+        // 무한루프 없이 유계 반환(2개 이하).
+        let msgs = vec![
+            StoredMessage { id: 1, parent_id: Some(2), speaker: "a".into(), content: "1".into() },
+            StoredMessage { id: 2, parent_id: Some(1), speaker: "b".into(), content: "2".into() },
+        ];
+        let path = path_to_root(&msgs, Some(1));
+        // 순환이므로 결과 길이가 유한해야 함(2개 이하).
+        assert!(path.len() <= 2, "순환에서 유한 반환이어야 함: len={}", path.len());
     }
 
     #[test]
