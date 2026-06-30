@@ -142,11 +142,19 @@
 - 한 러너로 ollama·ollama cloud·lmstudio·openai 커버(engine 이름이 키라 다모델 다좌석). HTTP 좌석은 레포 직독 없음(프롬프트 맥락만). opencode CLI 러너 + HTTP 좌석 search_context는 후속.
 - UI(리치 프론트)는 보류 결정(2026-06-30): 코어 아닌 폴리시. 필요 페인(분기트리/observe/맥락투명성) 입증 시 경량 ratatui.
 
+### Plan 18: FTS 리콜 보강 (docs/plans/v2-18-fts-recall.md) — done
+
+- [x] Task 1: raw 토큰 색인(fts_index) + prefix 질의(fts_query) + index/query 클로저 분리 (45cf0c8; Sonnet) — 측정으로 발견한 lindera 외래어 누락("임베딩") 메움(재측정으로 #3 히트 확인). 기존 "검색을→검색" 보존. 기본 103/전체 105 pass, clippy 클린. 품질 게이지 tests/search_quality.rs(#[ignore])
+
+### Plan 19: Windows Kiwi 활성화 (docs/plans/v2-19-enable-kiwi-windows.md) — done
+
+- [x] Task 1: Windows cfg 허용 + Kiwi keep-tags base 매칭(VA-I 등 변종) + install 스크립트/문서 (fe0ec71; Sonnet) — **Kiwi v0.22.2가 Windows에서 작동(검증).** 규명: kiwi-rs 0.1.4 auto-download 깨짐(토큰 무관)·latest v0.23.2 ABI crash → **v0.22.2 수동 libkiwi**(%LOCALAPPDATA%\kiwi, discovery 기본경로라 env 불필요), 미설치 시 lindera 폴백. 외래어 음절분할은 Plan 18 raw+prefix가 FTS 커버. 기본 103/전체 105 pass, clippy 클린. 바이너리 미커밋(scripts/install-kiwi-windows.sh로 설치)
+
 ### 후속 (검색 레이어 폴리시)
 - [x] load_session `.ok()` 에러 삼킴 보정(QueryReturnedNoRows만 None, 나머지 전파) + indexer let-chain clippy 정리 (cd7e4e5)
 - [~] indexer/retriever 토크나이저·embedder Arc 공유 — **백로그(저가치)**: 중복은 startup 1회 인스턴스뿐, 라운드당 추가비용 없음. 시그니처 3곳 churn > 메모리 1회 절약. 보류.
 
 ## v2 백로그 (착수 전 결정 필요)
 - [ ] 분리 터미널 A2A 협업(MCP+버스, 자율 핸드오프) — turn-triggering 난제, 큰 과제
-- [ ] 신규 엔진 러너(tunaLlama·opencode 좌석) — 외부 CLI 통합. 로스터는 이미 N-ready
+- [x] 신규 엔진 러너(HTTP): ollama·lmstudio·openai (Plan 17 done). opencode CLI 참가자는 후속(외부 CLI 통합)
 - [ ] 리치 프론트(ratatui/web) — 신규 의존성 결정 필요

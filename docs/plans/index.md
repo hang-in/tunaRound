@@ -6,6 +6,8 @@
 
 | 문서 | 우선순위 | 상태 | 요약 |
 |---|---|---|---|
+| [v2-19-enable-kiwi-windows.md](v2-19-enable-kiwi-windows.md) | P1 | done | Windows Kiwi 활성화: cfg 허용 + keep-tags base 매칭(VA-I 등). 규명=kiwi-rs auto-download 깨짐·v0.23.2 ABI crash → v0.22.2 수동 libkiwi(%LOCALAPPDATA%\kiwi, env 불필요), 미설치 시 lindera 폴백. install 스크립트+문서. **Kiwi v0.22.2 Windows 작동 검증.** fe0ec71 |
+| [v2-18-fts-recall.md](v2-18-fts-recall.md) | P1 | done | FTS 리콜 보강: raw 토큰 색인 + prefix 질의로 lindera 외래어 누락("임베딩") 메움. index/query 클로저 분리. 기존 "검색을→검색" 보존. 품질 게이지 tests/search_quality.rs. 기본 103/전체 105 pass. 45cf0c8 |
 | [v2-17-http-engine-runner.md](v2-17-http-engine-runner.md) | P1 | done | OpenAI 호환 HTTP 엔진 러너: 한 러너로 ollama/lmstudio/openai/cloud 커버. 로스터 base_url/model/api_key_env, engine 이름 키로 다모델 다좌석. engines feature. 라이브: Ollama gemma4:e2b 응답 확인. 기본 101/engines 106 pass. e1373f9 |
 | [v2-16-reinjection-cap.md](v2-16-reinjection-cap.md) | P1 | done | 재주입 축소: --recent-turns N으로 prior를 최근 N턴만 재주입(나머지는 검색 주입이 담당). opt-in(기본 None=현행 통째 재주입 불변). 북극성 스케일 페이오프. 기본 76/전체 101 pass. 2834a1d |
 | [v2-15-windows-cli-resolve.md](v2-15-windows-cli-resolve.md) | P0 | done | gotcha #4: 러너 Windows CLI 해석(resolve_bin, PATH .exe/.cmd/.bat). codex.cmd가 spawn됨(Rust .cmd 자동 래핑). 비Windows·확장자 bin 불변. **라이브: codex 실제 spawn·응답 확인.** 8d02088 |

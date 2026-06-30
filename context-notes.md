@@ -258,3 +258,12 @@
 - **MCP 검증(무토큰):** `tunaround --mcp-search --db smoke.db`에 JSON-RPC initialize+tools/call 직접 전송 -> rmcp 1.8.0 정상, `search_context("발제자")` -> 실 색인된 claude 발언 반환. **MCP 검색 전 체인 입증.**
 - **남은 것(모델 행동):** 에이전트가 토론 중 search_context를 자율 호출할지는 모델 판단. 툴 배선·서버·검색은 입증됨. 품질은 `--features "mcp morphology semantic"`(형태소 FTS + bge-m3 벡터)로 빌드 시 ↑.
 - **검색 스택 전체 완성:** 형태소 FTS(Plan 8,9) + 라이브 색인(10) + RAG 주입(11) + /search(12) + 벡터/하이브리드(13) + 에이전트 MCP 도구(14) + Windows 러너(15). v2 검색/맥락 북극성 1차 완결.
+
+## 검색 품질 측정 + Plan 17~19 + Kiwi 활성화 (2026-06-30)
+
+- **검색 품질 실측(중요):** tests/search_quality.rs(#[ignore], 통제 코퍼스+Ollama 임베딩) 게이지로 측정. 발견: lindera가 **외래어를 문맥에서 누락**("벡터 임베딩을"→"임베딩" 탈락, "인증을"→"인증"은 정상). 형태소 굴절은 OK, 외래어가 구멍. 벡터는 소규모 코퍼스에서 노이즈 큼. => **기계 동작만 검증했지 품질은 평범**이었음을 인정하고 실측으로 전환.
+- **Plan 17 `e1373f9`:** OpenAI 호환 HTTP 엔진 러너(runner/http.rs, engines feature). 한 러너로 ollama/lmstudio/openai/cloud. 로스터 base_url/model/api_key_env. 라이브: Ollama gemma4:e2b /v1/chat/completions 응답.
+- **Plan 18 `45cf0c8`:** FTS 리콜 보강 - 색인=형태소+raw 토큰(fts_index), 질의=prefix-AND(fts_query). 외래어 누락 메움(재측정서 "임베딩" #3 히트). index/query 클로저 분리. 기본 feature=morphology+sqlite(4441a18).
+- **Plan 19 `fe0ec71` Kiwi 활성화(중요, 재현법):** Kiwi가 Windows에서 막혔던 진짜 원인 = (1) kiwi-rs 0.1.4 auto-download 깨짐(GITHUB_TOKEN 무관, release_json/curl 실패) (2) **latest Kiwi v0.23.2는 kiwi-rs 0.1.4 바인딩과 ABI 불일치 → native ACCESS_VIOLATION**. 해법 = **Kiwi v0.22.2**(0.1.4 README가 겨냥) 수동 설치. `Kiwi::init()`이 discovery(KIWI_LIBRARY_PATH/KIWI_MODEL_PATH 또는 **%LOCALAPPDATA%\kiwi** 기본)를 bootstrap보다 먼저 봄 → 수동 배치로 깨진 다운로드 우회. **설치:** `gh release download v0.22.2 --repo bab2min/Kiwi`로 kiwi_win_x64_v0.22.2.zip(→lib/kiwi.dll) + kiwi_model_v0.22.2_base.tgz(→models/cong/base)를 %LOCALAPPDATA%\kiwi에 추출(`scripts/install-kiwi-windows.sh`). env 불필요. 미설치 시 lindera 폴백. 문서 docs/reference/kiwi-windows-setup.md. **주의: v0.23.2 쓰지 말 것(crash).** Kiwi keep-tags는 base 매칭(VA-I/VV-I 변종). Kiwi도 외래어 음절분할하나 Plan 18 raw+prefix가 FTS 커버.
+- **README:** 사용자가 깃헙에서 전면 리라이트(어투 개선) → 로컬 분기와 충돌 → merge에서 사용자 리라이트 채택 + 로드맵 정정·"좌석"→"참가자"·Kiwi 안내만 재적용(`5b8cd36`). origin 동기화됨. "좌석"은 코드(SeatConfig)·일부 plan 문서엔 잔존(내부라 미변경).
+- **미반영 후속:** ctx-handle/요약 carry-forward(item 4, enhancement) · opencode CLI 참가자 · 리치 프론트(보류) · 검색 품질 추가 개선(현실 코퍼스 측정).
