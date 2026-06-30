@@ -178,4 +178,16 @@
 - 사용자 핵심 요구: 에이전트가 서로 맥락을 **능동적으로 기억·검색**, 단기(세션)~프로젝트 모든 층. Redis·SQLite 적극, 필요시 vector DB. 설계문서 `docs/design/v2-context-memory-direction_2026-06-30.md`.
 - 핵심 전환: "전사 통째 재주입" -> "검색해 관련 슬라이스만 주입(RAG)". 현재 build_round_prompt가 통째 재주입 = 스케일 병목.
 - **재주입 vs Redis 구분(사용자 질문):** Redis(Plan 06)는 cross-process 전송/캐시 + 라이브일 뿐, 프롬프트 조립을 안 바꿈 = 재주입 자체를 안 줄임. 재주입 감소 = (a)handle(참조 전달, 온디맨드 expand: Redis 강점) + (b)관련성 검색(vanilla Redis는 전문/의미검색 없음 -> SQLite FTS / vector / RediSearch). 둘 다 아직 미구현(현 Redis는 미러/observe/resume만).
-- 저장소 계층: Redis=핫+handle+pubsub / SQLite=시스템오브레코드+FTS 백본 / vector=의미검색 입증 시 마지막. 첫 스텝 = 미정(재주입감소 먼저 vs SQLite+FTS 먼저, 사용자와 조율 중).
+- 저장소 계층: Redis=핫+handle+pubsub / SQLite=시스템오브레코드+FTS 백본 / vector=의미검색.
+
+## 한국어 검색 정답 = secall 포팅 (2026-06-30)
+
+- tuna 단골 "한국어 FTS 형태소" 정답이 secall 코드에 있음. 재발명 금지, 포팅. 메모리 [[korean-search-port-secall]].
+- 해법: 형태소 분석기로 선-토크나이즈 -> FTS5(unicode61)에 공백조인 저장("검색을"->"검색"). keep-tags NNG/NNP/NNB/VV/VA/SL(외국어=영어·코드 살림). + BGE-M3 벡터 + 하이브리드(BM25+ANN).
+- **Kiwi 메인(품질)**, lindera 폴백. lindera 폴백은 secall 초기 Mac kiwi 컴파일 이슈 잔재(현재 mac에서 Kiwi 동작). tunaSalon은 lindera-only lift라 그것만 보였던 것.
+- **임베딩 = 원격 Ollama(로컬 ORT 대체):** SSH 터널 `-L 11435:127.0.0.1:11434` -> `/api/embed` model bge-m3. Embedder=reqwest HTTP + MockEmbedder 폴백. 무거운 ONNX 의존 제거. 터널 떠 있어야 동작, 원격 bge-m3 pull 필요.
+- 진화: tunaFlow(vector_search) -> secall(hybrid 정본) -> tunaSalon(lindera+BGE-M3 경량). 설계 v2-context-memory-direction_2026-06-30.md.
+
+## v2 Plan 08 한국어 토크나이저 착수 (2026-06-30)
+
+- secall `tokenizer.rs` 포팅(Tokenizer trait + Kiwi + lindera + factory), String 에러/eprintln 적응(anyhow/tracing 미도입), `morphology` feature 게이트(기본 빌드 무영향). Task 1=lindera(안전), Task 2=Kiwi(컴파일 risk-gate). 격리 모듈, 미배선. 다음=SQLite FTS 선-형태소화.

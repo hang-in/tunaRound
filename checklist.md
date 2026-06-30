@@ -79,6 +79,18 @@
 - [x] Task 1: /debate 파싱 (N턴, 기본 3, 최대 10) (c5b9339)
 - [x] Task 2: Session::step 바운드 자동 교환 루프 (run_round N회) (01b8860) — Plan 07 완료, 69 테스트(66+3 ignored), build/clippy 클린
 
+## v2 능동 검색/맥락 (북극성, secall 포팅) — docs/design/v2-context-memory-direction_2026-06-30.md
+
+### Plan 08: 한국어 토크나이저 (docs/plans/v2-08-ko-tokenizer.md) — feat/v2-ko-tokenizer
+
+- [ ] Task 1: 의존성(kiwi-rs/lindera, morphology feature) + lindera 경로 + factory
+- [ ] Task 2: Kiwi 경로 + 메인 백엔드 (kiwi-rs 컴파일 risk-gate)
+
+### 후속 (검색 레이어)
+- [ ] SQLite 시스템오브레코드 + FTS5(선-형태소화 저장)
+- [ ] 벡터: 원격 Ollama(SSH 터널 11435, bge-m3) reqwest 임베더 + ANN
+- [ ] 하이브리드 융합(BM25+벡터) + 검색 주입(통째 재주입 -> 관련 슬라이스)
+
 ## v2 백로그 (착수 전 결정 필요)
 - [ ] 분리 터미널 A2A 협업(MCP+버스, 자율 핸드오프) — turn-triggering 난제, 큰 과제
 - [ ] 신규 엔진 러너(tunaLlama·opencode 좌석) — 외부 CLI 통합. 로스터는 이미 N-ready
