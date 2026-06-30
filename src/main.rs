@@ -231,30 +231,14 @@ fn main() {
         return;
     }
 
-    // --core <addr> 모드: REPL + in-process HTTP MCP 코어(front=core 단일 프로세스. serve 피처 전용).
-    // serve-mcp(헤드리스)와 달리 return하지 않고, 로컬 좌석을 자기 코어에 HTTP로 배선한 뒤 REPL로 진행한다.
+    // --core <addr> 모드(serve 전용): 로컬 좌석을 in-process 코어에 HTTP로 배선한다.
+    // 실제 서버 spawn + REPL core-sync 배선은 participants 빌드 후(아래)에서 한다(로스터 주입 위해).
     #[cfg(feature = "serve")]
     if let Some(addr) = core_addr.clone() {
-        let db_str = match &db_path {
-            Some(p) => p.clone(),
-            None => { eprintln!("[core] --core는 --db <경로>가 필요합니다"); std::process::exit(1); }
-        };
-        let (retriever_arc, reader_arc, writer_arc) = build_http_mcp_backends("core", &db_str);
-        // bind 동기 선행: 포트 경합을 REPL 진입 전에 fail-fast.
-        let listener = match rt.block_on(tokio::net::TcpListener::bind(&addr)) {
-            Ok(l) => l,
-            Err(e) => { eprintln!("[core] 바인드 실패({addr}): {e}"); std::process::exit(1); }
-        };
-        let serve_tok = serve_token.clone();
-        // HTTP MCP 코어를 rt 워커 스레드에 백그라운드 서빙(메인은 블로킹 REPL).
-        // post_turn 활성(원격 참가자 쓰기). 로스터는 후속(Task 4)에서 주입. REPL 병합은 core-sync(Task 3).
-        rt.spawn(async move {
-            if let Err(e) = tunaround::mcp::serve_http_mcp_on_listener(
-                listener, retriever_arc, reader_arc, Some(writer_arc), None, serve_tok,
-            ).await {
-                eprintln!("[core] HTTP MCP 서버 종료: {e}");
-            }
-        });
+        if db_path.is_none() {
+            eprintln!("[core] --core는 --db <경로>가 필요합니다");
+            std::process::exit(1);
+        }
         // 로컬 좌석을 in-process 코어에 배선(명시 --search-url이 있으면 그쪽 우선).
         if search_url.is_some() {
             eprintln!("[core] 명시 --search-url이 있어 로컬 좌석은 그 URL을 사용합니다(코어는 {addr}에서 원격용으로 서빙).");
@@ -324,6 +308,18 @@ fn main() {
             (parts, reg)
         }
     };
+
+    // --core 로스터 스냅샷: participants가 session에 이동되기 전 좌석 구성을 캡처(get_roster 노출용).
+    #[cfg(feature = "serve")]
+    let core_roster: Option<Vec<tunaround::orchestrator::RosterSeat>> = core_addr.as_ref().map(|_| {
+        participants
+            .iter()
+            .map(|p| tunaround::orchestrator::RosterSeat {
+                engine: p.engine.clone(),
+                role: p.role.clone(),
+            })
+            .collect()
+    });
 
     // bus 핸들 준비: TUNAROUND_REDIS_URL 없으면 None(기존 동작 불변).
     // RedisBusHandle::spawn은 tokio::spawn을 내부 호출하므로 rt.enter() 가드 안에서 생성.
@@ -514,6 +510,54 @@ fn main() {
 
     // retriever + recent_turns + context_mode 1회 배선(session 생성 if/else 이후 단일 적용).
     let mut session = session.with_retriever(retriever).with_recent_turns(recent_turns).with_context_mode(context_mode);
+
+    // --core 배선(participants/session 빌드 후): seed→코어 DB 권위 반영 → HTTP MCP 서버 spawn(로스터 주입)
+    //  → REPL core-sync 연결. 이 순서라야 로스터 스냅샷과 권위 트리가 일관된다.
+    #[cfg(feature = "serve")]
+    if let Some(addr) = core_addr.clone() {
+        let db_str = db_path.clone().expect("--core는 위에서 --db를 검증함");
+        // seed(파일/redis 재개)가 있으면 코어 DB에 먼저 전량 반영해 DB를 단일 권위로 만든다
+        // (이후 core-sync adopt가 DB를 채택하므로 seed 유실/이드 충돌 방지).
+        if session.message_count() > 0 {
+            match tunaround::store::sqlite::SqliteStore::open(&db_str) {
+                Ok(store) => {
+                    let tok = build_index_tokenizer("core");
+                    if let Err(e) = store.save_session(&sid, &session.to_stored(), |t| tok(t)) {
+                        eprintln!("[core] seed 코어 DB 반영 실패: {e}");
+                    }
+                }
+                Err(e) => eprintln!("[core] seed 반영용 DB 열기 실패: {e}"),
+            }
+        }
+        // HTTP MCP 코어 백엔드 + 전용 스레드(자체 런타임 block_on) 서빙(로스터 포함).
+        let (retriever_arc, reader_arc, writer_arc) = build_http_mcp_backends("core", &db_str);
+        let serve_tok = serve_token.clone();
+        let addr_owned = addr.clone();
+        // 메인 스레드는 동기 블로킹 REPL(std stdin)이라 공유 rt에 spawn하면 서버 accept 루프가
+        // 유휴 중 간헐적으로만 구동된다(신뢰 불가). 전용 OS 스레드의 자체 런타임 block_on이 서버를
+        // 계속 구동해 원격 클라이언트(curl·에이전트)에 안정적으로 응답한다.
+        std::thread::spawn(move || {
+            let srt = match tokio::runtime::Runtime::new() {
+                Ok(r) => r,
+                Err(e) => { eprintln!("[core] 서버 런타임 생성 실패: {e}"); return; }
+            };
+            srt.block_on(async move {
+                if let Err(e) = tunaround::mcp::start_http_mcp_server(
+                    &addr_owned, retriever_arc, reader_arc, Some(writer_arc), core_roster, serve_tok,
+                ).await {
+                    eprintln!("[core] HTTP MCP 서버 종료: {e}");
+                }
+            });
+        });
+        // REPL core-sync: 코어 DB(--db)를 권위로 삼아 매 라운드 adopt + append_turn 쓰기.
+        match tunaround::store::sqlite::SqliteStore::open(&db_str) {
+            Ok(store) => {
+                let core_sync = tunaround::store::retriever::SqliteCoreSync::new(store, build_index_tokenizer("core"));
+                session = session.with_core_sync(Some(Box::new(core_sync)));
+            }
+            Err(e) => eprintln!("[core] core-sync DB 열기 실패(병합 비활성): {e}"),
+        }
+    }
 
     println!("tunaRound - 메시지를 입력하세요. /help, /save, /quit.");
     let stdin = io::stdin();

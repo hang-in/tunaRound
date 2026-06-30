@@ -335,6 +335,120 @@ mod tests {
         /// initialize 요청 본문(MCP 2025-03-26 프로토콜).
         const INIT_BODY: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}"#;
 
+        /// 공유 벡터를 쓰는 가짜 writer + 읽는 가짜 reader(HTTP 통합 e2e용).
+        #[derive(Clone, Default)]
+        struct SharedLog(std::sync::Arc<std::sync::Mutex<Vec<(String, String)>>>);
+        impl crate::orchestrator::TranscriptWriter for SharedLog {
+            fn append_turn(&self, _sid: &str, speaker: &str, content: &str) -> Result<u64, String> {
+                let mut v = self.0.lock().unwrap();
+                v.push((speaker.to_string(), content.to_string()));
+                Ok(v.len() as u64)
+            }
+        }
+        impl crate::orchestrator::TranscriptReader for SharedLog {
+            fn read_transcript(&self, _sid: &str, _max: Option<usize>) -> Vec<crate::orchestrator::Utterance> {
+                self.0
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .map(|(s, c)| crate::orchestrator::Utterance { speaker: s.clone(), content: c.clone() })
+                    .collect()
+            }
+        }
+
+        /// tools/call 본문 생성.
+        fn call_body(id: u32, name: &str, args: &str) -> String {
+            format!(
+                r#"{{"jsonrpc":"2.0","id":{id},"method":"tools/call","params":{{"name":"{name}","arguments":{args}}}}}"#
+            )
+        }
+
+        /// HTTP MCP로 get_roster·post_turn·read_transcript를 실제 왕복 검증한다.
+        /// 핸드셰이크: initialize→(mcp-session-id 캡처)→initialized→tools/call들.
+        #[tokio::test]
+        async fn http_post_turn_get_roster_read_transcript_e2e() {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+            let port = listener.local_addr().unwrap().port();
+
+            let log = SharedLog::default();
+            let retriever = Arc::new(NullRetriever) as Arc<dyn crate::orchestrator::ContextRetriever>;
+            let reader = Some(Arc::new(log.clone()) as Arc<dyn crate::orchestrator::TranscriptReader>);
+            let writer = Some(Arc::new(log.clone()) as Arc<dyn crate::orchestrator::TranscriptWriter>);
+            let roster = Some(vec![
+                RosterSeat { engine: "claude".into(), role: Some("proposer".into()) },
+                RosterSeat { engine: "codex".into(), role: Some("reviewer".into()) },
+            ]);
+            tokio::spawn(async move {
+                let _ = serve_http_mcp_on_listener(listener, retriever, reader, writer, roster, None).await;
+            });
+            tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+
+            let client = reqwest::Client::new();
+            let url = format!("http://127.0.0.1:{port}/mcp");
+            let accept = "application/json, text/event-stream";
+
+            // initialize → mcp-session-id 헤더 캡처.
+            let init = client
+                .post(&url)
+                .header("Content-Type", "application/json")
+                .header("Accept", accept)
+                .body(INIT_BODY)
+                .send()
+                .await
+                .expect("init");
+            assert_eq!(init.status(), 200);
+            let sid = init
+                .headers()
+                .get("mcp-session-id")
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_string())
+                .expect("mcp-session-id 헤더 필요");
+
+            // initialized 알림(세션 헤더 포함).
+            let _ = client
+                .post(&url)
+                .header("Content-Type", "application/json")
+                .header("Accept", accept)
+                .header("mcp-session-id", &sid)
+                .body(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#)
+                .send()
+                .await
+                .expect("initialized");
+
+            let post = |body: String| {
+                let client = client.clone();
+                let url = url.clone();
+                let sid = sid.clone();
+                async move {
+                    client
+                        .post(&url)
+                        .header("Content-Type", "application/json")
+                        .header("Accept", accept)
+                        .header("mcp-session-id", &sid)
+                        .body(body)
+                        .send()
+                        .await
+                        .expect("call")
+                        .text()
+                        .await
+                        .expect("text")
+                }
+            };
+
+            // get_roster → 좌석 목록.
+            let roster_text = post(call_body(2, "get_roster", "{}")).await;
+            assert!(roster_text.contains("claude (proposer)"), "get_roster 응답: {roster_text}");
+
+            // post_turn → 추가됨.
+            let post_text =
+                post(call_body(3, "post_turn", r#"{"speaker":"remote/agent","content":"원격 발언 핵심어 살구"}"#)).await;
+            assert!(post_text.contains("msg_id="), "post_turn 응답: {post_text}");
+
+            // read_transcript → 방금 post한 발언이 보임(쓰기→읽기 일관).
+            let read_text = post(call_body(4, "read_transcript", "{}")).await;
+            assert!(read_text.contains("살구"), "read_transcript에 post_turn 내용 없음: {read_text}");
+        }
+
         #[test]
         fn core_local_url_maps_wildcards_to_loopback() {
             // 와일드카드 host는 loopback으로, 일반 host는 그대로.

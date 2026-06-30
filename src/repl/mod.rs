@@ -428,6 +428,11 @@ impl Session {
             .unwrap_or_default()
     }
 
+    /// 현재 인메모리 트리를 StoredSession으로 복제한다(--core seed를 코어 DB에 권위로 반영할 때 사용).
+    pub fn to_stored(&self) -> StoredSession {
+        StoredSession { messages: self.messages.clone(), head: self.head }
+    }
+
     /// 상태 파일에서 트리를 로드해 세션을 복원한다. 레거시 bare-array 포맷도 지원한다.
     pub fn resume(
         participants: Vec<Participant>,
