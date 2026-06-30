@@ -37,6 +37,11 @@ pub trait RunnerRegistry {
     fn get(&self, engine: &str) -> Option<&dyn Runner>;
 }
 
+/// topic으로 관련 과거 맥락 슬라이스를 끌어오는 경계(RunnerRegistry와 동형, 비게이트).
+pub trait ContextRetriever {
+    fn retrieve(&self, query: &str, limit: usize) -> Vec<Utterance>;
+}
+
 /// HashMap 기반 기본 레지스트리. 테스트는 FakeRunner를 넣는다.
 pub struct MapRegistry {
     runners: HashMap<String, Box<dyn Runner>>,
@@ -67,18 +72,20 @@ impl RunnerRegistry for MapRegistry {
 /// 각 자리를 순서대로 호출하되, 뒤 자리는 같은 라운드 앞 응답을 본다(순차-인지).
 /// transcript는 이전 라운드들이며, 이번 라운드 응답이 끝에 append된다.
 /// mode는 호출자가 지정(말하기=ReadOnly, 사람이 지목한 쓰기 턴=Write).
+/// retrieved는 검색으로 끌어온 과거 맥락 슬라이스(비면 무영향, 동작 불변).
 pub fn run_round(
     participants: &[Participant],
     transcript: &mut Vec<Utterance>,
     topic: &str,
     registry: &dyn RunnerRegistry,
     mode: RunMode,
+    retrieved: &[Utterance],
 ) -> Result<Vec<Utterance>, RunError> {
     let prior: Vec<Utterance> = transcript.clone();
     let mut same_round: Vec<Utterance> = Vec::new();
 
     for part in participants {
-        let prompt = build_round_prompt(part, topic, &prior, &same_round);
+        let prompt = build_round_prompt(part, topic, &prior, &same_round, retrieved);
         let runner = registry
             .get(&part.engine)
             .ok_or_else(|| RunError::Spawn(format!("엔진 러너 없음: {}", part.engine)))?;

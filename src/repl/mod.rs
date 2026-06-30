@@ -235,7 +235,7 @@ impl Session {
             },
             Command::Message(text) => {
                 let mut path = self.active_path();
-                match run_round(&self.participants, &mut path, &text, self.registry.as_ref(), RunMode::ReadOnly) {
+                match run_round(&self.participants, &mut path, &text, self.registry.as_ref(), RunMode::ReadOnly, &[]) {
                     Ok(round) => { self.append_round(&round); StepOutcome::Print(render(&round)) }
                     Err(e) => StepOutcome::Print(format!("[에러] {e:?}")),
                 }
@@ -247,7 +247,7 @@ impl Session {
                     return StepOutcome::Print(format!("그런 자리가 없습니다: {engine}"));
                 }
                 let mut path = self.active_path();
-                match run_round(&seats, &mut path, &text, self.registry.as_ref(), RunMode::ReadOnly) {
+                match run_round(&seats, &mut path, &text, self.registry.as_ref(), RunMode::ReadOnly, &[]) {
                     Ok(round) => { self.append_round(&round); StepOutcome::Print(render(&round)) }
                     Err(e) => StepOutcome::Print(format!("[에러] {e:?}")),
                 }
@@ -259,7 +259,7 @@ impl Session {
                     return StepOutcome::Print(format!("그런 자리가 없습니다: {engine}"));
                 }
                 let mut path = self.active_path();
-                match run_round(&seats, &mut path, &text, self.registry.as_ref(), RunMode::Write) {
+                match run_round(&seats, &mut path, &text, self.registry.as_ref(), RunMode::Write, &[]) {
                     Ok(round) => { self.append_round(&round); StepOutcome::Print(render(&round)) }
                     Err(e) => StepOutcome::Print(format!("[에러] {e:?}")),
                 }
@@ -275,7 +275,7 @@ impl Session {
                     instruction: String::new(),
                 }];
                 let mut path = self.active_path();
-                match run_round(&synth, &mut path, "지금까지의 토론을 종합해 결론을 정리해줘.", self.registry.as_ref(), RunMode::ReadOnly) {
+                match run_round(&synth, &mut path, "지금까지의 토론을 종합해 결론을 정리해줘.", self.registry.as_ref(), RunMode::ReadOnly, &[]) {
                     Ok(round) => { self.append_round(&round); StepOutcome::Print(render(&round)) }
                     Err(e) => StepOutcome::Print(format!("[에러] {e:?}")),
                 }
@@ -289,7 +289,7 @@ impl Session {
                         "지금까지의 논의를 이어서, 앞 발언에 반박하거나 더 깊이 들어가줘. 새 주제를 꺼내지 말고 수렴을 시도해줘.".to_string()
                     };
                     let mut path = self.active_path();
-                    match run_round(&self.participants, &mut path, &round_topic, self.registry.as_ref(), RunMode::ReadOnly) {
+                    match run_round(&self.participants, &mut path, &round_topic, self.registry.as_ref(), RunMode::ReadOnly, &[]) {
                         Ok(round) => {
                             self.append_round(&round);
                             out.push_str(&format!("### 라운드 {}\n{}\n\n", k + 1, render(&round)));

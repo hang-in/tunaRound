@@ -17,16 +17,21 @@ fn join_utterances(utts: &[Utterance]) -> String {
 }
 
 /// 한 자리의 라운드 프롬프트를 조립한다.
-/// 순서: 역할 지시 → (이전 라운드) → (이번 라운드 앞 자리 = 순차-인지) → 주제.
+/// 순서: 역할 지시 → (검색 맥락) → (이전 라운드) → (이번 라운드 앞 자리 = 순차-인지) → 주제.
 /// 빈 컨텍스트면 주제만. role/instruction이 없으면 해당 섹션 생략.
+/// retrieved가 비어있지 않으면 prior 앞에 "참고할 만한 과거 맥락(검색)" 섹션을 추가한다.
 pub fn build_round_prompt(
     participant: &Participant,
     topic: &str,
     prior: &[Utterance],
     same_round: &[Utterance],
+    retrieved: &[Utterance],
 ) -> String {
     let mut sections: Vec<String> = Vec::new();
     // [v1.x] consensus carry-forward: 합의 추출 후 여기에 "이미 합의된 사항(전제)" 섹션 주입. 삭제 금지.
+    if !retrieved.is_empty() {
+        sections.push(format!("참고할 만한 과거 맥락(검색):\n\n{}", join_utterances(retrieved)));
+    }
     if !prior.is_empty() {
         sections.push(format!("이전 라운드 응답:\n\n{}", join_utterances(prior)));
     }
@@ -70,7 +75,7 @@ mod tests {
 
     #[test]
     fn prompt_includes_role_directive_and_topic() {
-        let out = build_round_prompt(&p("claude", Some("reviewer")), "이 설계 어떤가요?", &[], &[]);
+        let out = build_round_prompt(&p("claude", Some("reviewer")), "이 설계 어떤가요?", &[], &[], &[]);
         assert!(out.contains("## Your role"));
         assert!(out.contains("verdict"));
         assert!(out.contains("이 설계 어떤가요?"));
@@ -79,7 +84,7 @@ mod tests {
     #[test]
     fn prompt_sequential_aware_includes_same_round_responses() {
         let same = vec![Utterance { speaker: "claude/architect".into(), content: "API부터 잡자".into() }];
-        let out = build_round_prompt(&p("codex", Some("reviewer")), "주제", &[], &same);
+        let out = build_round_prompt(&p("codex", Some("reviewer")), "주제", &[], &same, &[]);
         assert!(out.contains("이번 라운드 다른 에이전트 답변"));
         assert!(out.contains("API부터 잡자"));
         assert!(out.contains("claude/architect"));
@@ -88,7 +93,7 @@ mod tests {
     #[test]
     fn prompt_includes_prior_rounds() {
         let prior = vec![Utterance { speaker: "codex".into(), content: "지난 결론".into() }];
-        let out = build_round_prompt(&p("claude", None), "주제", &prior, &[]);
+        let out = build_round_prompt(&p("claude", None), "주제", &prior, &[], &[]);
         assert!(out.contains("이전 라운드 응답"));
         assert!(out.contains("지난 결론"));
     }
@@ -97,7 +102,22 @@ mod tests {
     fn prompt_appends_instruction() {
         let mut part = p("claude", Some("proposer"));
         part.instruction = "API 설계에 집중".into();
-        let out = build_round_prompt(&part, "주제", &[], &[]);
+        let out = build_round_prompt(&part, "주제", &[], &[], &[]);
         assert!(out.contains("API 설계에 집중"));
+    }
+
+    #[test]
+    fn prompt_includes_retrieved_context_section() {
+        let retrieved = vec![Utterance { speaker: "codex/reviewer".into(), content: "과거 분기 결론".into() }];
+        let out = build_round_prompt(&p("claude", None), "주제", &[], &[], &retrieved);
+        assert!(out.contains("참고할 만한 과거 맥락"));
+        assert!(out.contains("과거 분기 결론"));
+    }
+
+    #[test]
+    fn prompt_empty_retrieved_is_unchanged() {
+        // retrieved=&[] -> 검색 섹션 없음(기존과 동일).
+        let out = build_round_prompt(&p("claude", None), "주제", &[], &[], &[]);
+        assert!(!out.contains("참고할 만한 과거 맥락"));
     }
 }
