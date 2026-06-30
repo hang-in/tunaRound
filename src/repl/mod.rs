@@ -13,6 +13,7 @@ pub enum Command {
     Only { engine: String, text: String },
     Write { engine: String, text: String },
     Debate { turns: usize, topic: String },
+    Search(String),
     Branches,
     Checkout(u64),
     Help,
@@ -35,6 +36,10 @@ pub fn parse_command(line: &str) -> Command {
             "help" | "h" => Command::Help,
             "save" => Command::Save(arg.filter(|s| !s.is_empty())),
             "conclude" => Command::Conclude(arg.filter(|s| !s.is_empty())),
+            "search" => match arg.filter(|s| !s.is_empty()) {
+                Some(q) => Command::Search(q),
+                None => Command::Message(line.to_string()),
+            },
             "branches" | "tree" => Command::Branches,
             "checkout" | "co" => match arg.as_deref().and_then(|a| a.trim().parse::<u64>().ok()) {
                 Some(id) => Command::Checkout(id),
@@ -249,7 +254,7 @@ impl Session {
             Command::Quit => StepOutcome::Exit,
             Command::Noop => StepOutcome::Noop,
             Command::Help => StepOutcome::Print(
-                "메시지를 입력하면 두 에이전트가 응답합니다. @engine 메시지로 한 자리만 지목(읽기), @engine! 메시지로 쓰기 턴(에이전트가 레포 편집), /debate [n] <주제>로 에이전트 N턴 자동 교환(기본 3, 최대 10), /conclude [engine] 종합, /save [경로] 결과 저장, /branches 트리 목록, /checkout <id> 분기 전환, /quit 종료.".into(),
+                "메시지를 입력하면 두 에이전트가 응답합니다. @engine 메시지로 한 자리만 지목(읽기), @engine! 메시지로 쓰기 턴(에이전트가 레포 편집), /debate [n] <주제>로 에이전트 N턴 자동 교환(기본 3, 최대 10), /conclude [engine] 종합, /save [경로] 결과 저장, /search <질의>로 인덱스 검색(--db 필요), /branches 트리 목록, /checkout <id> 분기 전환, /quit 종료.".into(),
             ),
             Command::Save(path) => StepOutcome::Save {
                 path: path.unwrap_or_else(|| DEFAULT_SAVE_PATH.to_string()),
@@ -328,6 +333,20 @@ impl Session {
                     }
                 }
                 StepOutcome::Print(out)
+            }
+            Command::Search(q) => {
+                const SEARCH_K: usize = 10;
+                match &self.retriever {
+                    None => StepOutcome::Print("검색이 비활성화돼 있습니다. --db <경로>로 실행하면 인덱스를 검색할 수 있습니다.".into()),
+                    Some(r) => {
+                        let hits = r.retrieve(&q, SEARCH_K);
+                        if hits.is_empty() {
+                            StepOutcome::Print(format!("검색 결과 없음: {q}"))
+                        } else {
+                            StepOutcome::Print(format!("검색 결과({}건):\n\n{}", hits.len(), render(&hits)))
+                        }
+                    }
+                }
             }
             Command::Branches => StepOutcome::Print(crate::store::tree_summary(&self.messages, self.head)),
             Command::Checkout(id) => {
@@ -685,5 +704,36 @@ mod tests {
         let mut s = session_with_two_seats(); // indexer 없음
         let _ = s.step(Command::Message("주제".into()));
         assert_eq!(s.transcript_len(), 2); // 기존 동작 불변
+    }
+
+    #[test]
+    fn parses_search() {
+        assert_eq!(parse_command("/search 검색 시스템"), Command::Search("검색 시스템".into()));
+        // 인자 없으면 일반 메시지로 폴스루(기존 명령 패턴)
+        assert_eq!(parse_command("/search"), Command::Message("/search".into()));
+    }
+
+    #[test]
+    fn step_search_without_retriever_explains() {
+        let mut s = session_with_two_seats(); // retriever 없음
+        match s.step(Command::Search("아무거나".into())) {
+            StepOutcome::Print(t) => assert!(t.contains("검색") && t.contains("--db")),
+            other => panic!("got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn step_search_with_retriever_renders_hits() {
+        // FakeRetriever(고정 Utterance 반환)로 검색 결과 렌더 확인.
+        struct FakeRetriever(Vec<Utterance>);
+        impl crate::orchestrator::ContextRetriever for FakeRetriever {
+            fn retrieve(&self, _q: &str, _l: usize) -> Vec<Utterance> { self.0.clone() }
+        }
+        let hits = vec![Utterance { speaker: "claude/proposer".into(), content: "검색 시스템 설계".into() }];
+        let mut s = session_with_two_seats().with_retriever(Some(Box::new(FakeRetriever(hits))));
+        match s.step(Command::Search("검색".into())) {
+            StepOutcome::Print(t) => { assert!(t.contains("검색 시스템 설계")); assert!(t.contains("claude/proposer")); }
+            other => panic!("got {other:?}"),
+        }
     }
 }
