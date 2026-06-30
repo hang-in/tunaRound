@@ -1,5 +1,5 @@
 // 터미널 REPL. 명령 파싱·렌더·세션 step. I/O는 main.rs.
-use crate::orchestrator::{run_round, ContextMode, Participant, RunnerRegistry, Utterance};
+use crate::orchestrator::{run_round, ContextMode, Participant, RoundInput, RunnerRegistry, Utterance};
 use crate::runner::RunMode;
 use crate::session_bus::SessionBus;
 use crate::store::{StoredMessage, StoredSession};
@@ -138,6 +138,18 @@ const DEFAULT_SAVE_PATH: &str = "tunaround-discussion.md";
 /// retrieve_for가 검색 시 끌어올 최대 슬라이스 수.
 const RETRIEVE_K: usize = 5;
 
+/// step이 active_path를 한 번만 계산해 파생하는 라운드 맥락 묶음.
+struct RoundContext {
+    /// run_round에 넘길 prior 슬라이스(recent_turns 적용 후).
+    prior: Vec<Utterance>,
+    /// 드롭된 옛 턴의 압축 요약.
+    carried: String,
+    /// 활성 경로 전체 발언 수(포인터 힌트용).
+    transcript_len: usize,
+    /// retrieve_for dedup 전용: 전체 활성 경로.
+    full_path: Vec<Utterance>,
+}
+
 /// 한 토론 세션. 참가자 + in-store 트리(messages+head) + 러너 레지스트리를 보유한다.
 pub struct Session {
     participants: Vec<Participant>,
@@ -197,24 +209,25 @@ impl Session {
         self
     }
 
-    /// run_round에 넘길 prior 슬라이스. recent_turns Some(n)이면 활성 경로 마지막 n턴만, 아니면 전체.
-    pub fn prior_for_prompt(&self) -> Vec<Utterance> {
-        let p = self.active_path();
+    /// recent_turns를 적용해 prior 슬라이스를 반환한다. path를 받으므로 active_path 재호출 없음.
+    fn prior_from_path(&self, path: Vec<Utterance>) -> Vec<Utterance> {
         match self.recent_turns {
-            Some(n) if p.len() > n => p[p.len() - n..].to_vec(),
-            _ => p,
+            Some(n) if path.len() > n => path[path.len() - n..].to_vec(),
+            _ => path,
         }
     }
 
-    /// 프롬프트에서 빠진 전사를 결정적 압축 요약으로 반환한다(LLM·임베더 미사용).
-    /// Pull 모드: 전사 전체가 프롬프트에서 빠지므로 전체를 요약한다(안전망, MAX_CARRY로 평평하게 캡).
-    /// Push 모드: recent_turns 밖으로 드롭된 옛 턴만 요약(None이거나 path<=n이면 드롭 없음 → 빈 문자열).
-    /// 초과 시 최근 턴 우선 유지, 맨 앞에 "(이전 N턴 생략)" 표기.
-    pub fn carry_forward_digest(&self) -> String {
+    /// run_round에 넘길 prior 슬라이스. recent_turns Some(n)이면 활성 경로 마지막 n턴만, 아니면 전체.
+    pub fn prior_for_prompt(&self) -> Vec<Utterance> {
         let path = self.active_path();
+        self.prior_from_path(path)
+    }
+
+    /// carry_forward_digest의 path 파라미터 버전. active_path 재호출 없이 호출 가능.
+    fn carry_forward_digest_from_path(&self, path: &[Utterance]) -> String {
         let dropped: &[Utterance] = match self.context_mode {
             // Pull: prior를 통째로 안 넣으니 전사 전체가 요약 대상이다.
-            ContextMode::Pull => &path,
+            ContextMode::Pull => path,
             // Push: recent_turns 밖만 드롭. 미캡(None)이거나 path<=n이면 드롭 없음.
             ContextMode::Push => match self.recent_turns {
                 Some(n) if path.len() > n => &path[..path.len() - n],
@@ -266,16 +279,40 @@ impl Session {
         }
     }
 
-    /// topic으로 retriever를 검색하고 활성 경로 중복을 제외한 슬라이스를 반환한다.
-    /// retriever 없으면 빈 Vec(기존 동작 불변).
-    fn retrieve_for(&self, topic: &str) -> Vec<Utterance> {
+    /// 프롬프트에서 빠진 전사를 결정적 압축 요약으로 반환한다(LLM·임베더 미사용).
+    /// Pull 모드: 전사 전체가 프롬프트에서 빠지므로 전체를 요약한다(안전망, MAX_CARRY로 평평하게 캡).
+    /// Push 모드: recent_turns 밖으로 드롭된 옛 턴만 요약(None이거나 path<=n이면 드롭 없음 → 빈 문자열).
+    /// 초과 시 최근 턴 우선 유지, 맨 앞에 "(이전 N턴 생략)" 표기.
+    pub fn carry_forward_digest(&self) -> String {
+        let path = self.active_path();
+        self.carry_forward_digest_from_path(&path)
+    }
+
+    /// step에서 active_path를 한 번만 계산해 prior·carried·transcript_len을 파생하는 헬퍼.
+    fn round_context(&self) -> RoundContext {
+        let full_path = self.active_path(); // 유일한 active_path 호출.
+        let carried = self.carry_forward_digest_from_path(&full_path);
+        let transcript_len = full_path.len();
+        let prior = self.prior_from_path(full_path.clone());
+        RoundContext { prior, carried, transcript_len, full_path }
+    }
+
+    /// retrieve_for의 path 파라미터 버전. active_path 재호출 없이 호출 가능.
+    fn retrieve_for_from_path(&self, topic: &str, active: &[Utterance]) -> Vec<Utterance> {
         let Some(r) = &self.retriever else { return Vec::new(); };
-        let active = self.active_path();
         r.retrieve(topic, RETRIEVE_K)
             .into_iter()
             // 활성 경로에 이미 있는 내용은 중복이므로 제외.
             .filter(|u| !active.iter().any(|a| a.content == u.content))
             .collect()
+    }
+
+    /// topic으로 retriever를 검색하고 활성 경로 중복을 제외한 슬라이스를 반환한다.
+    /// retriever 없으면 빈 Vec(기존 동작 불변). 테스트 전용(step은 retrieve_for_from_path를 직접 사용).
+    #[cfg(test)]
+    fn retrieve_for(&self, topic: &str) -> Vec<Utterance> {
+        let active = self.active_path();
+        self.retrieve_for_from_path(topic, &active)
     }
 
     /// Redis snapshot에서 트리 상태를 주입한다. main이 --session 재개 시 호출.
@@ -375,11 +412,11 @@ impl Session {
                 markdown: self.transcript_markdown(),
             },
             Command::Message(text) => {
-                let retrieved = self.retrieve_for(&text);
-                let mut path = self.prior_for_prompt();
-                let carried = self.carry_forward_digest();
-                let tlen = self.transcript_len();
-                match run_round(&self.participants, &mut path, &text, self.registry.as_ref(), RunMode::ReadOnly, &retrieved, &carried, self.context_mode, tlen) {
+                // active_path를 1회만 계산하고 prior·carried·tlen·dedup 모두 재사용.
+                let ctx = self.round_context();
+                let retrieved = self.retrieve_for_from_path(&text, &ctx.full_path);
+                let input = RoundInput { prior: &ctx.prior, retrieved: &retrieved, carried: &ctx.carried, ctx_mode: self.context_mode, transcript_len: ctx.transcript_len };
+                match run_round(&self.participants, &text, self.registry.as_ref(), RunMode::ReadOnly, input) {
                     Ok(round) => { self.append_round(&round); StepOutcome::Print(render(&round)) }
                     Err(e) => StepOutcome::Print(format!("[에러] {e:?}")),
                 }
@@ -390,11 +427,10 @@ impl Session {
                 if seats.is_empty() {
                     return StepOutcome::Print(format!("그런 자리가 없습니다: {engine}"));
                 }
-                let retrieved = self.retrieve_for(&text);
-                let mut path = self.prior_for_prompt();
-                let carried = self.carry_forward_digest();
-                let tlen = self.transcript_len();
-                match run_round(&seats, &mut path, &text, self.registry.as_ref(), RunMode::ReadOnly, &retrieved, &carried, self.context_mode, tlen) {
+                let ctx = self.round_context();
+                let retrieved = self.retrieve_for_from_path(&text, &ctx.full_path);
+                let input = RoundInput { prior: &ctx.prior, retrieved: &retrieved, carried: &ctx.carried, ctx_mode: self.context_mode, transcript_len: ctx.transcript_len };
+                match run_round(&seats, &text, self.registry.as_ref(), RunMode::ReadOnly, input) {
                     Ok(round) => { self.append_round(&round); StepOutcome::Print(render(&round)) }
                     Err(e) => StepOutcome::Print(format!("[에러] {e:?}")),
                 }
@@ -405,11 +441,10 @@ impl Session {
                 if seats.is_empty() {
                     return StepOutcome::Print(format!("그런 자리가 없습니다: {engine}"));
                 }
-                let retrieved = self.retrieve_for(&text);
-                let mut path = self.prior_for_prompt();
-                let carried = self.carry_forward_digest();
-                let tlen = self.transcript_len();
-                match run_round(&seats, &mut path, &text, self.registry.as_ref(), RunMode::Write, &retrieved, &carried, self.context_mode, tlen) {
+                let ctx = self.round_context();
+                let retrieved = self.retrieve_for_from_path(&text, &ctx.full_path);
+                let input = RoundInput { prior: &ctx.prior, retrieved: &retrieved, carried: &ctx.carried, ctx_mode: self.context_mode, transcript_len: ctx.transcript_len };
+                match run_round(&seats, &text, self.registry.as_ref(), RunMode::Write, input) {
                     Ok(round) => { self.append_round(&round); StepOutcome::Print(render(&round)) }
                     Err(e) => StepOutcome::Print(format!("[에러] {e:?}")),
                 }
@@ -424,11 +459,10 @@ impl Session {
                     role: Some("synthesizer".into()),
                     instruction: String::new(),
                 }];
-                let retrieved = self.retrieve_for("지금까지의 토론을 종합해 결론을 정리해줘.");
-                let mut path = self.prior_for_prompt();
-                let carried = self.carry_forward_digest();
-                let tlen = self.transcript_len();
-                match run_round(&synth, &mut path, "지금까지의 토론을 종합해 결론을 정리해줘.", self.registry.as_ref(), RunMode::ReadOnly, &retrieved, &carried, self.context_mode, tlen) {
+                let ctx = self.round_context();
+                let retrieved = self.retrieve_for_from_path("지금까지의 토론을 종합해 결론을 정리해줘.", &ctx.full_path);
+                let input = RoundInput { prior: &ctx.prior, retrieved: &retrieved, carried: &ctx.carried, ctx_mode: self.context_mode, transcript_len: ctx.transcript_len };
+                match run_round(&synth, "지금까지의 토론을 종합해 결론을 정리해줘.", self.registry.as_ref(), RunMode::ReadOnly, input) {
                     Ok(round) => { self.append_round(&round); StepOutcome::Print(render(&round)) }
                     Err(e) => StepOutcome::Print(format!("[에러] {e:?}")),
                 }
@@ -441,11 +475,11 @@ impl Session {
                     } else {
                         "지금까지의 논의를 이어서, 앞 발언에 반박하거나 더 깊이 들어가줘. 새 주제를 꺼내지 말고 수렴을 시도해줘.".to_string()
                     };
-                    let retrieved = self.retrieve_for(&round_topic);
-                    let mut path = self.prior_for_prompt();
-                    let carried = self.carry_forward_digest();
-                    let tlen = self.transcript_len();
-                    match run_round(&self.participants, &mut path, &round_topic, self.registry.as_ref(), RunMode::ReadOnly, &retrieved, &carried, self.context_mode, tlen) {
+                    // 매 라운드마다 새 발언이 추가되므로 active_path 재계산은 불가피.
+                    let ctx = self.round_context();
+                    let retrieved = self.retrieve_for_from_path(&round_topic, &ctx.full_path);
+                    let input = RoundInput { prior: &ctx.prior, retrieved: &retrieved, carried: &ctx.carried, ctx_mode: self.context_mode, transcript_len: ctx.transcript_len };
+                    match run_round(&self.participants, &round_topic, self.registry.as_ref(), RunMode::ReadOnly, input) {
                         Ok(round) => {
                             self.append_round(&round);
                             out.push_str(&format!("### 라운드 {}\n{}\n\n", k + 1, render(&round)));

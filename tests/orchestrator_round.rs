@@ -1,5 +1,6 @@
-// run_round가 자리들을 구동하고 전사를 누적하는지 FakeRunner로 검증(실 CLI 없음).
-use tunaround::orchestrator::{run_round, ContextMode, MapRegistry, Participant, Utterance};
+// run_round가 자리들을 구동하고 라운드 응답을 반환하는지 FakeRunner로 검증(실 CLI 없음).
+// transcript append는 호출자(Session::append_round) 책임이므로 여기서는 검증하지 않는다.
+use tunaround::orchestrator::{run_round, ContextMode, MapRegistry, Participant, RoundInput, Utterance};
 use tunaround::runner::{RunError, RunInput, RunMode, RunOutput, Runner};
 
 /// 고정 응답을 내는 가짜 러너.
@@ -13,7 +14,7 @@ impl Runner for FakeRunner {
 }
 
 #[test]
-fn run_round_drives_seats_and_accumulates_transcript() {
+fn run_round_drives_seats_and_returns_utterances() {
     let mut reg = MapRegistry::new();
     reg.insert("claude", Box::new(FakeRunner { reply: "아키텍트 의견".into() }));
     reg.insert("codex", Box::new(FakeRunner { reply: "리뷰어 의견".into() }));
@@ -22,13 +23,13 @@ fn run_round_drives_seats_and_accumulates_transcript() {
         Participant { engine: "claude".into(), role: Some("architect".into()), instruction: String::new() },
         Participant { engine: "codex".into(), role: Some("reviewer".into()), instruction: String::new() },
     ];
-    let mut transcript: Vec<Utterance> = Vec::new();
 
-    let round = run_round(&participants, &mut transcript, "이 설계 어떤가요?", &reg, RunMode::ReadOnly, &[], "", ContextMode::Push, 0).expect("ok");
+    let prior: Vec<Utterance> = Vec::new();
+    let input = RoundInput { prior: &prior, retrieved: &[], carried: "", ctx_mode: ContextMode::Push, transcript_len: 0 };
+    let round = run_round(&participants, "이 설계 어떤가요?", &reg, RunMode::ReadOnly, input).expect("ok");
 
     assert_eq!(round.len(), 2);
     assert_eq!(round[0].content, "아키텍트 의견");
     assert_eq!(round[1].content, "리뷰어 의견");
-    assert_eq!(transcript.len(), 2);
 }
 // 순차-인지(2번째 자리가 1번째 응답을 봄)는 Task 2 prompt.rs 단위테스트가 증명한다.

@@ -4,7 +4,7 @@ pub mod prompt;
 
 use std::collections::HashMap;
 
-use crate::orchestrator::prompt::build_round_prompt;
+use crate::orchestrator::prompt::{build_round_prompt, PromptContext};
 use crate::runner::{RunError, RunInput, RunMode, Runner};
 
 /// 컨텍스트 전달 방식. Push(기본)=지금처럼 프롬프트에 직접 주입, Pull=포인터만 주고 에이전트가 도구로 당겨옴.
@@ -89,47 +89,58 @@ impl RunnerRegistry for MapRegistry {
     }
 }
 
+/// run_round에 넘기는 라운드 맥락 인자 묶음. 파라미터 폭발 방지용.
+pub struct RoundInput<'a> {
+    /// 이전 라운드들의 발언 슬라이스(호출자가 recent_turns 적용 후 제공).
+    pub prior: &'a [Utterance],
+    /// 검색으로 끌어온 과거 맥락 슬라이스(비면 무영향, 동작 불변).
+    pub retrieved: &'a [Utterance],
+    /// 드롭된 옛 턴의 압축 요약(비면 이월 섹션 없음, behavior-preserving).
+    pub carried: &'a str,
+    /// 컨텍스트 전달 모드. Pull이고 MCP 가능 좌석이면 포인터 프롬프트로 대체.
+    pub ctx_mode: ContextMode,
+    /// 활성 전사 전체 발언 수(포인터 힌트용).
+    pub transcript_len: usize,
+}
+
 /// 한 라운드를 구동한다. 사람 주도이므로 topic = 사용자 메시지.
 /// 각 자리를 순서대로 호출하되, 뒤 자리는 같은 라운드 앞 응답을 본다(순차-인지).
-/// transcript는 이전 라운드들이며, 이번 라운드 응답이 끝에 append된다.
 /// mode는 호출자가 지정(말하기=ReadOnly, 사람이 지목한 쓰기 턴=Write).
-/// retrieved는 검색으로 끌어온 과거 맥락 슬라이스(비면 무영향, 동작 불변).
-/// carried는 드롭된 옛 턴의 압축 요약(비면 이월 섹션 없음, behavior-preserving).
-/// ctx_mode=Pull이고 MCP 가능 좌석이면 포인터 프롬프트로 대체. transcript_len은 포인터 힌트용.
-#[allow(clippy::too_many_arguments)]
+/// 반환값은 이번 라운드 발언 목록. 트리 append는 호출자(Session::append_round)가 담당.
 pub fn run_round(
     participants: &[Participant],
-    transcript: &mut Vec<Utterance>,
     topic: &str,
     registry: &dyn RunnerRegistry,
     mode: RunMode,
-    retrieved: &[Utterance],
-    carried: &str,
-    ctx_mode: ContextMode,
-    transcript_len: usize,
+    input: RoundInput<'_>,
 ) -> Result<Vec<Utterance>, RunError> {
-    let prior: Vec<Utterance> = transcript.clone();
     let mut same_round: Vec<Utterance> = Vec::new();
 
     for part in participants {
         // Pull 모드이고 MCP 도구 보유 좌석이면 포인터 프롬프트, 아니면 Push(기존 동일).
-        let pull = ctx_mode == ContextMode::Pull && is_mcp_capable(&part.engine);
-        let prompt = build_round_prompt(part, topic, &prior, &same_round, retrieved, carried, pull, transcript_len);
+        let pull = input.ctx_mode == ContextMode::Pull && is_mcp_capable(&part.engine);
+        let prompt = build_round_prompt(part, topic, PromptContext {
+            prior: input.prior,
+            same_round: &same_round,
+            retrieved: input.retrieved,
+            carried: input.carried,
+            pull,
+            transcript_len: input.transcript_len,
+        });
         eprintln!("[ctx] seat={} mode={} prompt_chars={}", part.engine, if pull { "pull" } else { "push" }, prompt.chars().count());
         let runner = registry
             .get(&part.engine)
             .ok_or_else(|| RunError::Spawn(format!("엔진 러너 없음: {}", part.engine)))?;
-        let input = RunInput {
+        let run_input = RunInput {
             prompt,
             model: None,
             project_path: None,
             mode,
         };
-        let out = runner.run(&input)?;
+        let out = runner.run(&run_input)?;
         same_round.push(Utterance { speaker: part.label(), content: out.content });
     }
 
-    transcript.extend(same_round.iter().cloned());
     Ok(same_round)
 }
 
