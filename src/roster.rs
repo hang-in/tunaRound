@@ -20,6 +20,12 @@ pub struct SeatConfig {
     pub role: Option<String>,
     #[serde(default)]
     pub instruction: String,
+    #[serde(default)]
+    pub base_url: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub api_key_env: Option<String>,
 }
 
 /// JSON 문자열을 Roster로 파싱한다.
@@ -74,7 +80,41 @@ pub fn build_registry(roster: &Roster, search_db: Option<&str>) -> Result<MapReg
                 "codex",
                 Box::new(CodexRunner::new().with_search_db(search_db.map(String::from))),
             ),
-            other => return Err(format!("알 수 없는 엔진: {other} (지원: claude, codex)")),
+            other => {
+                // HTTP 엔진 분기: base_url+model 좌석이면 OpenAiChatRunner, 없으면 에러.
+                #[cfg(feature = "engines")]
+                {
+                    match (seat.base_url.as_deref(), seat.model.as_deref()) {
+                        (Some(base), Some(mdl)) => {
+                            let api_key = seat
+                                .api_key_env
+                                .as_ref()
+                                .and_then(|e| std::env::var(e).ok());
+                            reg.insert(
+                                other,
+                                Box::new(
+                                    crate::runner::http::OpenAiChatRunner::new(base, mdl, api_key),
+                                ),
+                            );
+                        }
+                        _ => {
+                            return Err(format!(
+                                "HTTP 엔진 '{other}'엔 base_url과 model이 필요합니다"
+                            ));
+                        }
+                    }
+                }
+                #[cfg(not(feature = "engines"))]
+                {
+                    if seat.base_url.is_some() {
+                        return Err(format!(
+                            "HTTP 엔진엔 engines feature가 필요합니다: {other}"
+                        ));
+                    } else {
+                        return Err(format!("알 수 없는 엔진: {other} (지원: claude, codex)"));
+                    }
+                }
+            }
         }
         seen.push(seat.engine.clone());
     }
@@ -136,5 +176,24 @@ mod tests {
     fn empty_seats_is_error() {
         let roster = parse_roster(r#"{"seats":[]}"#).unwrap();
         assert!(build_participants_checked(&roster).is_err());
+    }
+
+    #[cfg(feature = "engines")]
+    #[test]
+    fn build_registry_http_seat_ok() {
+        let roster = parse_roster(
+            r#"{"seats":[{"engine":"local","base_url":"http://127.0.0.1:11435","model":"gemma4:e2b"}]}"#,
+        )
+        .unwrap();
+        assert!(build_registry(&roster, None).is_ok());
+    }
+
+    #[cfg(feature = "engines")]
+    #[test]
+    fn build_registry_http_seat_missing_model_err() {
+        let roster =
+            parse_roster(r#"{"seats":[{"engine":"local","base_url":"http://x"}]}"#).unwrap();
+        let err = build_registry(&roster, None).err().unwrap();
+        assert!(err.contains("base_url"), "에러에 base_url 없음: {err}");
     }
 }
