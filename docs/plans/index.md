@@ -6,6 +6,7 @@
 
 | 문서 | 우선순위 | 상태 | 요약 |
 |---|---|---|---|
+| [v2-16-reinjection-cap.md](v2-16-reinjection-cap.md) | P1 | done | 재주입 축소: --recent-turns N으로 prior를 최근 N턴만 재주입(나머지는 검색 주입이 담당). opt-in(기본 None=현행 통째 재주입 불변). 북극성 스케일 페이오프. 기본 76/전체 101 pass. 2834a1d |
 | [v2-15-windows-cli-resolve.md](v2-15-windows-cli-resolve.md) | P0 | done | gotcha #4: 러너 Windows CLI 해석(resolve_bin, PATH .exe/.cmd/.bat). codex.cmd가 spawn됨(Rust .cmd 자동 래핑). 비Windows·확장자 bin 불변. **라이브: codex 실제 spawn·응답 확인.** 8d02088 |
 | [v2-14-agent-search-mcp.md](v2-14-agent-search-mcp.md) | P1 | done | 에이전트 능동 검색 MCP: rmcp search_context 서버(SqliteRetriever 래핑) + --mcp-search stdio + claude --mcp-config 배선. **라이브 검증: 실 라운드 색인 → MCP search_context가 실 발언 반환.** mcp 89 pass. a65feba+a5a185d |
 | [v2-13-vector-hybrid.md](v2-13-vector-hybrid.md) | P2 | done | 벡터 임베딩 + 하이브리드: Embedder(Mock/Ollama reqwest) + message_vectors 증분 색인 + cosine + RRF 융합(BM25+벡터, k=60). embedder 없으면 FTS 단독(불변). 라이브 임베더 dim 1024 검증. brute-force cosine(ANN 후속). sqlite 86/semantic 86 pass. 1ad8881+30efa51+8920027 |
