@@ -6,6 +6,7 @@
 
 | 문서 | 우선순위 | 상태 | 요약 |
 |---|---|---|---|
+| [v2-09-sqlite-fts.md](v2-09-sqlite-fts.md) | P1 | done | SQLite 시스템오브레코드 + FTS5 선-형태소화 색인/검색. secall store/schema.rs+bm25.rs 답습. 격리 모듈(store/sqlite.rs)+테스트, REPL/main JSON 미접촉. sqlite feature, 토크나이저 비의존. "검색을"->"검색" end-to-end 실증(Windows lindera). sqlite 68/+morphology 75 pass. c61cf11+181f46a |
 | [v2-08-ko-tokenizer.md](v2-08-ko-tokenizer.md) | P1 | done | 한국어 형태소 토크나이저 포팅(secall): Kiwi 메인 + lindera 폴백, POS keep-tags(SL). morphology feature. 기본 66/morphology 72 pass, main 머지. ⚠️ Kiwi 런타임 버그(libkiwi 404)->lindera 실효 |
 | [v2-07-bounded-debate.md](v2-07-bounded-debate.md) | P1 | done | v2 바운드 자동 교환: `/debate <n> <주제>`로 사람 발화 1회 -> 에이전트 N턴 자동 교환 -> 복귀. run_round N회 재사용, 최대 10 clamp. 69 테스트, main 머지됨 |
 | [v2-06-redis-integration.md](v2-06-redis-integration.md) | P1 | done | v2 멀티세션 통합: Redis 미러(이벤트+스냅샷) + `--observe` 라이브 관찰 + `--session` 재개 + owner lease. 66 테스트, main 머지됨. observe/resume 라이브는 수동 검증 필요. 멀티세션 3플랜(04+05+06) 완성 |

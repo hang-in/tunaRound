@@ -199,3 +199,13 @@
 - 사용자: 다음 작업은 **Windows로 이관**(완전 새 세션, /clear 아님). 맥 작업 여기까지. 상세 핸드오프 작성됨(docs/prompts/).
 - 정리: redis-server 내림(`redis-cli shutdown nosave`), SSH 터널(2232) 종료, observer 프로세스 종료. (brew redis 설치는 남음 - 필요시 `brew uninstall redis`.)
 - **Windows 주의:** (1) Kiwi cfg 제외 -> 토크나이저 = lindera(정상). (2) Redis 라이브 검증은 Windows에 redis 필요(WSL/Memurai/Docker). (3) 원격 Ollama 터널: Windows ssh도 `-p [사설포트] -L 11435:127.0.0.1:11434`(bge-m3 검증됨 dim 1024). (4) claude/codex CLI 경로/실행이 Windows에서 다를 수 있음(러너 spawn 확인).
+
+## Windows 첫 세션: 빌드 검증 + Plan 09 착수 (2026-06-30)
+
+- **빌드 검증(맥 패리티 달성):** 기본 `cargo test` 66/morphology 72 pass, build/clippy 클린. 처음엔 러너 timeout/spawn 픽스처 4건 Windows 실패(`#!/bin/sh`를 bin으로 직접 spawn -> Windows 직접 실행 불가). 수정: OS별 픽스처(Unix=.sh, Windows=무출력 .cmd, Rust 1.77.2+가 .cmd를 cmd.exe 래핑). 커밋 `3f44a48`(미푸시). cfg(unix) 게이트 안 하고 양 OS 커버리지 유지.
+- **⚠️ 남은 리스크(gotcha #4, 미검증):** 프로덕션 러너는 `Command::new("claude")`/`("codex")`(확장자 없음)로 spawn. Windows 실제는 `claude.cmd`(npm shim)일 수 있고 .cmd 자동 래핑은 **이름이 .cmd로 끝날 때만** -> 실 에이전트 스모크 전 러너 실행파일 해석 점검 필요(tunaFlow wrap_windows_script 참고).
+- **전역 설정 gotcha #0:** Windows엔 `~/.config/agents/COMMON.md` 없음(`~/.claude/CLAUDE.md`가 `@RTK.md`만 import, COMMON 미로드). 단 Windows 자체 CLAUDE.md가 공통 계약(결론우선/findings-first/검증사다리/보안/한국어)을 자체 포함 -> 치명적 공백 아님. 일원화하려면 COMMON.md 복원 + import 틸드 경로(별 트랙).
+- **Plan 09 결정(사용자 확정):** 다음 = SQLite 시스템오브레코드 + FTS5(선-형태소화). 범위 = **격리 모듈 우선**(store/sqlite.rs + 테스트만, REPL/main JSON 미접촉). 의존성 = **새 sqlite feature**(rusqlite 0.31 bundled optional). 스토어는 토크나이저 비의존(선-토크나이즈 텍스트 주입), morphology는 통합 테스트에서만 결합. 출처 답습 = secall `store/schema.rs`(FTS5 unicode61 + UNINDEXED 역참조) + `search/bm25.rs`. 출처 레포 D드라이브 확인(`D:/privateProject/seCall`, `tunaSalon`). plan = docs/plans/v2-09-sqlite-fts.md.
+- **Plan 09 완료(2026-06-30):** Task 1 `c61cf11`(Sonnet 위임: 스키마/마이그레이션/save_session/load_session) + Task 2 `181f46a`(Opus: FTS 검색 테스트). **Windows rusqlite bundled 컴파일 OK(21초, MSVC C:\BuildTools 자동탐지).** sqlite 68/sqlite+morphology 75 pass, 기본 61 불변, clippy 양 조합 클린. **핵심 실증**: `morpheme_indexing_matches_inflected_form` 통과 = "검색을" 형태소 색인 -> "검색" 쿼리 매칭(Windows lindera 경로). 미푸시.
+- **잠재 와트(기록):** `exec.rs` 러너 테스트는 `bin:"sh"` 의존 -> Git Bash(sh on PATH)에선 green, 순수 PowerShell(sh 미발견)에선 spawn 실패. 정본 검증은 Bash 경유. 서브에이전트가 PowerShell로 돌려 "2 fail" 오인했던 원인.
+- **Plan 09 다음 슬라이스:** (a) 영속을 SQLite로 전환(시스템오브레코드, REPL/main + Redis 스냅샷 조정) (b) `build_round_prompt` RAG화(통째 재주입 -> 검색 슬라이스) (c) 벡터(원격 Ollama bge-m3 dim 1024) -> 하이브리드.

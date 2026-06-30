@@ -87,10 +87,16 @@
 - [x] Task 2: Kiwi 경로 + 메인 백엔드 (kiwi-rs 컴파일 성공) (1059be8) — Plan 08 완료, 기본 66/morphology 72 pass, clippy 클린
 - ⚠️ **Kiwi 런타임 부트스트랩 실패**(libkiwi v0.23.2 에셋 404) -> 현재 lindera 폴백 실효. 해결 후속(kiwi-rs 버전 핀/libkiwi 수동). Windows에선 Kiwi cfg 제외=lindera만이라 무관.
 
+### Plan 09: SQLite 시스템오브레코드 + FTS5 (docs/plans/v2-09-sqlite-fts.md) — done (격리 모듈 우선 + sqlite feature, 사용자 확정 2026-06-30)
+
+- [x] Task 1: 의존성(rusqlite 0.31 bundled, sqlite feature) + 스키마/마이그레이션 + 세션 저장/로드 라운드트립(트리+head) (c61cf11; Sonnet 위임, Windows rusqlite bundled 컴파일 21초 OK)
+- [x] Task 2: FTS5 선-형태소화 색인 + bm25 검색 + 테스트(코어 4 + sqlite+morphology 통합 1) (181f46a; **morpheme_indexing_matches_inflected_form 통과**: "검색을"->"검색" end-to-end 실증) — Plan 09 완료, sqlite 68/sqlite+morphology 75 pass, 기본 61 불변, clippy 양 조합 클린
+- 비포함(다음 슬라이스): REPL/main 영속 SQLite 전환, Redis 스냅샷 조정, 검색 주입(RAG), 벡터/하이브리드
+- 리뷰 노트(후속 폴리시): load_session head 조회 `.ok()`가 실DB에러도 삼킴(QueryReturnedNoRows만 None 처리 권장) · 트랜잭션은 unchecked_transaction()이 더 관용적
+
 ### 후속 (검색 레이어)
-- [ ] SQLite 시스템오브레코드 + FTS5(선-형태소화 저장)
-- [ ] 벡터: 원격 Ollama(SSH 터널 11435, bge-m3) reqwest 임베더 + ANN
-- [ ] 하이브리드 융합(BM25+벡터) + 검색 주입(통째 재주입 -> 관련 슬라이스)
+- [ ] 벡터: 원격 Ollama(SSH 터널 11435, bge-m3 dim 1024) reqwest 임베더 + ANN
+- [ ] 하이브리드 융합(BM25+벡터) + 검색 주입(통째 재주입 -> 관련 슬라이스, build_round_prompt RAG화)
 
 ## v2 백로그 (착수 전 결정 필요)
 - [ ] 분리 터미널 A2A 협업(MCP+버스, 자율 핸드오프) — turn-triggering 난제, 큰 과제
