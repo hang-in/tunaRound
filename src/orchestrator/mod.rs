@@ -42,6 +42,12 @@ pub trait ContextRetriever: Send + Sync {
     fn retrieve(&self, query: &str, limit: usize) -> Vec<Utterance>;
 }
 
+/// 세션 전사를 읽어 오는 추상(코어를 백엔드로 노출하는 오케스트레이션 primitive).
+pub trait TranscriptReader: Send + Sync {
+    /// session_id의 활성 경로(root->head) 발언. max_turns=Some(n)이면 마지막 n턴만.
+    fn read_transcript(&self, session_id: &str, max_turns: Option<usize>) -> Vec<Utterance>;
+}
+
 /// HashMap 기반 기본 레지스트리. 테스트는 FakeRunner를 넣는다.
 pub struct MapRegistry {
     runners: HashMap<String, Box<dyn Runner>>,

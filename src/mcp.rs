@@ -10,7 +10,7 @@ use rmcp::{
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use crate::orchestrator::{ContextRetriever, Utterance};
+use crate::orchestrator::{ContextRetriever, TranscriptReader, Utterance};
 
 /// search_context 툴 파라미터.
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -21,18 +21,34 @@ pub struct SearchParams {
     pub limit: Option<usize>,
 }
 
-/// rmcp MCP 서버 핸들러. ContextRetriever를 감싸 search_context 툴을 노출한다.
+/// read_transcript 툴 파라미터.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct TranscriptParams {
+    /// 세션 id(기본 "default").
+    pub session_id: Option<String>,
+    /// 마지막 N턴만(생략=전체).
+    pub max_turns: Option<usize>,
+}
+
+/// rmcp MCP 서버 핸들러. ContextRetriever를 감싸 search_context/read_transcript 툴을 노출한다.
 #[derive(Clone)]
 pub struct TunaSearchServer {
     #[allow(dead_code)]
     tool_router: ToolRouter<Self>,
     retriever: Arc<dyn ContextRetriever>,
+    reader: Option<Arc<dyn TranscriptReader>>,
 }
 
 impl TunaSearchServer {
-    /// retriever Arc를 받아 새 서버 인스턴스를 반환한다.
+    /// retriever Arc를 받아 새 서버 인스턴스를 반환한다(reader=None, 기존 시그니처 유지).
     pub fn new(retriever: Arc<dyn ContextRetriever>) -> Self {
-        Self { tool_router: Self::tool_router(), retriever }
+        Self { tool_router: Self::tool_router(), retriever, reader: None }
+    }
+
+    /// 전사 리더를 연결한 빌더 메서드(기존 new 시그니처 무영향).
+    pub fn with_transcript_reader(mut self, reader: Arc<dyn TranscriptReader>) -> Self {
+        self.reader = Some(reader);
+        self
     }
 }
 
@@ -55,6 +71,29 @@ impl TunaSearchServer {
         };
         Ok(CallToolResult::success(vec![Content::text(text)]))
     }
+
+    #[tool(description = "현재 토론 전사를 읽는다(활성 경로). 검색이 아니라 통째 맥락이 필요할 때.")]
+    async fn read_transcript(
+        &self,
+        Parameters(p): Parameters<TranscriptParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let Some(reader) = &self.reader else {
+            return Ok(CallToolResult::success(vec![Content::text(
+                "전사 리더 미연결".to_string(),
+            )]));
+        };
+        let sid = p.session_id.unwrap_or_else(|| "default".to_string());
+        let utts = reader.read_transcript(&sid, p.max_turns);
+        let text = if utts.is_empty() {
+            "전사 없음".to_string()
+        } else {
+            utts.iter()
+                .map(|u| format!("[{}] {}", u.speaker, u.content))
+                .collect::<Vec<_>>()
+                .join("\n\n")
+        };
+        Ok(CallToolResult::success(vec![Content::text(text)]))
+    }
 }
 
 #[tool_handler]
@@ -62,7 +101,7 @@ impl ServerHandler for TunaSearchServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_instructions(
-                "토론 맥락을 검색하려면 search_context(query)를 호출하세요.".to_string(),
+                "토론 맥락을 검색하려면 search_context(query)를, 전사 통째를 읽으려면 read_transcript(session_id?, max_turns?)를 호출하세요.".to_string(),
             )
     }
 }
@@ -70,8 +109,12 @@ impl ServerHandler for TunaSearchServer {
 /// stdin/stdout을 전송으로 사용하는 stdio MCP 서버를 기동한다.
 pub async fn start_mcp_server(
     retriever: Arc<dyn ContextRetriever>,
+    reader: Option<Arc<dyn TranscriptReader>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let server = TunaSearchServer::new(retriever);
+    let mut server = TunaSearchServer::new(retriever);
+    if let Some(r) = reader {
+        server = server.with_transcript_reader(r);
+    }
     let (stdin, stdout) = rmcp::transport::io::stdio();
     let service = server.serve((stdin, stdout)).await?;
     service.waiting().await?;
@@ -117,5 +160,50 @@ mod tests {
             }))
             .await;
         assert!(result.is_ok());
+    }
+
+    /// 고정 Utterance를 반환하는 가짜 전사 리더.
+    struct FakeTranscriptReader(Vec<Utterance>);
+
+    impl crate::orchestrator::TranscriptReader for FakeTranscriptReader {
+        fn read_transcript(&self, _session_id: &str, _max_turns: Option<usize>) -> Vec<Utterance> {
+            self.0.clone()
+        }
+    }
+
+    #[tokio::test]
+    async fn read_transcript_with_reader_returns_content() {
+        let utts = vec![
+            Utterance { speaker: "claude/proposer".into(), content: "첫 번째 발언".into() },
+            Utterance { speaker: "codex/reviewer".into(), content: "두 번째 발언".into() },
+        ];
+        let server = TunaSearchServer::new(Arc::new(FakeRetriever(vec![])))
+            .with_transcript_reader(Arc::new(FakeTranscriptReader(utts)));
+        let result = server
+            .read_transcript(Parameters(TranscriptParams {
+                session_id: Some("test-session".into()),
+                max_turns: None,
+            }))
+            .await;
+        assert!(result.is_ok(), "read_transcript가 Ok여야 함: {result:?}");
+        let call_result = result.unwrap();
+        let text = format!("{:?}", call_result.content);
+        assert!(text.contains("첫 번째 발언"), "전사 내용이 포함되어야 함: {text}");
+        assert!(text.contains("두 번째 발언"), "전사 내용이 포함되어야 함: {text}");
+    }
+
+    #[tokio::test]
+    async fn read_transcript_without_reader_returns_not_connected() {
+        let server = TunaSearchServer::new(Arc::new(FakeRetriever(vec![])));
+        let result = server
+            .read_transcript(Parameters(TranscriptParams {
+                session_id: None,
+                max_turns: None,
+            }))
+            .await;
+        assert!(result.is_ok());
+        let call_result = result.unwrap();
+        let text = format!("{:?}", call_result.content);
+        assert!(text.contains("전사 리더 미연결"), "reader=None 안내 불일치: {text}");
     }
 }

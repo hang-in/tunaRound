@@ -4,6 +4,9 @@
 pub use sqlite_retriever::SqliteRetriever;
 
 #[cfg(feature = "sqlite")]
+pub use sqlite_transcript::SqliteTranscriptReader;
+
+#[cfg(feature = "sqlite")]
 mod sqlite_retriever {
     use std::collections::HashMap;
 
@@ -115,6 +118,39 @@ mod sqlite_retriever {
                 }
             }
             result
+        }
+    }
+}
+
+#[cfg(feature = "sqlite")]
+mod sqlite_transcript {
+    use crate::orchestrator::Utterance;
+    use crate::store::sqlite::SqliteStore;
+
+    /// 세션 전사 전체(또는 마지막 N턴)를 활성 경로(root->head)로 읽어 오는 구현.
+    /// rusqlite Connection은 Send이지만 Sync가 아니므로 Mutex로 감싼다.
+    pub struct SqliteTranscriptReader {
+        store: std::sync::Mutex<SqliteStore>,
+    }
+
+    impl SqliteTranscriptReader {
+        /// SqliteStore를 받아 새 전사 리더를 반환한다.
+        pub fn new(store: SqliteStore) -> Self {
+            Self { store: std::sync::Mutex::new(store) }
+        }
+    }
+
+    impl crate::orchestrator::TranscriptReader for SqliteTranscriptReader {
+        fn read_transcript(&self, session_id: &str, max_turns: Option<usize>) -> Vec<Utterance> {
+            let store = self.store.lock().unwrap_or_else(|e| e.into_inner());
+            let Ok(Some(ss)) = store.load_session(session_id) else {
+                return Vec::new();
+            };
+            let path = crate::store::path_to_root(&ss.messages, ss.head);
+            match max_turns {
+                Some(n) if path.len() > n => path[path.len() - n..].to_vec(),
+                _ => path,
+            }
         }
     }
 }

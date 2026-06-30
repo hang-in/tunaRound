@@ -135,10 +135,20 @@ fn main() {
         };
         #[cfg(not(feature = "semantic"))]
         let emb: Option<Box<dyn tunaround::store::embedding::Embedder>> = None;
+        let store2 = match tunaround::store::sqlite::SqliteStore::open(&db_str) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("[mcp-search] 전사 리더 DB 열기 실패: {e}");
+                std::process::exit(1);
+            }
+        };
         let retriever = tunaround::store::retriever::SqliteRetriever::new(store, tok, emb);
         let retriever_arc =
             std::sync::Arc::new(retriever) as std::sync::Arc<dyn tunaround::orchestrator::ContextRetriever>;
-        if let Err(e) = rt.block_on(tunaround::mcp::start_mcp_server(retriever_arc)) {
+        let transcript_reader = tunaround::store::retriever::SqliteTranscriptReader::new(store2);
+        let reader_arc: Option<std::sync::Arc<dyn tunaround::orchestrator::TranscriptReader>> =
+            Some(std::sync::Arc::new(transcript_reader));
+        if let Err(e) = rt.block_on(tunaround::mcp::start_mcp_server(retriever_arc, reader_arc)) {
             eprintln!("[mcp-search] 서버 오류: {e}");
             std::process::exit(1);
         }
