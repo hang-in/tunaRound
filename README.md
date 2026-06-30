@@ -91,7 +91,7 @@ cargo run --features "sqlite morphology semantic mcp" -- --db tuna.db
   필요하면 `TUNAROUND_OLLAMA_URL`로 바꿀 수 있습니다.
 
 - `mcp`  
-  에이전트가 토론 중 직접 과거 맥락을 검색할 수 있도록 `search_context` 도구를 붙입니다.
+  에이전트가 토론 중 직접 과거 맥락을 검색(`search_context`)하고, 지금까지의 전사를 읽어올(`read_transcript`) 수 있도록 도구를 붙입니다.
 
 기본 실행은 가볍게 유지하고, 검색·임베딩·MCP 같은 무거운 기능은 필요할 때만 켜는 구조입니다.
 
@@ -113,7 +113,9 @@ v1 본체와 v2 검색·맥락 기능이 대부분 들어왔습니다.
 - 한국어 형태소 검색
 - bge-m3 의미 검색
 - BM25 + 의미 검색을 합친 하이브리드 검색
-- MCP 기반 에이전트 직접 검색
+- MCP 기반 에이전트 직접 검색과 전사 읽기
+- 긴 토론에서 오래된 발언을 요약해 다음 라운드로 넘기는 요약 이월
+- 로컬/원격 LLM 참가자 (ollama, lmstudio, openai 같은 HTTP 엔진, opencode CLI)
 
 Windows에서 실제 `claude`와 `codex` CLI로 동작을 확인했습니다.
 
@@ -173,13 +175,17 @@ TUI나 웹 UI는 이후 단계에서 붙일 예정입니다.
 - [x] MCP `search_context` 도구
 - [x] 가벼운 컨텍스트 주입 (최근 N턴 + 검색 결과, `--recent-turns`)
 - [x] 로컬 LLM 참가자 (ollama, lmstudio, openai 같은 HTTP 엔진)
+- [x] opencode CLI 참가자
+- [x] 요약 이월 (긴 토론의 오래된 발언을 요약해 다음 라운드로)
+- [x] 에이전트 전사 읽기 도구 (`read_transcript`)
 
 다음:
 
+- [ ] 통째 주입 대신 에이전트가 맥락을 직접 당겨오는 방식 (push → pull)
+- [ ] 코어를 백엔드로, 에이전트를 접속 클라이언트로 (원격 참가자 가능성)
 - [ ] 세션을 넘나드는 프로젝트 기억
 - [ ] 리치 TUI
 - [ ] 웹 UI
-- [ ] opencode 참가자
 
 ## 설계 문서
 

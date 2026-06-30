@@ -173,7 +173,8 @@
 - [~] Stage 1: 오케스트레이션 툴(read_transcript/get_roster/post_turn) 기존 rmcp 서버 확장
   - [x] read_transcript(Plan 23): TranscriptReader 트레잇 + SqliteTranscriptReader(Mutex) + MCP 툴 + main 배선. 기본 111/mcp+sqlite 119 pass, clippy 클린(미커밋→리뷰완료). 세션 id=파라미터/기본 default
   - [ ] 후속: 현재 세션 id를 spawn 인자(--session-id) 주입(Task 2) · get_roster · post_turn
-- [ ] Stage 2: 주입 모델 전환(push->pull), 재전송량 감소 실측 (crux)
+- [~] Stage 2: 주입 모델 전환(push->pull), 재전송량 감소 실측 (crux)
+  - [x] 설계(Plan 24): Push/Pull 모드, 좌석 능력 게이트(비MCP→push 폴백), 포인터+carried/same_round 유지, 통제 리스크 완화, 측정=페이오프 증명. 구현은 승인 후
 - [ ] Stage 3: 코어 프로세스 분리(상주 데몬 + 멀티 프론트/세션)
 - [ ] Stage 4(범위 밖): 영속 에이전트 세션 + AutoLoop = (B), 경제 조건 입증 시에만
 
