@@ -206,6 +206,83 @@ impl SqliteStore {
         result
     }
 
+    /// 단일 발언을 세션 전사 끝(현재 head의 자식)에 증분 추가하고 새 msg_id를 반환한다.
+    /// save_session(전량 교체)과 달리 INSERT만 하므로, 외부 writer(post_turn)와 REPL이
+    /// 같은 DB id 권위(max msg_id+1)를 공유해 충돌·클로버가 구조적으로 없다(Plan 27 옵션 B).
+    /// 단일 트랜잭션이라 SQLite 쓰기 직렬화로 동시 append 안전.
+    pub fn append_turn<F: Fn(&str) -> String>(
+        &self,
+        session_id: &str,
+        speaker: &str,
+        content: &str,
+        fts_tok: F,
+    ) -> Result<u64, String> {
+        self.conn
+            .execute_batch("BEGIN;")
+            .map_err(|e| format!("sqlite: {e}"))?;
+
+        let result = (|| -> Result<u64, String> {
+            // 현재 head(부모) 조회. 세션 행이 없으면 신규(parent=None).
+            let parent: Option<i64> = match self.conn.query_row(
+                "SELECT head_id FROM sessions WHERE id=?1",
+                [session_id],
+                |r| r.get(0),
+            ) {
+                Ok(v) => v,
+                Err(rusqlite::Error::QueryReturnedNoRows) => None,
+                Err(e) => return Err(format!("sqlite: {e}")),
+            };
+
+            // 새 msg_id = 이 세션 max(msg_id)+1 (DB가 id 권위).
+            let max_id: Option<i64> = self
+                .conn
+                .query_row(
+                    "SELECT MAX(msg_id) FROM messages WHERE session_id=?1",
+                    [session_id],
+                    |r| r.get(0),
+                )
+                .map_err(|e| format!("sqlite: {e}"))?;
+            let new_id = max_id.unwrap_or(0) + 1;
+
+            // sessions 행 보장 + head 갱신(messages FK가 sessions를 참조하므로 먼저).
+            self.conn
+                .execute(
+                    "INSERT INTO sessions(id, head_id) VALUES(?1, ?2) \
+                     ON CONFLICT(id) DO UPDATE SET head_id=excluded.head_id, updated_at=datetime('now')",
+                    rusqlite::params![session_id, new_id],
+                )
+                .map_err(|e| format!("sqlite: {e}"))?;
+
+            self.conn
+                .execute(
+                    "INSERT INTO messages(session_id, msg_id, parent_id, speaker, content) \
+                     VALUES(?1, ?2, ?3, ?4, ?5)",
+                    rusqlite::params![session_id, new_id, parent, speaker, content],
+                )
+                .map_err(|e| format!("sqlite: {e}"))?;
+
+            let fts_content = fts_tok(content);
+            self.conn
+                .execute(
+                    "INSERT INTO messages_fts(content, session_id, msg_id) VALUES(?1, ?2, ?3)",
+                    rusqlite::params![fts_content, session_id, new_id],
+                )
+                .map_err(|e| format!("sqlite: {e}"))?;
+
+            Ok(new_id as u64)
+        })();
+
+        if result.is_ok() {
+            self.conn
+                .execute_batch("COMMIT;")
+                .map_err(|e| format!("sqlite: {e}"))?;
+        } else {
+            let _ = self.conn.execute_batch("ROLLBACK;");
+        }
+
+        result
+    }
+
     /// 세션을 로드한다. 없으면 Ok(None)을 반환한다.
     pub fn load_session(&self, session_id: &str) -> Result<Option<StoredSession>, String> {
         // sessions 테이블에서 head_id 조회. 행 없음(세션 없음)과 실제 DB 에러를 구분한다.
@@ -501,6 +578,42 @@ mod tests {
         db.save_session("s1", &ss(), |t| t.to_string()).unwrap();
         let back = db.load_session("s1").unwrap().unwrap();
         assert_eq!(back.messages.len(), 2);
+    }
+
+    #[test]
+    fn append_turn_chains_from_head_and_returns_ids() {
+        // 신규 세션에 두 번 append -> head 자식 체인(1<-2), 반환 id 1,2, head=2.
+        let db = SqliteStore::open_memory().unwrap();
+        let id1 = db.append_turn("s1", "claude", "첫 발언", |t| t.to_string()).unwrap();
+        let id2 = db.append_turn("s1", "codex", "둘째 발언", |t| t.to_string()).unwrap();
+        assert_eq!((id1, id2), (1, 2));
+        let back = db.load_session("s1").unwrap().expect("present");
+        assert_eq!(back.head, Some(2));
+        assert_eq!(back.messages.len(), 2);
+        assert_eq!(back.messages[0].parent_id, None);
+        assert_eq!(back.messages[1].parent_id, Some(1));
+    }
+
+    #[test]
+    fn append_turn_after_save_session_does_not_clobber() {
+        // save_session(전량) 후 append -> 기존 2턴 보존 + 새 턴(id 3, parent 2)이 head.
+        let db = SqliteStore::open_memory().unwrap();
+        db.save_session("s1", &ss(), |t| t.to_string()).unwrap();
+        let id3 = db.append_turn("s1", "claude", "원격 추가 발언", |t| t.to_string()).unwrap();
+        assert_eq!(id3, 3);
+        let back = db.load_session("s1").unwrap().unwrap();
+        assert_eq!(back.messages.len(), 3, "기존 2턴 + 새 턴(클로버 없음)");
+        assert_eq!(back.head, Some(3));
+        assert_eq!(back.messages[2].parent_id, Some(2));
+    }
+
+    #[test]
+    fn append_turn_is_fts_searchable() {
+        // append한 발언이 FTS로 검색되어야 한다.
+        let db = SqliteStore::open_memory().unwrap();
+        db.append_turn("s1", "claude", "이벤트소싱 설계", |t| t.to_string()).unwrap();
+        let hits = db.search("이벤트소싱", 10).unwrap();
+        assert!(hits.iter().any(|h| h.session_id == "s1" && h.content.contains("이벤트소싱")));
     }
 
     #[test]

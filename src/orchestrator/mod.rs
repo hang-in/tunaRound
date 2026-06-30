@@ -63,6 +63,13 @@ pub trait TranscriptReader: Send + Sync {
     fn read_transcript(&self, session_id: &str, max_turns: Option<usize>) -> Vec<Utterance>;
 }
 
+/// 세션 전사 끝(head 자식)에 발언을 추가하는 경계(원격 post_turn·front=core 병합용, Plan 27).
+/// 구현은 DB를 id 권위로 삼아 증분 추가하므로 REPL과 외부 writer가 충돌 없이 공존한다.
+pub trait TranscriptWriter: Send + Sync {
+    /// session_id에 발언을 추가하고 새 msg_id를 반환한다.
+    fn append_turn(&self, session_id: &str, speaker: &str, content: &str) -> Result<u64, String>;
+}
+
 /// HashMap 기반 기본 레지스트리. 테스트는 FakeRunner를 넣는다.
 pub struct MapRegistry {
     runners: HashMap<String, Box<dyn Runner>>,

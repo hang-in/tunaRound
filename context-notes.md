@@ -2,6 +2,13 @@
 
 > 작업 중 결정과 근거. 계속 append. (규율 #7) 다음 세션이 결정을 재유도하지 않게.
 
+## 2026-07-01 시간성·유효성 방향 확정 (외부 memory 프레임워크 검토 후)
+
+- 외부 지형도(Zep/Graphiti·Mem0·Letta·Cognee·Memora·H-Mem/MemORAI/MRAgent) 검토. **결론: 인프라(graph DB·managed service) 안 감, 개념(시간성·유효성·provenance)만 SQLite 컬럼+랭킹가중치로 흡수.** SQLite-light·로컬-first 유지.
+- 핵심 진단: provenance는 이미 있음(session_id·msg_id·parent_id·speaker·branch). 빠진 건 valid_from/until·superseded_by = **validity metadata**. 참고 1순위=Memora(원문/abstraction/anchors 분리, 인프라 안 바꾸고 흡수).
+- **정본**: docs/design/v2-temporal-validity-direction_2026-07-01.md. 메모리: [[tunaround-temporal-validity-roadmap]].
+- **확정 순서**: 1)3d 쓰기권위 2)embed 무효화키(model_id/dim/provider) 3)retrieved 길이·세션다양성 cap 4)valid_state/superseded_by/abstraction/anchors 컬럼 5)branch/session/recency/valid_state 랭킹가중 6)실코퍼스 regression 7)/search --debug 8)reindex/lint. Graphiti 1순위 구현은 과설계(지금 문제=검색 오염, graph traversal 아님).
+
 ## 2026-06-30 (세션4) Stage 3a-3 front=core 착수 (Plan 26)
 
 - **목표**: 3a-2의 2프로세스(`--serve-mcp` 코어 + REPL `--search-url`)를 1프로세스로 통합. `--core <addr>` = REPL이 자기 안에서 HTTP MCP 코어를 띄우고 로컬 좌석이 거기에 HTTP pull. 원격 프론트/에이전트도 같은 주소 공존.

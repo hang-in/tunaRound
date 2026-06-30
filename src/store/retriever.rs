@@ -4,7 +4,7 @@
 pub use sqlite_retriever::SqliteRetriever;
 
 #[cfg(feature = "sqlite")]
-pub use sqlite_transcript::SqliteTranscriptReader;
+pub use sqlite_transcript::{SqliteTranscriptReader, SqliteTranscriptWriter};
 
 #[cfg(feature = "sqlite")]
 mod sqlite_retriever {
@@ -151,6 +151,27 @@ mod sqlite_transcript {
                 Some(n) if path.len() > n => path[path.len() - n..].to_vec(),
                 _ => path,
             }
+        }
+    }
+
+    /// 세션 전사 끝에 발언을 증분 추가하는 쓰기 구현(post_turn·front=core 병합용, Plan 27).
+    /// FTS 색인용 토크나이저 closure를 보유한다. Connection은 Send이나 Sync 아니라 Mutex로 감싼다.
+    pub struct SqliteTranscriptWriter {
+        store: std::sync::Mutex<SqliteStore>,
+        tok: Box<dyn Fn(&str) -> String + Send + Sync>,
+    }
+
+    impl SqliteTranscriptWriter {
+        /// SqliteStore + 색인용 토크나이저 closure를 받아 새 writer를 반환한다.
+        pub fn new(store: SqliteStore, tok: Box<dyn Fn(&str) -> String + Send + Sync>) -> Self {
+            Self { store: std::sync::Mutex::new(store), tok }
+        }
+    }
+
+    impl crate::orchestrator::TranscriptWriter for SqliteTranscriptWriter {
+        fn append_turn(&self, session_id: &str, speaker: &str, content: &str) -> Result<u64, String> {
+            let store = self.store.lock().unwrap_or_else(|e| e.into_inner());
+            store.append_turn(session_id, speaker, content, |t| (self.tok)(t))
         }
     }
 }
