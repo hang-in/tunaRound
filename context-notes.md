@@ -2,6 +2,13 @@
 
 > 작업 중 결정과 근거. 계속 append. (규율 #7) 다음 세션이 결정을 재유도하지 않게.
 
+## 2026-07-01 step 2 완료: 임베딩 무효화 키에 model_id (실버그 수정, Plan 28)
+
+- **문제**: `index_vectors` 증분 가드가 content_hash(내용만)로 skip → 모델 교체 시 stale 벡터 유지(차원/공간 섞임, 조용한 저하).
+- **수정**: Embedder 트레잇에 `model_id()`(Mock=`mock-{dim}`, Ollama=`ollama:{model}`). message_vectors에 `model_id TEXT`(스키마 v2→v3: CREATE에 추가 + migrate ALTER, column_exists 가드). skip은 (content_hash AND model_id) 일치 시만. 모델 바뀌면 재임베딩. 기존 v2 행은 model_id NULL → 다음 색인 때 자동 재임베딩.
+- **검증**: 기본 146/features 156 pass, clippy 클린. 신규 테스트: model_id 표기, index_vectors 같은모델 skip/모델교체 재임베딩(카운팅 임베더), fresh DB 컬럼 존재, v2→v3 마이그레이션(수동 v2 스키마 → ALTER + 행 보존). behavior-preserving(모델 동일 시 기존과 동일).
+- 다음 = step 3(retrieved 길이 cap + session diversity cap).
+
 ## 2026-07-01 Stage 3d 완료 (post_turn 쓰기 권위 + get_roster, 옵션 B front=core 병합)
 
 - **4 태스크 커밋**: T1 `append_turn`(증분 INSERT, DB id 권위) + TranscriptWriter(`d90d867`). T2 MCP post_turn/get_roster 툴 + 서버 배선(`c28561d`). T3 REPL core-sync 병합(step adopt + append_turn, 전량 persist 생략 → 외부 쓰기 클로버 차단)(`f500840`). T4 main --core 배선 + 라이브 e2e(`8a80cfe`).

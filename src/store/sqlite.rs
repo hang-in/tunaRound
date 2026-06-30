@@ -4,8 +4,8 @@ use rusqlite::Connection;
 
 use crate::store::{StoredMessage, StoredSession};
 
-// 스키마 버전 상수.
-const CURRENT_SCHEMA_VERSION: u32 = 2;
+// 스키마 버전 상수. v3: message_vectors.model_id(임베딩 무효화 키).
+const CURRENT_SCHEMA_VERSION: u32 = 3;
 
 // config 테이블 생성 SQL.
 const CREATE_CONFIG: &str = "CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT);";
@@ -44,13 +44,15 @@ CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
 );
 ";
 
-// 메시지 벡터 저장 테이블. f32 LE BLOB, content_hash로 증분 색인 가드.
+// 메시지 벡터 저장 테이블. f32 LE BLOB, (content_hash, model_id)로 증분 색인 가드.
+// model_id=임베딩 모델 정체성. 모델 교체 시 같은 내용이라도 재임베딩(stale 벡터 방지).
 const CREATE_MESSAGE_VECTORS: &str = "
 CREATE TABLE IF NOT EXISTS message_vectors (
     session_id   TEXT NOT NULL,
     msg_id       INTEGER NOT NULL,
     dim          INTEGER NOT NULL,
     content_hash TEXT NOT NULL,
+    model_id     TEXT,
     embedding    BLOB NOT NULL,
     PRIMARY KEY(session_id, msg_id)
 );
@@ -126,6 +128,14 @@ impl SqliteStore {
             self.conn
                 .execute_batch(CREATE_MESSAGE_VECTORS)
                 .map_err(|e| format!("sqlite: {e}"))?;
+            // v3: 기존(v2) DB의 message_vectors엔 model_id가 없으므로 ADD COLUMN으로 보강한다.
+            // fresh DB는 CREATE에 이미 있어 column_exists가 true → ALTER 생략. 기존 행은 NULL이라
+            // 다음 색인 때 model_id 불일치로 재임베딩(자동 복구).
+            if !self.column_exists("message_vectors", "model_id") {
+                self.conn
+                    .execute("ALTER TABLE message_vectors ADD COLUMN model_id TEXT", [])
+                    .map_err(|e| format!("sqlite: {e}"))?;
+            }
             self.conn
                 .execute(
                     "INSERT OR REPLACE INTO config(key, value) VALUES('schema_version', ?1)",
@@ -135,6 +145,17 @@ impl SqliteStore {
         }
 
         Ok(())
+    }
+
+    /// 테이블에 특정 컬럼이 존재하는지 PRAGMA table_info로 확인한다(마이그레이션 가드).
+    fn column_exists(&self, table: &str, column: &str) -> bool {
+        let Ok(mut stmt) = self.conn.prepare(&format!("PRAGMA table_info({table})")) else {
+            return false;
+        };
+        let Ok(rows) = stmt.query_map([], |row| row.get::<_, String>(1)) else {
+            return false;
+        };
+        rows.flatten().any(|name| name == column)
     }
 
     /// 세션을 저장(upsert)한다. 기존 메시지/FTS를 전량 교체하고 fts_tok로 선-형태소화한다.
@@ -399,6 +420,7 @@ impl SqliteStore {
             .execute_batch("BEGIN;")
             .map_err(|e| format!("sqlite: {e}"))?;
 
+        let model_id = embedder.model_id();
         let result = (|| -> Result<(), String> {
             for msg in &ss.messages {
                 // content_hash 계산(FNV-1a 64bit, 버전 무관 결정적).
@@ -406,17 +428,21 @@ impl SqliteStore {
 
                 let msg_id = msg.id as i64;
 
-                // 기존 행 조회: 같은 hash면 skip(증분).
-                let existing: Option<String> = self
+                // 기존 행 조회: content_hash와 model_id가 모두 같을 때만 skip(증분).
+                // 모델이 바뀌면(model_id 불일치) 같은 내용이라도 재임베딩한다(stale 벡터 방지).
+                let existing: Option<(String, Option<String>)> = self
                     .conn
                     .query_row(
-                        "SELECT content_hash FROM message_vectors WHERE session_id=?1 AND msg_id=?2",
+                        "SELECT content_hash, model_id FROM message_vectors WHERE session_id=?1 AND msg_id=?2",
                         rusqlite::params![session_id, msg_id],
-                        |row| row.get(0),
+                        |row| Ok((row.get(0)?, row.get(1)?)),
                     )
                     .ok();
 
-                if existing.as_deref() == Some(&content_hash) {
+                if let Some((h, m)) = &existing
+                    && h == &content_hash
+                    && m.as_deref() == Some(model_id.as_str())
+                {
                     continue;
                 }
 
@@ -430,13 +456,14 @@ impl SqliteStore {
                 // upsert.
                 self.conn
                     .execute(
-                        "INSERT INTO message_vectors(session_id, msg_id, dim, content_hash, embedding) \
-                         VALUES(?1, ?2, ?3, ?4, ?5) \
+                        "INSERT INTO message_vectors(session_id, msg_id, dim, content_hash, model_id, embedding) \
+                         VALUES(?1, ?2, ?3, ?4, ?5, ?6) \
                          ON CONFLICT(session_id, msg_id) DO UPDATE SET \
                              dim=excluded.dim, \
                              content_hash=excluded.content_hash, \
+                             model_id=excluded.model_id, \
                              embedding=excluded.embedding",
-                        rusqlite::params![session_id, msg_id, dim, content_hash, blob],
+                        rusqlite::params![session_id, msg_id, dim, content_hash, model_id, blob],
                     )
                     .map_err(|e| format!("sqlite: {e}"))?;
             }
@@ -578,6 +605,96 @@ mod tests {
         db.save_session("s1", &ss(), |t| t.to_string()).unwrap();
         let back = db.load_session("s1").unwrap().unwrap();
         assert_eq!(back.messages.len(), 2);
+    }
+
+    /// embed 호출 횟수를 세는 임베더. model_id를 주입 가능(무효화 키 테스트용).
+    struct CountingEmbedder {
+        dim: usize,
+        model: String,
+        calls: std::sync::atomic::AtomicUsize,
+    }
+    impl crate::store::embedding::Embedder for CountingEmbedder {
+        fn embed(&self, _text: &str) -> Result<Vec<f32>, String> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(vec![0.1_f32; self.dim])
+        }
+        fn dim(&self) -> usize {
+            self.dim
+        }
+        fn model_id(&self) -> String {
+            self.model.clone()
+        }
+    }
+
+    #[test]
+    fn index_vectors_skips_same_model_reembeds_on_model_change() {
+        use std::sync::atomic::Ordering::SeqCst;
+        let db = SqliteStore::open_memory().unwrap();
+        db.save_session("s1", &ss(), |t| t.to_string()).unwrap(); // 메시지 2건.
+
+        let emb_a = CountingEmbedder { dim: 8, model: "model-A".into(), calls: 0.into() };
+        // 최초 색인: 2건 임베드.
+        db.index_vectors("s1", &ss(), &emb_a).unwrap();
+        assert_eq!(emb_a.calls.load(SeqCst), 2, "최초 색인은 모든 메시지 임베드");
+
+        // 같은 모델 재색인: content_hash+model_id 일치 → skip(추가 임베드 0).
+        db.index_vectors("s1", &ss(), &emb_a).unwrap();
+        assert_eq!(emb_a.calls.load(SeqCst), 2, "같은 모델 재색인은 skip");
+
+        // 모델 교체: model_id 불일치 → 재임베딩(2건 더).
+        let emb_b = CountingEmbedder { dim: 8, model: "model-B".into(), calls: 0.into() };
+        db.index_vectors("s1", &ss(), &emb_b).unwrap();
+        assert_eq!(emb_b.calls.load(SeqCst), 2, "모델 교체 시 stale 벡터 재임베딩");
+
+        // 다시 model-B 재색인: 이제 일치 → skip.
+        db.index_vectors("s1", &ss(), &emb_b).unwrap();
+        assert_eq!(emb_b.calls.load(SeqCst), 2, "교체 후 같은 모델은 다시 skip");
+    }
+
+    #[test]
+    fn fresh_db_has_model_id_column() {
+        let db = SqliteStore::open_memory().unwrap();
+        assert!(db.column_exists("message_vectors", "model_id"), "v3 스키마에 model_id 컬럼 존재");
+    }
+
+    #[test]
+    fn migration_v2_to_v3_adds_model_id_and_preserves_rows() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("tuna_mig_v2v3.db");
+        let _ = std::fs::remove_file(&path);
+        let p = path.to_str().unwrap();
+        // v2 스키마 수동 구성: message_vectors에 model_id 없음 + schema_version=2 + 기존 행 1건.
+        {
+            let conn = rusqlite::Connection::open(p).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE config(key TEXT PRIMARY KEY, value TEXT);
+                 CREATE TABLE message_vectors(session_id TEXT NOT NULL, msg_id INTEGER NOT NULL, \
+                     dim INTEGER NOT NULL, content_hash TEXT NOT NULL, embedding BLOB NOT NULL, \
+                     PRIMARY KEY(session_id, msg_id));
+                 INSERT INTO message_vectors(session_id,msg_id,dim,content_hash,embedding) \
+                     VALUES('s',1,8,'h',x'00');
+                 INSERT INTO config(key,value) VALUES('schema_version','2');",
+            )
+            .unwrap();
+        }
+        // open → migrate v2→v3(ALTER로 model_id 추가).
+        let db = SqliteStore::open(p).unwrap();
+        assert!(db.column_exists("message_vectors", "model_id"), "마이그레이션이 model_id 추가");
+        let cnt: i64 = db
+            .conn
+            .query_row("SELECT COUNT(*) FROM message_vectors WHERE session_id='s'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(cnt, 1, "기존 벡터 행 보존");
+        let mid: Option<String> = db
+            .conn
+            .query_row(
+                "SELECT model_id FROM message_vectors WHERE session_id='s' AND msg_id=1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(mid, None, "기존 행 model_id는 NULL(다음 색인 때 재임베딩 트리거)");
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
@@ -747,6 +864,10 @@ mod tests {
 
             fn dim(&self) -> usize {
                 self.inner.dim()
+            }
+
+            fn model_id(&self) -> String {
+                self.inner.model_id()
             }
         }
 

@@ -4,6 +4,9 @@
 pub trait Embedder: Send + Sync {
     fn embed(&self, text: &str) -> Result<Vec<f32>, String>;
     fn dim(&self) -> usize;
+    /// 모델 정체성(provider:model). 벡터 증분 색인의 무효화 키 일부.
+    /// 이 값이 바뀌면(모델 교체) 같은 내용이라도 재임베딩해야 stale 벡터를 막는다.
+    fn model_id(&self) -> String;
 }
 
 /// 결정적 MockEmbedder: 텍스트 FNV-1a 해시 시드 -> LCG PRNG -> L2 정규화. 테스트/폴백용.
@@ -53,6 +56,10 @@ impl Embedder for MockEmbedder {
 
     fn dim(&self) -> usize {
         self.dim
+    }
+
+    fn model_id(&self) -> String {
+        format!("mock-{}", self.dim)
     }
 }
 
@@ -107,6 +114,10 @@ impl Embedder for OllamaEmbedder {
     fn dim(&self) -> usize {
         1024
     }
+
+    fn model_id(&self) -> String {
+        format!("ollama:{}", self.model)
+    }
 }
 
 #[cfg(all(test, feature = "sqlite"))]
@@ -121,6 +132,12 @@ mod tests {
         assert_eq!(a.len(), 1024);
         assert_eq!(a, b); // 결정적.
         assert_ne!(a, e.embed("다른 텍스트").unwrap());
+    }
+
+    #[test]
+    fn model_id_reflects_identity() {
+        assert_eq!(MockEmbedder::new(64).model_id(), "mock-64");
+        assert_eq!(MockEmbedder::new(1024).model_id(), "mock-1024");
     }
 
     #[cfg(feature = "semantic")]
