@@ -120,8 +120,8 @@
 - embedder 없으면(semantic off/--db 없음) FTS 단독=불변. ANN 미도입(brute-force cosine, YAGNI). 라이브 의미 품질은 실사용 측정.
 
 ### 후속 (검색 레이어 폴리시)
-- [ ] load_session `.ok()` 에러 삼킴 보정(QueryReturnedNoRows만 None)
-- [ ] indexer/retriever 토크나이저·embedder Arc 공유(현재 각자 생성)
+- [x] load_session `.ok()` 에러 삼킴 보정(QueryReturnedNoRows만 None, 나머지 전파) + indexer let-chain clippy 정리 (cd7e4e5)
+- [~] indexer/retriever 토크나이저·embedder Arc 공유 — **백로그(저가치)**: 중복은 startup 1회 인스턴스뿐, 라운드당 추가비용 없음. 시그니처 3곳 churn > 메모리 1회 절약. 보류.
 
 ## v2 백로그 (착수 전 결정 필요)
 - [ ] 분리 터미널 A2A 협업(MCP+버스, 자율 핸드오프) — turn-triggering 난제, 큰 과제
