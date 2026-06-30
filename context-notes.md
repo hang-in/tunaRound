@@ -233,3 +233,12 @@
 - **Plan 12 재정의 = /search 명령**(사람이 인덱스 직접 검색, FTS 품질 관측 -> 벡터 도입 근거 수집). plan=docs/plans/v2-12-search-command.md. 기존 Session.retriever 재사용, 신규 의존성 0. 벡터(원안)는 /search로 품질 관측 후.
 - **Plan 12 /search 완료(2026-06-30):** `bc2f359`(Sonnet). Command::Search 파싱 + step 핸들러(retriever 재사용, 없으면 --db 안내, 빈 결과 안내, 있으면 render). 기본 70/sqlite 79/sqlite+morphology 86 pass, clippy 3조합 클린. 미푸시.
 - **벡터(Plan 원안) 재개 조건:** 라이브 블로커 해소됨(2232/bge-m3 dim 1024). 남은 게이트=YAGNI(FTS 부족 입증). 재개 시 Embedder trait + MockEmbedder + reqwest Ollama(엔드포인트 http://127.0.0.1:11435, 터널 -p [사설포트]) + message_vectors BLOB(dim 1024) + cosine/ANN + 하이브리드(BM25+벡터). semantic feature 게이트.
+
+## Plan 13 벡터/하이브리드 완료 (2026-06-30, 사용자 요청으로 YAGNI 우회 진행)
+
+- **사용자가 벡터 진행 지시**(Ollama 호스트 제공 + "2,3 가자"). 블로커 해소돼 원안대로 구축.
+- **구조:** `semantic = ["sqlite","dep:reqwest"]`(reqwest blocking, rustls-tls). `store/embedding.rs`=Embedder trait + MockEmbedder(결정적, sqlite) + OllamaEmbedder(semantic, `{model:bge-m3,input:[..]}`->`{embeddings}`). `sqlite.rs`=message_vectors(schema v2, f32 LE BLOB, content_hash 증분 가드) + index_vectors(Embedder 주입) + vector_search(brute-force cosine) + get_message. `store/mod.rs`=reciprocal_rank_fusion(k=60, secall 답습). SqliteIndexer/SqliteRetriever에 `Option<Box<dyn Embedder>>` - 있으면 벡터색인/RRF 하이브리드, 없으면 FTS 단독(불변). main semantic 시 OllamaEmbedder 2개(indexer/retriever, env TUNAROUND_OLLAMA_URL/기본 11435).
+- **커밋:** 1ad8881(embedder) + 30efa51(vectors+cosine) + 8920027(RRF+배선). sqlite 86/semantic 86 pass, clippy 클린, 스모크 OK.
+- **라이브 검증:** `ollama_embed_live_dim_1024 ... ok`(로컬 11435 터널 -> 원격 bge-m3, dim 1024). reqwest 클라이언트 end-to-end 동작 확인.
+- **한계:** ANN 미도입(brute-force cosine, 규모 시 usearch). 라이브 의미 품질(벡터가 recall 개선하는지)은 실사용 측정 영역. embedder 2중 생성(Arc 공유 후속). reqwest blocking은 Session.step이 block_on 밖이라 안전.
+- **다음 = item 3 폴리시:** load_session .ok() 보정 + 토크나이저/embedder Arc 공유.

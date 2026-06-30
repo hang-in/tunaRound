@@ -112,9 +112,16 @@
 - 목적: 사람이 인덱스 직접 검색 -> FTS 품질 관측 -> 벡터(원안) 도입 YAGNI 근거 수집. 미푸시.
 - **벡터 보류 근거:** 설계 YAGNI(FTS 부족 입증 시에만). 라이브 블로커는 해소(원격 Ollama 2232 검증, bge-m3 dim 1024).
 
-### 후속 (검색 레이어)
-- [ ] 벡터: 원격 Ollama(SSH 터널 11435, bge-m3 dim 1024) reqwest 임베더 + ANN
-- [ ] 하이브리드 융합(BM25+벡터) + 검색 주입(통째 재주입 -> 관련 슬라이스, build_round_prompt RAG화)
+### Plan 13: 벡터 임베딩 + 하이브리드 (docs/plans/v2-13-vector-hybrid.md) — done (사용자 요청 2026-06-30, 블로커 해소 후)
+
+- [x] Task 1: Embedder trait + MockEmbedder + OllamaEmbedder(reqwest blocking, semantic feature) (1ad8881; Sonnet, reqwest rustls Windows 22s) — **라이브 검증: ollama_embed_live dim 1024 ok**(터널 11435)
+- [x] Task 2: message_vectors(schema v2, f32 LE BLOB) 증분 색인(content_hash 가드) + cosine 벡터 검색 (30efa51; Sonnet)
+- [x] Task 3: RRF 하이브리드(k=60, secall 답습) + indexer/retriever/main embedder 배선 + get_message (8920027; Sonnet) — Plan 13 완료, sqlite 86/semantic 86 pass, 기본 불변, clippy 클린, 스모크 OK
+- embedder 없으면(semantic off/--db 없음) FTS 단독=불변. ANN 미도입(brute-force cosine, YAGNI). 라이브 의미 품질은 실사용 측정.
+
+### 후속 (검색 레이어 폴리시)
+- [ ] load_session `.ok()` 에러 삼킴 보정(QueryReturnedNoRows만 None)
+- [ ] indexer/retriever 토크나이저·embedder Arc 공유(현재 각자 생성)
 
 ## v2 백로그 (착수 전 결정 필요)
 - [ ] 분리 터미널 A2A 협업(MCP+버스, 자율 핸드오프) — turn-triggering 난제, 큰 과제
