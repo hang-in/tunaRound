@@ -29,13 +29,14 @@ pub trait Tokenizer: Send + Sync {
         v.join(" ")
     }
 
-    /// 질의용 FTS5 표현: 형태소+raw 토큰 distinct에 prefix(*) 붙여 AND. 빈 입력은 빈 문자열.
+    /// 질의용 FTS5 표현: 형태소+raw 토큰 distinct에 prefix(*) 붙여 OR. 빈 입력은 빈 문자열.
+    /// OR+bm25 조합으로 리콜 보장(다토큰 매치 문서가 bm25 상위로 올라 정밀도 보존).
     fn fts_query(&self, text: &str) -> String {
         let mut toks = self.tokenize(text);
         toks.extend(self.raw_tokens(text));
         toks.sort();
         toks.dedup();
-        toks.into_iter().map(|t| format!("{t}*")).collect::<Vec<_>>().join(" ")
+        toks.into_iter().map(|t| format!("{t}*")).collect::<Vec<_>>().join(" OR ")
     }
 }
 
