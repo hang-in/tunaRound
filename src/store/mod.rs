@@ -3,6 +3,7 @@
 #[cfg(feature = "sqlite")]
 pub mod sqlite;
 
+pub mod embedding;
 pub mod indexer;
 pub mod retriever;
 
