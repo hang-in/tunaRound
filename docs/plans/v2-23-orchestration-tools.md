@@ -81,7 +81,22 @@ async fn read_transcript(&self, Parameters(p): Parameters<TranscriptParams>) -> 
 - cargo는 **Bash 툴**(Windows). `cargo test`(기본) + `cargo test --features "mcp sqlite morphology"` 통과, `cargo clippy --features "mcp sqlite"` 클린. 기존 통과 수 유지.
 - diff 요약 + 새 테스트 결과 + 빌드/clippy 보고. **커밋 금지**(Opus 리뷰 후).
 
-## 후속 (Task 2+)
-- 현재 세션 id를 MCP 서버 spawn 인자(--session-id)로 주입 → 에이전트가 자기 토론 전사를 정확히 읽음.
+## Task 2: 세션 id 주입 (Sonnet 위임) — read_transcript를 멀티세션에서 정확히
+
+현재 read_transcript는 session_id 기본이 "default" 리터럴이라 멀티세션(--session)에서 엉뚱한 전사를 읽을 수 있음. 현재 세션 id를 MCP 서버 spawn까지 흘려보낸다.
+
+### 확인된 구조
+- 러너는 `with_search_db(Option<String>)`로 `search_db` 필드만 저장(claude.rs:94, codex.rs:104). MCP config는 `run()`에서 조립(claude.rs:108-122 `args:["--mcp-search","--db",db]`, codex.rs:130 `mcp_servers.tuna-search.args=['--mcp-search','--db','{db}']`).
+- main: 러너 생성 line 182/187, `sid` 계산 line 300(`--session <id>` 또는 "default").
+
+### 변경
+- **claude.rs / codex.rs**: 필드 `search_session: Option<String>` + 빌더 `with_search_session(Option<String>)` 추가. `run()`에서 Some이면 MCP args 끝에 `--session-id <sid>` 추가. **빌더 미호출 시 args 불변(behavior-preserving)** → 기존 러너 테스트(claude.rs:198/codex.rs:277) 무영향.
+- **main.rs**: `sid`를 러너 생성 전에 계산(현 line 300 로직을 위로) → 두 러너에 `.with_search_session(Some(sid.clone()))`. `--mcp-search` 분기(서버 측)에서 `--session-id <id>` 파싱(기본 "default") → start_mcp_server에 전달.
+- **mcp.rs**: `TunaSearchServer`에 `default_session: String` 필드(new()에서 "default") + 빌더 `with_default_session(String)`. read_transcript의 sid = `p.session_id.unwrap_or_else(|| self.default_session.clone())`. `start_mcp_server(retriever, reader, default_session: String)` 파라미터 추가 → 빌더 적용. new() 기본 "default"라 기존 mcp 테스트 무영향.
+
+### 검증
+- cargo는 Bash 툴. 기본 + `--features "mcp sqlite morphology"` 통과, clippy 클린. 기존 통과 수 유지. 커밋 금지(리뷰 후).
+
+## 후속 (Task 3+)
 - get_roster(로스터 전달 경로 필요).
 - Stage 2: 프롬프트를 통째 push 대신 "전사는 read_transcript로 당겨라" 포인터로 축소 + 재전송량 실측.
