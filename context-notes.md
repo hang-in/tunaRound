@@ -269,3 +269,13 @@
 - **미반영 후속:** 검색 품질 추가 개선(현실 코퍼스 측정) · 요약 carry-forward(enhancement; 온디맨드 확장은 MCP search_context가 이미 커버) · 예시 로스터 확장 · 리치 프론트(보류).
 - **Plan 20 opencode CLI 러너 done(`7fedac2`):** `opencode run --format json` JSONL(text.part.text=본문, step_finish.part.tokens=토큰) 파싱 + 로스터 engine "opencode"(seat.model). 신규 의존성 0, gotcha #4 resolve_bin이 opencode.cmd spawn. **ollama cloud가 opencode에 안정**(Cerebras/짧은 타임아웃은 cold start로 hang). 모델 예: `ollama-cloud/gemma3:4b`. 신규 엔진 = HTTP(17) + opencode(20) 완성.
 - **검토할 아키텍처 방향(사용자 제기 2026-06-30): 코어-백엔드 + 에이전트-클라이언트(A2A).** 현재=tunaRound가 매 라운드 에이전트 stateless spawn(-p). 제안=코어(오케스트레이션+검색/메모리) 백엔드 상주 + 에이전트는 MCP 클라이언트로 접속. **이미 씨앗=`--mcp-search`(검색/메모리를 백엔드로 노출)**. 확장=오케스트레이션 툴(read_transcript/post_turn) 추가. **난점=분산 turn-triggering(A2A 백로그 난제) + 컨텍스트 통제 약화.** 두 모델 공존·점진 권고. 큰 포크라 별도 설계 세션. 상세 핸드오프 ⑧-A.
+
+## 2026-06-30 (A) 코어-백엔드 설계 확정 (사용자 결정)
+
+- **A2A를 둘로 분해(설계 흔들림 방지):** (A) 아키텍처 A2A = 코어 상주 백엔드 + 에이전트 접속 클라이언트, **사람이 운전자**(= 가치, 채택). (B) 자율 A2A = 에이전트가 다음 화자 스스로 결정·서로 트리거(= 미래 명시 opt-in, 지금 X). 사용자 확정: **(A)**.
+- **(B) 경제 논리(사용자 직관, 기록):** 자율 루프가 비싼 진짜 이유 = 토큰이 아니라 **탐색 공간**. 사람 마이크로매니징 = 매 턴 **가지치기** = 라운드 수↓ = 품질↑·비용↓. (B)의 경제가 뒤집히는 조건 = (1) 토큰 단가 충분히 하락 or (2) 과제가 **검증 가능**(테스트/컴파일/실측 기계 판정)해 사람 없이 수렴. 그 전엔 사람-주도가 싸고 좋다. → (B)는 조건부 옵션, 디폴트는 영원히 사람-주도.
+- **핵심 솔기 = turn-policy:** "다음 턴 누가 정하나"를 코어 명시 정책으로 분리. `HumanDriven`(디폴트·유일 구현) / `AutoLoop`(미래 (B), 같은 백엔드 위 정책만 교체). 이 솔기로 (B)는 포크가 아닌 **플러그인 1개**, 켜기 전 비용 0.
+- **본질 전환:** push(맥락을 prompt에 통째 밀어넣기) → pull(코어가 전사·검색·요약을 서비스로 노출, 에이전트가 필요분만 도구로 당김). `--recent-turns`(Plan 16)·`--mcp-search`(Plan 14)가 이미 그 씨앗.
+- **단계:** Stage 0(검색품질+요약 carry-forward, 코어 경화) → 1(오케스트레이션 툴 read_transcript/get_roster) → 2(주입 push→pull, 재전송량 감소 **실측**=crux) → 3(코어 데몬 분리) → 4(범위 밖=(B)). Stage 1~2는 **에이전트 여전히 stateless spawn**(저위험), 영속 프로세스는 Stage 3 이후.
+- **리스크:** codex MCP **도구 실호출** 미검증(Plan 14 T4는 `-c mcp_servers` 인자 수용만 확인) = Stage 1 통과 기준. Stage 2는 통제 약화 위험(포인터에 당길 범위 명시로 완화).
+- **정본 문서:** docs/design/v2-A2A-core-backend_2026-06-30.md. **이번 세션 = Stage 0 + (A)설계 병렬.**
