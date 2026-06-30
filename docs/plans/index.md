@@ -6,7 +6,8 @@
 
 | 문서 | 우선순위 | 상태 | 요약 |
 |---|---|---|---|
-| [v2-14-agent-search-mcp.md](v2-14-agent-search-mcp.md) | P1 | partial | 에이전트 능동 검색 MCP: rmcp search_context 서버(SqliteRetriever 래핑) + --mcp-search stdio + claude --mcp-config 배선. Task 1·2 done(mcp 89 pass, rmcp Windows OK), Task 3 라이브(실 claude 자율 호출)·codex(gotcha #4)는 대기. a65feba+a5a185d |
+| [v2-15-windows-cli-resolve.md](v2-15-windows-cli-resolve.md) | P0 | done | gotcha #4: 러너 Windows CLI 해석(resolve_bin, PATH .exe/.cmd/.bat). codex.cmd가 spawn됨(Rust .cmd 자동 래핑). 비Windows·확장자 bin 불변. **라이브: codex 실제 spawn·응답 확인.** 8d02088 |
+| [v2-14-agent-search-mcp.md](v2-14-agent-search-mcp.md) | P1 | done | 에이전트 능동 검색 MCP: rmcp search_context 서버(SqliteRetriever 래핑) + --mcp-search stdio + claude --mcp-config 배선. **라이브 검증: 실 라운드 색인 → MCP search_context가 실 발언 반환.** mcp 89 pass. a65feba+a5a185d |
 | [v2-13-vector-hybrid.md](v2-13-vector-hybrid.md) | P2 | done | 벡터 임베딩 + 하이브리드: Embedder(Mock/Ollama reqwest) + message_vectors 증분 색인 + cosine + RRF 융합(BM25+벡터, k=60). embedder 없으면 FTS 단독(불변). 라이브 임베더 dim 1024 검증. brute-force cosine(ANN 후속). sqlite 86/semantic 86 pass. 1ad8881+30efa51+8920027 |
 | [v2-12-search-command.md](v2-12-search-command.md) | P2 | done | /search 명령: 사람이 SQLite 인덱스 직접 검색(retriever 재사용, 신규 의존성 0). 벡터는 설계 YAGNI로 보류 - FTS 품질 관측해 도입 근거 수집. 라이브 블로커는 해소(원격 Ollama 2232/bge-m3 dim 1024 검증). 기본 70/sqlite 79/+morphology 86 pass. bc2f359 |
 | [v2-11-rag-injection.md](v2-11-rag-injection.md) | P1 | done | 검색 주입(RAG): build_round_prompt에 ContextRetriever로 끌어온 관련 과거 맥락 주입. 추가적(활성 경로 밖 다른 분기·과거 세션만, 재주입 미축소). SqliteRetriever + Session retrieve_for(dedup, K=5) + main --db. cross-session 검색 실연. sqlite 76/+morphology 83 pass. b0dd7bd+4643977 |

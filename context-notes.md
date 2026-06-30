@@ -250,3 +250,11 @@
 - **Task 3 라이브 대기:** 실 claude가 search_context를 실제로 부르는지 = 토큰 소모, 사용자 확인 후. **codex는 gotcha #4로 막힘**(codex.exe 없음, npm shim codex.cmd만 -> Command::new("codex") spawn 실패). codex 능동검색은 gotcha #4(러너 Windows CLI 해석) 수정 후.
 - **CLI MCP 설정 실측:** claude `--mcp-config <JSON>`(인라인/파일)+`--strict-mcp-config`. codex는 퍼-런 플래그 없음(`codex mcp add` 영속 or `-c` 오버라이드).
 - **gotcha #4 정밀 진단:** `claude`=claude.exe(spawn OK), `codex`=codex/codex.cmd/codex.ps1만(codex.exe 없음). Rust Command::new는 .exe만 덧붙여 찾고 .cmd는 이름이 .cmd로 끝날 때만 -> codex spawn 실패. 수정=러너가 Windows에서 .cmd 해석(tunaFlow wrap_windows_script).
+
+## Plan 15(gotcha #4) + Plan 14 Task 3 라이브 검증 완료 (2026-06-30)
+
+- **Plan 15 `8d02088`:** `exec.rs resolve_bin` - Windows에서 확장자 없는 bin을 PATH에서 .exe/.cmd/.bat/.com 풀경로화(Rust가 .cmd를 cmd.exe 자동 래핑). `run_with_watchdog` spawn 전 호출. 비Windows·확장자/경로 있는 bin은 no-op(기존 .cmd/.sh 픽스처 테스트 무영향). 기본 74/전체 99 pass.
+- **라이브 검증(실 에이전트, 토큰 사용):** `printf '...자기 역할...' | tunaround --db smoke.db`(mcp 빌드) -> **claude/proposer + codex/reviewer 둘 다 실제 응답**(gotcha #4 수정으로 codex.cmd spawn 성공 = 라이브 입증). smoke.db에 색인됨.
+- **MCP 검증(무토큰):** `tunaround --mcp-search --db smoke.db`에 JSON-RPC initialize+tools/call 직접 전송 -> rmcp 1.8.0 정상, `search_context("발제자")` -> 실 색인된 claude 발언 반환. **MCP 검색 전 체인 입증.**
+- **남은 것(모델 행동):** 에이전트가 토론 중 search_context를 자율 호출할지는 모델 판단. 툴 배선·서버·검색은 입증됨. 품질은 `--features "mcp morphology semantic"`(형태소 FTS + bge-m3 벡터)로 빌드 시 ↑.
+- **검색 스택 전체 완성:** 형태소 FTS(Plan 8,9) + 라이브 색인(10) + RAG 주입(11) + /search(12) + 벡터/하이브리드(13) + 에이전트 MCP 도구(14) + Windows 러너(15). v2 검색/맥락 북극성 1차 완결.

@@ -123,8 +123,12 @@
 
 - [x] Task 1: rmcp search_context 서버(SqliteRetriever 래핑) + main --mcp-search stdio 모드 (a65feba; Sonnet) — **rmcp Windows 빌드 OK**(1.3.0->1.8.0, 10초). ContextRetriever에 Send+Sync 추가. mcp 88 pass
 - [x] Task 2: claude --mcp-config 배선(self-exe를 --mcp-search --db로 spawn, serde_json 조립) + with_search_db + main cfg(mcp) (a5a185d; Sonnet) — mcp 89 pass, clippy 클린
-- [ ] Task 3: 라이브 스모크(실 claude가 search_context 자율 호출하는지) — **토큰 소모, 사용자 확인 후.** codex는 gotcha #4(codex.exe 없음, spawn 실패)로 후속
-- 단일 툴 search_context. 로스터·codex·다중툴(recall/get)은 후속.
+- [x] Task 3: 라이브 검증(2026-06-30) — **실 claude+codex 라운드 정상 응답(gotcha #4 수정으로 codex spawn OK)** → SQLite 색인 → **MCP 서버 직접 JSON-RPC(initialize+tools/call)로 search_context("발제자")가 실 색인 발언 반환**. 전 체인 입증. 에이전트 자율호출은 모델 행동(별도). morphology/semantic 빌드면 형태소+벡터 품질↑
+- 단일 툴 search_context. 로스터·다중툴(recall/get)은 후속.
+
+## Plan 15: 러너 Windows CLI 해석 (docs/plans/v2-15-windows-cli-resolve.md) — done (gotcha #4)
+
+- [x] Task 1: exec.rs resolve_bin(Windows PATH .exe/.cmd/.bat/.com 풀경로화) + run_with_watchdog 배선 (8d02088; Sonnet) — 기본 74/전체 99 pass, 기존 .cmd 픽스처 무영향(확장자 있으면 no-op), clippy 클린. **라이브: codex(codex.cmd)가 실제 spawn돼 응답 확인**
 
 ### 후속 (검색 레이어 폴리시)
 - [x] load_session `.ok()` 에러 삼킴 보정(QueryReturnedNoRows만 None, 나머지 전파) + indexer let-chain clippy 정리 (cd7e4e5)
