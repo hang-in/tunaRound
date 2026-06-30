@@ -242,3 +242,11 @@
 - **라이브 검증:** `ollama_embed_live_dim_1024 ... ok`(로컬 11435 터널 -> 원격 bge-m3, dim 1024). reqwest 클라이언트 end-to-end 동작 확인.
 - **한계:** ANN 미도입(brute-force cosine, 규모 시 usearch). 라이브 의미 품질(벡터가 recall 개선하는지)은 실사용 측정 영역. embedder 2중 생성(Arc 공유 후속). reqwest blocking은 Session.step이 block_on 밖이라 안전.
 - **다음 = item 3 폴리시:** load_session .ok() 보정 + 토크나이저/embedder Arc 공유.
+
+## Plan 14 에이전트 능동 검색 MCP (2026-06-30, 사용자 선택)
+
+- **방식:** secall rmcp(1.3.0->1.8.0) 답습. `src/mcp.rs` TunaSearchServer = 단일 툴 `search_context(query,limit)`가 기존 SqliteRetriever(하이브리드) 호출 -> Content. `main --mcp-search --db`로 stdio MCP 서버 기동. claude 러너가 `--mcp-config`(serde_json, command=self-exe args=[--mcp-search,--db,path])로 이 서버를 물려 에이전트가 토론 중 자율 호출. `mcp = ["sqlite","dep:rmcp","dep:schemars"]` 피처.
+- **커밋:** Task 1 `a65feba`(서버+stdio) + Task 2 `a5a185d`(claude 배선). mcp 89 pass, 기본 71 불변, clippy 클린. ContextRetriever에 `Send+Sync` bound 추가(기존 구현 충족). rmcp Windows 빌드 OK(10초).
+- **Task 3 라이브 대기:** 실 claude가 search_context를 실제로 부르는지 = 토큰 소모, 사용자 확인 후. **codex는 gotcha #4로 막힘**(codex.exe 없음, npm shim codex.cmd만 -> Command::new("codex") spawn 실패). codex 능동검색은 gotcha #4(러너 Windows CLI 해석) 수정 후.
+- **CLI MCP 설정 실측:** claude `--mcp-config <JSON>`(인라인/파일)+`--strict-mcp-config`. codex는 퍼-런 플래그 없음(`codex mcp add` 영속 or `-c` 오버라이드).
+- **gotcha #4 정밀 진단:** `claude`=claude.exe(spawn OK), `codex`=codex/codex.cmd/codex.ps1만(codex.exe 없음). Rust Command::new는 .exe만 덧붙여 찾고 .cmd는 이름이 .cmd로 끝날 때만 -> codex spawn 실패. 수정=러너가 Windows에서 .cmd 해석(tunaFlow wrap_windows_script).

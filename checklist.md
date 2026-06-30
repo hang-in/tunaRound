@@ -119,6 +119,13 @@
 - [x] Task 3: RRF 하이브리드(k=60, secall 답습) + indexer/retriever/main embedder 배선 + get_message (8920027; Sonnet) — Plan 13 완료, sqlite 86/semantic 86 pass, 기본 불변, clippy 클린, 스모크 OK
 - embedder 없으면(semantic off/--db 없음) FTS 단독=불변. ANN 미도입(brute-force cosine, YAGNI). 라이브 의미 품질은 실사용 측정.
 
+### Plan 14: 에이전트 능동 검색 도구 MCP (docs/plans/v2-14-agent-search-mcp.md) — Task 1·2 done, Task 3 라이브 대기 (사용자 선택 2026-06-30)
+
+- [x] Task 1: rmcp search_context 서버(SqliteRetriever 래핑) + main --mcp-search stdio 모드 (a65feba; Sonnet) — **rmcp Windows 빌드 OK**(1.3.0->1.8.0, 10초). ContextRetriever에 Send+Sync 추가. mcp 88 pass
+- [x] Task 2: claude --mcp-config 배선(self-exe를 --mcp-search --db로 spawn, serde_json 조립) + with_search_db + main cfg(mcp) (a5a185d; Sonnet) — mcp 89 pass, clippy 클린
+- [ ] Task 3: 라이브 스모크(실 claude가 search_context 자율 호출하는지) — **토큰 소모, 사용자 확인 후.** codex는 gotcha #4(codex.exe 없음, spawn 실패)로 후속
+- 단일 툴 search_context. 로스터·codex·다중툴(recall/get)은 후속.
+
 ### 후속 (검색 레이어 폴리시)
 - [x] load_session `.ok()` 에러 삼킴 보정(QueryReturnedNoRows만 None, 나머지 전파) + indexer let-chain clippy 정리 (cd7e4e5)
 - [~] indexer/retriever 토크나이저·embedder Arc 공유 — **백로그(저가치)**: 중복은 startup 1회 인스턴스뿐, 라운드당 추가비용 없음. 시그니처 3곳 churn > 메모리 1회 절약. 보류.
