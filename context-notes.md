@@ -312,3 +312,11 @@
   - **토큰 페이오프 증명**: push는 전사 누적에 선형 증가(claude 284->5184->9770, codex 2453->7623->12489). pull은 평평(claude 433->431->429, codex 2413->2307->2417). claude 95%↓, codex 81%↓. **프롬프트가 전사 길이와 탈동조** = (A) 핵심 페이오프.
   - **블로커 발견(중요)**: pull에서 read_transcript가 **헤드리스 `claude -p` 권한모드서 차단**. claude 응답에 "read_transcript 권한이 막혀 직전 4턴 전사 대신 이전 결론 메모를 근거로" 명시. 게으른 pull 아니라 **하드 권한 블록**. 에이전트는 레포(cwd)+사전지식으로 보충 → 그럴듯하나 **전사 grounding 아님**(예 "상주코어<->접속" = 레포 설계문서에서 읽음). coherence 부분 착시.
   - **결론**: 토큰 감소 실재, 단 현 spawn 설정선 pull 무효. **Task 3 = 러너 spawn에 MCP 도구 권한 자동허용**(claude --allowedTools 또는 permission-mode로 tuna-search 승인, codex 대응) 후 재측정. 측정-우선이 조용한 품질저하를 사전 차단.
+
+## 2026-06-30 Stage 2 Task 3(권한 블로커 해소) - 작동 검증 완료
+
+- **claude 수정(claude.rs build_claude_args)**: ReadOnly + mcp_config 있으면 `--allowedTools mcp__tuna-search__search_context,mcp__tuna-search__read_transcript` 추가. 쓰기 차단(--disallowedTools Write,Edit,Bash) 유지 = read-only 안전. fail-safe(도구명 틀려도 보안구멍 없이 막힐 뿐). 실측 #10: `claude --help`에 --allowedTools(가산 허용)·--disallowedTools·--permission-mode 확인. permission-mode bypass는 fail-unsafe라 미채택.
+- **codex는 수정 불필요**: codex exec=비대화형이라 MCP 도구 자동 승인(claude -p와 다름). 재측정서 codex도 전사 인용 확인.
+- **codex 서버 모드(사용자 지적)**: codex는 `codex mcp-server`(codex를 MCP 서버로), `codex app-server`(영속 데몬, experimental), `codex mcp`(외부 MCP 관리)가 있음. 우리 러너는 `codex exec`(stateless, codex=우리 tuna-search의 MCP 클라이언트). **app-server/mcp-server = (A) Stage 3 영속 에이전트 세션 경로**(매턴 stateless exec 대신 영속 데몬). 후속 검토.
+- **재측정 검증(실 claude/codex, pull, 3턴, 3턴째=합의요약 과제)**: "권한 막힘" 0회. 두 에이전트가 **전사 특정 내용 정확 인용**(codex "전사와 관련 맥락을 확인해" + env_clear/close-on-exec/Tailscale 등 앞턴 결정 요약; claude가 transcript.read scope 등 참조). 프롬프트 평평(claude 433/431/441, codex 2401/3307/2132) vs push(9770/12489). **토큰 80~95%↓ + grounding 유지 = (A) push→pull 페이오프 실증.**
+- **Stage 2 작동 검증 완료.** half-a2a 척추 동작. 남은 폴리시: --recent-turns+carried 병행 시 동작, 포인터 문구 튜닝, pull 기본화 결정(품질 더 측정 후). get_roster/post_turn은 Stage 1 후속.

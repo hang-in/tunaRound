@@ -23,6 +23,12 @@ fn build_claude_args(input: &RunInput, mcp_config: Option<&str>) -> Vec<String> 
         RunMode::ReadOnly => {
             args.push("--disallowedTools".into());
             args.push("Write,Edit,Bash".into());
+            // 헤드리스 -p 모드는 미승인 도구를 자동 거부하므로, MCP 검색/전사 도구가 있으면
+            // 그 둘만 명시 허용한다(쓰기 차단은 유지 = read-only 안전성 보존).
+            if mcp_config.is_some() {
+                args.push("--allowedTools".into());
+                args.push("mcp__tuna-search__search_context,mcp__tuna-search__read_transcript".into());
+            }
         }
     }
     if let Some(model) = &input.model {
