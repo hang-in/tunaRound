@@ -2,6 +2,14 @@
 
 > 작업 중 결정과 근거. 계속 append. (규율 #7) 다음 세션이 결정을 재유도하지 않게.
 
+## 2026-07-01 Stage 3d 완료 (post_turn 쓰기 권위 + get_roster, 옵션 B front=core 병합)
+
+- **4 태스크 커밋**: T1 `append_turn`(증분 INSERT, DB id 권위) + TranscriptWriter(`d90d867`). T2 MCP post_turn/get_roster 툴 + 서버 배선(`c28561d`). T3 REPL core-sync 병합(step adopt + append_turn, 전량 persist 생략 → 외부 쓰기 클로버 차단)(`f500840`). T4 main --core 배선 + 라이브 e2e(`8a80cfe`).
+- **라이브 e2e 성공(결정적)**: 단일 `--core` 프로세스에서 원격 참가자가 실 HTTP MCP로 `post_turn`("추가됨 msg_id=1") → front=core REPL이 core-sync로 흡수 → **claude가 read_transcript로 그 발언을 그대로 인용**("...valid_state 가중...키워드 살구나무"). get_roster가 실 로스터(claude proposer/codex reviewer) 반환. = half-a2a 분산 쓰기 권위 끝까지 동작.
+- **⚠ 중요 교훈(서버 호스팅)**: `--core`는 메인 스레드가 동기 블로킹 REPL(std stdin)이라, **공유 rt에 서버를 spawn하면 accept 루프가 유휴 중 간헐적으로만 구동돼 신뢰 불가**(실측: 유휴 4s UP, 6s/8s down). **해결 = 서버를 전용 OS 스레드의 자체 런타임 block_on으로 서빙**(헤드리스 --serve-mcp가 메인 block_on이라 되는 것과 동형). 라운드 중엔 메인이 서브프로세스 대기라 rt 워커가 돌아 에이전트는 작동했으나, 외부 curl/원격 클라이언트는 유휴 중 끊김. 전용 스레드가 둘 다 안정.
+- **디버깅 함정 기록**: e2e 실패로 보였던 것들은 대부분 **타이밍/orchestration 아티팩트**였다. (1) Kiwi 토크나이저 init로 서버 기동이 ~3초 걸려 고정 `sleep 3` curl이 레이스. (2) FIFO `printf >&9`가 즉시 flush 안 돼 agent 라인이 close 시점까지 지연. (3) 2-에이전트 라운드가 ~35초라 짧은 타임아웃이 잘림. → 서버는 **준비 폴링** 후 호출, agent 라운드는 **파이프 입력** + 넉넉한 타임아웃(300s).
+- **남은(3d 후속)**: codex bearer-env(원격 인증 접속), --core+resume 엣지(seed→DB 권위 반영은 구현했으나 미검증), post_turn 권한(현재 누구나 토큰만 있으면 씀).
+
 ## 2026-07-01 시간성·유효성 방향 확정 (외부 memory 프레임워크 검토 후)
 
 - 외부 지형도(Zep/Graphiti·Mem0·Letta·Cognee·Memora·H-Mem/MemORAI/MRAgent) 검토. **결론: 인프라(graph DB·managed service) 안 감, 개념(시간성·유효성·provenance)만 SQLite 컬럼+랭킹가중치로 흡수.** SQLite-light·로컬-first 유지.

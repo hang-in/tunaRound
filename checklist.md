@@ -185,7 +185,8 @@
   - [x] 3a-1 HTTP MCP 서브 모드: `--serve-mcp <addr> --token` + rmcp StreamableHttpService(axum 마운트) + bearer 미들웨어(401) + serve feature(axum 격리). 기본 105 불변/serve 신규 2 pass, clippy 클린. disable_allowed_hosts(원격 허용, bearer가 인증)
   - [x] 3a-2(502e458): 러너 with_search_url(URL+bearer) → 에이전트가 원격 HTTP MCP 접속. claude HTTP config, codex url(bearer-env TODO). **라이브 e2e: 코어 --serve-mcp + 별도 REPL claude가 원격 HTTP로 read_transcript 전사 정확 인용 = remote core 동작**
   - [x] 3a-3: front=core 단일프로세스(Plan 26). `--core <addr>` = REPL+in-process HTTP MCP 코어(bind 동기 선행→rt.spawn 서빙→로컬좌석 search_url 자동배선→REPL). serve 두 분기 `build_http_mcp_backends` 헬퍼 공유, mcp.rs `core_local_url`+단위테스트. 기본 137/serve 146 pass, clippy 클린. **풀 라이브 e2e 통과**: 단일 프로세스로 실 claude+codex 2턴, claude(pull, 프롬프트 604자 포인터)가 in-process 코어에서 read_transcript로 자기 turn1 발언 verbatim 인용 = pull 확정. [ctx] claude 513/604(평평) vs codex 1511(push). half-a2a 척추 단일 front=core 라이브 동작
-  - [ ] 3a 잔여: 3d post_turn/get_roster · codex bearer-env · 3e 영속 에이전트(보류)
+  - [x] 3d post_turn(쓰기 권위)+get_roster(Plan 27, 옵션 B front=core 병합): append_turn(증분, DB id 권위)+TranscriptWriter, MCP post_turn/get_roster, REPL core-sync(adopt+append, 클로버 차단), --core 배선. 라이브 e2e: 원격 post_turn→core-sync 흡수→claude 인용. 커밋 d90d867/c28561d/f500840/8a80cfe. 기본 142/serve 156. **서버는 전용 스레드 block_on 서빙**(공유 rt spawn은 유휴 중 간헐 신뢰불가)
+  - [ ] 3a 잔여: codex bearer-env · post_turn 권한/인가 · --core+resume 검증 · 3e 영속 에이전트(보류)
 - [ ] Stage 4(범위 밖): 영속 에이전트 세션 + AutoLoop = (B), 경제 조건 입증 시에만
 
 ## v2 백로그 (착수 전 결정 필요)
