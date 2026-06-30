@@ -304,3 +304,11 @@
 - **결론(측정이 취소시킨 것)**: (1) **쿼리확장 YAGNI 확정** - 벡터가 어휘공백 메움. (2) **리랭커 보류** - 벡터 MRR 0.976(gold 거의 1순위)이라 재정렬 한계이득 미미. 측정 한 번이 두 기능을 안 짓게 막음.
 - **단서**: 깨끗한 소코퍼스라 bge-m3에 쉬움. 프로덕션 전사(길고 노이즈·문서多)는 더 어려워 갭 재개 가능 → 그때 리랭커 재검토(로컬 GPU 가능). **하이브리드 MRR < 벡터**: RRF 어휘 arm이 가끔 gold 끌어내림(이 코퍼스선 순수 벡터가 깔끔).
 - **검색 품질 트랙 = 현 eval 기준 충분.** 다음 = Stage 1(A2A 오케스트레이션 툴). 검색은 프로덕션 코퍼스 확보 후 재측정.
+
+## 2026-06-30 Stage 2(push->pull) 라이브 측정 - 페이오프 증명 + 권한 블로커 발견
+
+- **Task 1 done(f15911b)**: ContextMode(Push/Pull) + is_mcp_capable + build_round_prompt pull 분기(포인터, prior/retrieved 생략) + --pull-context(--db 없으면 경고+Push) + [ctx] 프롬프트 크기 계측. behavior-preserving. 기본 118/mcp+sqlite 124.
+- **Task 2 라이브 측정(실 claude/codex, 3턴, --db, --recent-turns 미설정이라 carried도 빈값)**:
+  - **토큰 페이오프 증명**: push는 전사 누적에 선형 증가(claude 284->5184->9770, codex 2453->7623->12489). pull은 평평(claude 433->431->429, codex 2413->2307->2417). claude 95%↓, codex 81%↓. **프롬프트가 전사 길이와 탈동조** = (A) 핵심 페이오프.
+  - **블로커 발견(중요)**: pull에서 read_transcript가 **헤드리스 `claude -p` 권한모드서 차단**. claude 응답에 "read_transcript 권한이 막혀 직전 4턴 전사 대신 이전 결론 메모를 근거로" 명시. 게으른 pull 아니라 **하드 권한 블록**. 에이전트는 레포(cwd)+사전지식으로 보충 → 그럴듯하나 **전사 grounding 아님**(예 "상주코어<->접속" = 레포 설계문서에서 읽음). coherence 부분 착시.
+  - **결론**: 토큰 감소 실재, 단 현 spawn 설정선 pull 무효. **Task 3 = 러너 spawn에 MCP 도구 권한 자동허용**(claude --allowedTools 또는 permission-mode로 tuna-search 승인, codex 대응) 후 재측정. 측정-우선이 조용한 품질저하를 사전 차단.

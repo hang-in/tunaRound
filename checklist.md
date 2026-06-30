@@ -177,7 +177,8 @@
 - [~] Stage 2: 주입 모델 전환(push->pull), 재전송량 감소 실측 (crux)
   - [x] 설계(Plan 24): Push/Pull 모드, 좌석 능력 게이트(비MCP→push 폴백), 포인터+carried/same_round 유지, 통제 리스크 완화, 측정=페이오프 증명. 구현은 승인 후
   - [x] Task 1 메커니즘: ContextMode(Push/Pull) + is_mcp_capable + build_round_prompt pull 분기(포인터, prior/retrieved 생략) + --pull-context(--db 없으면 경고+Push) + 프롬프트 크기 계측([ctx]). behavior-preserving(기본 Push). 기본 118/mcp+sqlite 124 pass, clippy 클린
-  - [ ] Task 2 라이브 측정: 실 claude/codex로 push vs pull 토큰 비교 + 게으른 pull 여부 + 일관성(사용자 승인)
+  - [x] Task 2 라이브 측정(실 claude/codex, 3턴): **토큰 페이오프 증명**(pull 평평: claude 9770→429 95%↓, codex 12489→2417 81%↓, 전사길이와 탈동조). **블로커 발견**: read_transcript가 헤드리스 `-p` 권한모드서 차단(claude 응답에 "read_transcript 권한이 막혀" 명시)→에이전트가 레포/사전지식으로 보충(전사 grounding 아님). pull 아직 프로덕션 불가
+  - [ ] **Task 3(블로커 해소)**: 러너 spawn에 MCP 도구 권한 자동허용(claude --allowedTools/permission-mode, codex 대응) → 재측정으로 일관성 확인
 - [ ] Stage 3: 코어 프로세스 분리(상주 데몬 + 멀티 프론트/세션)
 - [ ] Stage 4(범위 밖): 영속 에이전트 세션 + AutoLoop = (B), 경제 조건 입증 시에만
 
