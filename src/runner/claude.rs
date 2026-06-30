@@ -9,7 +9,8 @@ use std::time::Duration;
 /// Step 1 실측(2026-06-29): claude --help 확인.
 ///   Write    → --dangerously-skip-permissions (모든 권한 우회)
 ///   ReadOnly → --disallowedTools Write,Edit,Bash (쓰기 도구 차단)
-fn build_claude_args(input: &RunInput) -> Vec<String> {
+/// mcp_config가 Some(json)이면 --mcp-config <json>을 args에 추가한다.
+fn build_claude_args(input: &RunInput, mcp_config: Option<&str>) -> Vec<String> {
     let mut args: Vec<String> = vec![
         "-p".into(),
         input.prompt.clone(),
@@ -27,6 +28,10 @@ fn build_claude_args(input: &RunInput) -> Vec<String> {
     if let Some(model) = &input.model {
         args.push("--model".into());
         args.push(model.clone());
+    }
+    if let Some(json) = mcp_config {
+        args.push("--mcp-config".into());
+        args.push(json.to_string());
     }
     args
 }
@@ -69,18 +74,25 @@ pub(crate) fn parse_claude_stream(stdout: &str) -> Result<RunOutput, RunError> {
 pub struct ClaudeRunner {
     bin: String,
     idle_timeout: Duration,
+    /// 검색 MCP 서버에 넘길 DB 경로. Some이면 run() 시 --mcp-config를 조립해 전달한다.
+    search_db: Option<String>,
 }
 
 impl ClaudeRunner {
     pub fn new() -> Self {
-        Self { bin: "claude".to_string(), idle_timeout: Duration::from_secs(600) }
+        Self { bin: "claude".to_string(), idle_timeout: Duration::from_secs(600), search_db: None }
     }
     pub fn with_bin(bin: &str) -> Self {
-        Self { bin: bin.to_string(), idle_timeout: Duration::from_secs(600) }
+        Self { bin: bin.to_string(), idle_timeout: Duration::from_secs(600), search_db: None }
     }
     /// 테스트/설정용 idle 타임아웃 주입.
     pub fn with_idle_timeout(mut self, d: Duration) -> Self {
         self.idle_timeout = d;
+        self
+    }
+    /// 검색 MCP 서버 DB 경로 주입. Some이면 claude에 --mcp-config로 self-exe를 spawn하도록 배선한다.
+    pub fn with_search_db(mut self, db: Option<String>) -> Self {
+        self.search_db = db;
         self
     }
 }
@@ -93,9 +105,24 @@ impl Default for ClaudeRunner {
 
 impl Runner for ClaudeRunner {
     fn run(&self, input: &RunInput) -> Result<RunOutput, RunError> {
+        let mcp_json: Option<String> = self.search_db.as_ref().map(|db| {
+            let exe = std::env::current_exe()
+                .ok()
+                .and_then(|p| p.to_str().map(String::from))
+                .unwrap_or_else(|| "tunaround".into());
+            let v = serde_json::json!({
+                "mcpServers": {
+                    "tuna-search": {
+                        "command": exe,
+                        "args": ["--mcp-search", "--db", db]
+                    }
+                }
+            });
+            v.to_string()
+        });
         let spec = ExecSpec {
             bin: self.bin.clone(),
-            args: build_claude_args(input),
+            args: build_claude_args(input, mcp_json.as_deref()),
             cwd: input.project_path.clone(),
             stdin: None,
             idle_timeout: self.idle_timeout,
@@ -151,7 +178,7 @@ mod tests {
     #[test]
     fn args_have_stream_json_and_prompt() {
         let input = RunInput { prompt: "이 설계 어떤가요?".into(), model: None, project_path: None, mode: RunMode::ReadOnly };
-        let args = build_claude_args(&input);
+        let args = build_claude_args(&input, None);
         let joined = args.join(" ");
         assert!(joined.contains("-p 이 설계 어떤가요?"));
         assert!(joined.contains("--output-format stream-json"));
@@ -160,9 +187,22 @@ mod tests {
     #[test]
     fn args_write_mode_skips_permissions() {
         let input = RunInput { prompt: "p".into(), model: Some("claude-x".into()), project_path: None, mode: RunMode::Write };
-        let joined = build_claude_args(&input).join(" ");
+        let joined = build_claude_args(&input, None).join(" ");
         assert!(joined.contains("--dangerously-skip-permissions"));
         assert!(joined.contains("--model claude-x"));
+    }
+
+    #[test]
+    fn args_with_mcp_config_appends_flag() {
+        let input = RunInput { prompt: "q".into(), model: None, project_path: None, mode: RunMode::ReadOnly };
+        let json = r#"{"mcpServers":{"tuna-search":{"command":"/usr/bin/tunaround","args":["--mcp-search","--db","/tmp/t.db"]}}}"#;
+        let args = build_claude_args(&input, Some(json));
+        let joined = args.join(" ");
+        assert!(joined.contains("--mcp-config"), "mcp-config 플래그 없음: {joined}");
+        assert!(joined.contains("tuna-search"), "서버 이름 없음: {joined}");
+        // None일 때는 포함되지 않는다.
+        let args_none = build_claude_args(&input, None);
+        assert!(!args_none.join(" ").contains("--mcp-config"), "--mcp-config가 None인데 포함됨");
     }
 
     // 무출력으로 sleep하는 가짜 실행파일을 tmp에 만들어 경로를 돌려준다(OS별).

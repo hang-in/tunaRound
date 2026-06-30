@@ -148,7 +148,11 @@ fn main() {
         }
         None => {
             let mut reg = MapRegistry::new();
-            reg.insert("claude", Box::new(ClaudeRunner::new()));
+            #[cfg(feature = "mcp")]
+            let claude_runner = ClaudeRunner::new().with_search_db(db_path.clone());
+            #[cfg(not(feature = "mcp"))]
+            let claude_runner = ClaudeRunner::new();
+            reg.insert("claude", Box::new(claude_runner));
             reg.insert("codex", Box::new(CodexRunner::new()));
             let parts = vec![
                 Participant { engine: "claude".into(), role: Some("proposer".into()), instruction: String::new() },
