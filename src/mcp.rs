@@ -10,7 +10,7 @@ use rmcp::{
 use schemars::JsonSchema;
 use serde::Deserialize;
 
-use crate::orchestrator::{ContextRetriever, TranscriptReader, Utterance};
+use crate::orchestrator::{ContextRetriever, RosterSeat, TranscriptReader, TranscriptWriter, Utterance};
 
 /// search_context 툴 파라미터.
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -30,6 +30,24 @@ pub struct TranscriptParams {
     pub max_turns: Option<usize>,
 }
 
+/// post_turn 툴 파라미터.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct PostTurnParams {
+    /// 세션 id(기본 "default").
+    pub session_id: Option<String>,
+    /// 발언자 라벨(예: "claude/proposer").
+    pub speaker: String,
+    /// 발언 본문.
+    pub content: String,
+}
+
+/// get_roster 툴 파라미터.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct RosterParams {
+    /// 세션 id(현재는 단일 로스터라 참고용).
+    pub session_id: Option<String>,
+}
+
 /// rmcp MCP 서버 핸들러. ContextRetriever를 감싸 search_context/read_transcript 툴을 노출한다.
 #[derive(Clone)]
 pub struct TunaSearchServer {
@@ -37,19 +55,40 @@ pub struct TunaSearchServer {
     tool_router: ToolRouter<Self>,
     retriever: Arc<dyn ContextRetriever>,
     reader: Option<Arc<dyn TranscriptReader>>,
+    writer: Option<Arc<dyn TranscriptWriter>>,
+    roster: Option<Vec<RosterSeat>>,
     /// session_id 파라미터 생략 시 기본으로 사용할 세션 id.
     default_session: String,
 }
 
 impl TunaSearchServer {
-    /// retriever Arc를 받아 새 서버 인스턴스를 반환한다(reader=None, default_session="default", 기존 시그니처 유지).
+    /// retriever Arc를 받아 새 서버 인스턴스를 반환한다(reader/writer=None, default_session="default", 기존 시그니처 유지).
     pub fn new(retriever: Arc<dyn ContextRetriever>) -> Self {
-        Self { tool_router: Self::tool_router(), retriever, reader: None, default_session: "default".to_string() }
+        Self {
+            tool_router: Self::tool_router(),
+            retriever,
+            reader: None,
+            writer: None,
+            roster: None,
+            default_session: "default".to_string(),
+        }
     }
 
     /// 전사 리더를 연결한 빌더 메서드(기존 new 시그니처 무영향).
     pub fn with_transcript_reader(mut self, reader: Arc<dyn TranscriptReader>) -> Self {
         self.reader = Some(reader);
+        self
+    }
+
+    /// 전사 writer를 연결한 빌더 메서드(post_turn 활성화).
+    pub fn with_transcript_writer(mut self, writer: Arc<dyn TranscriptWriter>) -> Self {
+        self.writer = Some(writer);
+        self
+    }
+
+    /// 로스터 스냅샷을 연결한 빌더 메서드(get_roster 활성화).
+    pub fn with_roster(mut self, roster: Vec<RosterSeat>) -> Self {
+        self.roster = Some(roster);
         self
     }
 
@@ -102,6 +141,47 @@ impl TunaSearchServer {
         };
         Ok(CallToolResult::success(vec![Content::text(text)]))
     }
+
+    #[tool(description = "토론에 발언을 추가한다(원격 참가자가 코어 전사에 자기 턴을 씀).")]
+    async fn post_turn(
+        &self,
+        Parameters(p): Parameters<PostTurnParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let Some(writer) = &self.writer else {
+            return Ok(CallToolResult::success(vec![Content::text(
+                "전사 writer 미연결(post_turn 비활성)".to_string(),
+            )]));
+        };
+        let sid = p.session_id.unwrap_or_else(|| self.default_session.clone());
+        match writer.append_turn(&sid, &p.speaker, &p.content) {
+            Ok(id) => Ok(CallToolResult::success(vec![Content::text(format!(
+                "추가됨: session={sid} msg_id={id}"
+            ))])),
+            Err(e) => Ok(CallToolResult::success(vec![Content::text(format!(
+                "추가 실패: {e}"
+            ))])),
+        }
+    }
+
+    #[tool(description = "현재 토론 참가자(좌석) 구성을 조회한다.")]
+    async fn get_roster(
+        &self,
+        Parameters(_p): Parameters<RosterParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let text = match &self.roster {
+            None => "로스터 미연결".to_string(),
+            Some(seats) if seats.is_empty() => "참가자 없음".to_string(),
+            Some(seats) => seats
+                .iter()
+                .map(|s| match &s.role {
+                    Some(r) => format!("{} ({})", s.engine, r),
+                    None => s.engine.clone(),
+                })
+                .collect::<Vec<_>>()
+                .join("\n"),
+        };
+        Ok(CallToolResult::success(vec![Content::text(text)]))
+    }
 }
 
 #[tool_handler]
@@ -136,10 +216,12 @@ pub async fn start_http_mcp_server(
     addr: &str,
     retriever: Arc<dyn ContextRetriever>,
     reader: Option<Arc<dyn TranscriptReader>>,
+    writer: Option<Arc<dyn TranscriptWriter>>,
+    roster: Option<Vec<RosterSeat>>,
     token: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    serve_http_mcp_on_listener(listener, retriever, reader, token).await
+    serve_http_mcp_on_listener(listener, retriever, reader, writer, roster, token).await
 }
 
 /// 이미 바인드된 TcpListener로 HTTP MCP 서버를 서빙한다(테스트에서도 재사용).
@@ -148,6 +230,8 @@ pub async fn serve_http_mcp_on_listener(
     listener: tokio::net::TcpListener,
     retriever: Arc<dyn ContextRetriever>,
     reader: Option<Arc<dyn TranscriptReader>>,
+    writer: Option<Arc<dyn TranscriptWriter>>,
+    roster: Option<Vec<RosterSeat>>,
     token: Option<String>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use axum::{
@@ -163,6 +247,8 @@ pub async fn serve_http_mcp_on_listener(
 
     let retriever2 = retriever.clone();
     let reader2 = reader.clone();
+    let writer2 = writer.clone();
+    let roster2 = roster.clone();
     // service_factory: 요청마다 새 TunaSearchServer 인스턴스를 생성한다(Clone 불필요, Arc 공유).
     let service: StreamableHttpService<TunaSearchServer, LocalSessionManager> =
         StreamableHttpService::new(
@@ -170,6 +256,12 @@ pub async fn serve_http_mcp_on_listener(
                 let mut s = TunaSearchServer::new(retriever2.clone());
                 if let Some(r) = &reader2 {
                     s = s.with_transcript_reader(r.clone());
+                }
+                if let Some(w) = &writer2 {
+                    s = s.with_transcript_writer(w.clone());
+                }
+                if let Some(rs) = &roster2 {
+                    s = s.with_roster(rs.clone());
                 }
                 Ok(s)
             },
@@ -263,7 +355,7 @@ mod tests {
             let token = Some("secret-tok".to_string());
 
             tokio::spawn(async move {
-                let _ = serve_http_mcp_on_listener(listener, retriever, None, token).await;
+                let _ = serve_http_mcp_on_listener(listener, retriever, None, None, None, token).await;
             });
             // axum이 accept를 시작할 시간을 준다.
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -317,7 +409,7 @@ mod tests {
             let retriever = Arc::new(NullRetriever) as Arc<dyn crate::orchestrator::ContextRetriever>;
 
             tokio::spawn(async move {
-                let _ = serve_http_mcp_on_listener(listener, retriever, None, None).await;
+                let _ = serve_http_mcp_on_listener(listener, retriever, None, None, None, None).await;
             });
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
@@ -481,5 +573,75 @@ mod tests {
             Some("explicit-session"),
             "명시 session_id가 우선되어야 함"
         );
+    }
+
+    /// append_turn 인자를 캡처하는 가짜 writer.
+    struct CapturingWriter {
+        captured: std::sync::Mutex<Option<(String, String, String)>>,
+    }
+
+    impl crate::orchestrator::TranscriptWriter for CapturingWriter {
+        fn append_turn(&self, session_id: &str, speaker: &str, content: &str) -> Result<u64, String> {
+            *self.captured.lock().unwrap() =
+                Some((session_id.to_string(), speaker.to_string(), content.to_string()));
+            Ok(7)
+        }
+    }
+
+    #[tokio::test]
+    async fn post_turn_with_writer_appends_and_uses_default_session() {
+        let writer = Arc::new(CapturingWriter { captured: std::sync::Mutex::new(None) });
+        let server = TunaSearchServer::new(Arc::new(FakeRetriever(vec![])))
+            .with_transcript_writer(writer.clone() as Arc<dyn crate::orchestrator::TranscriptWriter>)
+            .with_default_session("sess-d".to_string());
+        let result = server
+            .post_turn(Parameters(PostTurnParams {
+                session_id: None, // 생략 → default_session.
+                speaker: "claude/proposer".into(),
+                content: "원격 발언".into(),
+            }))
+            .await;
+        assert!(result.is_ok());
+        let text = format!("{:?}", result.unwrap().content);
+        assert!(text.contains("msg_id=7"), "새 id 안내 불일치: {text}");
+        let cap = writer.captured.lock().unwrap().clone();
+        assert_eq!(cap, Some(("sess-d".into(), "claude/proposer".into(), "원격 발언".into())));
+    }
+
+    #[tokio::test]
+    async fn post_turn_without_writer_returns_not_connected() {
+        let server = TunaSearchServer::new(Arc::new(FakeRetriever(vec![])));
+        let result = server
+            .post_turn(Parameters(PostTurnParams {
+                session_id: None,
+                speaker: "x".into(),
+                content: "y".into(),
+            }))
+            .await;
+        assert!(result.is_ok());
+        let text = format!("{:?}", result.unwrap().content);
+        assert!(text.contains("writer 미연결"), "미연결 안내 불일치: {text}");
+    }
+
+    #[tokio::test]
+    async fn get_roster_lists_seats() {
+        let server = TunaSearchServer::new(Arc::new(FakeRetriever(vec![]))).with_roster(vec![
+            RosterSeat { engine: "claude".into(), role: Some("proposer".into()) },
+            RosterSeat { engine: "codex".into(), role: None },
+        ]);
+        let result = server.get_roster(Parameters(RosterParams { session_id: None })).await;
+        assert!(result.is_ok());
+        let text = format!("{:?}", result.unwrap().content);
+        assert!(text.contains("claude (proposer)"), "좌석 표기 불일치: {text}");
+        assert!(text.contains("codex"), "역할 없는 좌석 누락: {text}");
+    }
+
+    #[tokio::test]
+    async fn get_roster_without_roster_returns_not_connected() {
+        let server = TunaSearchServer::new(Arc::new(FakeRetriever(vec![])));
+        let result = server.get_roster(Parameters(RosterParams { session_id: None })).await;
+        assert!(result.is_ok());
+        let text = format!("{:?}", result.unwrap().content);
+        assert!(text.contains("로스터 미연결"), "미연결 안내 불일치: {text}");
     }
 }

@@ -220,9 +220,10 @@ fn main() {
             #[cfg(not(feature = "sqlite"))]
             { eprintln!("[serve-mcp] sqlite 피처 없음"); std::process::exit(1); }
         };
-        let (retriever_arc, reader_arc) = build_http_mcp_backends("serve-mcp", &db_str);
+        let (retriever_arc, reader_arc, writer_arc) = build_http_mcp_backends("serve-mcp", &db_str);
+        // 헤드리스 코어: post_turn 활성(단일 writer라 클로버 없음), 로스터 없음.
         if let Err(e) = rt.block_on(tunaround::mcp::start_http_mcp_server(
-            addr, retriever_arc, reader_arc, serve_token.clone(),
+            addr, retriever_arc, reader_arc, Some(writer_arc), None, serve_token.clone(),
         )) {
             eprintln!("[serve-mcp] 서버 오류: {e}");
             std::process::exit(1);
@@ -238,7 +239,7 @@ fn main() {
             Some(p) => p.clone(),
             None => { eprintln!("[core] --core는 --db <경로>가 필요합니다"); std::process::exit(1); }
         };
-        let (retriever_arc, reader_arc) = build_http_mcp_backends("core", &db_str);
+        let (retriever_arc, reader_arc, writer_arc) = build_http_mcp_backends("core", &db_str);
         // bind 동기 선행: 포트 경합을 REPL 진입 전에 fail-fast.
         let listener = match rt.block_on(tokio::net::TcpListener::bind(&addr)) {
             Ok(l) => l,
@@ -246,9 +247,10 @@ fn main() {
         };
         let serve_tok = serve_token.clone();
         // HTTP MCP 코어를 rt 워커 스레드에 백그라운드 서빙(메인은 블로킹 REPL).
+        // post_turn 활성(원격 참가자 쓰기). 로스터는 후속(Task 4)에서 주입. REPL 병합은 core-sync(Task 3).
         rt.spawn(async move {
             if let Err(e) = tunaround::mcp::serve_http_mcp_on_listener(
-                listener, retriever_arc, reader_arc, serve_tok,
+                listener, retriever_arc, reader_arc, Some(writer_arc), None, serve_tok,
             ).await {
                 eprintln!("[core] HTTP MCP 서버 종료: {e}");
             }
@@ -552,16 +554,38 @@ fn main() {
     }
 }
 
-/// HTTP MCP 코어용 retriever + 전사 리더를 --db 경로로 빌드한다(--serve-mcp / --core 공용).
-/// serve→mcp→sqlite라 sqlite는 항상 켜짐. 실패 시 ctx 프리픽스로 에러를 찍고 종료한다.
+/// 색인용 FTS 토크나이저 closure(fts_index: 형태소+raw, indexer/writer 공용). serve 전용.
 #[cfg(feature = "serve")]
-fn build_http_mcp_backends(
-    ctx: &str,
-    db_str: &str,
-) -> (
+fn build_index_tokenizer(ctx: &str) -> Box<dyn Fn(&str) -> String + Send + Sync> {
+    #[cfg(feature = "morphology")]
+    {
+        match tunaround::search::tokenizer::create_tokenizer("kiwi") {
+            Ok(t) => Box::new(move |s: &str| t.fts_index(s)),
+            Err(e) => {
+                eprintln!("[{ctx}] 색인 토크나이저 실패, 폴백: {e}");
+                Box::new(|s: &str| tunaround::search::tokenize_fallback(s).join(" "))
+            }
+        }
+    }
+    #[cfg(not(feature = "morphology"))]
+    {
+        let _ = ctx;
+        Box::new(|s: &str| tunaround::search::tokenize_fallback(s).join(" "))
+    }
+}
+
+/// build_http_mcp_backends 반환 묶음: (retriever, 전사 리더, writer).
+#[cfg(feature = "serve")]
+type HttpMcpBackends = (
     std::sync::Arc<dyn tunaround::orchestrator::ContextRetriever>,
     Option<std::sync::Arc<dyn tunaround::orchestrator::TranscriptReader>>,
-) {
+    std::sync::Arc<dyn tunaround::orchestrator::TranscriptWriter>,
+);
+
+/// HTTP MCP 코어용 retriever + 전사 리더 + writer를 --db 경로로 빌드한다(--serve-mcp / --core 공용).
+/// serve→mcp→sqlite라 sqlite는 항상 켜짐. 실패 시 ctx 프리픽스로 에러를 찍고 종료한다.
+#[cfg(feature = "serve")]
+fn build_http_mcp_backends(ctx: &str, db_str: &str) -> HttpMcpBackends {
     let store = match tunaround::store::sqlite::SqliteStore::open(db_str) {
         Ok(s) => s,
         Err(e) => {
@@ -569,6 +593,7 @@ fn build_http_mcp_backends(
             std::process::exit(1);
         }
     };
+    // 질의용 토크나이저(fts_query: prefix). retriever 전용.
     #[cfg(feature = "morphology")]
     let tok: Box<dyn Fn(&str) -> String + Send + Sync> = {
         match tunaround::search::tokenizer::create_tokenizer("kiwi") {
@@ -606,11 +631,21 @@ fn build_http_mcp_backends(
             std::process::exit(1);
         }
     };
+    let store3 = match tunaround::store::sqlite::SqliteStore::open(db_str) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("[{ctx}] writer DB 열기 실패: {e}");
+            std::process::exit(1);
+        }
+    };
     let retriever = tunaround::store::retriever::SqliteRetriever::new(store, tok, emb);
     let retriever_arc = std::sync::Arc::new(retriever)
         as std::sync::Arc<dyn tunaround::orchestrator::ContextRetriever>;
     let transcript_reader = tunaround::store::retriever::SqliteTranscriptReader::new(store2);
     let reader_arc: Option<std::sync::Arc<dyn tunaround::orchestrator::TranscriptReader>> =
         Some(std::sync::Arc::new(transcript_reader));
-    (retriever_arc, reader_arc)
+    let writer = tunaround::store::retriever::SqliteTranscriptWriter::new(store3, build_index_tokenizer(ctx));
+    let writer_arc = std::sync::Arc::new(writer)
+        as std::sync::Arc<dyn tunaround::orchestrator::TranscriptWriter>;
+    (retriever_arc, reader_arc, writer_arc)
 }

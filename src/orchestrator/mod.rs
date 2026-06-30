@@ -70,6 +70,13 @@ pub trait TranscriptWriter: Send + Sync {
     fn append_turn(&self, session_id: &str, speaker: &str, content: &str) -> Result<u64, String>;
 }
 
+/// 로스터 좌석 요약(get_roster MCP 노출용). 원격 참가자가 토론 좌석 구성을 발견한다.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RosterSeat {
+    pub engine: String,
+    pub role: Option<String>,
+}
+
 /// HashMap 기반 기본 레지스트리. 테스트는 FakeRunner를 넣는다.
 pub struct MapRegistry {
     runners: HashMap<String, Box<dyn Runner>>,
