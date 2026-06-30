@@ -100,6 +100,12 @@
 - [x] Task 2: main --db 배선(3분기 일관 전달, feature-gated) + 색인 roundtrip 테스트(persist->재오픈->search) (5d79a0a; Sonnet 위임) — Plan 10 완료, sqlite 74/sqlite+morphology 81 pass, 기본 불변, clippy 3조합 클린, 스모크 OK. **origin 푸시됨**(README와 함께)
 - 패턴: SessionBus 미러 답습(Option 필드 + append_round). 추가적(JSON/Redis 미접촉), sqlite off=None=불변. 검색 소비(RAG)는 Plan 11.
 
+### Plan 11: 검색 주입 RAG (docs/plans/v2-11-rag-injection.md) — done
+
+- [x] Task 1: build_round_prompt retrieved 슬롯 + ContextRetriever trait + run_round 배선(동작 불변, retrieved=&[]) (b0dd7bd; Sonnet)
+- [x] Task 2: SqliteRetriever + Session retriever(with_retriever 빌더) + retrieve_for(활성경로 dedup, K=5) + main --db 읽기 배선 (4643977; Sonnet) — Plan 11 완료, sqlite 76/sqlite+morphology 83 pass, 기본 불변, clippy 3조합 클린, 스모크 OK. **cross-session 검색 단위 테스트 통과**(능동 검색 실연)
+- 방식: 추가적(활성 경로 밖 다른 분기·과거 세션 맥락만 검색 주입). prior 캡(재주입 축소)은 품질 측정 후 별 슬라이스. 미푸시.
+
 ### 후속 (검색 레이어)
 - [ ] 벡터: 원격 Ollama(SSH 터널 11435, bge-m3 dim 1024) reqwest 임베더 + ANN
 - [ ] 하이브리드 융합(BM25+벡터) + 검색 주입(통째 재주입 -> 관련 슬라이스, build_round_prompt RAG화)

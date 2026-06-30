@@ -218,3 +218,10 @@
 - **절차 교훈:** README를 쓰는 사이 Task 2가 커밋돼 `git push`(README만 의도)가 Task 1·2 코드까지 함께 올림. 또 Task 2를 리뷰 전 푸시 -> 사후 독립검증(빌드/테스트/clippy)으로 그린 확인. **다음부턴 서브에이전트 진행 중 푸시 자제 또는 완료·리뷰 후 푸시.**
 - **다음 = Plan 11 검색 주입(RAG):** `build_round_prompt`가 통째 재주입 대신 SqliteStore.search로 관련 슬라이스만 주입. 북극성 핵심. 인덱스는 Plan 10으로 라이브로 채워짐.
 - **검색 토크나이저(서브에이전트 보고):** `cargo`는 Bash 툴로 돌릴 것(Git Bash sh 있어 exec.rs sh 테스트 통과; PowerShell이면 2건 거짓 실패).
+
+## Plan 11 검색 주입(RAG) 완료 (2026-06-30)
+
+- **방식(추가적):** prior 통째 재주입은 그대로 두고, 활성 경로 **밖**의 관련 맥락(다른 분기·과거 세션)을 topic으로 검색해 "참고할 만한 과거 맥락(검색)" 섹션으로 **추가** 주입. 검증된 단일세션 품질 보존하면서 능동 검색 기둥만 세움. prior 캡(재주입 토큰 축소)은 품질 측정 후 별 슬라이스(설계 원칙: 검색가능->주입->측정->필요시 축소).
+- **구조:** `ContextRetriever` trait(orchestrator, 비게이트) + `build_round_prompt`/`run_round`에 retrieved 슬롯(Task 1, 동작 불변) + `SqliteRetriever`(sqlite, SqliteStore 읽기 + tokenize closure) + `Session.retriever`(with_retriever 빌더) + `retrieve_for`(활성 경로 content dedup, K=5) + main `--db`로 indexer와 별개 읽기 연결(WAL 동시 reader). retriever 없으면 retrieved=&[] = 동작 불변.
+- **커밋:** Task 1 `b0dd7bd`(orchestrator 슬롯) + Task 2 `4643977`(SqliteRetriever+Session+main). sqlite 76/sqlite+morphology 83 pass, clippy 3조합 클린, 스모크 OK. **cross-session 검색 단위 테스트 통과 = 능동 검색 실연.** 미푸시.
+- **다음 = Plan 12 벡터/하이브리드:** 어휘(FTS)만으론 동의어·의미 약함. 원격 Ollama bge-m3(dim 1024, SSH -p [사설포트] 터널) reqwest 임베더 + MockEmbedder 폴백 + ANN(usearch 또는 cosine) + 하이브리드(BM25+벡터). **Windows 네트워크에서 터널 도달 가능한지 미검증** -> 안 되면 Mock+graceful로 구현하고 라이브 검증 보류.
