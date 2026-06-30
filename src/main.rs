@@ -108,16 +108,25 @@ fn main() {
         #[cfg(feature = "morphology")]
         let tok: Box<dyn Fn(&str) -> String + Send + Sync> = {
             match tunaround::search::tokenizer::create_tokenizer("kiwi") {
-                Ok(t) => Box::new(move |s: &str| t.tokenize_for_fts(s)),
+                Ok(t) => Box::new(move |s: &str| t.fts_query(s)),
                 Err(e) => {
                     eprintln!("[mcp-search] 토크나이저 실패, 폴백: {e}");
-                    Box::new(|s: &str| tunaround::search::tokenize_fallback(s).join(" "))
+                    Box::new(|s: &str| {
+                        let mut toks = tunaround::search::tokenize_fallback(s);
+                        toks.sort();
+                        toks.dedup();
+                        toks.into_iter().map(|t| format!("{t}*")).collect::<Vec<_>>().join(" ")
+                    })
                 }
             }
         };
         #[cfg(not(feature = "morphology"))]
-        let tok: Box<dyn Fn(&str) -> String + Send + Sync> =
-            Box::new(|s: &str| tunaround::search::tokenize_fallback(s).join(" "));
+        let tok: Box<dyn Fn(&str) -> String + Send + Sync> = Box::new(|s: &str| {
+            let mut toks = tunaround::search::tokenize_fallback(s);
+            toks.sort();
+            toks.dedup();
+            toks.into_iter().map(|t| format!("{t}*")).collect::<Vec<_>>().join(" ")
+        });
         #[cfg(feature = "semantic")]
         let emb: Option<Box<dyn tunaround::store::embedding::Embedder>> = {
             let endpoint = std::env::var("TUNAROUND_OLLAMA_URL")
@@ -192,7 +201,7 @@ fn main() {
                 #[cfg(feature = "morphology")]
                 let tok: Box<dyn Fn(&str) -> String + Send + Sync> = {
                     match tunaround::search::tokenizer::create_tokenizer("kiwi") {
-                        Ok(t) => Box::new(move |s: &str| t.tokenize_for_fts(s)),
+                        Ok(t) => Box::new(move |s: &str| t.fts_index(s)),
                         Err(e) => {
                             eprintln!("[tunaRound] 토크나이저 실패, 폴백: {e}");
                             Box::new(|s: &str| tunaround::search::tokenize_fallback(s).join(" "))
@@ -234,16 +243,25 @@ fn main() {
                 #[cfg(feature = "morphology")]
                 let tok2: Box<dyn Fn(&str) -> String + Send + Sync> = {
                     match tunaround::search::tokenizer::create_tokenizer("kiwi") {
-                        Ok(t) => Box::new(move |s: &str| t.tokenize_for_fts(s)),
+                        Ok(t) => Box::new(move |s: &str| t.fts_query(s)),
                         Err(e) => {
                             eprintln!("[tunaRound] retriever 토크나이저 실패, 폴백: {e}");
-                            Box::new(|s: &str| tunaround::search::tokenize_fallback(s).join(" "))
+                            Box::new(|s: &str| {
+                                let mut toks = tunaround::search::tokenize_fallback(s);
+                                toks.sort();
+                                toks.dedup();
+                                toks.into_iter().map(|t| format!("{t}*")).collect::<Vec<_>>().join(" ")
+                            })
                         }
                     }
                 };
                 #[cfg(not(feature = "morphology"))]
-                let tok2: Box<dyn Fn(&str) -> String + Send + Sync> =
-                    Box::new(|s: &str| tunaround::search::tokenize_fallback(s).join(" "));
+                let tok2: Box<dyn Fn(&str) -> String + Send + Sync> = Box::new(|s: &str| {
+                    let mut toks = tunaround::search::tokenize_fallback(s);
+                    toks.sort();
+                    toks.dedup();
+                    toks.into_iter().map(|t| format!("{t}*")).collect::<Vec<_>>().join(" ")
+                });
                 // semantic 피처: OllamaEmbedder 인스턴스(retriever용). 연결 실패는 best-effort.
                 #[cfg(feature = "semantic")]
                 let emb_ret: Option<Box<dyn tunaround::store::embedding::Embedder>> = {

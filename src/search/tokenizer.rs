@@ -16,6 +16,27 @@ pub trait Tokenizer: Send + Sync {
     fn tokenize_for_fts(&self, text: &str) -> String {
         self.tokenize(text).join(" ")
     }
+
+    /// raw 토큰: 공백·ASCII구두점 분리, 소문자, 1글자 초과. POS 필터 없음(외래어 보존).
+    fn raw_tokens(&self, text: &str) -> Vec<String> {
+        tokenize_fallback(text)
+    }
+
+    /// 색인용 FTS 텍스트: 형태소 + raw 토큰 공백조인(중복 허용, 외래어가 조사째 색인에 남음).
+    fn fts_index(&self, text: &str) -> String {
+        let mut v = self.tokenize(text);
+        v.extend(self.raw_tokens(text));
+        v.join(" ")
+    }
+
+    /// 질의용 FTS5 표현: 형태소+raw 토큰 distinct에 prefix(*) 붙여 AND. 빈 입력은 빈 문자열.
+    fn fts_query(&self, text: &str) -> String {
+        let mut toks = self.tokenize(text);
+        toks.extend(self.raw_tokens(text));
+        toks.sort();
+        toks.dedup();
+        toks.into_iter().map(|t| format!("{t}*")).collect::<Vec<_>>().join(" ")
+    }
 }
 
 // ─── LinderaKoTokenizer ───────────────────────────────────────────────────────
@@ -229,6 +250,20 @@ mod tests {
         let tok = create_tokenizer("kiwi").expect("kiwi or lindera fallback");
         let tokens = tok.tokenize("아키텍처를 설계한다");
         assert!(!tokens.is_empty());
+    }
+
+    #[test]
+    fn fts_index_keeps_loanword_in_context() {
+        let tok = LinderaKoTokenizer::new().unwrap();
+        let idx = tok.fts_index("벡터 임베딩을 쓴다");
+        assert!(idx.contains("임베딩을") || idx.contains("임베딩"), "외래어 보존 실패: {idx}");
+    }
+
+    #[test]
+    fn fts_query_is_prefix_and() {
+        let tok = LinderaKoTokenizer::new().unwrap();
+        let q = tok.fts_query("임베딩");
+        assert!(q.contains("임베딩*"), "prefix 아님: {q}");
     }
 
     #[cfg(all(
