@@ -87,6 +87,17 @@ enum TurnDecision { Speak(SeatId), AwaitHuman, Conclude }
 - **비용은 신뢰 경계에서 발생**: 코어가 로컬 신뢰 경계를 벗어날수록 (1) 인증/신원 (2) 격리/멀티테넌시 (3) 데이터 거주성(전사 = 설계논의+레포맥락; 외부 호스팅 = 그 맥락 송신, "서비스 비공개" 기조와 충돌 가능) 필요.
 - **단계 영향**: Stage 0~2는 전부 로컬이라 무관. 토폴로지/인증은 Stage 3에서 본격.
 
+### Stage 3 메모: 데이터 계층 + WAN 연결 (사용자 결정 2026-06-30, 지금은 로컬로 둠)
+
+배포 모델 = **자체호스팅 오픈소스**(각자 받아 자기 서버/로컬에 구동), **SaaS 아님**. → 단일 테넌트라 멀티테넌시·SaaS 인증 부담 없음.
+
+- **데이터 계층**: 배포별(=사용자별) **SQLite 파일**(WAL + busy_timeout) + **단일 Redis**(user/session 키 네임스페이스). PostgreSQL 비채택: 10명 규모 이득<비용, 사용자별 파일이면 쓰기 경합 없음·격리 공짜, 한국어 FTS5+벡터 스택 재작성 회피([[prefer-sqlite-over-vector-db]]). store는 트레잇 뒤(SqliteStore/Retriever/Indexer/TranscriptReader)라 미래 PG는 구현 교체로 가능(YAGNI, 지금 안 함).
+- **임베딩 엔드포인트**: 현재 원격 Ollama(bge-m3)는 실사용상 **사용자 소유·상시 가용**(이전 필요시 조치 가능, 사용자 확인 2026-06-30). SaaS 의존 리스크 아님. 별도 전용 endpoint는 규모 커질 때만.
+- **WAN 연결 = 두 관계 분리**:
+  - **(a) 코어 → WAN LLM**: 코어가 클라이언트 = outbound API 호출 = 포워딩/터널 불필요(공개 엔드포인트·API key면). 현 SSH 터널은 친구 Ollama가 localhost+무인증이라 생긴 특수케이스.
+  - **(b) 원격 에이전트 → 내 코어(분산 A2A)**: 코어가 서버 = inbound = NAT 문제 본체. **해법 = 포트포워딩 대신 오버레이(Tailscale/WireGuard)**: 각 머신 tailnet 가입, 사설 IP 통신, NAT 자동통과, 공개포트 0 → WAN을 "LAN 피어"로 되돌림. (대안: cloudflared/ngrok outbound 리버스 터널, 단 인증 필수.)
+- **코드 무관**: 도달성은 transport/운영 선택(코어는 주소 바인딩 + 프로토콜만). Stage 1-2(로컬) 차단 안 함.
+
 ## 7. 이번 세션 결정 (2026-06-30)
 
 - 사용자 확정: **(A) 상주 코어 + 클라이언트(사람 운전)**. (B)는 미래 명시 opt-in.

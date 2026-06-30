@@ -170,7 +170,9 @@
   - [x] eval 코퍼스 확대: 20→40발언, 10→21질의(어휘·의미공백 포함). R@5 0.857/P@5 0.592/MRR 0.833. 리콜공백(Q6/16/17/21)=벡터·확장 영역, 정밀도noise=리랭커 영역 분리 확인
   - [x] 벡터/하이브리드 측정(vector_hybrid_recall, 터널): FTS R@5 0.857→**벡터 0.952**, MRR 0.976. 공백 회복(Q16/17/6/21). **결론: 쿼리확장 YAGNI 확정 + 리랭커 보류**(MRR 0.976=gold 1순위, 재정렬 이득 미미). 측정이 두 기능 도입 취소
   - [~] 검색 품질 트랙 = 현 eval 충분. 프로덕션 코퍼스 확보 후 재측정(그때 리랭커 재검토)
-- [ ] Stage 1: 오케스트레이션 툴(read_transcript/get_roster/post_turn) 기존 rmcp 서버 확장
+- [~] Stage 1: 오케스트레이션 툴(read_transcript/get_roster/post_turn) 기존 rmcp 서버 확장
+  - [x] read_transcript(Plan 23): TranscriptReader 트레잇 + SqliteTranscriptReader(Mutex) + MCP 툴 + main 배선. 기본 111/mcp+sqlite 119 pass, clippy 클린(미커밋→리뷰완료). 세션 id=파라미터/기본 default
+  - [ ] 후속: 현재 세션 id를 spawn 인자(--session-id) 주입(Task 2) · get_roster · post_turn
 - [ ] Stage 2: 주입 모델 전환(push->pull), 재전송량 감소 실측 (crux)
 - [ ] Stage 3: 코어 프로세스 분리(상주 데몬 + 멀티 프론트/세션)
 - [ ] Stage 4(범위 밖): 영속 에이전트 세션 + AutoLoop = (B), 경제 조건 입증 시에만
