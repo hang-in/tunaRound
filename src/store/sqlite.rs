@@ -5,7 +5,7 @@ use rusqlite::Connection;
 use crate::store::{StoredMessage, StoredSession};
 
 // 스키마 버전 상수.
-const CURRENT_SCHEMA_VERSION: u32 = 1;
+const CURRENT_SCHEMA_VERSION: u32 = 2;
 
 // config 테이블 생성 SQL.
 const CREATE_CONFIG: &str = "CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT);";
@@ -41,6 +41,18 @@ CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
     session_id UNINDEXED,
     msg_id     UNINDEXED,
     tokenize='unicode61'
+);
+";
+
+// 메시지 벡터 저장 테이블. f32 LE BLOB, content_hash로 증분 색인 가드.
+const CREATE_MESSAGE_VECTORS: &str = "
+CREATE TABLE IF NOT EXISTS message_vectors (
+    session_id   TEXT NOT NULL,
+    msg_id       INTEGER NOT NULL,
+    dim          INTEGER NOT NULL,
+    content_hash TEXT NOT NULL,
+    embedding    BLOB NOT NULL,
+    PRIMARY KEY(session_id, msg_id)
 );
 ";
 
@@ -101,7 +113,7 @@ impl SqliteStore {
             .unwrap_or(0);
 
         if version < CURRENT_SCHEMA_VERSION {
-            // v0 -> v1: 전체 스키마 생성.
+            // v0 -> v2: 전체 스키마 생성. IF NOT EXISTS라 기존 테이블 재실행 무해.
             self.conn
                 .execute_batch(CREATE_SESSIONS)
                 .map_err(|e| format!("sqlite: {e}"))?;
@@ -110,6 +122,9 @@ impl SqliteStore {
                 .map_err(|e| format!("sqlite: {e}"))?;
             self.conn
                 .execute_batch(CREATE_MESSAGES_FTS)
+                .map_err(|e| format!("sqlite: {e}"))?;
+            self.conn
+                .execute_batch(CREATE_MESSAGE_VECTORS)
                 .map_err(|e| format!("sqlite: {e}"))?;
             self.conn
                 .execute(
@@ -280,6 +295,142 @@ impl SqliteStore {
 
         Ok(hits)
     }
+
+    /// 세션 메시지를 벡터 색인한다. content_hash가 동일하면 skip(증분). sqlite 피처 전용.
+    #[cfg(feature = "sqlite")]
+    pub fn index_vectors(
+        &self,
+        session_id: &str,
+        ss: &StoredSession,
+        embedder: &dyn crate::store::embedding::Embedder,
+    ) -> Result<(), String> {
+        use std::hash::{DefaultHasher, Hash, Hasher};
+
+        self.conn
+            .execute_batch("BEGIN;")
+            .map_err(|e| format!("sqlite: {e}"))?;
+
+        let result = (|| -> Result<(), String> {
+            for msg in &ss.messages {
+                // content_hash 계산(DefaultHasher, hex 문자열).
+                let mut hasher = DefaultHasher::new();
+                msg.content.hash(&mut hasher);
+                let content_hash = format!("{:x}", hasher.finish());
+
+                let msg_id = msg.id as i64;
+
+                // 기존 행 조회: 같은 hash면 skip(증분).
+                let existing: Option<String> = self
+                    .conn
+                    .query_row(
+                        "SELECT content_hash FROM message_vectors WHERE session_id=?1 AND msg_id=?2",
+                        rusqlite::params![session_id, msg_id],
+                        |row| row.get(0),
+                    )
+                    .ok();
+
+                if existing.as_deref() == Some(&content_hash) {
+                    continue;
+                }
+
+                // 임베딩 생성.
+                let vec = embedder.embed(&msg.content)?;
+                let dim = vec.len() as i64;
+
+                // f32 LE BLOB 직렬화.
+                let blob: Vec<u8> = vec.iter().flat_map(|f| f.to_le_bytes()).collect();
+
+                // upsert.
+                self.conn
+                    .execute(
+                        "INSERT INTO message_vectors(session_id, msg_id, dim, content_hash, embedding) \
+                         VALUES(?1, ?2, ?3, ?4, ?5) \
+                         ON CONFLICT(session_id, msg_id) DO UPDATE SET \
+                             dim=excluded.dim, \
+                             content_hash=excluded.content_hash, \
+                             embedding=excluded.embedding",
+                        rusqlite::params![session_id, msg_id, dim, content_hash, blob],
+                    )
+                    .map_err(|e| format!("sqlite: {e}"))?;
+            }
+            Ok(())
+        })();
+
+        if result.is_ok() {
+            self.conn
+                .execute_batch("COMMIT;")
+                .map_err(|e| format!("sqlite: {e}"))?;
+        } else {
+            let _ = self.conn.execute_batch("ROLLBACK;");
+        }
+
+        result
+    }
+
+    /// message_vectors 전체를 brute-force cosine으로 검색해 top-K를 반환한다. sqlite 피처 전용.
+    #[cfg(feature = "sqlite")]
+    pub fn vector_search(
+        &self,
+        query_vec: &[f32],
+        limit: usize,
+    ) -> Result<Vec<(String, u64, f64)>, String> {
+        if query_vec.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let mut stmt = self
+            .conn
+            .prepare("SELECT session_id, msg_id, dim, embedding FROM message_vectors")
+            .map_err(|e| format!("sqlite: {e}"))?;
+
+        let mut scored: Vec<(String, u64, f64)> = stmt
+            .query_map([], |row| {
+                let session_id: String = row.get(0)?;
+                let msg_id: i64 = row.get(1)?;
+                let dim: i64 = row.get(2)?;
+                let blob: Vec<u8> = row.get(3)?;
+                Ok((session_id, msg_id as u64, dim as usize, blob))
+            })
+            .map_err(|e| format!("sqlite: {e}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("sqlite: {e}"))?
+            .into_iter()
+            .filter_map(|(sid, mid, dim, blob)| {
+                // BLOB -> Vec<f32>(LE 역직렬화).
+                if blob.len() != dim * 4 {
+                    return None;
+                }
+                let vec: Vec<f32> = blob
+                    .chunks_exact(4)
+                    .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+                    .collect();
+
+                // cosine 유사도.
+                let score = cosine_similarity(query_vec, &vec);
+                Some((sid, mid, score))
+            })
+            .collect();
+
+        // 내림차순 정렬 후 top-K.
+        scored.sort_by(|a, b| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal));
+        scored.truncate(limit);
+        Ok(scored)
+    }
+}
+
+/// cosine 유사도. norm 0이면 0 반환.
+#[cfg(feature = "sqlite")]
+fn cosine_similarity(a: &[f32], b: &[f32]) -> f64 {
+    if a.len() != b.len() {
+        return 0.0;
+    }
+    let dot: f64 = a.iter().zip(b.iter()).map(|(x, y)| (*x as f64) * (*y as f64)).sum();
+    let norm_a: f64 = a.iter().map(|x| (*x as f64) * (*x as f64)).sum::<f64>().sqrt();
+    let norm_b: f64 = b.iter().map(|x| (*x as f64) * (*x as f64)).sum::<f64>().sqrt();
+    if norm_a < 1e-9 || norm_b < 1e-9 {
+        return 0.0;
+    }
+    dot / (norm_a * norm_b)
 }
 
 #[cfg(test)]
@@ -396,5 +547,102 @@ mod tests {
         let q = tok.tokenize_for_fts("검색");
         let hits = db.search(&q, 10).unwrap();
         assert!(!hits.is_empty(), "형태소 색인이 '검색을'을 '검색'으로 잡아야 함");
+    }
+
+    // 벡터 검색 테스트: sqlite 피처 전용.
+    #[cfg(feature = "sqlite")]
+    mod vector_tests {
+        use super::*;
+        use crate::store::embedding::{Embedder, MockEmbedder};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        /// embed 호출 횟수를 카운트하는 MockEmbedder 래퍼.
+        struct CountingMock {
+            inner: MockEmbedder,
+            calls: AtomicUsize,
+        }
+
+        impl CountingMock {
+            fn new(dim: usize) -> Self {
+                Self { inner: MockEmbedder::new(dim), calls: AtomicUsize::new(0) }
+            }
+
+            fn call_count(&self) -> usize {
+                self.calls.load(Ordering::SeqCst)
+            }
+        }
+
+        impl Embedder for CountingMock {
+            fn embed(&self, text: &str) -> Result<Vec<f32>, String> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                self.inner.embed(text)
+            }
+
+            fn dim(&self) -> usize {
+                self.inner.dim()
+            }
+        }
+
+        #[test]
+        fn vector_search_finds_same_content() {
+            // 두 메시지 색인 후, 첫 메시지 content로 쿼리 -> 첫 메시지가 top.
+            let db = SqliteStore::open_memory().unwrap();
+            let mock = MockEmbedder::new(64);
+            let session = StoredSession {
+                messages: vec![
+                    StoredMessage {
+                        id: 1,
+                        parent_id: None,
+                        speaker: "a".into(),
+                        content: "목표 텍스트".into(),
+                    },
+                    StoredMessage {
+                        id: 2,
+                        parent_id: Some(1),
+                        speaker: "b".into(),
+                        content: "다른 내용의 메시지".into(),
+                    },
+                ],
+                head: Some(2),
+            };
+            db.save_session("vs1", &session, |t| t.to_string()).unwrap();
+            db.index_vectors("vs1", &session, &mock).unwrap();
+
+            // 같은 텍스트로 쿼리 벡터 생성(MockEmbedder는 결정적이므로 cosine=1).
+            let query_vec = mock.embed("목표 텍스트").unwrap();
+            let results = db.vector_search(&query_vec, 10).unwrap();
+
+            assert!(!results.is_empty(), "벡터 검색 결과가 있어야 함");
+            let top = &results[0];
+            assert_eq!(top.0, "vs1");
+            assert_eq!(top.1, 1, "같은 텍스트를 가진 msg_id=1이 top이어야 함");
+            // cosine 유사도는 1.0에 근사해야 함.
+            assert!(top.2 > 0.99, "cosine 유사도가 1.0에 근사해야 함: {}", top.2);
+        }
+
+        #[test]
+        fn index_vectors_is_incremental() {
+            // 같은 세션 두 번 색인 시 두 번째는 embed 호출 수 = 0(content_hash 동일이라 skip).
+            let db = SqliteStore::open_memory().unwrap();
+            let counter = CountingMock::new(64);
+            let session = StoredSession {
+                messages: vec![StoredMessage {
+                    id: 1,
+                    parent_id: None,
+                    speaker: "a".into(),
+                    content: "증분 테스트 메시지".into(),
+                }],
+                head: Some(1),
+            };
+            db.save_session("inc1", &session, |t| t.to_string()).unwrap();
+
+            // 첫 번째 색인: embed 1회 호출.
+            db.index_vectors("inc1", &session, &counter).unwrap();
+            assert_eq!(counter.call_count(), 1, "첫 번째 색인에서 embed 1회 호출");
+
+            // 두 번째 색인: 동일 content_hash이므로 skip -> embed 0회 추가 호출.
+            db.index_vectors("inc1", &session, &counter).unwrap();
+            assert_eq!(counter.call_count(), 1, "두 번째 색인에서 embed 추가 호출 없어야 함");
+        }
     }
 }
