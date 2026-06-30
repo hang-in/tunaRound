@@ -5,6 +5,7 @@ use serde::Deserialize;
 use crate::orchestrator::{MapRegistry, Participant};
 use crate::runner::claude::ClaudeRunner;
 use crate::runner::codex::CodexRunner;
+use crate::runner::opencode::OpencodeRunner;
 
 /// 로스터 파일 루트. 좌석 목록.
 #[derive(Debug, Clone, Deserialize)]
@@ -80,6 +81,10 @@ pub fn build_registry(roster: &Roster, search_db: Option<&str>) -> Result<MapReg
                 "codex",
                 Box::new(CodexRunner::new().with_search_db(search_db.map(String::from))),
             ),
+            "opencode" => reg.insert(
+                "opencode",
+                Box::new(OpencodeRunner::new().with_model(seat.model.clone())),
+            ),
             other => {
                 // HTTP 엔진 분기: base_url+model 좌석이면 OpenAiChatRunner, 없으면 에러.
                 #[cfg(feature = "engines")]
@@ -111,7 +116,7 @@ pub fn build_registry(roster: &Roster, search_db: Option<&str>) -> Result<MapReg
                             "HTTP 엔진엔 engines feature가 필요합니다: {other}"
                         ));
                     } else {
-                        return Err(format!("알 수 없는 엔진: {other} (지원: claude, codex)"));
+                        return Err(format!("알 수 없는 엔진: {other} (지원: claude, codex, opencode)"));
                     }
                 }
             }

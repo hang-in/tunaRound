@@ -4,6 +4,7 @@ pub mod codex;
 pub(crate) mod exec;
 #[cfg(feature = "engines")]
 pub mod http;
+pub mod opencode;
 
 /// 한 턴 입력. v1은 매 턴 전사를 prompt에 주입하므로 resume 토큰은 두지 않는다.
 #[derive(Debug, Clone)]
