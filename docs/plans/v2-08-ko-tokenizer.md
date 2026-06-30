@@ -1,7 +1,7 @@
 ---
 title: "tunaRound v2 Plan 08: 한국어 형태소 토크나이저 포팅 (Kiwi 메인 + lindera 폴백)"
 type: plan
-status: in_progress
+status: done
 priority: P1
 updated_at: 2026-06-30
 owner: shared
@@ -9,6 +9,27 @@ summary: 한국어 FTS 형태소 문제 해결의 토대. secall 정본 tokenize
 ---
 
 # tunaRound v2 Plan 08: 한국어 토크나이저 포팅 Implementation Plan
+
+## 실행 결과 (2026-06-30, done — 단 Kiwi 런타임 주의)
+
+브랜치 `feat/v2-ko-tokenizer`(74f8771 lindera, 1059be8 Kiwi). 기본 `cargo test` 66(불변, morphology off=격리 OK), `cargo test --features morphology` 72 pass + 4 ignored. build/clippy 둘 다 + `--features morphology` 경고 0. secall 정본 포팅 충실(String 에러/eprintln, anyhow/tracing 미도입, keep-tags NNG/NNP/NNB/VV/VA/SL, `DEFAULT_BACKEND="kiwi"`, kiwi->lindera 폴백).
+
+- Task 1: lindera 경로 + Tokenizer trait + factory + tokenize_fallback (커밋 `74f8771`).
+- Task 2: KiwiTokenizer(플랫폼 cfg, Mutex<KiwiWrapper>) + create_tokenizer kiwi 메인 (커밋 `1059be8`).
+- **kiwi-rs 컴파일: 성공**(mac aarch64, v0.1.4). 과거 Mac 컴파일 이슈는 해소.
+
+### ⚠️ 중요 발견: Kiwi 런타임 부트스트랩 실패 -> 현재 lindera로 동작
+
+라이브 테스트(`kiwi_tokenizes_korean_live`)에서 **Kiwi가 런타임에 네이티브 라이브러리 로드 실패**:
+```
+kiwi-rs init failed: libkiwi.dylib 로드 실패 + auto-download 404
+(release asset not found: kiwi_mac_arm64_v0.23.2.tgz)
+```
+즉 **kiwi-rs 0.1.4가 libkiwi v0.23.2를 받으려다 upstream 릴리스 에셋이 없어 실패** -> `create_tokenizer("kiwi")`가 **lindera로 폴백**(그래서 폴백 테스트는 통과). 사용자 선호(Kiwi 메인)는 코드상 준비됐으나 **현재 실효는 lindera**.
+- **해결 후보(후속):** kiwi-rs 버전 핀(에셋 존재하는 버전) / libkiwi 수동 설치(~/Library/Caches/kiwi-rs/) / upstream 이슈 확인.
+- **Windows(다음 세션):** Kiwi는 cfg로 제외됨 -> Windows에선 어차피 **lindera만**. 즉 Windows 작업에선 Kiwi 런타임 이슈 무관, lindera가 정상 경로.
+
+---
 
 > **For agentic workers:** REQUIRED SUB-SKILL: superpowers:subagent-driven-development + test-driven-development. Steps use checkbox (`- [ ]`).
 > 출처: `~/privateProject/secall/crates/secall-core/src/search/tokenizer.rs` (정본). 결정: docs/design/v2-context-memory-direction_2026-06-30.md, 메모리 korean-search-port-secall. **Kiwi 메인, lindera 폴백.** 아키텍처 재론 금지.

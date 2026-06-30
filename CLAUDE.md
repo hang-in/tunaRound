@@ -20,11 +20,11 @@
 
 ## 현재 상태 (2026-06-29)
 
-- **v1 완료 + v2 멀티세션 완성.** v1 본체 + hardening. v2 done: **01 idle watchdog · 02 N좌석 로스터 · 03 협업 코딩(`@engine!`) · 04 session_bus 토대 · 05 세션 모델(in-store 트리, `/branches`·`/checkout`) · 06 Redis 통합(`--observe`/`--session`, 미러+관찰+재개).** 66 테스트(63 pass + 라이브 Redis 3 #[ignore]), build/clippy 클린. 토론 + 협업 코딩 + 분기 토론 트리 + 멀티프로세스 동시 세션.
-- 현행 spec: [docs/design/tunaRound-v1-design_2026-06-29.md](docs/design/tunaRound-v1-design_2026-06-29.md). 진행 현황은 [docs/plans/index.md](docs/plans/index.md)(v1 Plan 01~06, v2 Plan 01~06 done).
-- 변경은 origin/main 동기화(푸시됨). **멀티세션 v2 완성 + `/debate`(바운드 자동 교환, Plan 07) 추가.** 69 테스트.
-- **북극성(2026-06-30):** 계층형 공유 맥락 + 능동 검색 - 에이전트가 단기(세션)~프로젝트 모든 층 맥락을 능동 기억·검색. 핵심 전환 "전사 통째 재주입 -> RAG(검색 슬라이스 주입)". 설계 [docs/design/v2-context-memory-direction_2026-06-30.md](docs/design/v2-context-memory-direction_2026-06-30.md). 첫 스텝 조율 중(재주입 감소: handle+windowing vs SQLite+FTS 백본). 백로그: 분리터미널 A2A 협업(turn-triggering) / 리치 프론트 / 신규 엔진 러너.
-- **라이브 검증 완료(2026-06-30, 로컬 Redis):** bus #[ignore] 3 / resume / observe / 실 3라운드 컨텍스트 유지 전부 통과. 실 라운드로 버그 1건 발견·수정(종료 시 마지막 snapshot 유실 -> 동기 flush, fix/v2-06-snapshot-flush). 검증법: `TUNAROUND_REDIS_URL=redis://127.0.0.1/ cargo run -- --session demo` / 다른 터미널 `... --observe demo`. redis-server 끄기: `redis-cli shutdown nosave`.
+- **v1 완료 + v2 Plan 01~08 완성.** v2 done: 01 idle watchdog · 02 N좌석 로스터 · 03 협업 코딩(`@engine!`) · 04 session_bus · 05 세션 모델(in-store 트리, `/branches`·`/checkout`) · 06 Redis 통합(`--observe`/`--session`) · 07 `/debate`(N턴 자동 교환) · 08 한국어 토크나이저(secall 포팅, morphology feature). 기본 `cargo test` 66+3 ignored, `--features morphology` 72+4 ignored, build/clippy 클린. 전부 origin/main 푸시.
+- 현행 spec: [docs/design/tunaRound-v1-design_2026-06-29.md](docs/design/tunaRound-v1-design_2026-06-29.md). 진행: [docs/plans/index.md](docs/plans/index.md)(v1 01~06, v2 01~08 done).
+- **>>> 다음은 Windows 새 세션. 핸드오프: [docs/prompts/v2-windows-handoff_2026-06-30.md](docs/prompts/v2-windows-handoff_2026-06-30.md) <<<**
+- **북극성(2026-06-30):** 계층형 공유 맥락 + 능동 검색. 전환 "전사 통째 재주입 -> RAG(검색 슬라이스 주입)". 한국어 검색 정답 = **secall 포팅**(형태소 FTS + BGE-M3 벡터 + 하이브리드). 설계 [docs/design/v2-context-memory-direction_2026-06-30.md](docs/design/v2-context-memory-direction_2026-06-30.md). **다음 스텝 = SQLite 시스템오브레코드 + FTS5(선-형태소화 저장).** 백로그: 분리터미널 A2A / 리치 프론트 / 신규 엔진 러너.
+- **검증/주의:** 멀티세션 라이브 검증 통과(맥, 로컬 Redis). 임베딩=원격 Ollama(SSH `-p [사설포트]` 터널, bge-m3 dim 1024, 검증됨). **⚠️ Kiwi 런타임 버그**(libkiwi 404)->현재 lindera 실효; **Windows는 Kiwi cfg 제외=lindera만**이라 무관. 맥 정리: redis 내림·SSH터널 종료(brew redis 설치는 남음).
 
 ## 무엇을 만드나 (요약)
 
@@ -42,8 +42,8 @@
 - **tunaFlow**(Rust): `~/privateProject/tunaFlow/src-tauri/src/agents/{claude,codex}.rs` - CLI 러너(`stream_run`) + hardening.
 - **tunaSalon**(Rust, v2용): `src/session_bus.rs`(Redis), `src/chat.rs`의 `render_chat`(ratatui), `src/flow.rs`(FlowMeter, 선택).
 
-## 다음 세션 첫 행동
+## 다음 세션 첫 행동 (Windows)
 
-1. `cargo run`으로 앱 동작 확인(claude/codex CLI 필요). 진행 현황은 [docs/plans/index.md](docs/plans/index.md), 결정 로그는 `context-notes.md`.
-2. 다음 = **남은 v2 백로그 중 택1**(각각 결정 필요): 리치 프론트 ratatui·web(신규 의존성, tunaSalon `render_chat` 포팅) / 신규 엔진 러너 좌석(tunaLlama·opencode, 외부 CLI - 로스터는 이미 N-ready라 러너만 추가). 또는 Plan 06 observe/resume 라이브 수동 검증부터. 착수 전 design 문서 v2 섹션 + claude-mem으로 기결정 확인(재론 금지).
-3. 작업 추적은 `checklist.md`·`context-notes.md`(규율 #7). 위임은 Sonnet 서브에이전트 + Opus 리뷰(subagent-driven).
+1. **[docs/prompts/v2-windows-handoff_2026-06-30.md](docs/prompts/v2-windows-handoff_2026-06-30.md) 먼저 읽기** + `docs/design/v2-context-memory-direction_2026-06-30.md` + `context-notes.md` + claude-mem(`mem-search`). `cargo test`(기본) + `cargo test --features morphology`로 상태 확인.
+2. 다음 = **SQLite 시스템오브레코드 + FTS5(선-형태소화 저장)** = 북극성(능동 검색)의 토대. 그 뒤 벡터(원격 Ollama bge-m3 dim 1024) -> 하이브리드 -> 검색 주입(`build_round_prompt` RAG화). Windows는 토크나이저=lindera(Kiwi cfg 제외).
+3. 작업 추적 `checklist.md`·`context-notes.md`(규율 #7). 위임 Sonnet + Opus 리뷰. 굵직한 결정 재론 금지(claude-mem `no-relitigating-decisions`).

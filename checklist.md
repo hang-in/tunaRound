@@ -81,10 +81,11 @@
 
 ## v2 능동 검색/맥락 (북극성, secall 포팅) — docs/design/v2-context-memory-direction_2026-06-30.md
 
-### Plan 08: 한국어 토크나이저 (docs/plans/v2-08-ko-tokenizer.md) — feat/v2-ko-tokenizer
+### Plan 08: 한국어 토크나이저 (docs/plans/v2-08-ko-tokenizer.md) — feat/v2-ko-tokenizer -> main
 
-- [ ] Task 1: 의존성(kiwi-rs/lindera, morphology feature) + lindera 경로 + factory
-- [ ] Task 2: Kiwi 경로 + 메인 백엔드 (kiwi-rs 컴파일 risk-gate)
+- [x] Task 1: 의존성(kiwi-rs/lindera, morphology feature) + lindera 경로 + factory (74f8771)
+- [x] Task 2: Kiwi 경로 + 메인 백엔드 (kiwi-rs 컴파일 성공) (1059be8) — Plan 08 완료, 기본 66/morphology 72 pass, clippy 클린
+- ⚠️ **Kiwi 런타임 부트스트랩 실패**(libkiwi v0.23.2 에셋 404) -> 현재 lindera 폴백 실효. 해결 후속(kiwi-rs 버전 핀/libkiwi 수동). Windows에선 Kiwi cfg 제외=lindera만이라 무관.
 
 ### 후속 (검색 레이어)
 - [ ] SQLite 시스템오브레코드 + FTS5(선-형태소화 저장)

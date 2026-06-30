@@ -6,7 +6,8 @@
 
 | 문서 | paired_plan | 상태 |
 |---|---|---|
-| [v2-handoff_2026-06-29.md](v2-handoff_2026-06-29.md) | v1 전체(Plan 01~06) | active |
+| [v2-windows-handoff_2026-06-30.md](v2-windows-handoff_2026-06-30.md) | v2 Plan 01~08 + 검색 로드맵 | active (Windows 이관) |
+| [v2-handoff_2026-06-29.md](v2-handoff_2026-06-29.md) | v1 전체(Plan 01~06) | superseded |
 
 ## 재사용 템플릿
 

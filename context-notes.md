@@ -191,3 +191,11 @@
 ## v2 Plan 08 한국어 토크나이저 착수 (2026-06-30)
 
 - secall `tokenizer.rs` 포팅(Tokenizer trait + Kiwi + lindera + factory), String 에러/eprintln 적응(anyhow/tracing 미도입), `morphology` feature 게이트(기본 빌드 무영향). Task 1=lindera(안전), Task 2=Kiwi(컴파일 risk-gate). 격리 모듈, 미배선. 다음=SQLite FTS 선-형태소화.
+- **완료(2026-06-30):** 브랜치 `feat/v2-ko-tokenizer`(74f8771, 1059be8) -> main. 기본 66/morphology 72 pass, clippy 클린. kiwi-rs **컴파일 성공**(mac aarch64, 과거 이슈 해소).
+- **⚠️ Kiwi 런타임 부트스트랩 실패:** 라이브 테스트에서 libkiwi.dylib 로드 실패 + auto-download 404(`kiwi_mac_arm64_v0.23.2.tgz` 없음). kiwi-rs 0.1.4가 libkiwi v0.23.2 받으려다 upstream 에셋 부재 -> **create_tokenizer("kiwi")가 lindera 폴백**. Kiwi 메인 코드는 준비됐으나 실효는 lindera. 후속: kiwi-rs 버전 핀/libkiwi 수동 설치/upstream 확인. **Windows에선 Kiwi cfg 제외 = lindera만이라 무관.**
+
+## 맥 세션 종료 + Windows 이관 (2026-06-30)
+
+- 사용자: 다음 작업은 **Windows로 이관**(완전 새 세션, /clear 아님). 맥 작업 여기까지. 상세 핸드오프 작성됨(docs/prompts/).
+- 정리: redis-server 내림(`redis-cli shutdown nosave`), SSH 터널(2232) 종료, observer 프로세스 종료. (brew redis 설치는 남음 - 필요시 `brew uninstall redis`.)
+- **Windows 주의:** (1) Kiwi cfg 제외 -> 토크나이저 = lindera(정상). (2) Redis 라이브 검증은 Windows에 redis 필요(WSL/Memurai/Docker). (3) 원격 Ollama 터널: Windows ssh도 `-p [사설포트] -L 11435:127.0.0.1:11434`(bge-m3 검증됨 dim 1024). (4) claude/codex CLI 경로/실행이 Windows에서 다를 수 있음(러너 spawn 확인).
