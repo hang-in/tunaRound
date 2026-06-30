@@ -341,3 +341,10 @@
 - **결정(정직한 폴백)**: `is_mcp_capable` → **claude 전용**. codex는 pull 모드에서 push 폴백(전사 전체 주입=grounded). 혼합 모드(claude pull + codex push) 라이브 검증: claude 432(pull) / codex 2024→6015(push), codex가 "첫 주제" 정확 답변=grounded, "사용자 취소" 사라짐.
 - **codex pull 활성화 = 후속**: codex 승인 설정 심층 조사(mcp 서버 trust? config 키?) 또는 Stage 3e 영속 codex(app-server, 승인 모델 다를 수 있음). 그 전엔 claude만 pull 이득, codex는 정확하지만 push.
 - **신규 테스트**: orchestrator pull_capable_is_claude_only.
+
+## 2026-06-30 Stage 3a-2 remote core e2e 검증 + 핸드오프(세션3)
+
+- **3a-2(502e458)**: 러너 with_search_url(url,token). claude=HTTP config(type:http+url+Bearer 헤더, serde_json), codex=-c mcp_servers.tuna-search.url(bearer env는 ExecSpec env 필드 필요해 TODO). main --search-url/--search-token, roster build_registry 4인자. search_url 미설정 시 stdio 불변.
+- **라이브 e2e(성공)**: 코어 `--serve-mcp 127.0.0.1:8766 --db shared2.db --token TOK123`(serve feature) 상주 → 별도 REPL이 `--db shared2.db --search-url http://127.0.0.1:8766/mcp --search-token TOK123 --pull-context`. claude(pull, 439/646자)가 **원격 HTTP MCP(bearer)에서 read_transcript 호출 → 별도 프로세스가 쓴 전사 정확 인용**("전사를 확인했습니다. 첫 주제는 이벤트소싱 vs CRUD..."). 인증: no-token 401, with-token 통과. **remote core = half-a2a 네트워크 실증.**
+- **세션3 핸드오프**: docs/prompts/v2-handoff_2026-06-30_session3.md. README·CLAUDE.md(상태 세션3)·핸드오프 갱신.
+- **3a 잔여**: 3a-3 front=core(REPL+HTTP MCP 단일 프로세스, 현재는 serve+REPL 2프로세스로 e2e), 3d post_turn/get_roster, codex bearer-env(ExecSpec env), 영속 에이전트(3e 보류).

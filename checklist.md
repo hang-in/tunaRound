@@ -183,7 +183,8 @@
 - [~] Stage 3: 코어 프로세스 분리(상주 데몬 + 멀티 프론트/세션)
   - [x] 설계(Plan 25): 린치핀=코어를 HTTP MCP 서비스로 상주. 실측 확정(claude --transport http / codex --url + bearer / rmcp streamable-http). 분해 3a(HTTP MCP 상주)→3b(토큰)→3c(Tailscale)→3d(post_turn/get_roster)→3e(영속 에이전트 보류). 구현 승인 후
   - [x] 3a-1 HTTP MCP 서브 모드: `--serve-mcp <addr> --token` + rmcp StreamableHttpService(axum 마운트) + bearer 미들웨어(401) + serve feature(axum 격리). 기본 105 불변/serve 신규 2 pass, clippy 클린. disable_allowed_hosts(원격 허용, bearer가 인증)
-  - [ ] 3a-2: 러너 with_search_url(URL+bearer) → 에이전트가 HTTP MCP 접속. 3a-3: front=core 단일프로세스
+  - [x] 3a-2(502e458): 러너 with_search_url(URL+bearer) → 에이전트가 원격 HTTP MCP 접속. claude HTTP config, codex url(bearer-env TODO). **라이브 e2e: 코어 --serve-mcp + 별도 REPL claude가 원격 HTTP로 read_transcript 전사 정확 인용 = remote core 동작**
+  - [ ] 3a-3: front=core 단일프로세스(현재 serve+REPL 2프로세스) · 3d post_turn/get_roster · codex bearer-env · 3e 영속 에이전트(보류)
 - [ ] Stage 4(범위 밖): 영속 에이전트 세션 + AutoLoop = (B), 경제 조건 입증 시에만
 
 ## v2 백로그 (착수 전 결정 필요)
