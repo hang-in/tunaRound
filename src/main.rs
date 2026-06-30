@@ -160,7 +160,11 @@ fn main() {
             #[cfg(not(feature = "mcp"))]
             let claude_runner = ClaudeRunner::new();
             reg.insert("claude", Box::new(claude_runner));
-            reg.insert("codex", Box::new(CodexRunner::new()));
+            #[cfg(feature = "mcp")]
+            let codex_runner = CodexRunner::new().with_search_db(db_path.clone());
+            #[cfg(not(feature = "mcp"))]
+            let codex_runner = CodexRunner::new();
+            reg.insert("codex", Box::new(codex_runner));
             let parts = vec![
                 Participant { engine: "claude".into(), role: Some("proposer".into()), instruction: String::new() },
                 Participant { engine: "codex".into(), role: Some("reviewer".into()), instruction: String::new() },

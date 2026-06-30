@@ -50,10 +50,11 @@ pub(crate) fn parse_codex_stream(stdout: &str) -> RunOutput {
 
 /// `codex exec` argv 조립. 모드에 따라 샌드박스 권한을 분리한다(쓰기 하드 분리).
 /// 프롬프트는 stdin(`-`)으로 전달하므로 argv에 넣지 않는다.
+/// mcp_args는 이미 조립된 `-c key=val` 쌍들(보통 4개). 빈 슬라이스면 기존과 동일.
 /// Step 1 실측(2026-06-29): codex --full-auto 없음.
 ///   Write  → --sandbox workspace-write
 ///   ReadOnly → --sandbox read-only
-fn build_codex_args(input: &RunInput) -> Vec<String> {
+fn build_codex_args(input: &RunInput, mcp_args: &[String]) -> Vec<String> {
     let mut args: Vec<String> = vec![
         "exec".into(),
         "--json".into(),
@@ -75,6 +76,7 @@ fn build_codex_args(input: &RunInput) -> Vec<String> {
         args.push(model.clone());
     }
     args.push("-".into());
+    args.extend_from_slice(mcp_args);
     args
 }
 
@@ -82,18 +84,25 @@ fn build_codex_args(input: &RunInput) -> Vec<String> {
 pub struct CodexRunner {
     bin: String,
     idle_timeout: Duration,
+    /// 검색 MCP 서버에 넘길 DB 경로. Some이면 run() 시 -c mcp_servers 오버라이드를 조립해 전달한다.
+    search_db: Option<String>,
 }
 
 impl CodexRunner {
     pub fn new() -> Self {
-        Self { bin: "codex".to_string(), idle_timeout: Duration::from_secs(600) }
+        Self { bin: "codex".to_string(), idle_timeout: Duration::from_secs(600), search_db: None }
     }
     pub fn with_bin(bin: &str) -> Self {
-        Self { bin: bin.to_string(), idle_timeout: Duration::from_secs(600) }
+        Self { bin: bin.to_string(), idle_timeout: Duration::from_secs(600), search_db: None }
     }
     /// 테스트/설정용 idle 타임아웃 주입.
     pub fn with_idle_timeout(mut self, d: Duration) -> Self {
         self.idle_timeout = d;
+        self
+    }
+    /// 검색 MCP 서버 DB 경로 주입. Some이면 codex에 -c mcp_servers.tuna-search로 self-exe를 spawn하도록 배선한다.
+    pub fn with_search_db(mut self, db: Option<String>) -> Self {
+        self.search_db = db;
         self
     }
 }
@@ -106,9 +115,24 @@ impl Default for CodexRunner {
 
 impl Runner for CodexRunner {
     fn run(&self, input: &RunInput) -> Result<RunOutput, RunError> {
+        // search_db가 Some이면 -c mcp_servers.tuna-search 오버라이드 쌍을 조립한다.
+        // TOML 리터럴 문자열(작은따옴표)로 Windows 백슬래시 경로 안전.
+        // 한계: exe/db 경로에 작은따옴표가 포함된 경우 TOML 파싱 오류 가능(일반 Windows 경로 OK).
+        let mcp_args: Vec<String> = self.search_db.as_ref().map(|db| {
+            let exe = std::env::current_exe()
+                .ok()
+                .and_then(|p| p.to_str().map(String::from))
+                .unwrap_or_else(|| "tunaround".into());
+            vec![
+                "-c".into(),
+                format!("mcp_servers.tuna-search.command='{exe}'"),
+                "-c".into(),
+                format!("mcp_servers.tuna-search.args=['--mcp-search','--db','{db}']"),
+            ]
+        }).unwrap_or_default();
         let spec = ExecSpec {
             bin: self.bin.clone(),
-            args: build_codex_args(input),
+            args: build_codex_args(input, &mcp_args),
             cwd: input.project_path.clone(),
             stdin: Some(input.prompt.clone()),
             idle_timeout: self.idle_timeout,
@@ -218,7 +242,7 @@ mod tests {
             project_path: None,
             mode: RunMode::Write,
         };
-        let args = build_codex_args(&input);
+        let args = build_codex_args(&input, &[]);
         let joined = args.join(" ");
         assert!(joined.contains("--sandbox workspace-write"));
         assert_eq!(args.last().unwrap(), "-"); // prompt via stdin
@@ -232,10 +256,33 @@ mod tests {
             project_path: None,
             mode: RunMode::ReadOnly,
         };
-        let args = build_codex_args(&input);
+        let args = build_codex_args(&input, &[]);
         let joined = args.join(" ");
         assert!(joined.contains("--sandbox read-only"));
         assert!(joined.contains("--model gpt-x"));
+    }
+
+    #[test]
+    fn args_with_mcp_args_appends_c_flags() {
+        let input = RunInput {
+            prompt: "q".into(),
+            model: None,
+            project_path: None,
+            mode: RunMode::ReadOnly,
+        };
+        let mcp_args = vec![
+            "-c".to_string(),
+            "mcp_servers.tuna-search.command='/usr/bin/tunaround'".to_string(),
+            "-c".to_string(),
+            "mcp_servers.tuna-search.args=['--mcp-search','--db','/tmp/t.db']".to_string(),
+        ];
+        let args = build_codex_args(&input, &mcp_args);
+        let joined = args.join(" ");
+        assert!(joined.contains("-c"), "-c 플래그 없음: {joined}");
+        assert!(joined.contains("mcp_servers.tuna-search"), "서버 이름 없음: {joined}");
+        // 빈 슬라이스면 -c 없음.
+        let args_none = build_codex_args(&input, &[]);
+        assert!(!args_none.join(" ").contains("mcp_servers.tuna-search"), "mcp_args 없는데 포함됨");
     }
 
     // 무출력으로 sleep하는 가짜 실행파일을 tmp에 만들어 경로를 돌려준다(OS별).
