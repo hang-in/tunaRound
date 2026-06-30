@@ -164,7 +164,8 @@
 > 상주 코어 + 접속 클라이언트(사람 운전). 핵심 솔기 = turn-policy(HumanDriven 디폴트, AutoLoop=미래 (B) 플러그인). Stage 0~4.
 - [~] Stage 0: 코어 서비스 경화 — 검색 품질(항목1) + 요약 carry-forward(항목2). **이번 세션 착수.**
   - [x] Plan 21 검색품질: 현실코퍼스+recall/MRR 하네스(tests/search_recall.rs) + AND→OR 개선. **R@5 0.55→0.90, MRR 0.60→0.90** (미커밋, 리뷰 완료). docs/plans/v2-21-search-quality.md
-  - [ ] precision@k 하네스 추가(OR noise 정량화) · 요약 carry-forward(항목2)
+  - [x] precision@k 하네스 추가(`30543fb`): mean P@3=0.70 P@5=0.727, K=5 정당화(정밀도 손실 없이 리콜↑), 양면 회귀 가드
+  - [ ] Plan 22 요약 carry-forward(항목2): 드롭된 턴을 압축 요약으로 이월(예약 슬롯). Memora abstraction/value 분리 차용
 - [ ] Stage 1: 오케스트레이션 툴(read_transcript/get_roster/post_turn) 기존 rmcp 서버 확장
 - [ ] Stage 2: 주입 모델 전환(push->pull), 재전송량 감소 실측 (crux)
 - [ ] Stage 3: 코어 프로세스 분리(상주 데몬 + 멀티 프론트/세션)

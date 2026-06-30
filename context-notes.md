@@ -279,3 +279,12 @@
 - **단계:** Stage 0(검색품질+요약 carry-forward, 코어 경화) → 1(오케스트레이션 툴 read_transcript/get_roster) → 2(주입 push→pull, 재전송량 감소 **실측**=crux) → 3(코어 데몬 분리) → 4(범위 밖=(B)). Stage 1~2는 **에이전트 여전히 stateless spawn**(저위험), 영속 프로세스는 Stage 3 이후.
 - **리스크:** codex MCP **도구 실호출** 미검증(Plan 14 T4는 `-c mcp_servers` 인자 수용만 확인) = Stage 1 통과 기준. Stage 2는 통제 약화 위험(포인터에 당길 범위 명시로 완화).
 - **정본 문서:** docs/design/v2-A2A-core-backend_2026-06-30.md. **이번 세션 = Stage 0 + (A)설계 병렬.**
+
+## 2026-06-30 검색 품질 트랙 결정 (Memora 참고 후)
+
+- **Stage 0 항목1(검색품질) 완료·커밋**: `581eaa2`(하네스+FTS AND→OR), `30543fb`(precision@k). R@5 0.55→0.90, MRR 0.60→0.90, P@5 0.727. K=5 정당화. 진짜 천장 = Q6 어휘공백(재주입↔재전송) = 벡터/확장 근거점.
+- **ChromaDB 비도입(확정)**: ANN=근사라 exact cosine보다 품질 동급↓, 우리 규모(수천 턴) brute-force 충분·정확. 이득은 스케일/운영뿐. 사용자 여러 프로젝트 공통 SQLite 고수(메모리 [[prefer-sqlite-over-vector-db]]).
+- **GRPO 비도입(확정)**: RL 정책학습 = 라벨데이터·인프라 필요(우리 없음), 측정 불가, Memora도 experimental.
+- **채택(사용자 승인, 무거워도 품질이면 OK)**: cross-encoder 리랭커(secall `model_manager`/`hybrid` 씨앗) + 쿼리 확장(secall `query_expand.rs`, Q6류 어휘공백). 단 리랭커는 임베딩/CE 모델 필요 → **Ollama 터널 의존(현재 DOWN)**.
+- **품질 트랙 전략(사용자 문답): 측정-증분, 심판자 우선.** "기능 다 깔고 데이터로 수정"(A)은 귀속불가·비용낭비·락인이라 기각. 순서 = (0) **eval 코퍼스 확대 먼저**(현실 라벨 케이스, 터널 불필요·결정적 FTS로 지금 측정) → (1) 기능 한 개씩 측정·유지/폐기(동시투입 금지) → (2) 프로덕션 데이터는 기능 맹목수정 아니라 **실패 케이스를 eval에 흡수**(hard negative). 기능 "완성(배선+단위테스트)"과 "튜닝(데이터 필요)"은 다른 축. 얇은 eval(10질의)에 튜닝 = 과적합이라 eval 확대가 0번 스텝.
+- **다음 품질 슬라이스**: eval 코퍼스 확대(Plan 21 코퍼스 확장판) → 리랭커(터널 복구 후) → 쿼리 확장.
