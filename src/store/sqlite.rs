@@ -331,4 +331,70 @@ mod tests {
         let back = db.load_session("s1").unwrap().unwrap();
         assert_eq!(back.messages.len(), 2);
     }
+
+    #[test]
+    fn search_matches_indexed_token() {
+        // 선-토크나이즈된 텍스트("검색 시스템")를 저장 -> "검색" 쿼리가 매칭.
+        let db = SqliteStore::open_memory().unwrap();
+        db.save_session("s1", &ss(), |t| t.to_string()).unwrap();
+        let hits = db.search("검색", 10).unwrap();
+        assert!(hits.iter().any(|h| h.msg_id == 1));
+        assert!(hits.iter().all(|h| !h.content.is_empty())); // 원문 복원.
+    }
+
+    #[test]
+    fn search_empty_query_is_empty() {
+        let db = SqliteStore::open_memory().unwrap();
+        db.save_session("s1", &ss(), |t| t.to_string()).unwrap();
+        assert!(db.search("", 10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn search_no_match_is_empty() {
+        let db = SqliteStore::open_memory().unwrap();
+        db.save_session("s1", &ss(), |t| t.to_string()).unwrap();
+        assert!(db.search("존재하지않는단어xyz", 10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn search_returns_correct_msg_id_across_sessions() {
+        // rowid != msg_id 상황(secall test_turn_index_not_rowid 적응): 두 세션 색인 후 msg_id 정확성.
+        let db = SqliteStore::open_memory().unwrap();
+        db.save_session("a", &ss(), |t| t.to_string()).unwrap();
+        let other = StoredSession {
+            messages: vec![StoredMessage {
+                id: 1,
+                parent_id: None,
+                speaker: "x".into(),
+                content: "검색 색인".into(),
+            }],
+            head: Some(1),
+        };
+        db.save_session("b", &other, |t| t.to_string()).unwrap();
+        let hits = db.search("검색", 10).unwrap();
+        assert!(hits.iter().any(|h| h.session_id == "b" && h.msg_id == 1));
+    }
+
+    // 선-형태소화 핵심: "검색을"(조사 포함)이 형태소 색인되어 "검색" 쿼리에 잡힌다.
+    #[cfg(feature = "morphology")]
+    #[test]
+    fn morpheme_indexing_matches_inflected_form() {
+        use crate::search::tokenizer::create_tokenizer;
+        let tok = create_tokenizer("kiwi").expect("kiwi or lindera");
+        let db = SqliteStore::open_memory().unwrap();
+        let s = StoredSession {
+            messages: vec![StoredMessage {
+                id: 1,
+                parent_id: None,
+                speaker: "a".into(),
+                content: "검색을 어떻게 설계할까".into(),
+            }],
+            head: Some(1),
+        };
+        db.save_session("m", &s, |t| tok.tokenize_for_fts(t)).unwrap();
+        // 쿼리도 동일 형태소화.
+        let q = tok.tokenize_for_fts("검색");
+        let hits = db.search(&q, 10).unwrap();
+        assert!(!hits.is_empty(), "형태소 색인이 '검색을'을 '검색'으로 잡아야 함");
+    }
 }
