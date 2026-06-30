@@ -14,7 +14,7 @@ summary: Windows 세션에서 v2 검색/맥락 스택을 Plan 09~19로 완성(SQ
 
 ## ① 현 상태 (한 줄)
 
-**v1 + v2 Plan 01~19 완성, 전부 origin/main(`7ce7575`) 푸시·동기화.** 검증: `cargo test`(기본=morphology+sqlite) 103 + `--features "semantic morphology mcp"` 105 + engines 106 pass, clippy 전 조합 클린. 워킹트리 클린(`.omc/`만 untracked).
+**v1 + v2 Plan 01~20 완성, 전부 origin/main 푸시·동기화.** 검증: `cargo test`(기본=morphology+sqlite) 105 + `--features "semantic morphology mcp engines"` 112 pass, clippy 전 조합 클린. 워킹트리 클린(`.omc/`만 untracked).
 
 ## ② 이번 세션(Windows) 한 일 — Plan 09~19 + gotcha #4
 
@@ -31,6 +31,7 @@ summary: Windows 세션에서 v2 검색/맥락 스택을 Plan 09~19로 완성(SQ
 | 17 | OpenAI 호환 HTTP 엔진 러너(ollama/lmstudio/openai) | e1373f9 |
 | 18 | FTS 리콜 보강(raw 토큰 + prefix 질의) | 45cf0c8 |
 | 19 | Windows Kiwi 활성화(v0.22.2 수동 libkiwi) | fe0ec71 |
+| 20 | opencode CLI 엔진 러너(로스터 engine "opencode") | 7fedac2 |
 
 **라이브 검증:** 실 claude+codex 1라운드 정상 응답(Windows) → SQLite 색인 → MCP search_context가 실 색인 발언 반환. Ollama /v1/chat/completions(gemma4) + /api/embed(bge-m3 dim 1024) 응답 확인. Kiwi v0.22.2 tokenize 동작 확인.
 
@@ -50,11 +51,13 @@ summary: Windows 세션에서 v2 검색/맥락 스택을 Plan 09~19로 완성(SQ
 
 ## ⑤ 남은 항목 (우선순위 제안)
 
-1. **opencode CLI 참가자** — HTTP 엔진(ollama/lmstudio/openai)은 done. opencode는 CLI 러너(claude/codex처럼 argv/출력 파싱). opencode CLI 설치·포맷 실측 필요.
-2. **검색 품질 추가 개선** — 현실 코퍼스로 벡터/하이브리드 재측정 → 필요시 RRF 튜닝/쿼리확장/재랭킹.
-3. **ctx-handle / 요약 carry-forward** — 재주입 축소(Plan 16)에서 잘린 오래된 맥락의 러닝 요약(consensus carry-forward 자리). enhancement.
-4. **리치 프론트(ratatui)** — 보류. 페인(분기트리/observe/맥락 투명성) 입증 시 경량 TUI.
-5. **"좌석" 잔존 정리** — 코드 식별자(SeatConfig)는 유지, Korean prose 문서의 "좌석"→"참가자" 일괄(저가치).
+1. **검색 품질 추가 개선** — 현실 코퍼스로 벡터/하이브리드 재측정 → 필요시 RRF 튜닝/쿼리확장/재랭킹. (제품 크럭스, 현재 "평범".)
+2. **요약 carry-forward** — 재주입 축소(Plan 16)에서 잘린 맥락의 러닝 요약. 단 "온디맨드 확장"은 이미 MCP search_context(Plan 14)가 커버 → 남는 건 요약 주입뿐. enhancement.
+3. **예시 로스터 확장** — examples/roster.json에 ollama-cloud/opencode 좌석 예시(작음, 신규 엔진 사용성).
+4. **코어-백엔드 + 에이전트-클라이언트(A2A)** — ⑧-A 방향. 큰 포크, 별도 설계 세션.
+5. **리치 프론트(ratatui)** — 보류. 페인(분기트리/observe/맥락 투명성) 입증 시 경량 TUI.
+6. **"좌석" 잔존 정리** — 코드 식별자(SeatConfig)는 유지, Korean prose 문서의 "좌석"→"참가자" 일괄(저가치).
+- (done) opencode CLI 참가자 = Plan 20. HTTP 엔진 = Plan 17.
 
 ## ⑥ 검증 / 규율
 
@@ -68,6 +71,16 @@ summary: Windows 세션에서 v2 검색/맥락 스택을 Plan 09~19로 완성(SQ
 - tunaSalon: `D:/privateProject/tunaSalon` (Redis/lindera/embed 경량)
 - tunaFlow: `D:/privateProject/tunaFlow` (CLI 러너)
 - kiwi-rs 소스: `D:/.cargo/registry/src/.../kiwi-rs-0.1.4` (bootstrap/discovery - Kiwi 경로 규칙)
+
+## ⑧-A 검토할 아키텍처 방향: 코어-백엔드 + 에이전트-클라이언트 (사용자 제기 2026-06-30)
+
+> 사용자 질문: "지금 cargo run이 `-p` 모드로 매 라운드 에이전트를 stateless spawn하는데, **코어(오케스트레이션+검색/메모리)를 백엔드 서비스로 상주**시키고 claude code·codex·ollama/openai 클라이언트가 **접속해서 쓰는** 게 낫지 않나?"
+
+- **현재:** tunaRound가 코어를 들고 매 라운드 에이전트를 stateless spawn(`-p`/`exec`/HTTP). 사람↔tunaRound 대화. 분산 turn-triggering 난제를 우회한 선택.
+- **이미 깔린 씨앗:** `--mcp-search`(Plan 14) = 코어의 **검색/메모리를 백엔드로 노출, 에이전트가 MCP 클라이언트로 사용**. 제안은 이를 **오케스트레이션까지 확장**.
+- **장점:** 영속 코어 공유(멀티 프론트, Redis 멀티세션이 부분 시작) · 에이전트 자체 세션 유지로 재전송↓ · 모델/클라이언트 플러그인.
+- **난점(핵심):** 분산 turn-triggering(누가 언제·앞 발언 순차 노출을 백엔드가 조정) = CLAUDE.md A2A 백로그 난제. + 컨텍스트 통제(재주입축소/RAG의 "그 턴에 뭘 보일지" 정밀 통제) 약화 위험.
+- **권고:** 두 모델 공존. 현재(사람주도 순차, 동작함) 유지 + **점진**: MCP 서버에 검색 외 오케스트레이션 툴(`read_transcript`/`post_turn` 등) 추가 → 코어-백엔드 A2A로 성장. **큰 포크라 별도 설계 세션 필요**(지금 구현 X). 관련 백로그: 분리터미널 A2A.
 
 ## ⑧ 다음 세션 첫 행동
 

@@ -20,10 +20,10 @@
 
 ## 현재 상태 (2026-06-30, Windows 세션 2)
 
-- **v1 완료 + v2 Plan 01~19 완성.** 01~08(Mac): watchdog·로스터·협업코딩·session_bus·세션모델·Redis통합·/debate·토크나이저. 09~19(Windows): 09 SQLite+FTS5 · 10 라이브 색인 · 11 검색주입(RAG) · 12 /search · 13 벡터/하이브리드 · 14 에이전트 MCP(search_context) · 15 gotcha#4(Windows .cmd spawn) · 16 재주입축소(--recent-turns) · 17 HTTP 엔진 러너(ollama/lmstudio/openai) · 18 FTS 리콜 보강 · 19 Windows Kiwi 활성화. 검증: 기본 103 / `--features "semantic morphology mcp"` 105 / engines 106 pass, clippy 클린. 전부 origin/main(`7ce7575`) 푸시.
+- **v1 완료 + v2 Plan 01~19 완성.** 01~08(Mac): watchdog·로스터·협업코딩·session_bus·세션모델·Redis통합·/debate·토크나이저. 09~20(Windows): 09 SQLite+FTS5 · 10 라이브 색인 · 11 검색주입(RAG) · 12 /search · 13 벡터/하이브리드 · 14 에이전트 MCP(search_context) · 15 gotcha#4(Windows .cmd spawn) · 16 재주입축소(--recent-turns) · 17 HTTP 엔진 러너(ollama/lmstudio/openai) · 18 FTS 리콜 보강 · 19 Windows Kiwi 활성화 · 20 opencode CLI 러너. 검증: 기본 105 / `--features "semantic morphology mcp engines"` 112 pass, clippy 클린. 전부 origin/main 푸시.
 - 현행 spec: [docs/design/tunaRound-v1-design_2026-06-29.md](docs/design/tunaRound-v1-design_2026-06-29.md). 진행: [docs/plans/index.md](docs/plans/index.md)(v1 01~06, v2 01~08 done).
 - **>>> 최신 핸드오프: [docs/prompts/v2-handoff_2026-06-30_session2.md](docs/prompts/v2-handoff_2026-06-30_session2.md) 먼저 읽기 <<<** (Plan 09~19 + Kiwi 셋업 + 검색 품질 + 남은 항목)
-- **북극성(2026-06-30):** 계층형 공유 맥락 + 능동 검색. **1차 완결**: 형태소 FTS(Kiwi v0.22.2 수동/lindera 폴백) + RAG 주입 + /search + BGE-M3 벡터/하이브리드 + 에이전트 MCP 도구 + 재주입 축소. 설계 [docs/design/v2-context-memory-direction_2026-06-30.md](docs/design/v2-context-memory-direction_2026-06-30.md). **남은 항목:** opencode CLI 참가자 · 검색 품질 추가 개선(현실 코퍼스) · ctx-handle/요약 carry-forward · 리치 프론트(보류) · 분리터미널 A2A(백로그).
+- **북극성(2026-06-30):** 계층형 공유 맥락 + 능동 검색. **1차 완결**: 형태소 FTS(Kiwi v0.22.2 수동/lindera 폴백) + RAG 주입 + /search + BGE-M3 벡터/하이브리드 + 에이전트 MCP 도구 + 재주입 축소. 설계 [docs/design/v2-context-memory-direction_2026-06-30.md](docs/design/v2-context-memory-direction_2026-06-30.md). **남은 항목:** 검색 품질 추가 개선(현실 코퍼스) · 요약 carry-forward · 예시 로스터 확장 · 리치 프론트(보류). **검토할 방향:** 코어-백엔드 + 에이전트-클라이언트(A2A) - 핸드오프 ⑧-A. 신규 엔진(HTTP+opencode)·Kiwi·검색스택은 done.
 - **검증/주의:** 멀티세션 라이브 검증 통과(맥, 로컬 Redis). 임베딩=원격 Ollama(SSH `-p [사설포트]` 터널, bge-m3 dim 1024, 검증됨). **⚠️ Kiwi 런타임 버그**(libkiwi 404)->현재 lindera 실효; **Windows는 Kiwi cfg 제외=lindera만**이라 무관. 맥 정리: redis 내림·SSH터널 종료(brew redis 설치는 남음).
 
 ## 무엇을 만드나 (요약)
