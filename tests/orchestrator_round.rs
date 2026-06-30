@@ -24,7 +24,7 @@ fn run_round_drives_seats_and_accumulates_transcript() {
     ];
     let mut transcript: Vec<Utterance> = Vec::new();
 
-    let round = run_round(&participants, &mut transcript, "이 설계 어떤가요?", &reg, RunMode::ReadOnly, &[]).expect("ok");
+    let round = run_round(&participants, &mut transcript, "이 설계 어떤가요?", &reg, RunMode::ReadOnly, &[], "").expect("ok");
 
     assert_eq!(round.len(), 2);
     assert_eq!(round[0].content, "아키텍트 의견");

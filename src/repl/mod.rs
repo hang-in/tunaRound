@@ -4,6 +4,30 @@ use crate::runner::RunMode;
 use crate::session_bus::SessionBus;
 use crate::store::{StoredMessage, StoredSession};
 
+/// 이월 요약 최대 바이트 수. 초과 시 최근 드롭 턴 우선 유지 + 생략 표기.
+const MAX_CARRY: usize = 1500;
+
+/// 발언 내용에서 첫 절을 추출한다. 첫 문장 종결('.', '。', 개행) 또는 첫 ~80자 중 짧은 쪽.
+fn first_clause(content: &str) -> String {
+    // 첫 문장 종결 위치(바이트 오프셋 + 문자 바이트 크기).
+    let sentence_end = content
+        .char_indices()
+        .find(|(_, c)| *c == '.' || *c == '\u{3002}' || *c == '\n')
+        .map(|(i, c)| i + c.len_utf8());
+    let sentence = match sentence_end {
+        Some(end) => &content[..end],
+        None => content,
+    };
+    // 첫 ~80자(한국어 포함 문자 단위).
+    let eighty: String = content.chars().take(80).collect();
+    // 문자 수 기준 짧은 쪽 선택.
+    if sentence.chars().count() <= eighty.chars().count() {
+        sentence.trim().to_string()
+    } else {
+        eighty.trim().to_string()
+    }
+}
+
 /// REPL 한 줄 입력의 해석 결과.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Command {
@@ -174,6 +198,61 @@ impl Session {
         }
     }
 
+    /// 드롭된 옛 턴을 결정적 압축 요약으로 반환한다(LLM·임베더 미사용).
+    /// recent_turns None(기본)이면 드롭 없음 → 빈 문자열. path.len()<=n이면 마찬가지로 빈 문자열.
+    /// 초과 시 최근 드롭 턴 우선 유지, 맨 앞에 "(이전 N턴 생략)" 표기.
+    pub fn carry_forward_digest(&self) -> String {
+        let n = match self.recent_turns {
+            Some(n) => n,
+            None => return String::new(),
+        };
+        let path = self.active_path();
+        if path.len() <= n {
+            return String::new();
+        }
+        let dropped = &path[..path.len() - n];
+        // 드롭 턴마다 한 줄: "- [speaker] {first_clause}".
+        let lines: Vec<String> = dropped
+            .iter()
+            .map(|u| format!("- [{}] {}", u.speaker, first_clause(&u.content)))
+            .collect();
+
+        let full = lines.join("\n");
+        if full.len() <= MAX_CARRY {
+            return full;
+        }
+
+        // 최근 드롭 턴 우선으로 예산 안에 유지. 마커 여유분 50바이트 확보.
+        const MARKER_RESERVE: usize = 50;
+        let budget = MAX_CARRY.saturating_sub(MARKER_RESERVE);
+        let mut kept: Vec<&str> = Vec::new();
+        let mut used: usize = 0;
+        for line in lines.iter().rev() {
+            let extra = if kept.is_empty() { line.len() } else { 1 + line.len() };
+            if used + extra > budget {
+                break;
+            }
+            kept.push(line.as_str());
+            used += extra;
+        }
+        kept.reverse();
+
+        let omitted = lines.len() - kept.len();
+        let marker = format!("(이전 {}턴 생략)", omitted);
+        if kept.is_empty() {
+            marker
+        } else {
+            let body = kept.join("\n");
+            let result = format!("{}\n{}", marker, body);
+            // 최종 바이트 캡 안전망.
+            if result.len() <= MAX_CARRY {
+                result
+            } else {
+                marker
+            }
+        }
+    }
+
     /// topic으로 retriever를 검색하고 활성 경로 중복을 제외한 슬라이스를 반환한다.
     /// retriever 없으면 빈 Vec(기존 동작 불변).
     fn retrieve_for(&self, topic: &str) -> Vec<Utterance> {
@@ -285,7 +364,8 @@ impl Session {
             Command::Message(text) => {
                 let retrieved = self.retrieve_for(&text);
                 let mut path = self.prior_for_prompt();
-                match run_round(&self.participants, &mut path, &text, self.registry.as_ref(), RunMode::ReadOnly, &retrieved) {
+                let carried = self.carry_forward_digest();
+                match run_round(&self.participants, &mut path, &text, self.registry.as_ref(), RunMode::ReadOnly, &retrieved, &carried) {
                     Ok(round) => { self.append_round(&round); StepOutcome::Print(render(&round)) }
                     Err(e) => StepOutcome::Print(format!("[에러] {e:?}")),
                 }
@@ -298,7 +378,8 @@ impl Session {
                 }
                 let retrieved = self.retrieve_for(&text);
                 let mut path = self.prior_for_prompt();
-                match run_round(&seats, &mut path, &text, self.registry.as_ref(), RunMode::ReadOnly, &retrieved) {
+                let carried = self.carry_forward_digest();
+                match run_round(&seats, &mut path, &text, self.registry.as_ref(), RunMode::ReadOnly, &retrieved, &carried) {
                     Ok(round) => { self.append_round(&round); StepOutcome::Print(render(&round)) }
                     Err(e) => StepOutcome::Print(format!("[에러] {e:?}")),
                 }
@@ -311,7 +392,8 @@ impl Session {
                 }
                 let retrieved = self.retrieve_for(&text);
                 let mut path = self.prior_for_prompt();
-                match run_round(&seats, &mut path, &text, self.registry.as_ref(), RunMode::Write, &retrieved) {
+                let carried = self.carry_forward_digest();
+                match run_round(&seats, &mut path, &text, self.registry.as_ref(), RunMode::Write, &retrieved, &carried) {
                     Ok(round) => { self.append_round(&round); StepOutcome::Print(render(&round)) }
                     Err(e) => StepOutcome::Print(format!("[에러] {e:?}")),
                 }
@@ -328,7 +410,8 @@ impl Session {
                 }];
                 let retrieved = self.retrieve_for("지금까지의 토론을 종합해 결론을 정리해줘.");
                 let mut path = self.prior_for_prompt();
-                match run_round(&synth, &mut path, "지금까지의 토론을 종합해 결론을 정리해줘.", self.registry.as_ref(), RunMode::ReadOnly, &retrieved) {
+                let carried = self.carry_forward_digest();
+                match run_round(&synth, &mut path, "지금까지의 토론을 종합해 결론을 정리해줘.", self.registry.as_ref(), RunMode::ReadOnly, &retrieved, &carried) {
                     Ok(round) => { self.append_round(&round); StepOutcome::Print(render(&round)) }
                     Err(e) => StepOutcome::Print(format!("[에러] {e:?}")),
                 }
@@ -343,7 +426,8 @@ impl Session {
                     };
                     let retrieved = self.retrieve_for(&round_topic);
                     let mut path = self.prior_for_prompt();
-                    match run_round(&self.participants, &mut path, &round_topic, self.registry.as_ref(), RunMode::ReadOnly, &retrieved) {
+                    let carried = self.carry_forward_digest();
+                    match run_round(&self.participants, &mut path, &round_topic, self.registry.as_ref(), RunMode::ReadOnly, &retrieved, &carried) {
                         Ok(round) => {
                             self.append_round(&round);
                             out.push_str(&format!("### 라운드 {}\n{}\n\n", k + 1, render(&round)));
@@ -778,5 +862,68 @@ mod tests {
         // 마지막 발언이 활성 경로 전체의 마지막 발언과 동일해야 한다.
         let full = s.active_path_pub_for_test();
         assert_eq!(prior.last().map(|u| &u.content), full.last().map(|u| &u.content));
+    }
+
+    // --- carry_forward_digest 테스트 ---
+
+    #[test]
+    fn carry_forward_digest_empty_when_no_cap() {
+        // recent_turns None(기본) -> 드롭 없음 -> 빈 문자열.
+        let s = session_with_two_seats();
+        assert_eq!(s.carry_forward_digest(), "");
+    }
+
+    #[test]
+    fn carry_forward_digest_empty_when_path_not_exceeded() {
+        // recent_turns=Some(4), 발언 2개(path 2) -> path<=n -> 빈 문자열.
+        let mut s = session_with_two_seats().with_recent_turns(Some(4));
+        let _ = s.step(Command::Message("주제".into())); // path 길이 2
+        assert_eq!(s.carry_forward_digest(), "");
+    }
+
+    #[test]
+    fn carry_forward_digest_includes_dropped_speaker_and_gist() {
+        // recent_turns=Some(2), 두 번 Message -> path=4, 드롭=2(path[..2]).
+        // 드롭된 발언의 speaker와 gist가 다이제스트에 포함돼야 한다.
+        let mut s = session_with_two_seats().with_recent_turns(Some(2));
+        let _ = s.step(Command::Message("주제1".into())); // path 2
+        let _ = s.step(Command::Message("주제2".into())); // path 4, 드롭 2
+        let digest = s.carry_forward_digest();
+        assert!(!digest.is_empty(), "드롭 존재 -> 비어있으면 안 됨");
+        // claude/proposer="제안", codex/reviewer="리뷰" 중 하나는 포함돼야 한다.
+        assert!(
+            digest.contains("claude/proposer") || digest.contains("codex/reviewer"),
+            "speaker 없음: {digest}"
+        );
+        assert!(
+            digest.contains("제안") || digest.contains("리뷰"),
+            "gist 없음: {digest}"
+        );
+    }
+
+    #[test]
+    fn carry_forward_digest_caps_at_max_carry() {
+        // 긴 응답을 내는 러너로 캡 초과 시나리오 구성.
+        // recent_turns=Some(1), 10번 Message -> path=20, 드롭=19 -> 각 라인 ~100자 합계 ~1900 > 1500.
+        let mut reg = MapRegistry::new();
+        let long_reply = "A".repeat(200);
+        reg.insert("claude", Box::new(FakeRunner { reply: long_reply.clone() }));
+        reg.insert("codex", Box::new(FakeRunner { reply: long_reply }));
+        let parts = vec![
+            Participant { engine: "claude".into(), role: Some("proposer".into()), instruction: String::new() },
+            Participant { engine: "codex".into(), role: Some("reviewer".into()), instruction: String::new() },
+        ];
+        let mut s = Session::new(parts, Box::new(reg)).with_recent_turns(Some(1));
+        for _ in 0..10 {
+            let _ = s.step(Command::Message("주제".into()));
+        }
+        let digest = s.carry_forward_digest();
+        assert!(digest.contains("이전"), "생략 표기 없음: {digest}");
+        assert!(
+            digest.len() <= super::MAX_CARRY,
+            "MAX_CARRY 초과: {} > {}",
+            digest.len(),
+            super::MAX_CARRY
+        );
     }
 }

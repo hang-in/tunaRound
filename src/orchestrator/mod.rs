@@ -73,6 +73,7 @@ impl RunnerRegistry for MapRegistry {
 /// transcript는 이전 라운드들이며, 이번 라운드 응답이 끝에 append된다.
 /// mode는 호출자가 지정(말하기=ReadOnly, 사람이 지목한 쓰기 턴=Write).
 /// retrieved는 검색으로 끌어온 과거 맥락 슬라이스(비면 무영향, 동작 불변).
+/// carried는 드롭된 옛 턴의 압축 요약(비면 이월 섹션 없음, behavior-preserving).
 pub fn run_round(
     participants: &[Participant],
     transcript: &mut Vec<Utterance>,
@@ -80,12 +81,13 @@ pub fn run_round(
     registry: &dyn RunnerRegistry,
     mode: RunMode,
     retrieved: &[Utterance],
+    carried: &str,
 ) -> Result<Vec<Utterance>, RunError> {
     let prior: Vec<Utterance> = transcript.clone();
     let mut same_round: Vec<Utterance> = Vec::new();
 
     for part in participants {
-        let prompt = build_round_prompt(part, topic, &prior, &same_round, retrieved);
+        let prompt = build_round_prompt(part, topic, &prior, &same_round, retrieved, carried);
         let runner = registry
             .get(&part.engine)
             .ok_or_else(|| RunError::Spawn(format!("엔진 러너 없음: {}", part.engine)))?;
