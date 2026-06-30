@@ -88,14 +88,32 @@ pub struct CodexRunner {
     search_db: Option<String>,
     /// MCP spawn 시 전달할 세션 id. Some이면 TOML args에 --session-id <sid>를 추가한다.
     search_session: Option<String>,
+    /// 원격 HTTP MCP 서버 URL. Some이면 stdio spawn 대신 -c mcp_servers.tuna-search.url 배선(search_db보다 우선).
+    search_url: Option<String>,
+    /// HTTP MCP 서버 bearer 토큰. codex bearer_token_env_var 배선은 추후 과제(TODO).
+    search_token: Option<String>,
 }
 
 impl CodexRunner {
     pub fn new() -> Self {
-        Self { bin: "codex".to_string(), idle_timeout: Duration::from_secs(600), search_db: None, search_session: None }
+        Self {
+            bin: "codex".to_string(),
+            idle_timeout: Duration::from_secs(600),
+            search_db: None,
+            search_session: None,
+            search_url: None,
+            search_token: None,
+        }
     }
     pub fn with_bin(bin: &str) -> Self {
-        Self { bin: bin.to_string(), idle_timeout: Duration::from_secs(600), search_db: None, search_session: None }
+        Self {
+            bin: bin.to_string(),
+            idle_timeout: Duration::from_secs(600),
+            search_db: None,
+            search_session: None,
+            search_url: None,
+            search_token: None,
+        }
     }
     /// 테스트/설정용 idle 타임아웃 주입.
     pub fn with_idle_timeout(mut self, d: Duration) -> Self {
@@ -110,6 +128,13 @@ impl CodexRunner {
     /// MCP 서버 spawn 시 사용할 세션 id 주입. Some이면 --session-id <sid>를 TOML args에 추가한다.
     pub fn with_search_session(mut self, session: Option<String>) -> Self {
         self.search_session = session;
+        self
+    }
+    /// 원격 HTTP MCP 서버 URL + bearer 토큰 주입. url이 Some이면 stdio spawn 대신 HTTP 배선.
+    /// TODO: codex bearer_token_env_var 배선은 ExecSpec env 필드 추가 후 구현(현재 url만 배선).
+    pub fn with_search_url(mut self, url: Option<String>, token: Option<String>) -> Self {
+        self.search_url = url;
+        self.search_token = token;
         self
     }
 }
@@ -127,31 +152,40 @@ fn toml_basic(s: &str) -> String {
 
 impl Runner for CodexRunner {
     fn run(&self, input: &RunInput) -> Result<RunOutput, RunError> {
-        // search_db가 Some이면 -c mcp_servers.tuna-search 오버라이드 쌍을 조립한다.
+        // search_url이 Some이면 HTTP MCP 배선(-c mcp_servers.tuna-search.url)을 우선한다.
+        // search_url이 None이고 search_db가 Some이면 기존 stdio self-exe spawn 오버라이드를 사용한다.
         // TOML basic(큰따옴표) 문자열로 역슬래시·큰따옴표를 이스케이프해 주입을 방지한다.
-        let mcp_args: Vec<String> = self.search_db.as_ref().map(|db| {
-            let exe = std::env::current_exe()
-                .ok()
-                .and_then(|p| p.to_str().map(String::from))
-                .unwrap_or_else(|| "tunaround".into());
-            let mut items = vec![
-                "--mcp-search".to_string(),
-                "--db".to_string(),
-                db.clone(),
-            ];
-            if let Some(sid) = &self.search_session {
-                items.push("--session-id".into());
-                items.push(sid.clone());
-            }
-            let arr = items.iter().map(|a| toml_basic(a)).collect::<Vec<_>>().join(",");
-            let args_toml = format!("mcp_servers.tuna-search.args=[{arr}]");
+        // TODO: bearer 토큰은 codex bearer_token_env_var 키 + ExecSpec env 필드 추가 후 구현.
+        let mcp_args: Vec<String> = if let Some(url) = &self.search_url {
             vec![
                 "-c".into(),
-                format!("mcp_servers.tuna-search.command={}", toml_basic(&exe)),
-                "-c".into(),
-                args_toml,
+                format!("mcp_servers.tuna-search.url={}", toml_basic(url)),
             ]
-        }).unwrap_or_default();
+        } else {
+            self.search_db.as_ref().map(|db| {
+                let exe = std::env::current_exe()
+                    .ok()
+                    .and_then(|p| p.to_str().map(String::from))
+                    .unwrap_or_else(|| "tunaround".into());
+                let mut items = vec![
+                    "--mcp-search".to_string(),
+                    "--db".to_string(),
+                    db.clone(),
+                ];
+                if let Some(sid) = &self.search_session {
+                    items.push("--session-id".into());
+                    items.push(sid.clone());
+                }
+                let arr = items.iter().map(|a| toml_basic(a)).collect::<Vec<_>>().join(",");
+                let args_toml = format!("mcp_servers.tuna-search.args=[{arr}]");
+                vec![
+                    "-c".into(),
+                    format!("mcp_servers.tuna-search.command={}", toml_basic(&exe)),
+                    "-c".into(),
+                    args_toml,
+                ]
+            }).unwrap_or_default()
+        };
         let spec = ExecSpec {
             bin: self.bin.clone(),
             args: build_codex_args(input, &mcp_args),
@@ -305,6 +339,42 @@ mod tests {
         // 빈 슬라이스면 -c 없음.
         let args_none = build_codex_args(&input, &[]);
         assert!(!args_none.join(" ").contains("mcp_servers.tuna-search"), "mcp_args 없는데 포함됨");
+    }
+
+    #[test]
+    fn with_search_url_produces_url_c_flag() {
+        // search_url 설정 시 -c mcp_servers.tuna-search.url 플래그를 포함한다.
+        let url = "http://127.0.0.1:8080/mcp";
+        let runner = CodexRunner::new().with_search_url(Some(url.into()), Some("tok".into()));
+        // URL mode mcp_args 재현.
+        let mcp_args = vec![
+            "-c".to_string(),
+            format!("mcp_servers.tuna-search.url={}", toml_basic(url)),
+        ];
+        let joined = mcp_args.join(" ");
+        assert!(joined.contains("-c"), "-c 없음: {joined}");
+        assert!(joined.contains("mcp_servers.tuna-search.url"), "url 키 없음: {joined}");
+        assert!(joined.contains(url), "url 값 없음: {joined}");
+        // 빌더 필드 확인.
+        assert_eq!(runner.search_url.as_deref(), Some(url));
+        assert_eq!(runner.search_token.as_deref(), Some("tok"));
+    }
+
+    #[test]
+    fn search_url_priority_over_search_db_in_codex() {
+        // search_url과 search_db 둘 다 있으면 url이 우선(command/args 없음).
+        let url = "http://127.0.0.1:9090/mcp";
+        let runner = CodexRunner::new()
+            .with_search_db(Some("/tmp/fallback.db".into()))
+            .with_search_url(Some(url.into()), None);
+        assert!(runner.search_url.is_some());
+        assert!(runner.search_db.is_some());
+        // url 모드 mcp_args에는 command가 없다.
+        let mcp_args = vec![
+            "-c".to_string(),
+            format!("mcp_servers.tuna-search.url={}", toml_basic(url)),
+        ];
+        assert!(!mcp_args.join(" ").contains("command"), "url 우선 시 command 없어야 함");
     }
 
     #[test]

@@ -64,8 +64,14 @@ pub fn build_participants_checked(roster: &Roster) -> Result<Vec<Participant>, S
 
 /// 로스터의 distinct 엔진마다 러너를 만들어 레지스트리를 구성한다.
 /// 알려진 엔진: claude, codex. 그 외는 에러.
-/// search_db가 Some이면 각 러너에 검색 MCP 서버를 배선한다.
-pub fn build_registry(roster: &Roster, search_db: Option<&str>) -> Result<MapRegistry, String> {
+/// search_db가 Some이면 각 러너에 stdio MCP 서버를 배선한다.
+/// search_url이 Some이면 HTTP MCP 서버 URL을 우선 배선한다(search_db보다 우선).
+pub fn build_registry(
+    roster: &Roster,
+    search_db: Option<&str>,
+    search_url: Option<&str>,
+    search_token: Option<&str>,
+) -> Result<MapRegistry, String> {
     let mut reg = MapRegistry::new();
     let mut seen: Vec<String> = Vec::new();
     for seat in &roster.seats {
@@ -75,11 +81,19 @@ pub fn build_registry(roster: &Roster, search_db: Option<&str>) -> Result<MapReg
         match seat.engine.as_str() {
             "claude" => reg.insert(
                 "claude",
-                Box::new(ClaudeRunner::new().with_search_db(search_db.map(String::from))),
+                Box::new(
+                    ClaudeRunner::new()
+                        .with_search_db(search_db.map(String::from))
+                        .with_search_url(search_url.map(String::from), search_token.map(String::from)),
+                ),
             ),
             "codex" => reg.insert(
                 "codex",
-                Box::new(CodexRunner::new().with_search_db(search_db.map(String::from))),
+                Box::new(
+                    CodexRunner::new()
+                        .with_search_db(search_db.map(String::from))
+                        .with_search_url(search_url.map(String::from), search_token.map(String::from)),
+                ),
             ),
             "opencode" => reg.insert(
                 "opencode",
@@ -160,13 +174,13 @@ mod tests {
     fn build_registry_known_engines_ok() {
         let roster =
             parse_roster(r#"{"seats":[{"engine":"claude"},{"engine":"codex"}]}"#).unwrap();
-        assert!(build_registry(&roster, None).is_ok());
+        assert!(build_registry(&roster, None, None, None).is_ok());
     }
 
     #[test]
     fn build_registry_unknown_engine_errors() {
         let roster = parse_roster(r#"{"seats":[{"engine":"gemini"}]}"#).unwrap();
-        let err = build_registry(&roster, None).err().unwrap();
+        let err = build_registry(&roster, None, None, None).err().unwrap();
         assert!(err.contains("gemini"));
     }
 
@@ -174,7 +188,15 @@ mod tests {
     fn build_registry_with_search_db_ok() {
         let roster =
             parse_roster(r#"{"seats":[{"engine":"claude"},{"engine":"codex"}]}"#).unwrap();
-        assert!(build_registry(&roster, Some("x.db")).is_ok());
+        assert!(build_registry(&roster, Some("x.db"), None, None).is_ok());
+    }
+
+    #[test]
+    fn build_registry_with_search_url_ok() {
+        // search_url 설정 시 레지스트리 구성이 정상적으로 완료된다.
+        let roster =
+            parse_roster(r#"{"seats":[{"engine":"claude"},{"engine":"codex"}]}"#).unwrap();
+        assert!(build_registry(&roster, None, Some("http://127.0.0.1:8080/mcp"), Some("tok")).is_ok());
     }
 
     #[test]
@@ -190,7 +212,7 @@ mod tests {
             r#"{"seats":[{"engine":"local","base_url":"http://127.0.0.1:11435","model":"gemma4:e2b"}]}"#,
         )
         .unwrap();
-        assert!(build_registry(&roster, None).is_ok());
+        assert!(build_registry(&roster, None, None, None).is_ok());
     }
 
     #[cfg(feature = "engines")]
@@ -198,7 +220,7 @@ mod tests {
     fn build_registry_http_seat_missing_model_err() {
         let roster =
             parse_roster(r#"{"seats":[{"engine":"local","base_url":"http://x"}]}"#).unwrap();
-        let err = build_registry(&roster, None).err().unwrap();
+        let err = build_registry(&roster, None, None, None).err().unwrap();
         assert!(err.contains("base_url"), "에러에 base_url 없음: {err}");
     }
 }

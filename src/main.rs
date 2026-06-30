@@ -29,6 +29,10 @@ fn main() {
     // --token <tok>: bearer 토큰 인증(serve 모드 전용).
     #[cfg(feature = "serve")]
     let mut serve_token: Option<String> = None;
+    // --search-url <url>: 원격 HTTP MCP 서버 URL(stdio spawn 대신 접속).
+    let mut search_url: Option<String> = None;
+    // --search-token <tok>: HTTP MCP 서버 bearer 토큰(Authorization 헤더).
+    let mut search_token: Option<String> = None;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -72,6 +76,14 @@ fn main() {
             "--token" => {
                 #[cfg(feature = "serve")]
                 { serve_token = args.get(i + 1).cloned(); }
+                i += 2;
+            }
+            "--search-url" => {
+                search_url = args.get(i + 1).cloned();
+                i += 2;
+            }
+            "--search-token" => {
+                search_token = args.get(i + 1).cloned();
                 i += 2;
             }
             "--pull-context" => {
@@ -266,7 +278,12 @@ fn main() {
             let roster_search_db: Option<&str> = db_path.as_deref();
             #[cfg(not(feature = "mcp"))]
             let roster_search_db: Option<&str> = None;
-            let reg = match tunaround::roster::build_registry(&roster, roster_search_db) {
+            let reg = match tunaround::roster::build_registry(
+                &roster,
+                roster_search_db,
+                search_url.as_deref(),
+                search_token.as_deref(),
+            ) {
                 Ok(r) => r,
                 Err(e) => { eprintln!("[로스터 실패] {e}"); std::process::exit(1); }
             };
@@ -275,14 +292,22 @@ fn main() {
         None => {
             let mut reg = MapRegistry::new();
             #[cfg(feature = "mcp")]
-            let claude_runner = ClaudeRunner::new().with_search_db(db_path.clone()).with_search_session(Some(sid.clone()));
+            let claude_runner = ClaudeRunner::new()
+                .with_search_db(db_path.clone())
+                .with_search_session(Some(sid.clone()))
+                .with_search_url(search_url.clone(), search_token.clone());
             #[cfg(not(feature = "mcp"))]
-            let claude_runner = ClaudeRunner::new();
+            let claude_runner = ClaudeRunner::new()
+                .with_search_url(search_url.clone(), search_token.clone());
             reg.insert("claude", Box::new(claude_runner));
             #[cfg(feature = "mcp")]
-            let codex_runner = CodexRunner::new().with_search_db(db_path.clone()).with_search_session(Some(sid.clone()));
+            let codex_runner = CodexRunner::new()
+                .with_search_db(db_path.clone())
+                .with_search_session(Some(sid.clone()))
+                .with_search_url(search_url.clone(), search_token.clone());
             #[cfg(not(feature = "mcp"))]
-            let codex_runner = CodexRunner::new();
+            let codex_runner = CodexRunner::new()
+                .with_search_url(search_url.clone(), search_token.clone());
             reg.insert("codex", Box::new(codex_runner));
             let parts = vec![
                 Participant { engine: "claude".into(), role: Some("proposer".into()), instruction: String::new() },

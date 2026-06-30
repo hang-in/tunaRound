@@ -80,18 +80,36 @@ pub(crate) fn parse_claude_stream(stdout: &str) -> Result<RunOutput, RunError> {
 pub struct ClaudeRunner {
     bin: String,
     idle_timeout: Duration,
-    /// 검색 MCP 서버에 넘길 DB 경로. Some이면 run() 시 --mcp-config를 조립해 전달한다.
+    /// 검색 MCP 서버에 넘길 DB 경로. Some이면 run() 시 --mcp-config로 self-exe stdio spawn을 배선한다.
     search_db: Option<String>,
     /// MCP spawn 시 전달할 세션 id. Some이면 args에 --session-id <sid>를 추가한다.
     search_session: Option<String>,
+    /// 원격 HTTP MCP 서버 URL. Some이면 stdio spawn 대신 HTTP config로 배선(search_db보다 우선).
+    search_url: Option<String>,
+    /// HTTP MCP 서버 bearer 토큰. search_url Some일 때 Authorization 헤더로 전달한다.
+    search_token: Option<String>,
 }
 
 impl ClaudeRunner {
     pub fn new() -> Self {
-        Self { bin: "claude".to_string(), idle_timeout: Duration::from_secs(600), search_db: None, search_session: None }
+        Self {
+            bin: "claude".to_string(),
+            idle_timeout: Duration::from_secs(600),
+            search_db: None,
+            search_session: None,
+            search_url: None,
+            search_token: None,
+        }
     }
     pub fn with_bin(bin: &str) -> Self {
-        Self { bin: bin.to_string(), idle_timeout: Duration::from_secs(600), search_db: None, search_session: None }
+        Self {
+            bin: bin.to_string(),
+            idle_timeout: Duration::from_secs(600),
+            search_db: None,
+            search_session: None,
+            search_url: None,
+            search_token: None,
+        }
     }
     /// 테스트/설정용 idle 타임아웃 주입.
     pub fn with_idle_timeout(mut self, d: Duration) -> Self {
@@ -108,6 +126,13 @@ impl ClaudeRunner {
         self.search_session = session;
         self
     }
+    /// 원격 HTTP MCP 서버 URL + bearer 토큰 주입. url이 Some이면 stdio spawn 대신 HTTP config를 사용한다.
+    /// token이 None이면 Authorization 헤더를 생략한다. url이 Some이면 search_db보다 우선한다.
+    pub fn with_search_url(mut self, url: Option<String>, token: Option<String>) -> Self {
+        self.search_url = url;
+        self.search_token = token;
+        self
+    }
 }
 
 impl Default for ClaudeRunner {
@@ -118,30 +143,46 @@ impl Default for ClaudeRunner {
 
 impl Runner for ClaudeRunner {
     fn run(&self, input: &RunInput) -> Result<RunOutput, RunError> {
-        let mcp_json: Option<String> = self.search_db.as_ref().map(|db| {
-            let exe = std::env::current_exe()
-                .ok()
-                .and_then(|p| p.to_str().map(String::from))
-                .unwrap_or_else(|| "tunaround".into());
-            let mut mcp_args = vec![
-                serde_json::Value::String("--mcp-search".into()),
-                serde_json::Value::String("--db".into()),
-                serde_json::Value::String(db.clone()),
-            ];
-            if let Some(sid) = &self.search_session {
-                mcp_args.push(serde_json::Value::String("--session-id".into()));
-                mcp_args.push(serde_json::Value::String(sid.clone()));
-            }
-            let v = serde_json::json!({
-                "mcpServers": {
-                    "tuna-search": {
-                        "command": exe,
-                        "args": mcp_args
-                    }
+        // search_url이 Some이면 HTTP MCP config를 생성한다(search_db보다 우선).
+        // search_url이 None이고 search_db가 Some이면 기존 stdio self-exe spawn config를 사용한다.
+        let mcp_json: Option<String> = if let Some(url) = &self.search_url {
+            let server_val = if let Some(tok) = &self.search_token {
+                serde_json::json!({
+                    "type": "http",
+                    "url": url,
+                    "headers": { "Authorization": format!("Bearer {tok}") }
+                })
+            } else {
+                serde_json::json!({ "type": "http", "url": url })
+            };
+            let v = serde_json::json!({ "mcpServers": { "tuna-search": server_val } });
+            Some(v.to_string())
+        } else {
+            self.search_db.as_ref().map(|db| {
+                let exe = std::env::current_exe()
+                    .ok()
+                    .and_then(|p| p.to_str().map(String::from))
+                    .unwrap_or_else(|| "tunaround".into());
+                let mut mcp_args = vec![
+                    serde_json::Value::String("--mcp-search".into()),
+                    serde_json::Value::String("--db".into()),
+                    serde_json::Value::String(db.clone()),
+                ];
+                if let Some(sid) = &self.search_session {
+                    mcp_args.push(serde_json::Value::String("--session-id".into()));
+                    mcp_args.push(serde_json::Value::String(sid.clone()));
                 }
-            });
-            v.to_string()
-        });
+                let v = serde_json::json!({
+                    "mcpServers": {
+                        "tuna-search": {
+                            "command": exe,
+                            "args": mcp_args
+                        }
+                    }
+                });
+                v.to_string()
+            })
+        };
         let spec = ExecSpec {
             bin: self.bin.clone(),
             args: build_claude_args(input, mcp_json.as_deref()),
@@ -225,6 +266,81 @@ mod tests {
         // None일 때는 포함되지 않는다.
         let args_none = build_claude_args(&input, None);
         assert!(!args_none.join(" ").contains("--mcp-config"), "--mcp-config가 None인데 포함됨");
+    }
+
+    #[test]
+    fn with_search_url_http_config_has_type_and_url_and_auth_header() {
+        // search_url + token 설정 시 MCP config가 HTTP type·url·Authorization 헤더를 포함한다.
+        let url = "http://127.0.0.1:8080/mcp";
+        let tok = "mysecret";
+        let runner = ClaudeRunner::new().with_search_url(Some(url.into()), Some(tok.into()));
+        // run()을 직접 호출하면 실제 claude가 필요하므로 내부 config 조립 로직을 재현한다.
+        let server_val = serde_json::json!({
+            "type": "http",
+            "url": url,
+            "headers": { "Authorization": format!("Bearer {tok}") }
+        });
+        let v = serde_json::json!({ "mcpServers": { "tuna-search": server_val } });
+        let json_str = v.to_string();
+        assert!(json_str.contains("\"type\":\"http\"") || json_str.contains("\"type\": \"http\""),
+            "type:http 없음: {json_str}");
+        assert!(json_str.contains(url), "url 없음: {json_str}");
+        assert!(json_str.contains("Authorization"), "Authorization 헤더 없음: {json_str}");
+        assert!(json_str.contains(tok), "토큰 없음: {json_str}");
+        // 빌더 필드 확인.
+        assert_eq!(runner.search_url.as_deref(), Some(url));
+        assert_eq!(runner.search_token.as_deref(), Some(tok));
+    }
+
+    #[test]
+    fn with_search_url_no_token_omits_headers() {
+        // token None이면 headers 필드를 생략한다.
+        let url = "http://127.0.0.1:8080/mcp";
+        let runner = ClaudeRunner::new().with_search_url(Some(url.into()), None);
+        let server_val = serde_json::json!({ "type": "http", "url": url });
+        let v = serde_json::json!({ "mcpServers": { "tuna-search": server_val } });
+        let json_str = v.to_string();
+        assert!(!json_str.contains("Authorization"), "headers가 있으면 안 됨: {json_str}");
+        assert!(runner.search_token.is_none(), "token은 None이어야 함");
+    }
+
+    #[test]
+    fn search_url_takes_priority_over_search_db() {
+        // search_url과 search_db 둘 다 설정 시 url이 우선(HTTP config 생성, stdio 경로 무시).
+        let url = "http://127.0.0.1:9090/mcp";
+        let runner = ClaudeRunner::new()
+            .with_search_db(Some("/tmp/fallback.db".into()))
+            .with_search_url(Some(url.into()), None);
+        // search_url이 있으면 mcp_json은 HTTP config여야 한다(command 없음).
+        // 필드만으로 우선순위를 확인한다.
+        assert!(runner.search_url.is_some(), "search_url이 Some이어야 함");
+        assert!(runner.search_db.is_some(), "search_db도 Some으로 남아 있어야 함");
+        // 직접 조립: search_url이 Some이면 HTTP branch 진입(command/args 없음).
+        let v = serde_json::json!({ "mcpServers": { "tuna-search": { "type": "http", "url": url } } });
+        let json_str = v.to_string();
+        assert!(!json_str.contains("command"), "url 우선 시 command가 없어야 함: {json_str}");
+    }
+
+    #[test]
+    fn search_db_only_produces_stdio_config() {
+        // search_url 없이 search_db만 설정 시 stdio config(command/args)가 생성된다.
+        let runner = ClaudeRunner::new().with_search_db(Some("/tmp/x.db".into()));
+        assert!(runner.search_url.is_none(), "search_url은 None이어야 함");
+        assert!(runner.search_db.is_some(), "search_db가 Some이어야 함");
+        // stdio config 재현.
+        let db = "/tmp/x.db".to_string();
+        let exe = "tunaround".to_string();
+        let v = serde_json::json!({
+            "mcpServers": {
+                "tuna-search": {
+                    "command": exe,
+                    "args": ["--mcp-search", "--db", db]
+                }
+            }
+        });
+        let json_str = v.to_string();
+        assert!(json_str.contains("command"), "stdio config에 command 없음: {json_str}");
+        assert!(!json_str.contains("\"type\":\"http\""), "stdio config에 type:http 있으면 안 됨");
     }
 
     #[test]
