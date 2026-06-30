@@ -165,15 +165,29 @@ mod tests {
         assert!(joined.contains("--model claude-x"));
     }
 
+    // 무출력으로 sleep하는 가짜 실행파일을 tmp에 만들어 경로를 돌려준다(OS별).
+    #[cfg(unix)]
+    fn fake_sleep_bin(name: &str) -> String {
+        let p = std::env::temp_dir().join(format!("{name}.sh"));
+        std::fs::write(&p, "#!/bin/sh\nexec sleep 5\n").unwrap();
+        let _ = std::process::Command::new("chmod")
+            .args(["+x", p.to_str().unwrap()])
+            .status();
+        p.to_str().unwrap().to_string()
+    }
+    #[cfg(windows)]
+    fn fake_sleep_bin(name: &str) -> String {
+        // .cmd는 Command가 cmd.exe로 래핑 실행한다(rustc>=1.77.2). ping으로 무출력 sleep.
+        let p = std::env::temp_dir().join(format!("{name}.cmd"));
+        std::fs::write(&p, "@ping -n 6 127.0.0.1 > nul\r\n").unwrap();
+        p.to_str().unwrap().to_string()
+    }
+
     #[test]
     fn runner_propagates_timeout_via_helper() {
-        // 가짜 스크립트: 인자 무시하고 sleep. tmp에 작성.
-        let dir = std::env::temp_dir();
-        let script = dir.join("tuna_fake_sleep_claude.sh");
-        std::fs::write(&script, "#!/bin/sh\nexec sleep 5\n").unwrap();
-        let _ = std::process::Command::new("chmod").args(["+x", script.to_str().unwrap()]).status();
-        let r = ClaudeRunner::with_bin(script.to_str().unwrap())
-            .with_idle_timeout(std::time::Duration::from_millis(150));
+        let bin = fake_sleep_bin("tuna_fake_sleep_claude");
+        let r =
+            ClaudeRunner::with_bin(&bin).with_idle_timeout(std::time::Duration::from_millis(150));
         let input = RunInput { prompt: "x".into(), model: None, project_path: None, mode: RunMode::ReadOnly };
         assert!(matches!(r.run(&input), Err(RunError::Timeout(_))));
     }
