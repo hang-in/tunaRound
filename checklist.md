@@ -106,6 +106,12 @@
 - [x] Task 2: SqliteRetriever + Session retriever(with_retriever 빌더) + retrieve_for(활성경로 dedup, K=5) + main --db 읽기 배선 (4643977; Sonnet) — Plan 11 완료, sqlite 76/sqlite+morphology 83 pass, 기본 불변, clippy 3조합 클린, 스모크 OK. **cross-session 검색 단위 테스트 통과**(능동 검색 실연)
 - 방식: 추가적(활성 경로 밖 다른 분기·과거 세션 맥락만 검색 주입). prior 캡(재주입 축소)은 품질 측정 후 별 슬라이스. 미푸시.
 
+### Plan 12: /search 명령 (docs/plans/v2-12-search-command.md) — done (벡터 보류, 정렬 슬라이스. 사용자 확정 2026-06-30)
+
+- [x] Task 1: Command::Search 파싱 + step 핸들러(retriever 재사용, 없으면 안내) + /help (bc2f359; Sonnet) — Plan 12 완료, 기본 70/sqlite 79/sqlite+morphology 86 pass, clippy 3조합 클린. 신규 의존성 0
+- 목적: 사람이 인덱스 직접 검색 -> FTS 품질 관측 -> 벡터(원안) 도입 YAGNI 근거 수집. 미푸시.
+- **벡터 보류 근거:** 설계 YAGNI(FTS 부족 입증 시에만). 라이브 블로커는 해소(원격 Ollama 2232 검증, bge-m3 dim 1024).
+
 ### 후속 (검색 레이어)
 - [ ] 벡터: 원격 Ollama(SSH 터널 11435, bge-m3 dim 1024) reqwest 임베더 + ANN
 - [ ] 하이브리드 융합(BM25+벡터) + 검색 주입(통째 재주입 -> 관련 슬라이스, build_round_prompt RAG화)

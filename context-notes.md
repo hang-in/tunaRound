@@ -224,4 +224,12 @@
 - **방식(추가적):** prior 통째 재주입은 그대로 두고, 활성 경로 **밖**의 관련 맥락(다른 분기·과거 세션)을 topic으로 검색해 "참고할 만한 과거 맥락(검색)" 섹션으로 **추가** 주입. 검증된 단일세션 품질 보존하면서 능동 검색 기둥만 세움. prior 캡(재주입 토큰 축소)은 품질 측정 후 별 슬라이스(설계 원칙: 검색가능->주입->측정->필요시 축소).
 - **구조:** `ContextRetriever` trait(orchestrator, 비게이트) + `build_round_prompt`/`run_round`에 retrieved 슬롯(Task 1, 동작 불변) + `SqliteRetriever`(sqlite, SqliteStore 읽기 + tokenize closure) + `Session.retriever`(with_retriever 빌더) + `retrieve_for`(활성 경로 content dedup, K=5) + main `--db`로 indexer와 별개 읽기 연결(WAL 동시 reader). retriever 없으면 retrieved=&[] = 동작 불변.
 - **커밋:** Task 1 `b0dd7bd`(orchestrator 슬롯) + Task 2 `4643977`(SqliteRetriever+Session+main). sqlite 76/sqlite+morphology 83 pass, clippy 3조합 클린, 스모크 OK. **cross-session 검색 단위 테스트 통과 = 능동 검색 실연.** 미푸시.
-- **다음 = Plan 12 벡터/하이브리드:** 어휘(FTS)만으론 동의어·의미 약함. 원격 Ollama bge-m3(dim 1024, SSH -p [사설포트] 터널) reqwest 임베더 + MockEmbedder 폴백 + ANN(usearch 또는 cosine) + 하이브리드(BM25+벡터). **Windows 네트워크에서 터널 도달 가능한지 미검증** -> 안 되면 Mock+graceful로 구현하고 라이브 검증 보류.
+- **다음 = Plan 12 벡터/하이브리드:** 어휘(FTS)만으론 동의어·의미 약함. 원격 Ollama bge-m3(dim 1024, SSH -p [사설포트] 터널) reqwest 임베더 + MockEmbedder 폴백 + ANN(usearch 또는 cosine) + 하이브리드(BM25+벡터).
+
+## 원격 Ollama Windows 검증 + 벡터/정렬 결정 (2026-06-30)
+
+- **검증됨(Windows):** `ssh -p [사설포트] -o BatchMode=yes [사설계정]@[사설IP] 'curl 127.0.0.1:11434/api/...'` 작동(키 인증, 무비번). `/api/tags`=bge-m3:latest + gemma4:e2b/e4b. `/api/embed` model bge-m3 -> **dim 1024 확인.** 사용자가 안내한 **포트 22는 타임아웃, 실제 포트=2232**(핸드오프 일치). 호스트=[사설IP](이제 세션에 공개됨). 터널형: `ssh -N -p [사설포트] -L 11435:127.0.0.1:11434 [사설계정]@[사설IP]`.
+- **벡터 라이브 블로커 해소.** 단 **설계 YAGNI 게이트(FTS 부족 입증 시에만, 마지막)는 여전히 유효** -> 사용자 결정=벡터 보류, 정렬 슬라이스(/search)부터.
+- **Plan 12 재정의 = /search 명령**(사람이 인덱스 직접 검색, FTS 품질 관측 -> 벡터 도입 근거 수집). plan=docs/plans/v2-12-search-command.md. 기존 Session.retriever 재사용, 신규 의존성 0. 벡터(원안)는 /search로 품질 관측 후.
+- **Plan 12 /search 완료(2026-06-30):** `bc2f359`(Sonnet). Command::Search 파싱 + step 핸들러(retriever 재사용, 없으면 --db 안내, 빈 결과 안내, 있으면 render). 기본 70/sqlite 79/sqlite+morphology 86 pass, clippy 3조합 클린. 미푸시.
+- **벡터(Plan 원안) 재개 조건:** 라이브 블로커 해소됨(2232/bge-m3 dim 1024). 남은 게이트=YAGNI(FTS 부족 입증). 재개 시 Embedder trait + MockEmbedder + reqwest Ollama(엔드포인트 http://127.0.0.1:11435, 터널 -p [사설포트]) + message_vectors BLOB(dim 1024) + cosine/ANN + 하이브리드(BM25+벡터). semantic feature 게이트.
