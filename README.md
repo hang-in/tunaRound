@@ -44,6 +44,8 @@ Redis가 있으면 여러 프로세스가 한 세션을 공유합니다. `TUNARO
 
 긴 토론이나 프로젝트 맥락을 매번 통째로 재주입하지 않고, 검색해서 관련 부분만 끌어 씁니다. 한국어는 형태소 분석으로 선-토크나이즈해 색인합니다("검색을"을 "검색"으로 잡습니다). `--db <path>`를 주면 라운드마다 메시지가 색인됩니다.
 
+형태소 백엔드 선택: Kiwi(고품질, 권장) 또는 lindera(기본 폴백). Windows에서 Kiwi를 쓰려면 `scripts/install-kiwi-windows.sh`로 v0.22.2 libkiwi를 설치하면 됩니다. 미설치 시 lindera로 자동 폴백합니다. 자세한 내용은 [docs/reference/kiwi-windows-setup.md](docs/reference/kiwi-windows-setup.md)를 참고하세요.
+
 자체 완결 검색은 **기본 빌드에 포함**됩니다(default = `morphology` + `sqlite`). 형태소 FTS5 색인 + 검색 주입(RAG, 관련 과거 맥락을 라운드 프롬프트에 덧붙임) + `/search` + `--recent-turns N`(재주입 축소)이 `cargo run -- --db tuna.db`로 바로 동작합니다. 가벼운 빌드는 `--no-default-features`.
 
 네트워크/무거운 계층은 opt-in 피처입니다:

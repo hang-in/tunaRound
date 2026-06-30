@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# Windows에서 Kiwi v0.22.2 libkiwi + base 모델을 %LOCALAPPDATA%\kiwi에 설치하는 스크립트.
+
+set -euo pipefail
+
+KIWI_VERSION="v0.22.2"
+# Windows LOCALAPPDATA를 bash 경로로 변환.
+# Git Bash/MSYS2: $LOCALAPPDATA는 환경에 있음. 없으면 기본 경로 추정.
+if [ -z "${LOCALAPPDATA:-}" ]; then
+  LOCALAPPDATA="$USERPROFILE/AppData/Local"
+fi
+# MSYS/Cygwin 경로 변환 (ex: C:\Users\... -> /c/Users/...).
+if command -v cygpath &>/dev/null; then
+  KIWI_DIR="$(cygpath -u "$LOCALAPPDATA")/kiwi"
+else
+  # Git Bash: 슬래시 변환 없이 그대로 쓰면 mkdir 실패할 수 있으므로 변환.
+  KIWI_DIR="${LOCALAPPDATA//\\//}/kiwi"
+fi
+
+LIB_DIR="$KIWI_DIR/lib"
+MODEL_DIR="$KIWI_DIR/models/cong/base"
+
+echo "[kiwi-install] 대상 경로: $KIWI_DIR"
+
+# ── 멱등 체크 ──────────────────────────────────────────────────────────────────
+if [ -f "$LIB_DIR/kiwi.dll" ] && [ -d "$MODEL_DIR" ]; then
+  echo "[kiwi-install] 이미 설치돼 있습니다. 건너뜁니다."
+  echo "[kiwi-install] dll: $LIB_DIR/kiwi.dll"
+  echo "[kiwi-install] 모델: $MODEL_DIR"
+  exit 0
+fi
+
+mkdir -p "$LIB_DIR" "$MODEL_DIR"
+
+TMPDIR_WORK="$(mktemp -d)"
+trap 'rm -rf "$TMPDIR_WORK"' EXIT
+
+echo "[kiwi-install] $KIWI_VERSION 다운로드 중..."
+gh release download "$KIWI_VERSION" \
+  --repo bab2min/Kiwi \
+  --pattern "kiwi_win_x64_${KIWI_VERSION#v}.zip" \
+  --pattern "kiwi_model_${KIWI_VERSION#v}_base.tgz" \
+  --dir "$TMPDIR_WORK" \
+  --clobber
+
+# ── dll 추출 ──────────────────────────────────────────────────────────────────
+ZIP_FILE="$TMPDIR_WORK/kiwi_win_x64_${KIWI_VERSION#v}.zip"
+if [ ! -f "$ZIP_FILE" ]; then
+  echo "[kiwi-install] 오류: zip 파일을 찾을 수 없습니다: $ZIP_FILE" >&2
+  exit 1
+fi
+echo "[kiwi-install] kiwi.dll 추출 중..."
+unzip -j -o "$ZIP_FILE" "kiwi.dll" -d "$LIB_DIR"
+
+# ── 모델 추출 ─────────────────────────────────────────────────────────────────
+TGZ_FILE="$TMPDIR_WORK/kiwi_model_${KIWI_VERSION#v}_base.tgz"
+if [ ! -f "$TGZ_FILE" ]; then
+  echo "[kiwi-install] 오류: 모델 파일을 찾을 수 없습니다: $TGZ_FILE" >&2
+  exit 1
+fi
+echo "[kiwi-install] base 모델 추출 중..."
+tar -xzf "$TGZ_FILE" -C "$MODEL_DIR" --strip-components=1
+
+echo "[kiwi-install] 완료."
+echo "  dll: $LIB_DIR/kiwi.dll"
+echo "  모델: $MODEL_DIR"
+echo ""
+echo "이제 'cargo test --features morphology'를 실행하면 Kiwi로 동작합니다."

@@ -89,10 +89,7 @@ impl Tokenizer for LinderaKoTokenizer {
 
 // ─── KiwiTokenizer ────────────────────────────────────────────────────────────
 
-#[cfg(all(
-    not(target_os = "windows"),
-    not(all(target_os = "linux", target_arch = "aarch64"))
-))]
+#[cfg(not(all(target_os = "linux", target_arch = "aarch64")))]
 mod kiwi_impl {
     use super::*;
 
@@ -135,10 +132,9 @@ mod kiwi_impl {
                         .into_iter()
                         .filter(|t| {
                             // Keep NNG, NNP, NNB (명사), VV (동사), VA (형용사), SL (외국어)
-                            matches!(
-                                t.tag.as_str(),
-                                "NNG" | "NNP" | "NNB" | "VV" | "VA" | "SL"
-                            )
+                            // Kiwi가 VA-I/VV-I/VV-R 등 변종을 내므로 base 태그(하이픈 앞)로 매칭.
+                            let base = t.tag.split('-').next().unwrap_or(t.tag.as_str());
+                            matches!(base, "NNG" | "NNP" | "NNB" | "VV" | "VA" | "SL")
                         })
                         .map(|t| t.form.to_lowercase())
                         .filter(|s| s.chars().count() > 1)
@@ -156,10 +152,7 @@ mod kiwi_impl {
     }
 }
 
-#[cfg(all(
-    not(target_os = "windows"),
-    not(all(target_os = "linux", target_arch = "aarch64"))
-))]
+#[cfg(not(all(target_os = "linux", target_arch = "aarch64")))]
 pub use kiwi_impl::KiwiTokenizer;
 
 // ─── SimpleTokenizer ──────────────────────────────────────────────────────────
@@ -182,10 +175,7 @@ pub const DEFAULT_BACKEND: &str = "kiwi";
 /// "kiwi"를 요청하면 KiwiTokenizer를 시도하고, 초기화 실패 시 lindera로 자동 폴백한다.
 pub fn create_tokenizer(backend: &str) -> Result<Box<dyn Tokenizer>, String> {
     match backend {
-        #[cfg(all(
-            not(target_os = "windows"),
-            not(all(target_os = "linux", target_arch = "aarch64"))
-        ))]
+        #[cfg(not(all(target_os = "linux", target_arch = "aarch64")))]
         "kiwi" => match KiwiTokenizer::new() {
             Ok(t) => Ok(Box::new(t)),
             Err(e) => {
@@ -266,10 +256,7 @@ mod tests {
         assert!(q.contains("임베딩*"), "prefix 아님: {q}");
     }
 
-    #[cfg(all(
-        not(target_os = "windows"),
-        not(all(target_os = "linux", target_arch = "aarch64"))
-    ))]
+    #[cfg(not(all(target_os = "linux", target_arch = "aarch64")))]
     #[test]
     #[ignore] // 수동: kiwi 모델 ~50MB 다운로드 필요
     fn kiwi_tokenizes_korean_live() {
