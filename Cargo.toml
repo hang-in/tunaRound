@@ -9,3 +9,8 @@ serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 futures-util = "0.3"
 redis = { version = "0.32", default-features = false, features = ["tokio-comp", "streams"] }
+kiwi-rs = { version = "0.1", optional = true }
+lindera = { version = "2.3.4", features = ["embed-ko-dic"], optional = true }
+
+[features]
+morphology = ["dep:kiwi-rs", "dep:lindera"]
