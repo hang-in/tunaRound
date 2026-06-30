@@ -6,6 +6,7 @@
 
 | 문서 | 우선순위 | 상태 | 요약 |
 |---|---|---|---|
+| [v2-20-opencode-runner.md](v2-20-opencode-runner.md) | P1 | done | opencode CLI 엔진 러너: `opencode run --format json` JSONL 파싱(text/step_finish) + 로스터 engine "opencode"(seat.model). 신규 의존성 0, gotcha #4 spawn. ollama cloud 검증. HTTP 엔진(17)과 함께 신규 엔진 완성. 기본 105/전체 112 pass. 7fedac2 |
 | [v2-19-enable-kiwi-windows.md](v2-19-enable-kiwi-windows.md) | P1 | done | Windows Kiwi 활성화: cfg 허용 + keep-tags base 매칭(VA-I 등). 규명=kiwi-rs auto-download 깨짐·v0.23.2 ABI crash → v0.22.2 수동 libkiwi(%LOCALAPPDATA%\kiwi, env 불필요), 미설치 시 lindera 폴백. install 스크립트+문서. **Kiwi v0.22.2 Windows 작동 검증.** fe0ec71 |
 | [v2-18-fts-recall.md](v2-18-fts-recall.md) | P1 | done | FTS 리콜 보강: raw 토큰 색인 + prefix 질의로 lindera 외래어 누락("임베딩") 메움. index/query 클로저 분리. 기존 "검색을→검색" 보존. 품질 게이지 tests/search_quality.rs. 기본 103/전체 105 pass. 45cf0c8 |
 | [v2-17-http-engine-runner.md](v2-17-http-engine-runner.md) | P1 | done | OpenAI 호환 HTTP 엔진 러너: 한 러너로 ollama/lmstudio/openai/cloud 커버. 로스터 base_url/model/api_key_env, engine 이름 키로 다모델 다좌석. engines feature. 라이브: Ollama gemma4:e2b 응답 확인. 기본 101/engines 106 pass. e1373f9 |

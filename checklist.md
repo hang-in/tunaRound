@@ -150,6 +150,11 @@
 
 - [x] Task 1: Windows cfg 허용 + Kiwi keep-tags base 매칭(VA-I 등 변종) + install 스크립트/문서 (fe0ec71; Sonnet) — **Kiwi v0.22.2가 Windows에서 작동(검증).** 규명: kiwi-rs 0.1.4 auto-download 깨짐(토큰 무관)·latest v0.23.2 ABI crash → **v0.22.2 수동 libkiwi**(%LOCALAPPDATA%\kiwi, discovery 기본경로라 env 불필요), 미설치 시 lindera 폴백. 외래어 음절분할은 Plan 18 raw+prefix가 FTS 커버. 기본 103/전체 105 pass, clippy 클린. 바이너리 미커밋(scripts/install-kiwi-windows.sh로 설치)
 
+### Plan 20: opencode CLI 엔진 러너 (docs/plans/v2-20-opencode-runner.md) — done
+
+- [x] Task 1: OpencodeRunner(`opencode run --format json` JSONL 파싱: text.part.text=본문, step_finish.part.tokens=토큰) + 로스터 engine "opencode"(seat.model) (7fedac2; Sonnet) — claude/codex 패턴 답습, 신규 의존성 0, gotcha #4 resolve_bin이 opencode.cmd spawn. ollama cloud 검증(cold start로 idle 600s). 기본 105/전체 112 pass, clippy 클린
+- **신규 엔진 완성**: HTTP(Plan 17: ollama/lmstudio/openai) + opencode CLI(Plan 20). 한계: opencode ReadOnly 샌드박싱 후속(플래그 불명확).
+
 ### 후속 (검색 레이어 폴리시)
 - [x] load_session `.ok()` 에러 삼킴 보정(QueryReturnedNoRows만 None, 나머지 전파) + indexer let-chain clippy 정리 (cd7e4e5)
 - [~] indexer/retriever 토크나이저·embedder Arc 공유 — **백로그(저가치)**: 중복은 startup 1회 인스턴스뿐, 라운드당 추가비용 없음. 시그니처 3곳 churn > 메모리 1회 절약. 보류.
