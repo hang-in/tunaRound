@@ -15,15 +15,21 @@ mod sqlite_indexer {
     use super::*;
     use crate::store::sqlite::SqliteStore;
 
-    /// SqliteStore + 선-토크나이즈 closure를 묶은 인덱서.
+    /// SqliteStore + 선-토크나이즈 closure + 선택적 Embedder를 묶은 인덱서.
     /// rusqlite::Connection은 Send이지만 Sync가 아니므로 Mutex로 감싸 Sync를 충족한다.
     pub struct SqliteIndexer {
         store: std::sync::Mutex<SqliteStore>,
         tok: Box<dyn Fn(&str) -> String + Send + Sync>,
+        embedder: Option<Box<dyn crate::store::embedding::Embedder>>,
     }
     impl SqliteIndexer {
-        pub fn new(store: SqliteStore, tok: Box<dyn Fn(&str) -> String + Send + Sync>) -> Self {
-            Self { store: std::sync::Mutex::new(store), tok }
+        /// embedder=None이면 FTS 단독(기존 동작 불변). Some이면 FTS 색인 후 벡터도 색인(best-effort).
+        pub fn new(
+            store: SqliteStore,
+            tok: Box<dyn Fn(&str) -> String + Send + Sync>,
+            embedder: Option<Box<dyn crate::store::embedding::Embedder>>,
+        ) -> Self {
+            Self { store: std::sync::Mutex::new(store), tok, embedder }
         }
     }
     impl MessageIndexer for SqliteIndexer {
@@ -35,6 +41,12 @@ mod sqlite_indexer {
             };
             if let Err(e) = store.save_session(session_id, ss, |t| (self.tok)(t)) {
                 eprintln!("[tunaRound] SQLite 색인 실패: {e}");
+            }
+            // 벡터 색인: embedder 있으면 best-effort(실패해도 토론 흐름 불중단).
+            if let Some(emb) = &self.embedder {
+                if let Err(e) = store.index_vectors(session_id, ss, emb.as_ref()) {
+                    eprintln!("[tunaRound] 벡터 색인 실패(best-effort): {e}");
+                }
             }
         }
     }
@@ -53,7 +65,7 @@ mod tests {
         let _ = std::fs::remove_file(&path); // 깨끗한 시작.
         let p = path.to_str().unwrap();
         let store = SqliteStore::open(p).unwrap();
-        let idx = SqliteIndexer::new(store, Box::new(|t: &str| t.to_string()));
+        let idx = SqliteIndexer::new(store, Box::new(|t: &str| t.to_string()), None);
         let ss = StoredSession {
             messages: vec![StoredMessage {
                 id: 1,

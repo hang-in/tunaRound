@@ -7,6 +7,85 @@ pub mod embedding;
 pub mod indexer;
 pub mod retriever;
 
+/// RRF 상수: 랭킹 압축 계수(secall 답습, k=60).
+#[cfg(feature = "sqlite")]
+const RRF_K: f64 = 60.0;
+
+/// 두 랭킹 리스트(키=(session_id, msg_id))를 RRF로 융합해 점수 내림차순 키 목록을 반환한다.
+/// secall hybrid.rs::reciprocal_rank_fusion 답습(k=60, 1/(k+rank+1) 누적 후 내림차순).
+#[cfg(feature = "sqlite")]
+pub(crate) fn reciprocal_rank_fusion(
+    lexical: &[(String, u64)],
+    vector: &[(String, u64)],
+) -> Vec<(String, u64)> {
+    use std::collections::HashMap;
+
+    let mut scores: HashMap<(String, u64), f64> = HashMap::new();
+
+    for (rank, key) in lexical.iter().enumerate() {
+        let rrf = 1.0 / (RRF_K + rank as f64 + 1.0);
+        *scores.entry((key.0.clone(), key.1)).or_insert(0.0) += rrf;
+    }
+    for (rank, key) in vector.iter().enumerate() {
+        let rrf = 1.0 / (RRF_K + rank as f64 + 1.0);
+        *scores.entry((key.0.clone(), key.1)).or_insert(0.0) += rrf;
+    }
+
+    // 점수 내림차순, 동점이면 키(session_id, msg_id) 오름차순으로 안정 정렬.
+    let mut ranked: Vec<(String, u64)> = scores.keys().cloned().collect();
+    ranked.sort_by(|a, b| {
+        let sa = scores[a];
+        let sb = scores[b];
+        sb.partial_cmp(&sa)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.0.cmp(&b.0))
+            .then_with(|| a.1.cmp(&b.1))
+    });
+
+    ranked
+}
+
+#[cfg(all(test, feature = "sqlite"))]
+mod rrf_tests {
+    use super::reciprocal_rank_fusion;
+
+    #[test]
+    fn rrf_basic_top_keys_from_both_lists() {
+        // 두 리스트에서 상위에 공통으로 나타나는 키가 최상위로 올라와야 한다(secall test_rrf_basic 적응).
+        let lexical = vec![
+            ("s1".to_string(), 1u64),
+            ("s1".to_string(), 2u64),
+            ("s2".to_string(), 1u64),
+        ];
+        let vector = vec![
+            ("s1".to_string(), 1u64),
+            ("s2".to_string(), 1u64),
+            ("s1".to_string(), 2u64),
+        ];
+        let result = reciprocal_rank_fusion(&lexical, &vector);
+        assert!(!result.is_empty());
+        // ("s1", 1)은 두 리스트에서 모두 rank=0 -> 가장 높은 RRF 점수를 가져야 한다.
+        assert_eq!(result[0], ("s1".to_string(), 1u64), "양쪽 상위 키가 최상위여야 함");
+    }
+
+    #[test]
+    fn rrf_empty_lists_return_empty() {
+        assert!(reciprocal_rank_fusion(&[], &[]).is_empty());
+    }
+
+    #[test]
+    fn rrf_single_list_preserves_order() {
+        let lexical = vec![
+            ("a".to_string(), 1u64),
+            ("b".to_string(), 2u64),
+            ("c".to_string(), 3u64),
+        ];
+        let result = reciprocal_rank_fusion(&lexical, &[]);
+        // 단일 리스트면 rank 0이 최고 점수 -> 원래 순서 유지.
+        assert_eq!(result[0], ("a".to_string(), 1u64));
+    }
+}
+
 use serde::{Deserialize, Serialize};
 
 use crate::orchestrator::Utterance;

@@ -255,6 +255,24 @@ impl SqliteStore {
         Ok(Some(StoredSession { messages, head }))
     }
 
+    /// 단건 메시지를 조회한다. 없으면 Ok(None). 벡터-only 키의 원문 해석용.
+    pub fn get_message(
+        &self,
+        session_id: &str,
+        msg_id: u64,
+    ) -> Result<Option<(String, String)>, String> {
+        let msg_id_i64 = msg_id as i64;
+        let row: Option<(String, String)> = self
+            .conn
+            .query_row(
+                "SELECT speaker, content FROM messages WHERE session_id=?1 AND msg_id=?2",
+                rusqlite::params![session_id, msg_id_i64],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .ok();
+        Ok(row)
+    }
+
     /// 선-형태소화된 FTS 쿼리로 메시지를 검색한다. 빈 쿼리는 빈 결과를 반환한다.
     pub fn search(&self, fts_query: &str, limit: usize) -> Result<Vec<SearchHit>, String> {
         if fts_query.trim().is_empty() {

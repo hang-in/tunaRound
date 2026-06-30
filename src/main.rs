@@ -128,7 +128,18 @@ fn main() {
                 #[cfg(not(feature = "morphology"))]
                 let tok: Box<dyn Fn(&str) -> String + Send + Sync> =
                     Box::new(|s: &str| tunaround::search::tokenize_fallback(s).join(" "));
-                Some(Box::new(tunaround::store::indexer::SqliteIndexer::new(store, tok))
+                // semantic 피처: OllamaEmbedder 인스턴스(indexer용). 연결 실패는 best-effort.
+                #[cfg(feature = "semantic")]
+                let emb_idx: Option<Box<dyn tunaround::store::embedding::Embedder>> = {
+                    let endpoint = std::env::var("TUNAROUND_OLLAMA_URL")
+                        .unwrap_or_else(|_| "http://127.0.0.1:11435".to_string());
+                    Some(Box::new(tunaround::store::embedding::OllamaEmbedder::new(
+                        &endpoint, "bge-m3",
+                    )))
+                };
+                #[cfg(not(feature = "semantic"))]
+                let emb_idx: Option<Box<dyn tunaround::store::embedding::Embedder>> = None;
+                Some(Box::new(tunaround::store::indexer::SqliteIndexer::new(store, tok, emb_idx))
                     as Box<dyn tunaround::store::indexer::MessageIndexer>)
             }
             Err(e) => {
@@ -159,7 +170,18 @@ fn main() {
                 #[cfg(not(feature = "morphology"))]
                 let tok2: Box<dyn Fn(&str) -> String + Send + Sync> =
                     Box::new(|s: &str| tunaround::search::tokenize_fallback(s).join(" "));
-                Some(Box::new(tunaround::store::retriever::SqliteRetriever::new(store, tok2))
+                // semantic 피처: OllamaEmbedder 인스턴스(retriever용). 연결 실패는 best-effort.
+                #[cfg(feature = "semantic")]
+                let emb_ret: Option<Box<dyn tunaround::store::embedding::Embedder>> = {
+                    let endpoint = std::env::var("TUNAROUND_OLLAMA_URL")
+                        .unwrap_or_else(|_| "http://127.0.0.1:11435".to_string());
+                    Some(Box::new(tunaround::store::embedding::OllamaEmbedder::new(
+                        &endpoint, "bge-m3",
+                    )))
+                };
+                #[cfg(not(feature = "semantic"))]
+                let emb_ret: Option<Box<dyn tunaround::store::embedding::Embedder>> = None;
+                Some(Box::new(tunaround::store::retriever::SqliteRetriever::new(store, tok2, emb_ret))
                     as Box<dyn tunaround::orchestrator::ContextRetriever>)
             }
             Err(e) => {
