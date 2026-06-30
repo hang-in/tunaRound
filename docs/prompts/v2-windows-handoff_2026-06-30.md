@@ -44,6 +44,7 @@ v1 완료 + **v2 Plan 01~08 완성, 전부 origin/main 푸시됨.** 기본 `carg
 
 ## ⑤ Windows 이관 gotcha (새 머신)
 
+0. **전역 설정 점검(1순위):** 레포엔 프로젝트 CLAUDE.md만 들어온다. **전역 `~/.claude/CLAUDE.md` + `@import`된 `~/.config/agents/COMMON.md`가 Windows엔 없거나 다를 수 있다.** 특히 맥 CLAUDE.md의 `@import`가 **절대 Mac 경로**라 Windows에선 COMMON.md(공통 행동 계약 전체)가 안 불러와진다. 스냅샷 [docs/reference/global-claude-config-snapshot_2026-06-30.md](../reference/global-claude-config-snapshot_2026-06-30.md)와 Windows 자기 설정을 비교·보완할 것.
 1. **토크나이저:** Kiwi는 cfg로 **Windows 제외** -> Windows에선 **lindera만**(정상 경로). 즉 Windows에선 Kiwi 런타임 버그 무관. `cargo test --features morphology`로 lindera 검증.
 2. **Redis 라이브 검증:** Windows엔 redis-server 기본 없음 -> WSL2 / Memurai / Docker 중 택. 평소 `cargo test`는 Redis 불필요(라이브 테스트만 `#[ignore]`).
 3. **원격 Ollama 터널:** Windows OpenSSH도 동일 `ssh -N -p [사설포트] -L 11435:127.0.0.1:11434 [사설계정]@<host>`. (이 맥 세션 환경에선 됐음. Windows 네트워크에서 2232 도달 가능한지 확인.)

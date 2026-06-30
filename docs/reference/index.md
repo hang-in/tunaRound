@@ -5,6 +5,7 @@
 | 문서 | 영역 | ssot_level |
 |---|---|---|
 | [development-guidelines.md](development-guidelines.md) | 개발 행동 규율(이 프로젝트 실험 적용) | canonical |
+| [global-claude-config-snapshot_2026-06-30.md](global-claude-config-snapshot_2026-06-30.md) | 전역 Claude/COMMON 설정 스냅샷(맥) — Windows 비교용 | snapshot(시점, non-canonical) |
 
 ## 갱신 정책
 
