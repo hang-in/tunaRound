@@ -60,6 +60,17 @@ fn mrr(retrieved: &[u64], gold: &[u64]) -> f64 {
     0.0
 }
 
+/// precision@k = |retrieved_topk ∩ gold| / min(k, |retrieved|). 빈 결과는 0.
+/// 분모를 실제 반환수로 잡아 "적게 반환"엔 불이익 없이 OR이 주입하는 noise만 잰다.
+fn precision_at_k(retrieved: &[u64], gold: &[u64], k: usize) -> f64 {
+    let denom = retrieved.len().min(k);
+    if denom == 0 {
+        return 0.0;
+    }
+    let hits = retrieved.iter().take(k).filter(|r| gold.contains(r)).count();
+    hits as f64 / denom as f64
+}
+
 #[test]
 fn fts_recall_baseline() {
     let tok = create_tokenizer("lindera").expect("tokenizer");
@@ -86,12 +97,17 @@ fn fts_recall_baseline() {
 
     let mut sum_r3 = 0.0f64;
     let mut sum_r5 = 0.0f64;
+    let mut sum_p3 = 0.0f64;
+    let mut sum_p5 = 0.0f64;
     let mut sum_mrr = 0.0f64;
 
     println!();
-    println!("{:-<78}", "");
-    println!("{:<22} {:>7} {:>7} {:>7}  retrieved_top5", "질의", "R@3", "R@5", "MRR");
-    println!("{:-<78}", "");
+    println!("{:-<86}", "");
+    println!(
+        "{:<20} {:>6} {:>6} {:>6} {:>6} {:>6}  top5",
+        "질의", "R@3", "R@5", "P@3", "P@5", "MRR"
+    );
+    println!("{:-<86}", "");
 
     for (q, gold, kind) in queries {
         let fts_q = tok.fts_query(q);
@@ -100,10 +116,14 @@ fn fts_recall_baseline() {
 
         let r3 = recall_at_k(&retrieved, gold, K3);
         let r5 = recall_at_k(&retrieved, gold, K5);
+        let p3 = precision_at_k(&retrieved, gold, K3);
+        let p5 = precision_at_k(&retrieved, gold, K5);
         let rr = mrr(&retrieved, gold);
 
         sum_r3 += r3;
         sum_r5 += r5;
+        sum_p3 += p3;
+        sum_p5 += p5;
         sum_mrr += rr;
 
         let ids_str = if retrieved.is_empty() {
@@ -113,24 +133,28 @@ fn fts_recall_baseline() {
         };
 
         println!(
-            "{:<22} {:>7.3} {:>7.3} {:>7.3}  [{}]  ({})",
-            q, r3, r5, rr, ids_str, kind
+            "{:<20} {:>6.3} {:>6.3} {:>6.3} {:>6.3} {:>6.3}  [{}] ({})",
+            q, r3, r5, p3, p5, rr, ids_str, kind
         );
     }
 
     let n = queries.len() as f64;
     let mean_r3  = sum_r3  / n;
     let mean_r5  = sum_r5  / n;
+    let mean_p3  = sum_p3  / n;
+    let mean_p5  = sum_p5  / n;
     let mean_mrr = sum_mrr / n;
 
-    println!("{:-<78}", "");
+    println!("{:-<86}", "");
     println!(
-        "{:<22} {:>7.3} {:>7.3} {:>7.3}  (mean, n={})",
-        "MEAN", mean_r3, mean_r5, mean_mrr, queries.len()
+        "{:<20} {:>6.3} {:>6.3} {:>6.3} {:>6.3} {:>6.3}  (mean, n={})",
+        "MEAN", mean_r3, mean_r5, mean_p3, mean_p5, mean_mrr, queries.len()
     );
-    println!("{:-<78}", "");
+    println!("{:-<86}", "");
     println!();
 
-    // 회귀 가드: OR 개선 후 측정값(mean R@5=0.900)을 floor로. lindera 결정적 경로.
+    // 회귀 가드(양면): OR 개선 후 측정값을 floor로. lindera 결정적 경로.
+    // recall floor = OR이 리콜을 유지하는지, precision floor = OR noise가 과하지 않은지.
     assert!(mean_r5 >= 0.89, "mean recall@5 회귀: {mean_r5:.3} < 0.89 (OR 개선 전 0.55)");
+    assert!(mean_p5 >= 0.70, "mean precision@5 회귀: {mean_p5:.3} < 0.70 (OR noise 과다)");
 }
