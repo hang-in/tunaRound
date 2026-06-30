@@ -208,20 +208,15 @@ impl SqliteStore {
 
     /// 세션을 로드한다. 없으면 Ok(None)을 반환한다.
     pub fn load_session(&self, session_id: &str) -> Result<Option<StoredSession>, String> {
-        // sessions 테이블에서 head_id 조회.
-        let row: Option<Option<i64>> = self
-            .conn
-            .query_row(
-                "SELECT head_id FROM sessions WHERE id=?1",
-                [session_id],
-                |row| row.get(0),
-            )
-            .ok();
-
-        // 세션이 없으면 None.
-        let head_raw = match row {
-            None => return Ok(None),
-            Some(v) => v,
+        // sessions 테이블에서 head_id 조회. 행 없음(세션 없음)과 실제 DB 에러를 구분한다.
+        let head_raw: Option<i64> = match self.conn.query_row(
+            "SELECT head_id FROM sessions WHERE id=?1",
+            [session_id],
+            |row| row.get(0),
+        ) {
+            Ok(v) => v,                                            // 세션 있음(head_id NULL이면 None).
+            Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None), // 세션 없음.
+            Err(e) => return Err(format!("sqlite: {e}")),         // 실제 DB 에러는 전파.
         };
 
         let head: Option<u64> = head_raw.map(|h| h as u64);

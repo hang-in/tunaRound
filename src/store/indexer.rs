@@ -43,10 +43,10 @@ mod sqlite_indexer {
                 eprintln!("[tunaRound] SQLite 색인 실패: {e}");
             }
             // 벡터 색인: embedder 있으면 best-effort(실패해도 토론 흐름 불중단).
-            if let Some(emb) = &self.embedder {
-                if let Err(e) = store.index_vectors(session_id, ss, emb.as_ref()) {
-                    eprintln!("[tunaRound] 벡터 색인 실패(best-effort): {e}");
-                }
+            if let Some(emb) = &self.embedder
+                && let Err(e) = store.index_vectors(session_id, ss, emb.as_ref())
+            {
+                eprintln!("[tunaRound] 벡터 색인 실패(best-effort): {e}");
             }
         }
     }
