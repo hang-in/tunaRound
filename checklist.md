@@ -180,7 +180,9 @@
   - [x] Task 2 라이브 측정(실 claude/codex, 3턴): **토큰 페이오프 증명**(pull 평평: claude 9770→429 95%↓, codex 12489→2417 81%↓, 전사길이와 탈동조). **블로커 발견**: read_transcript가 헤드리스 `-p` 권한모드서 차단(claude 응답에 "read_transcript 권한이 막혀" 명시)→에이전트가 레포/사전지식으로 보충(전사 grounding 아님). pull 아직 프로덕션 불가
   - [x] **Task 3(블로커 해소)**: claude ReadOnly에 `--allowedTools mcp__tuna-search__{search_context,read_transcript}`(MCP일 때만, 쓰기차단 유지=fail-safe). codex는 exec 비대화형이라 자동승인=수정 불필요. **재측정 검증: "권한 막힘" 사라짐 + 두 에이전트가 전사 실제 인용("합의 요약" 과제 정확 수행) + 프롬프트 평평 유지**. Stage 2 작동 검증 완료
 - [x] **Stage 2 검증 완료**: push→pull 페이오프 실증(토큰 80~95%↓·전사길이 탈동조 + grounding 유지). half-a2a 척추 작동
-- [ ] Stage 3: 코어 프로세스 분리(상주 데몬 + 멀티 프론트/세션)
+- [~] Stage 3: 코어 프로세스 분리(상주 데몬 + 멀티 프론트/세션)
+  - [x] 설계(Plan 25): 린치핀=코어를 HTTP MCP 서비스로 상주. 실측 확정(claude --transport http / codex --url + bearer / rmcp streamable-http). 분해 3a(HTTP MCP 상주)→3b(토큰)→3c(Tailscale)→3d(post_turn/get_roster)→3e(영속 에이전트 보류). 구현 승인 후
+  - [ ] 3a 구현 후보: --serve-mcp HTTP MCP + 러너 with_search_url(URL+bearer) 배선
 - [ ] Stage 4(범위 밖): 영속 에이전트 세션 + AutoLoop = (B), 경제 조건 입증 시에만
 
 ## v2 백로그 (착수 전 결정 필요)
