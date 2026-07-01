@@ -111,6 +111,7 @@ impl Runner for OpencodeRunner {
             stdin: None,
             idle_timeout: self.idle_timeout,
             label: "opencode".to_string(),
+            env: Vec::new(),
         };
         let stdout = run_with_watchdog(&spec)?;
         let out = parse_opencode_stream(&stdout);

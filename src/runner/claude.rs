@@ -190,6 +190,7 @@ impl Runner for ClaudeRunner {
             stdin: None,
             idle_timeout: self.idle_timeout,
             label: "claude".to_string(),
+            env: Vec::new(),
         };
         let stdout = run_with_watchdog(&spec)?;
         parse_claude_stream(&stdout)

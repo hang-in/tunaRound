@@ -90,7 +90,8 @@ pub struct CodexRunner {
     search_session: Option<String>,
     /// 원격 HTTP MCP 서버 URL. Some이면 stdio spawn 대신 -c mcp_servers.tuna-search.url 배선(search_db보다 우선).
     search_url: Option<String>,
-    /// HTTP MCP 서버 bearer 토큰. codex bearer_token_env_var 배선은 추후 과제(TODO).
+    /// HTTP MCP 서버 bearer 토큰. Some이면 bearer_token_env_var(TUNA_SEARCH_TOKEN) config +
+    /// 자식 env 주입으로 인증(비밀을 argv/config에 노출하지 않음).
     search_token: Option<String>,
 }
 
@@ -130,8 +131,8 @@ impl CodexRunner {
         self.search_session = session;
         self
     }
-    /// 원격 HTTP MCP 서버 URL + bearer 토큰 주입. url이 Some이면 stdio spawn 대신 HTTP 배선.
-    /// TODO: codex bearer_token_env_var 배선은 ExecSpec env 필드 추가 후 구현(현재 url만 배선).
+    /// 원격 HTTP MCP 서버 URL + bearer 토큰 주입. url이 Some이면 stdio spawn 대신 HTTP 배선하고,
+    /// token이 Some이면 bearer_token_env_var config + 자식 env로 인증까지 배선한다.
     pub fn with_search_url(mut self, url: Option<String>, token: Option<String>) -> Self {
         self.search_url = url;
         self.search_token = token;
@@ -145,22 +146,36 @@ impl Default for CodexRunner {
     }
 }
 
+/// codex가 원격 HTTP MCP bearer 토큰을 읽어올 환경변수 이름(config엔 이름만, 값은 env로 주입).
+const BEARER_TOKEN_ENV: &str = "TUNA_SEARCH_TOKEN";
+
 /// TOML basic 문자열로 안전 인용(역슬래시·큰따옴표 이스케이프). 인자 주입 방지.
 fn toml_basic(s: &str) -> String {
     format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
-impl Runner for CodexRunner {
-    fn run(&self, input: &RunInput) -> Result<RunOutput, RunError> {
-        // search_url이 Some이면 HTTP MCP 배선(-c mcp_servers.tuna-search.url)을 우선한다.
-        // search_url이 None이고 search_db가 Some이면 기존 stdio self-exe spawn 오버라이드를 사용한다.
-        // TOML basic(큰따옴표) 문자열로 역슬래시·큰따옴표를 이스케이프해 주입을 방지한다.
-        // TODO: bearer 토큰은 codex bearer_token_env_var 키 + ExecSpec env 필드 추가 후 구현.
+impl CodexRunner {
+    /// 검색 MCP 배선(-c mcp_servers... 인자)과 자식 env(bearer 토큰)를 조립한다.
+    /// search_url이 Some이면 HTTP MCP 배선 우선(+token 있으면 bearer_token_env_var+env),
+    /// 아니면 search_db 기반 stdio self-exe spawn. TOML basic으로 인용해 주입 방지.
+    /// 순수 조립이라 테스트 가능(프로세스 spawn과 분리).
+    fn build_mcp_wiring(&self) -> (Vec<String>, Vec<(String, String)>) {
+        let mut child_env: Vec<(String, String)> = Vec::new();
         let mcp_args: Vec<String> = if let Some(url) = &self.search_url {
-            vec![
+            let mut v = vec![
                 "-c".into(),
                 format!("mcp_servers.tuna-search.url={}", toml_basic(url)),
-            ]
+            ];
+            // bearer 토큰은 config엔 env 변수명만, 실제 값은 자식 env로 주입(argv/config에 비밀 미노출).
+            if let Some(token) = &self.search_token {
+                v.push("-c".into());
+                v.push(format!(
+                    "mcp_servers.tuna-search.bearer_token_env_var={}",
+                    toml_basic(BEARER_TOKEN_ENV)
+                ));
+                child_env.push((BEARER_TOKEN_ENV.to_string(), token.clone()));
+            }
+            v
         } else {
             self.search_db.as_ref().map(|db| {
                 let exe = std::env::current_exe()
@@ -186,6 +201,13 @@ impl Runner for CodexRunner {
                 ]
             }).unwrap_or_default()
         };
+        (mcp_args, child_env)
+    }
+}
+
+impl Runner for CodexRunner {
+    fn run(&self, input: &RunInput) -> Result<RunOutput, RunError> {
+        let (mcp_args, child_env) = self.build_mcp_wiring();
         let spec = ExecSpec {
             bin: self.bin.clone(),
             args: build_codex_args(input, &mcp_args),
@@ -193,6 +215,7 @@ impl Runner for CodexRunner {
             stdin: Some(input.prompt.clone()),
             idle_timeout: self.idle_timeout,
             label: "codex".to_string(),
+            env: child_env,
         };
         let stdout = run_with_watchdog(&spec)?;
         let out = parse_codex_stream(&stdout);
@@ -343,21 +366,41 @@ mod tests {
 
     #[test]
     fn with_search_url_produces_url_c_flag() {
-        // search_url 설정 시 -c mcp_servers.tuna-search.url 플래그를 포함한다.
+        // search_url 설정 시 실제 조립(build_mcp_wiring)이 -c mcp_servers.tuna-search.url을 포함한다.
         let url = "http://127.0.0.1:8080/mcp";
         let runner = CodexRunner::new().with_search_url(Some(url.into()), Some("tok".into()));
-        // URL mode mcp_args 재현.
-        let mcp_args = vec![
-            "-c".to_string(),
-            format!("mcp_servers.tuna-search.url={}", toml_basic(url)),
-        ];
+        let (mcp_args, _env) = runner.build_mcp_wiring();
         let joined = mcp_args.join(" ");
         assert!(joined.contains("-c"), "-c 없음: {joined}");
         assert!(joined.contains("mcp_servers.tuna-search.url"), "url 키 없음: {joined}");
         assert!(joined.contains(url), "url 값 없음: {joined}");
-        // 빌더 필드 확인.
-        assert_eq!(runner.search_url.as_deref(), Some(url));
-        assert_eq!(runner.search_token.as_deref(), Some("tok"));
+    }
+
+    #[test]
+    fn with_search_token_wires_bearer_env_not_argv() {
+        // token 주입 시 config엔 bearer_token_env_var(변수명)만, 실제 토큰은 자식 env로 간다(argv 비노출).
+        let url = "http://127.0.0.1:8080/mcp";
+        let runner = CodexRunner::new().with_search_url(Some(url.into()), Some("secret-tok".into()));
+        let (mcp_args, env) = runner.build_mcp_wiring();
+        let joined = mcp_args.join(" ");
+        assert!(joined.contains("bearer_token_env_var"), "bearer_token_env_var 키 없음: {joined}");
+        assert!(joined.contains(BEARER_TOKEN_ENV), "env 변수명 없음: {joined}");
+        assert!(!joined.contains("secret-tok"), "토큰이 argv에 노출됨: {joined}");
+        assert_eq!(
+            env.iter().find(|(k, _)| k == BEARER_TOKEN_ENV).map(|(_, v)| v.as_str()),
+            Some("secret-tok"),
+            "env에 토큰 주입 안 됨: {env:?}"
+        );
+    }
+
+    #[test]
+    fn no_token_means_no_bearer_wiring() {
+        // token 없으면 bearer_token_env_var 키도 env도 없다.
+        let url = "http://127.0.0.1:8080/mcp";
+        let runner = CodexRunner::new().with_search_url(Some(url.into()), None);
+        let (mcp_args, env) = runner.build_mcp_wiring();
+        assert!(!mcp_args.join(" ").contains("bearer_token_env_var"), "토큰 없는데 bearer 키 포함");
+        assert!(env.is_empty(), "토큰 없는데 env 주입됨: {env:?}");
     }
 
     #[test]
@@ -367,14 +410,10 @@ mod tests {
         let runner = CodexRunner::new()
             .with_search_db(Some("/tmp/fallback.db".into()))
             .with_search_url(Some(url.into()), None);
-        assert!(runner.search_url.is_some());
-        assert!(runner.search_db.is_some());
-        // url 모드 mcp_args에는 command가 없다.
-        let mcp_args = vec![
-            "-c".to_string(),
-            format!("mcp_servers.tuna-search.url={}", toml_basic(url)),
-        ];
-        assert!(!mcp_args.join(" ").contains("command"), "url 우선 시 command 없어야 함");
+        let (mcp_args, _env) = runner.build_mcp_wiring();
+        let joined = mcp_args.join(" ");
+        assert!(joined.contains("mcp_servers.tuna-search.url"), "url 배선 없음: {joined}");
+        assert!(!joined.contains("command"), "url 우선 시 command 없어야 함: {joined}");
     }
 
     #[test]

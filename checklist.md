@@ -199,6 +199,19 @@
 - [x] 라이브 검증(/explain 확장): debug_retrieve에 created_at + recency↓ 표시. 실 라이브러리 코드로 seed+8일aging 확인 - plumbing(save_session이 created_at 실제 채움) + /explain에 recency↓ 표시 + retrieve 순서 최신 우선. 신규 테스트 debug_retrieve_marks_stale_cross_session_recency
 - [ ] 잔여: 유기적 recency(며칠 간격 실 다세션)는 step 6 실코퍼스와 함께
 
+## 잔여 항목 배치 (2026-07-01 세션5 완료)
+### A. 안전성/견고성 배치 (자체완결, 코드 검증)
+- [x] #1 KiwiWrapper unsafe Send: SAFETY 주석 강화(직렬화 근거+잔여리스크=kiwi TLS 미확인+thread_local 비채택 이유+Windows 제외). 문서만
+- [x] #2 session_bus unbounded→bounded: channel(CAP=1024) + enqueue()가 try_send(Full=drop+경고, Closed=무시). sync fire-and-forget·non-blocking 유지
+- [x] #3 snapshot_json: 실패 시 eprintln 후 빈 문자열(빈 스냅샷 조용한 발행 방지)
+### B. codex bearer-env (원격 인증 배선, TODO 제거)
+- [x] ExecSpec.env 필드 + run_with_watchdog cmd.env(). claude/opencode/exec-test env: Vec::new()
+- [x] codex.rs: build_mcp_wiring 추출(테스트 가능). url+token이면 `-c ...bearer_token_env_var="TUNA_SEARCH_TOKEN"` + env로 토큰 주입(argv 비노출). TODO 제거
+- [x] 단위테스트: with_search_token_wires_bearer_env_not_argv · no_token_means_no_bearer_wiring + 기존 url 테스트를 build_mcp_wiring 직접 호출로 강화
+- [x] 검증: 기본 160 / features 174 pass, clippy 클린. A/B 커밋 분리
+- [ ] ⚠ 라이브 미검증: codex exec 승인 이슈로 codex MCP 도구 호출은 여전히 막힘(pull=claude 전용 결정). bearer는 인증 배선 완결이나 codex 도구사용 활성화는 별개(승인 심층조사 후속)
+### C. abstraction/anchors 생성 파이프라인 (별도 세션, 에이전트 요약 설계 필요)
+
 ## v2 백로그 (착수 전 결정 필요)
 - [~] 분리 터미널 A2A 협업 — (A) 설계로 승격(위), 자율(B)은 Stage 4로 분리
 - [x] 신규 엔진 러너(HTTP): ollama·lmstudio·openai (Plan 17 done). opencode CLI 참가자는 후속(외부 CLI 통합)

@@ -452,4 +452,18 @@
 - **라이브 결과(실 라이브러리 코드, 임시 example로 seed+8일aging 후 삭제)**: (1) plumbing=save_session이 created_at을 실 타임스탬프("2026-07-01 03:16:42")로 채움 확인. (2) /explain 출력에 aged 세션만 `created=2026-01-01 recency↓`, 최신 세션은 무표시. (3) retrieve 순서=최신("재설계")이 낡은 것("설계")보다 앞. **step 5c 랭킹·plumbing 라이브 확정.**
 - **미검증 잔여**: sqlite3 CLI 부재로 파일 직접 aging은 불가했고 example 경유. 유기적(며칠 간격 실 다세션) 관찰은 step 6로 이월. `/explain`이 이제 recency 검증 상시 창구.
 
+## 2026-07-01 세션5: 잔여 항목 배치(안전성 + codex bearer-env)
+
+- **A. 안전성/견고성 배치**:
+  - #1 KiwiWrapper `unsafe impl Send`: 코드 유지, SAFETY 주석만 강화(항상 Mutex 보관=동시접근 없음이 근거, 잔여 리스크=libkiwi 내부 TLS/전역 스레드정체성 미확인, thread_local 대안은 인스턴스당 init 비용으로 비채택, Windows는 Kiwi 제외=비활성 경로). morphology 피처.
+  - #2 session_bus `unbounded_channel`→`channel(1024)`: `enqueue()` 헬퍼가 `try_send`(Full=drop+경고 로그, Closed=무시). REPL 동기 스레드가 Redis 지연에 블로킹 안 되도록 try_send만. fire-and-forget·non-blocking API 불변, 무한 증가(OOM) 방지.
+  - #3 `Session::snapshot_json` `unwrap_or_default`→실패 시 eprintln 후 빈 문자열. 빈 스냅샷을 조용히 발행해 크로스터미널 상태 덮어쓰는 것 방지(직렬화 실패 확률은 낮지만 로그로 가시화).
+- **B. codex bearer-env(3d 후속 TODO 제거)**:
+  - `ExecSpec.env: Vec<(String,String)>` 필드 추가 + `run_with_watchdog`가 `cmd.env(k,v)` 적용. claude/opencode/exec-test는 `env: Vec::new()`.
+  - codex `run()`의 mcp_args 조립을 `build_mcp_wiring()` 메서드로 추출(spawn과 분리=테스트 가능, `(mcp_args, child_env)` 반환).
+  - search_url+search_token 둘 다 Some이면 `-c mcp_servers.tuna-search.bearer_token_env_var="TUNA_SEARCH_TOKEN"`(config엔 변수명만) + `child_env`에 실제 토큰(자식 프로세스 env로만 전달=argv/config 비노출). 상수 `BEARER_TOKEN_ENV="TUNA_SEARCH_TOKEN"`.
+  - 단위테스트 3: 토큰이 env로 가고 argv엔 없음 / 토큰 없으면 bearer 배선 없음 / url 우선. 기존 url 테스트도 build_mcp_wiring 직접 호출로 강화.
+  - **⚠ 라이브 미검증 + 한계**: 이전 결정대로 codex exec는 MCP 도구 호출 승인이 막혀 pull=claude 전용. bearer는 codex의 원격 서버 인증 배선을 완결하나, codex가 실제로 search_context/read_transcript를 호출하려면 승인 문제가 별도로 풀려야 함. 즉 이 커밋은 "인증 준비 완료"지 "codex 원격 pull 작동"은 아님. 라이브 e2e는 승인 해소 후.
+- **abstraction/anchors(C)**: 별도 세션. message_validity 컬럼은 있으나 채우는 로직(에이전트 요약/앵커 추출) 설계 필요. set_annotation은 준비됨.
+
 - **범위**: 스키마 v5 + INSERT 2경로 created_at + rerank recency + created_at 읽기 + 테스트(마이그레이션·save_session created_at 불변·recency 동작·기존 랭킹 불변). 외부 백엔드/코퍼스 불요, 자체 완결.

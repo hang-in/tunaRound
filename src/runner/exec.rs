@@ -15,6 +15,9 @@ pub(crate) struct ExecSpec {
     pub stdin: Option<String>,
     pub idle_timeout: Duration,
     pub label: String,
+    /// 자식에 추가로 주입할 환경변수(key, value). 비면 부모 환경만 상속.
+    /// codex bearer_token_env_var처럼 인자에 비밀을 노출하지 않고 토큰을 넘길 때 사용.
+    pub env: Vec<(String, String)>,
 }
 
 /// watchdog에 함수 scope 종료를 알려 trailing-kill race(이미 reap된 PID에 kill 송출)를 막는 RAII 가드.
@@ -68,6 +71,9 @@ fn resolve_bin(bin: &str) -> String {
 pub(crate) fn run_with_watchdog(spec: &ExecSpec) -> Result<String, RunError> {
     let mut cmd = Command::new(resolve_bin(&spec.bin));
     cmd.args(&spec.args);
+    for (k, v) in &spec.env {
+        cmd.env(k, v);
+    }
     if let Some(dir) = &spec.cwd {
         cmd.current_dir(dir);
     }
@@ -203,6 +209,7 @@ mod tests {
             stdin: None,
             idle_timeout: Duration::from_millis(idle_ms),
             label: "test".into(),
+            env: Vec::new(),
         }
     }
 
