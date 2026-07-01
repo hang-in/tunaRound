@@ -70,6 +70,18 @@ pub trait TranscriptWriter: Send + Sync {
     fn append_turn(&self, session_id: &str, speaker: &str, content: &str) -> Result<u64, String>;
 }
 
+/// 발언의 유효성 상태를 기록하는 경계(사람이 /supersede·/reject로 지정, step 5 HITL).
+/// 미배선(--db 없음)이면 REPL이 안내만 한다.
+pub trait ValiditySink: Send + Sync {
+    fn set_validity(
+        &self,
+        session_id: &str,
+        msg_id: u64,
+        valid_state: &str,
+        superseded_by: Option<u64>,
+    ) -> Result<(), String>;
+}
+
 /// 로스터 좌석 요약(get_roster MCP 노출용). 원격 참가자가 토론 좌석 구성을 발견한다.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RosterSeat {

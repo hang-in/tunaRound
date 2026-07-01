@@ -2,6 +2,14 @@
 
 > 작업 중 결정과 근거. 계속 append. (규율 #7) 다음 세션이 결정을 재유도하지 않게.
 
+## 2026-07-01 step 5 완료: 유효성 인지 검색 랭킹 + 지정 커맨드 (Plan 31)
+
+- **랭킹(SqliteRetriever)**: 후보에 rerank_by_validity 적용 - **rejected 드롭, superseded/stale은 active 뒤로 강등**(순서 보존), active/unknown/미설정은 유지. FTS단독·RRF·폴백 모두. 유효성 미설정 시 동작 불변.
+- **커맨드(HITL)**: `/supersede <id> [<대체id>]` · `/reject <id>`. ValiditySink 트레잇 + SqliteValiditySink + Session.validity_sink, main이 --db로 배선. 미배선 시 안내. mark_validity가 발언 존재 확인 후 set_validity 호출.
+- **범위**: valid_state 축만. recency/current-session/active-branch 가중은 retrieve에 컨텍스트 전달(트레잇 변경) 필요 → step 5b로 분리. abstraction/anchors 생성·활용도 후속.
+- **검증**: 기본 156/features 166 pass, clippy 클린. 재랭크(rejected 제외·superseded 강등), 커맨드 파싱, sink 호출/미배선 안내 테스트.
+- **시간성·유효성 흡수(step 4~5) 완료.** 사람이 /supersede·/reject로 옛/폐기 결정을 표시 → 검색이 자동으로 디프리오리티/제외. 다음 = step 6(실코퍼스 regression) 또는 사용자 지정.
+
 ## 2026-07-01 step 4 완료: 유효성 메타데이터 데이터 레이어 (Plan 30)
 
 - **설계 판단**: messages/StoredMessage에 컬럼 추가는 모든 struct 리터럴 붕괴 + 직렬화 하위호환 문제 + Memora 철학(원문/메타 분리) 위배 → **별도 `message_validity` 테이블**로 레이어링. StoredMessage 불변.

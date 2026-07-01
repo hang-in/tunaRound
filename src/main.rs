@@ -509,7 +509,26 @@ fn main() {
     };
 
     // retriever + recent_turns + context_mode 1회 배선(session 생성 if/else 이후 단일 적용).
-    let mut session = session.with_retriever(retriever).with_recent_turns(recent_turns).with_context_mode(context_mode);
+    // 유효성 지정 sink(--db 있으면 배선). /supersede·/reject가 message_validity에 쓴다.
+    #[cfg(feature = "sqlite")]
+    let validity_sink: Option<Box<dyn tunaround::orchestrator::ValiditySink>> = match &db_path {
+        Some(p) => match tunaround::store::sqlite::SqliteStore::open(p) {
+            Ok(store) => Some(Box::new(tunaround::store::retriever::SqliteValiditySink::new(store))),
+            Err(e) => {
+                eprintln!("[tunaRound] validity sink DB 열기 실패: {e}");
+                None
+            }
+        },
+        None => None,
+    };
+    #[cfg(not(feature = "sqlite"))]
+    let validity_sink: Option<Box<dyn tunaround::orchestrator::ValiditySink>> = None;
+
+    let mut session = session
+        .with_retriever(retriever)
+        .with_recent_turns(recent_turns)
+        .with_context_mode(context_mode)
+        .with_validity_sink(validity_sink);
 
     // --core 배선(participants/session 빌드 후): seed→코어 DB 권위 반영 → HTTP MCP 서버 spawn(로스터 주입)
     //  → REPL core-sync 연결. 이 순서라야 로스터 스냅샷과 권위 트리가 일관된다.

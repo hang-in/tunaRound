@@ -40,6 +40,10 @@ pub enum Command {
     Search(String),
     Branches,
     Checkout(u64),
+    /// 발언을 superseded로 표시(선택적으로 대체 발언 id). 유효성 지정(HITL).
+    Supersede { id: u64, by: Option<u64> },
+    /// 발언을 rejected로 표시(검색에서 제외).
+    Reject(u64),
     Help,
     Quit,
     Noop,
@@ -67,6 +71,21 @@ pub fn parse_command(line: &str) -> Command {
             "branches" | "tree" => Command::Branches,
             "checkout" | "co" => match arg.as_deref().and_then(|a| a.trim().parse::<u64>().ok()) {
                 Some(id) => Command::Checkout(id),
+                None => Command::Message(line.to_string()),
+            },
+            "supersede" => {
+                // /supersede <id> [<by_id>]
+                let mut toks = arg.as_deref().unwrap_or("").split_whitespace();
+                match toks.next().and_then(|t| t.parse::<u64>().ok()) {
+                    Some(id) => {
+                        let by = toks.next().and_then(|t| t.parse::<u64>().ok());
+                        Command::Supersede { id, by }
+                    }
+                    None => Command::Message(line.to_string()),
+                }
+            }
+            "reject" => match arg.as_deref().and_then(|a| a.trim().parse::<u64>().ok()) {
+                Some(id) => Command::Reject(id),
                 None => Command::Message(line.to_string()),
             },
             "debate" => {
@@ -169,11 +188,13 @@ pub struct Session {
     /// front=core 병합 경계(Plan 27 옵션 B). Some이면 DB가 권위: 매 라운드 adopt + append_turn 쓰기.
     /// None(기본)이면 기존 인메모리 트리 + indexer 전량 persist(동작 불변).
     core_sync: Option<Box<dyn crate::orchestrator::CoreSync>>,
+    /// 유효성 지정 sink(/supersede·/reject, step 5). None(--db 없음)이면 안내만.
+    validity_sink: Option<Box<dyn crate::orchestrator::ValiditySink>>,
 }
 
 impl Session {
     pub fn new(participants: Vec<Participant>, registry: Box<dyn RunnerRegistry>) -> Self {
-        Self { participants, messages: Vec::new(), head: None, registry, bus: None, session_id: "default".to_string(), indexer: None, retriever: None, recent_turns: None, core_sync: None, context_mode: ContextMode::Push }
+        Self { participants, messages: Vec::new(), head: None, registry, bus: None, session_id: "default".to_string(), indexer: None, retriever: None, recent_turns: None, core_sync: None, validity_sink: None, context_mode: ContextMode::Push }
     }
 
     /// bus + session_id 있는 생성자. 매 라운드 후 Redis 미러를 활성화한다.
@@ -183,7 +204,7 @@ impl Session {
         session_id: String,
         bus: Option<Box<dyn SessionBus>>,
     ) -> Self {
-        Self { participants, messages: Vec::new(), head: None, registry, bus, session_id, indexer: None, retriever: None, recent_turns: None, core_sync: None, context_mode: ContextMode::Push }
+        Self { participants, messages: Vec::new(), head: None, registry, bus, session_id, indexer: None, retriever: None, recent_turns: None, core_sync: None, validity_sink: None, context_mode: ContextMode::Push }
     }
 
     /// bus + indexer 동시 배선 생성자. SQLite 색인 활성화용.
@@ -194,7 +215,7 @@ impl Session {
         bus: Option<Box<dyn SessionBus>>,
         indexer: Option<Box<dyn crate::store::indexer::MessageIndexer>>,
     ) -> Self {
-        Self { participants, messages: Vec::new(), head: None, registry, bus, session_id, indexer, retriever: None, recent_turns: None, core_sync: None, context_mode: ContextMode::Push }
+        Self { participants, messages: Vec::new(), head: None, registry, bus, session_id, indexer, retriever: None, recent_turns: None, core_sync: None, validity_sink: None, context_mode: ContextMode::Push }
     }
 
     /// retriever를 설정하는 빌더 메서드(단일 적용, self를 소비 후 반환).
@@ -218,6 +239,12 @@ impl Session {
     /// front=core 병합 경계를 설정하는 빌더 메서드(--core 전용). None=기존 동작 불변.
     pub fn with_core_sync(mut self, cs: Option<Box<dyn crate::orchestrator::CoreSync>>) -> Self {
         self.core_sync = cs;
+        self
+    }
+
+    /// 유효성 지정 sink를 설정하는 빌더 메서드(--db 시 배선). None이면 /supersede·/reject 안내만.
+    pub fn with_validity_sink(mut self, sink: Option<Box<dyn crate::orchestrator::ValiditySink>>) -> Self {
+        self.validity_sink = sink;
         self
     }
 
@@ -455,7 +482,7 @@ impl Session {
         path: &str,
     ) -> std::io::Result<Self> {
         let ss = crate::store::load_session(path)?;
-        Ok(Self { participants, messages: ss.messages, head: ss.head, registry, bus: None, session_id: "default".to_string(), indexer: None, retriever: None, recent_turns: None, core_sync: None, context_mode: ContextMode::Push })
+        Ok(Self { participants, messages: ss.messages, head: ss.head, registry, bus: None, session_id: "default".to_string(), indexer: None, retriever: None, recent_turns: None, core_sync: None, validity_sink: None, context_mode: ContextMode::Push })
     }
 
     /// 한 입력을 처리한다. run_round 호출 등 로직만; 실제 I/O는 호출자(main).
@@ -466,7 +493,7 @@ impl Session {
             Command::Quit => StepOutcome::Exit,
             Command::Noop => StepOutcome::Noop,
             Command::Help => StepOutcome::Print(
-                "메시지를 입력하면 두 에이전트가 응답합니다. @engine 메시지로 한 자리만 지목(읽기), @engine! 메시지로 쓰기 턴(에이전트가 레포 편집), /debate [n] <주제>로 에이전트 N턴 자동 교환(기본 3, 최대 10), /conclude [engine] 종합, /save [경로] 결과 저장, /search <질의>로 인덱스 검색(--db 필요), /branches 트리 목록, /checkout <id> 분기 전환, /quit 종료.".into(),
+                "메시지를 입력하면 두 에이전트가 응답합니다. @engine 메시지로 한 자리만 지목(읽기), @engine! 메시지로 쓰기 턴(에이전트가 레포 편집), /debate [n] <주제>로 에이전트 N턴 자동 교환(기본 3, 최대 10), /conclude [engine] 종합, /save [경로] 결과 저장, /search <질의>로 인덱스 검색(--db 필요), /branches 트리 목록, /checkout <id> 분기 전환, /supersede <id> [<대체id>] 발언을 대체됨으로 표시, /reject <id> 발언을 기각으로 표시(검색 제외), /quit 종료.".into(),
             ),
             Command::Save(path) => StepOutcome::Save {
                 path: path.unwrap_or_else(|| DEFAULT_SAVE_PATH.to_string()),
@@ -576,6 +603,25 @@ impl Session {
                     StepOutcome::Print(format!("그런 메시지가 없습니다: #{id}"))
                 }
             }
+            Command::Supersede { id, by } => self.mark_validity(id, "superseded", by, "대체됨"),
+            Command::Reject(id) => self.mark_validity(id, "rejected", None, "기각됨"),
+        }
+    }
+
+    /// 유효성 지정 공용 처리: sink 미배선/발언 없음 안내 + 성공/실패 메시지.
+    fn mark_validity(&self, id: u64, state: &str, by: Option<u64>, label: &str) -> StepOutcome {
+        let Some(sink) = &self.validity_sink else {
+            return StepOutcome::Print("유효성 지정은 --db <경로>로 실행해야 합니다.".into());
+        };
+        if !self.messages.iter().any(|m| m.id == id) {
+            return StepOutcome::Print(format!("그런 발언이 없습니다: #{id}"));
+        }
+        match sink.set_validity(&self.session_id, id, state, by) {
+            Ok(()) => {
+                let extra = by.map(|b| format!(" (대체: #{b})")).unwrap_or_default();
+                StepOutcome::Print(format!("#{id} {label}{extra}. 이후 검색에서 디프리오리티/제외됩니다."))
+            }
+            Err(e) => StepOutcome::Print(format!("[유효성 지정 실패] {e}")),
         }
     }
 }
@@ -648,6 +694,69 @@ mod tests {
             Participant { engine: "codex".into(), role: Some("reviewer".into()), instruction: String::new() },
         ];
         Session::new(participants, Box::new(reg)).with_core_sync(Some(Box::new(cs)))
+    }
+
+    #[test]
+    fn parses_validity_commands() {
+        assert_eq!(parse_command("/supersede 3"), Command::Supersede { id: 3, by: None });
+        assert_eq!(parse_command("/supersede 3 7"), Command::Supersede { id: 3, by: Some(7) });
+        assert_eq!(parse_command("/reject 4"), Command::Reject(4));
+        // 인자 없으면 일반 메시지로 폴스루.
+        assert_eq!(parse_command("/supersede"), Command::Message("/supersede".into()));
+        assert_eq!(parse_command("/reject x"), Command::Message("/reject x".into()));
+    }
+
+    /// set_validity 호출을 캡처하는 가짜 sink.
+    struct CapturingSink {
+        last: std::sync::Mutex<Option<(String, u64, String, Option<u64>)>>,
+    }
+    impl crate::orchestrator::ValiditySink for CapturingSink {
+        fn set_validity(&self, sid: &str, msg_id: u64, state: &str, by: Option<u64>) -> Result<(), String> {
+            *self.last.lock().unwrap() = Some((sid.to_string(), msg_id, state.to_string(), by));
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn supersede_command_calls_sink_for_existing_message() {
+        let sink = std::sync::Arc::new(CapturingSink { last: std::sync::Mutex::new(None) });
+        // 메시지 1건 있는 세션 구성(sink 배선).
+        let mut s = session_with_two_seats()
+            .with_validity_sink(Some(Box::new(SinkHandle(sink.clone()))));
+        s.seed_from(StoredSession {
+            messages: vec![StoredMessage { id: 1, parent_id: None, speaker: "claude".into(), content: "x".into() }],
+            head: Some(1),
+        });
+        let out = s.step(Command::Supersede { id: 1, by: Some(2) });
+        assert!(matches!(out, StepOutcome::Print(_)));
+        let cap = sink.last.lock().unwrap().clone();
+        assert_eq!(cap, Some(("default".into(), 1, "superseded".into(), Some(2))));
+    }
+
+    #[test]
+    fn supersede_missing_message_does_not_call_sink() {
+        let sink = std::sync::Arc::new(CapturingSink { last: std::sync::Mutex::new(None) });
+        let mut s = session_with_two_seats()
+            .with_validity_sink(Some(Box::new(SinkHandle(sink.clone()))));
+        let _ = s.step(Command::Reject(99)); // 없는 id.
+        assert_eq!(sink.last.lock().unwrap().clone(), None, "없는 발언은 sink 미호출");
+    }
+
+    #[test]
+    fn validity_command_without_sink_guides() {
+        let mut s = session_with_two_seats(); // sink 미배선.
+        match s.step(Command::Reject(1)) {
+            StepOutcome::Print(t) => assert!(t.contains("--db"), "안내 불일치: {t}"),
+            _ => panic!("Print 기대"),
+        }
+    }
+
+    /// Arc<CapturingSink>를 Box<dyn ValiditySink>로 넘기기 위한 얇은 래퍼.
+    struct SinkHandle(std::sync::Arc<CapturingSink>);
+    impl crate::orchestrator::ValiditySink for SinkHandle {
+        fn set_validity(&self, sid: &str, msg_id: u64, state: &str, by: Option<u64>) -> Result<(), String> {
+            self.0.set_validity(sid, msg_id, state, by)
+        }
     }
 
     /// 긴 발언 여러 개를 반환하는 가짜 retriever(길이 cap 테스트용).

@@ -4,7 +4,9 @@
 pub use sqlite_retriever::SqliteRetriever;
 
 #[cfg(feature = "sqlite")]
-pub use sqlite_transcript::{SqliteCoreSync, SqliteTranscriptReader, SqliteTranscriptWriter};
+pub use sqlite_transcript::{
+    SqliteCoreSync, SqliteTranscriptReader, SqliteTranscriptWriter, SqliteValiditySink,
+};
 
 #[cfg(feature = "sqlite")]
 mod sqlite_retriever {
@@ -37,6 +39,33 @@ mod sqlite_retriever {
         }
     }
 
+    /// 유효성 재랭크: rejected는 드롭, superseded/stale은 active 뒤로 강등(순서 보존).
+    /// 유효성 미설정(None)이나 active/unknown은 그대로 앞에 둔다(step 5). 제네릭 값 T는 유지.
+    fn rerank_by_validity<T>(store: &SqliteStore, items: Vec<(String, u64, T)>) -> Vec<(String, u64, T)> {
+        let mut active: Vec<(String, u64, T)> = Vec::new();
+        let mut demoted: Vec<(String, u64, T)> = Vec::new();
+        for (sid, mid, v) in items {
+            let state = store.get_validity(&sid, mid).ok().flatten().map(|x| x.valid_state);
+            match state.as_deref() {
+                Some("rejected") => {} // 드롭.
+                Some("superseded") | Some("stale") => demoted.push((sid, mid, v)),
+                _ => active.push((sid, mid, v)), // active | unknown | None.
+            }
+        }
+        active.into_iter().chain(demoted).collect()
+    }
+
+    /// (session_id, Utterance) 항목을 유효성 재랭크 후 세션 다양성 cap + limit으로 마무리한다.
+    fn finish(
+        store: &SqliteStore,
+        cands: Vec<(String, u64, Utterance)>,
+        limit: usize,
+    ) -> Vec<Utterance> {
+        let reranked = rerank_by_validity(store, cands);
+        let items: Vec<(String, Utterance)> = reranked.into_iter().map(|(sid, _, u)| (sid, u)).collect();
+        crate::store::cap_per_session_backfill(items, MAX_PER_SESSION, limit)
+    }
+
     impl crate::orchestrator::ContextRetriever for SqliteRetriever {
         fn retrieve(&self, query: &str, limit: usize) -> Vec<Utterance> {
             if query.trim().is_empty() {
@@ -55,13 +84,13 @@ mod sqlite_retriever {
                 }
             };
 
-            // embedder 없으면 FTS 단독. over-fetch 후 세션 다양성 cap + limit(단일 세션은 동작 불변).
+            // embedder 없으면 FTS 단독. 유효성 재랭크 + 세션 다양성 cap(단일 세션은 동작 불변).
             let Some(emb) = &self.embedder else {
-                let items: Vec<(String, Utterance)> = lex_hits
+                let cands: Vec<(String, u64, Utterance)> = lex_hits
                     .into_iter()
-                    .map(|h| (h.session_id.clone(), Utterance { speaker: h.speaker, content: h.content }))
+                    .map(|h| (h.session_id, h.msg_id, Utterance { speaker: h.speaker, content: h.content }))
                     .collect();
-                return crate::store::cap_per_session_backfill(items, MAX_PER_SESSION, limit);
+                return finish(&store, cands, limit);
             };
 
             // FTS 결과 키 리스트 + content_map 구축.
@@ -72,16 +101,19 @@ mod sqlite_retriever {
                 .map(|h| ((h.session_id, h.msg_id), (h.speaker, h.content)))
                 .collect();
 
+            // content_map에서 (sid, msg_id, Utterance) 후보를 만드는 폴백용 클로저.
+            let cands_from_map = |m: HashMap<(String, u64), (String, String)>| -> Vec<(String, u64, Utterance)> {
+                m.into_iter()
+                    .map(|((sid, mid), (sp, ct))| (sid, mid, Utterance { speaker: sp, content: ct }))
+                    .collect()
+            };
+
             // 쿼리 임베딩 시도(실패 시 FTS 단독 폴백).
             let qvec = match emb.embed(query) {
                 Ok(v) => v,
                 Err(e) => {
                     eprintln!("[tunaRound] 쿼리 임베딩 실패(FTS 단독 폴백): {e}");
-                    let items: Vec<(String, Utterance)> = content_map
-                        .into_iter()
-                        .map(|((sid, _), (sp, ct))| (sid, Utterance { speaker: sp, content: ct }))
-                        .collect();
-                    return crate::store::cap_per_session_backfill(items, MAX_PER_SESSION, limit);
+                    return finish(&store, cands_from_map(content_map), limit);
                 }
             };
 
@@ -90,33 +122,20 @@ mod sqlite_retriever {
                 Ok(hits) => hits,
                 Err(e) => {
                     eprintln!("[tunaRound] 벡터 검색 실패(FTS 단독 폴백): {e}");
-                    let items: Vec<(String, Utterance)> = content_map
-                        .into_iter()
-                        .map(|((sid, _), (sp, ct))| (sid, Utterance { speaker: sp, content: ct }))
-                        .collect();
-                    return crate::store::cap_per_session_backfill(items, MAX_PER_SESSION, limit);
+                    return finish(&store, cands_from_map(content_map), limit);
                 }
             };
 
             let vec_keys: Vec<(String, u64)> =
                 vec_hits.iter().map(|(sid, mid, _)| (sid.clone(), *mid)).collect();
 
-            // RRF 융합.
+            // RRF 융합 → (sid, msg_id, Utterance) 후보로 해석(벡터-only 키는 DB 조회).
             let fused = crate::store::reciprocal_rank_fusion(&lex_keys, &vec_keys);
-
-            // 세션 다양성 cap(다중 세션 다양화, 단일 세션 backfill) 후 상위 limit 키를 Utterance로 변환.
-            let capped_keys = crate::store::cap_per_session_backfill(
-                fused.into_iter().map(|k| (k.0.clone(), k)).collect(),
-                MAX_PER_SESSION,
-                limit,
-            );
-            let mut result = Vec::with_capacity(capped_keys.len());
-            for key in capped_keys {
+            let mut cands: Vec<(String, u64, Utterance)> = Vec::with_capacity(fused.len());
+            for key in fused {
                 let utt = if let Some((sp, ct)) = content_map.remove(&key) {
-                    // FTS 결과에 있으면 캐시 사용.
                     Some(Utterance { speaker: sp, content: ct })
                 } else {
-                    // 벡터-only 키: DB에서 원문 조회.
                     match store.get_message(&key.0, key.1) {
                         Ok(Some((sp, ct))) => Some(Utterance { speaker: sp, content: ct }),
                         Ok(None) => None,
@@ -127,10 +146,10 @@ mod sqlite_retriever {
                     }
                 };
                 if let Some(u) = utt {
-                    result.push(u);
+                    cands.push((key.0, key.1, u));
                 }
             }
-            result
+            finish(&store, cands, limit)
         }
     }
 }
@@ -212,6 +231,30 @@ mod sqlite_transcript {
             store.append_turn(session_id, speaker, content, |t| (self.tok)(t))
         }
     }
+
+    /// 유효성 지정 sink 구현(/supersede·/reject → message_validity 쓰기).
+    pub struct SqliteValiditySink {
+        store: std::sync::Mutex<SqliteStore>,
+    }
+
+    impl SqliteValiditySink {
+        pub fn new(store: SqliteStore) -> Self {
+            Self { store: std::sync::Mutex::new(store) }
+        }
+    }
+
+    impl crate::orchestrator::ValiditySink for SqliteValiditySink {
+        fn set_validity(
+            &self,
+            session_id: &str,
+            msg_id: u64,
+            valid_state: &str,
+            superseded_by: Option<u64>,
+        ) -> Result<(), String> {
+            let store = self.store.lock().unwrap_or_else(|e| e.into_inner());
+            store.set_validity(session_id, msg_id, valid_state, superseded_by)
+        }
+    }
 }
 
 #[cfg(all(test, feature = "sqlite"))]
@@ -254,6 +297,40 @@ mod tests {
             "검색 결과 내용 불일치: {:?}",
             hits.iter().map(|u| u.content.as_str()).collect::<Vec<_>>()
         );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn retrieve_excludes_rejected_and_demotes_superseded() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("tuna_retriever_validity.db");
+        let _ = std::fs::remove_file(&path);
+        let p = path.to_str().unwrap();
+        let store_w = SqliteStore::open(p).unwrap();
+        // 세 발언 모두 "검색" 포함(같은 세션).
+        let ss = StoredSession {
+            messages: vec![
+                StoredMessage { id: 1, parent_id: None, speaker: "a".into(), content: "검색 활성".into() },
+                StoredMessage { id: 2, parent_id: Some(1), speaker: "b".into(), content: "검색 대체됨".into() },
+                StoredMessage { id: 3, parent_id: Some(2), speaker: "c".into(), content: "검색 기각됨".into() },
+            ],
+            head: Some(3),
+        };
+        store_w.save_session("s", &ss, |t| t.to_string()).unwrap();
+        store_w.set_validity("s", 2, "superseded", None).unwrap();
+        store_w.set_validity("s", 3, "rejected", None).unwrap();
+        drop(store_w);
+
+        let store_r = SqliteStore::open(p).unwrap();
+        let retriever = SqliteRetriever::new(store_r, Box::new(|t: &str| t.to_string()), None);
+        let hits = retriever.retrieve("검색", 10);
+        let contents: Vec<&str> = hits.iter().map(|u| u.content.as_str()).collect();
+        assert!(!contents.iter().any(|c| c.contains("기각")), "rejected는 제외: {contents:?}");
+        let pos_active = contents.iter().position(|c| c.contains("활성"));
+        let pos_super = contents.iter().position(|c| c.contains("대체"));
+        assert!(pos_active.is_some() && pos_super.is_some(), "active·superseded 모두 존재: {contents:?}");
+        assert!(pos_active < pos_super, "active가 superseded보다 앞: {contents:?}");
 
         let _ = std::fs::remove_file(&path);
     }
