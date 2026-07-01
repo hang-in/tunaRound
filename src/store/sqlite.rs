@@ -4,8 +4,8 @@ use rusqlite::Connection;
 
 use crate::store::{StoredMessage, StoredSession};
 
-// 스키마 버전 상수. v3: message_vectors.model_id(임베딩 무효화 키).
-const CURRENT_SCHEMA_VERSION: u32 = 3;
+// 스키마 버전 상수. v3: message_vectors.model_id. v4: message_validity(유효성 메타).
+const CURRENT_SCHEMA_VERSION: u32 = 4;
 
 // config 테이블 생성 SQL.
 const CREATE_CONFIG: &str = "CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT);";
@@ -54,6 +54,20 @@ CREATE TABLE IF NOT EXISTS message_vectors (
     content_hash TEXT NOT NULL,
     model_id     TEXT,
     embedding    BLOB NOT NULL,
+    PRIMARY KEY(session_id, msg_id)
+);
+";
+
+// 유효성 메타 테이블. 원문(messages)과 분리해 레이어링(valid_state/superseded/abstraction/anchors).
+const CREATE_MESSAGE_VALIDITY: &str = "
+CREATE TABLE IF NOT EXISTS message_validity (
+    session_id           TEXT NOT NULL,
+    msg_id               INTEGER NOT NULL,
+    valid_state          TEXT NOT NULL DEFAULT 'active',
+    superseded_by_msg_id INTEGER,
+    abstraction          TEXT,
+    anchors              TEXT,
+    updated_at           TEXT NOT NULL DEFAULT (datetime('now')),
     PRIMARY KEY(session_id, msg_id)
 );
 ";
@@ -127,6 +141,10 @@ impl SqliteStore {
                 .map_err(|e| format!("sqlite: {e}"))?;
             self.conn
                 .execute_batch(CREATE_MESSAGE_VECTORS)
+                .map_err(|e| format!("sqlite: {e}"))?;
+            // v4: 유효성 메타 테이블(새 TABLE이라 IF NOT EXISTS로 fresh·기존 모두 처리).
+            self.conn
+                .execute_batch(CREATE_MESSAGE_VALIDITY)
                 .map_err(|e| format!("sqlite: {e}"))?;
             // v3: 기존(v2) DB의 message_vectors엔 model_id가 없으므로 ADD COLUMN으로 보강한다.
             // fresh DB는 CREATE에 이미 있어 column_exists가 true → ALTER 생략. 기존 행은 NULL이라
@@ -406,6 +424,82 @@ impl SqliteStore {
             .map_err(|e| format!("sqlite: {e}"))?;
 
         Ok(hits)
+    }
+
+    /// 발언의 유효성 상태를 설정한다(upsert). abstraction/anchors는 보존한다.
+    /// valid_state=superseded일 때 superseded_by로 대체 발언을 가리킬 수 있다.
+    pub fn set_validity(
+        &self,
+        session_id: &str,
+        msg_id: u64,
+        valid_state: &str,
+        superseded_by: Option<u64>,
+    ) -> Result<(), String> {
+        let sup = superseded_by.map(|v| v as i64);
+        self.conn
+            .execute(
+                "INSERT INTO message_validity(session_id, msg_id, valid_state, superseded_by_msg_id) \
+                 VALUES(?1, ?2, ?3, ?4) \
+                 ON CONFLICT(session_id, msg_id) DO UPDATE SET \
+                     valid_state=excluded.valid_state, \
+                     superseded_by_msg_id=excluded.superseded_by_msg_id, \
+                     updated_at=datetime('now')",
+                rusqlite::params![session_id, msg_id as i64, valid_state, sup],
+            )
+            .map_err(|e| format!("sqlite: {e}"))?;
+        Ok(())
+    }
+
+    /// 발언의 요약(abstraction)·앵커(anchors)를 부분 설정한다(upsert). valid_state는 보존.
+    /// None인 필드는 기존 값을 유지한다(COALESCE, 부분 갱신). 최초 삽입이면 valid_state는 기본 'active'.
+    pub fn set_annotation(
+        &self,
+        session_id: &str,
+        msg_id: u64,
+        abstraction: Option<&str>,
+        anchors: Option<&str>,
+    ) -> Result<(), String> {
+        self.conn
+            .execute(
+                "INSERT INTO message_validity(session_id, msg_id, abstraction, anchors) \
+                 VALUES(?1, ?2, ?3, ?4) \
+                 ON CONFLICT(session_id, msg_id) DO UPDATE SET \
+                     abstraction=COALESCE(excluded.abstraction, message_validity.abstraction), \
+                     anchors=COALESCE(excluded.anchors, message_validity.anchors), \
+                     updated_at=datetime('now')",
+                rusqlite::params![session_id, msg_id as i64, abstraction, anchors],
+            )
+            .map_err(|e| format!("sqlite: {e}"))?;
+        Ok(())
+    }
+
+    /// 발언의 유효성 메타를 조회한다. 행 없으면 Ok(None)(호출자가 기본 active로 간주).
+    pub fn get_validity(
+        &self,
+        session_id: &str,
+        msg_id: u64,
+    ) -> Result<Option<crate::store::Validity>, String> {
+        match self.conn.query_row(
+            "SELECT valid_state, superseded_by_msg_id, abstraction, anchors \
+             FROM message_validity WHERE session_id=?1 AND msg_id=?2",
+            rusqlite::params![session_id, msg_id as i64],
+            |row| {
+                let valid_state: String = row.get(0)?;
+                let sup: Option<i64> = row.get(1)?;
+                let abstraction: Option<String> = row.get(2)?;
+                let anchors: Option<String> = row.get(3)?;
+                Ok(crate::store::Validity {
+                    valid_state,
+                    superseded_by: sup.map(|v| v as u64),
+                    abstraction,
+                    anchors,
+                })
+            },
+        ) {
+            Ok(v) => Ok(Some(v)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(format!("sqlite: {e}")),
+        }
     }
 
     /// 세션 메시지를 벡터 색인한다. content_hash가 동일하면 skip(증분). sqlite 피처 전용.
@@ -695,6 +789,38 @@ mod tests {
             .unwrap();
         assert_eq!(mid, None, "기존 행 model_id는 NULL(다음 색인 때 재임베딩 트리거)");
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn validity_roundtrip_and_missing_is_none() {
+        let db = SqliteStore::open_memory().unwrap();
+        // 미설정이면 None(호출자가 기본 active로 간주).
+        assert_eq!(db.get_validity("s1", 1).unwrap(), None);
+        // superseded 설정.
+        db.set_validity("s1", 1, "superseded", Some(5)).unwrap();
+        let v = db.get_validity("s1", 1).unwrap().expect("존재");
+        assert_eq!(v.valid_state, "superseded");
+        assert_eq!(v.superseded_by, Some(5));
+        assert_eq!(v.abstraction, None);
+    }
+
+    #[test]
+    fn set_validity_preserves_annotation_and_vice_versa() {
+        let db = SqliteStore::open_memory().unwrap();
+        // 먼저 요약/앵커 설정.
+        db.set_annotation("s1", 1, Some("결정 요약"), Some("검색\n랭킹")).unwrap();
+        // 그 다음 유효성 설정 → 요약/앵커 보존.
+        db.set_validity("s1", 1, "rejected", None).unwrap();
+        let v = db.get_validity("s1", 1).unwrap().unwrap();
+        assert_eq!(v.valid_state, "rejected");
+        assert_eq!(v.abstraction.as_deref(), Some("결정 요약"));
+        assert_eq!(v.anchors.as_deref(), Some("검색\n랭킹"));
+        // 반대로 요약만 갱신(anchors=None) → valid_state·anchors 보존(부분 갱신).
+        db.set_annotation("s1", 1, Some("갱신된 요약"), None).unwrap();
+        let v2 = db.get_validity("s1", 1).unwrap().unwrap();
+        assert_eq!(v2.valid_state, "rejected", "annotation 갱신이 valid_state를 덮지 않음");
+        assert_eq!(v2.abstraction.as_deref(), Some("갱신된 요약"));
+        assert_eq!(v2.anchors.as_deref(), Some("검색\n랭킹"), "None 필드는 기존 값 보존(COALESCE)");
     }
 
     #[test]

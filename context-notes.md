@@ -2,6 +2,15 @@
 
 > 작업 중 결정과 근거. 계속 append. (규율 #7) 다음 세션이 결정을 재유도하지 않게.
 
+## 2026-07-01 step 4 완료: 유효성 메타데이터 데이터 레이어 (Plan 30)
+
+- **설계 판단**: messages/StoredMessage에 컬럼 추가는 모든 struct 리터럴 붕괴 + 직렬화 하위호환 문제 + Memora 철학(원문/메타 분리) 위배 → **별도 `message_validity` 테이블**로 레이어링. StoredMessage 불변.
+- **스키마 v3→v4**: message_validity(session_id, msg_id, valid_state DEFAULT active, superseded_by_msg_id, abstraction, anchors, updated_at). 새 TABLE이라 migrate CREATE IF NOT EXISTS로 fresh·기존 처리.
+- **API**: store::Validity 구조체. SqliteStore set_validity(valid_state/superseded, abstraction 보존) · set_annotation(abstraction/anchors 부분 갱신 COALESCE, valid_state 보존) · get_validity(없으면 None=기본 active).
+- **검증**: 기본 151 pass, clippy 클린. 라운드트립 + 부분갱신 보존 테스트.
+- **step 4 범위 = 데이터 레이어만.** step 5에서: 검색 랭킹 LEFT JOIN(non-active 디프리오리티) + REPL 커맨드(/supersede, /reject)로 사람이 유효성 지정 배선. abstraction/anchors 생성 파이프라인은 더 뒤(컬럼만 준비).
+- 다음 = step 5.
+
 ## 2026-07-01 step 3 완료: retrieved 길이 cap + session diversity cap (Plan 29)
 
 - **session diversity(SqliteRetriever)**: store.search/vector_search를 `limit*4` over-fetch → `cap_per_session_backfill(max_per_session=2, limit)`. 다중 세션이면 다양화, **단일 세션이면 backfill로 limit까지 채워 동작 불변**(under-fill 없음). FTS단독·RRF·폴백 경로 모두 적용.

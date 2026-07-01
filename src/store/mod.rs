@@ -148,6 +148,21 @@ pub struct StoredMessage {
     pub content: String,
 }
 
+/// 발언에 레이어링되는 유효성·요약 메타(원문 StoredMessage와 분리, Memora식).
+/// message_validity 테이블에 저장. 없으면 기본 active로 간주한다(step 5 랭킹에서 사용).
+#[cfg(feature = "sqlite")]
+#[derive(Debug, Clone, PartialEq)]
+pub struct Validity {
+    /// active | superseded | rejected | stale | unknown.
+    pub valid_state: String,
+    /// 이 발언을 대체한 발언 id(superseded일 때).
+    pub superseded_by: Option<u64>,
+    /// 결정 요약(Memora primary abstraction). 생성 파이프라인은 후속.
+    pub abstraction: Option<String>,
+    /// 검색 단서(모듈·에러·쟁점). 생성 파이프라인은 후속.
+    pub anchors: Option<String>,
+}
+
 /// 전사를 stored로. id는 1부터, parent는 직전 id(첫 메시지는 None).
 pub fn to_stored(transcript: &[Utterance]) -> Vec<StoredMessage> {
     let mut out = Vec::with_capacity(transcript.len());
