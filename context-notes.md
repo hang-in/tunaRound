@@ -506,3 +506,11 @@
 - **셋업**: Ollama 터널(11435)에 두 모델 존재, 둘 다 dim 1024(드롭인 교체 가능). tests/embed_model_compare.rs(#[ignore] 수동): real corpus 18발언에 각 모델로 색인→vec-only/hybrid의 R@5·MRR을 나란히.
 - **결과(12질의)**: vecR@5·hybR@5는 둘 다 1.000(recall 포화=코퍼스가 작고 쉬움). 차이는 MRR: bge-m3 vecMRR 0.903/hybMRR 0.917 vs **qwen3 vecMRR 0.958/hybMRR 1.000**. qwen3가 12질의 전부 gold를 1순위에 놓음. bge-m3는 "풀 모드 토큰 절감"·"검색 디버그 창구"에서 1순위 놓침. **결론: qwen3-embedding:0.6b 랭킹 우위 실증(단, recall 포화라 차이는 MRR에만, 소코퍼스 검정력 한계, qwen3 색인 체감 느림).**
 - **적용**: OllamaEmbedder::from_env() 추가(TUNAROUND_OLLAMA_URL + TUNAROUND_EMBED_MODEL, DEFAULT_MODEL=qwen3-embedding:0.6b). main.rs 4곳 하드코딩 "bge-m3"→from_env()로 DRY. bge-m3 복귀=TUNAROUND_EMBED_MODEL=bge-m3. 모델 교체 시 model_id 무효화 키가 재임베딩 자동 처리(step 2 인프라 덕). README·CLAUDE.md 갱신. 기본 161 pass, clippy 클린.
+
+## 2026-07-02: step 6 실코퍼스 확장 (seCall 패치 후) + 외래어 갭 발견
+
+- **seCall 패치**: 세션 3142→6352, 턴 53726→255769 대규모 재수집. 한국어 멀티텀 keyword는 여전히 co-occurrence 의존(특정 질의 0), semantic이 다양성 우위(단 재수집분 벡터 40581로 뒤처짐).
+- **확장**: 패치 재수집이 드러낸 **실제 설계토론 세션**(e5a848d3 06-30, proposer/reviewer 역할 + 리프레시 토큰 회전 논쟁 = auth/보안 도메인, 비메타 세션)에서 5발언 추가. 코퍼스 18→23발언(검색인프라+auth 2도메인), 질의 12→15. 현재세션 쏠림·문체 동질 한계 완화.
+- **재측정**: mean R@5 0.878 / P@5 0.494 / MRR 0.900 (18발언 때 0.958/0.621/1.0보다 하락). floor R@5>=0.80, P@5>=0.42로 조정.
+- **⚠ 실발견(가치)**: 질의 "리프레시 토큰 어디 저장"(gold=발언20) **R@5 0.0 완전 누락**. 원인=질의는 한국어 외래어 "리프레시", 발언은 영어 "refresh" → **FTS 형태소가 외래어 음역(리프레시↔refresh) 갭을 못 이음**. 외래어 표기 정규화(romanize/음역 매핑) 미구현. 쉬운 합성/소코퍼스가 숨긴 실패모드를 확장 실코퍼스가 노출 = step 6의 본래 목적 달성. **개선 후보**: 토크나이저에 외래어 음역 정규화 또는 영한 병기 색인. auth 질의가 검색-인프라 발언 distractor 유입으로 P 하락도 관측.
+- **결론**: 검색 스택은 도메인 내 어휘엔 강하나(R@5 0.88, MRR 0.9), 외래어 한↔영 음역 경계에 실갭 존재. 실코퍼스가 이를 정직하게 드러냄.

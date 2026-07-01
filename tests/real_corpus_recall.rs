@@ -1,5 +1,6 @@
-// 실코퍼스 검색 회귀(step 6): seCall의 실제 tunaRound 설계 토론 턴(2026-06-30~07-01)에서
-// 발췌한 발언을 코퍼스로, 굴절·동의어로 바꾼 질의의 recall@k·MRR·precision@k를 결정적으로 잰다.
+// 실코퍼스 검색 회귀(step 6): seCall의 실제 tunaRound 설계 토론 턴(2026-06-30~07-01, 여러 세션)에서
+// 발췌한 23발언을 코퍼스로, 굴절·동의어로 바꾼 15질의의 recall@k·MRR·precision@k를 결정적으로 잰다.
+// 검색-인프라 도메인 + auth/보안 도메인(리프레시 토큰 논쟁, 별개 세션)을 섞어 대표성을 넓혔다.
 // 합성 코퍼스(search_recall.rs, R@5 0.90)의 대표성 한계를 실데이터로 보완한다.
 #![cfg(feature = "morphology")]
 
@@ -42,8 +43,14 @@ fn corpus() -> StoredSession {
             msg(16, "opus", "codex는 규칙 준수가 강해서 read-only를 샌드박스가 아니라 프롬프트 지시로 강제할 수 있다."),
             msg(17, "opus", "recency 랭킹은 messages에 created_at 컬럼을 더하고 다른 세션의 오래된 후보만 소폭 강등한다."),
             msg(18, "opus", "debug_retrieve 디버그 출력에 created_at과 recency 강등 표시를 더해 눈으로 확인할 수 있게 했다."),
+            // e5a848d3(06-30 설계토론: 리프레시 토큰 회전):8 - 다른 세션·다른 도메인(auth/보안)
+            msg(19, "opus", "리프레시 토큰 회전이 막아주는 탈취 탐지는 리프레시 토큰이 브라우저 JS로 읽히는 localStorage에 장기 보관될 때만 의미가 있다."),
+            msg(20, "opus", "access는 메모리 전용, refresh는 OS keychain, SPA는 httpOnly 쿠키로 두면 회전이 막는 공격면이 설계상 닫힌다."),
+            msg(21, "opus", "opaque refresh에 jti denylist와 token_version을 두면 로그아웃이나 유출 의심 시 토큰 패밀리를 한 번에 폐기할 수 있다."),
+            msg(22, "opus", "짧은 access TTL과 refresh의 절대 만료와 idle 만료를 함께 적용하면 회전 없이 위협모델을 덮는다."),
+            msg(23, "opus", "리프레시 토큰이 브라우저 JS가 닿는 저장소로 가는 순간 reuse-detection과 함께 토큰 회전을 도입한다."),
         ],
-        head: Some(18),
+        head: Some(23),
     }
 }
 
@@ -62,6 +69,9 @@ const QUERIES: &[EvalQuery] = &[
     ("캐시 무효화 전략",       &[11, 12, 13], "다중어"),
     ("원격 코어 인증",         &[14],         "*어휘공백(bearer)"),
     ("검색 디버그 창구",       &[18],         "*동의어(창구↔출력)"),
+    ("토큰 회전 필요한가",     &[19, 22, 23], "auth 도메인"),
+    ("리프레시 토큰 어디 저장", &[20],        "auth+외래어"),
+    ("토큰 즉시 폐기 방법",    &[21],         "*동의어(폐기↔denylist)"),
 ];
 
 fn recall_at_k(retrieved: &[u64], gold: &[u64], k: usize) -> f64 {
@@ -121,7 +131,10 @@ fn real_corpus_fts_recall() {
     println!("{:-<94}", "");
     println!();
 
-    // 실코퍼스 baseline floor(측정값 R@5 0.958 / P@5 0.621, lindera 결정적). 여유를 둔 회귀 가드.
-    assert!(mr5 >= 0.85, "mean recall@5 회귀: {mr5:.3} < 0.85 (실코퍼스 baseline 0.958)");
-    assert!(mp5 >= 0.55, "mean precision@5 회귀: {mp5:.3} < 0.55 (실코퍼스 baseline 0.621)");
+    // 실코퍼스 baseline floor(측정값 R@5 0.878 / P@5 0.494, lindera 결정적). 여유를 둔 회귀 가드.
+    // ⚠ 실발견: "리프레시 토큰 어디 저장"(gold 20) R@5 0.0 = 한국어 외래어 "리프레시"와 영어 "refresh"
+    //   음역 갭을 FTS 형태소가 못 이음(외래어 표기 정규화 미구현). auth 질의가 검색-인프라 발언을
+    //   distractor로 끌어 P 하락. 쉬운 코퍼스(0.958)가 숨긴 실난이도 → 확장 코퍼스가 노출.
+    assert!(mr5 >= 0.80, "mean recall@5 회귀: {mr5:.3} < 0.80 (실코퍼스 baseline 0.878)");
+    assert!(mp5 >= 0.42, "mean precision@5 회귀: {mp5:.3} < 0.42 (실코퍼스 baseline 0.494)");
 }
