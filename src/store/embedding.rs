@@ -80,6 +80,18 @@ impl OllamaEmbedder {
             client: reqwest::blocking::Client::new(),
         }
     }
+
+    /// 환경변수로 구성: TUNAROUND_OLLAMA_URL(기본 127.0.0.1:11435) + TUNAROUND_EMBED_MODEL.
+    /// 기본 모델 qwen3-embedding:0.6b는 실코퍼스에서 bge-m3보다 hybrid MRR 우위(측정, 둘 다 1024-dim).
+    /// bge-m3로 복귀는 TUNAROUND_EMBED_MODEL=bge-m3. 모델 교체 시 model_id 무효화 키가 재임베딩을 자동 처리.
+    pub const DEFAULT_MODEL: &'static str = "qwen3-embedding:0.6b";
+    pub fn from_env() -> Self {
+        let endpoint = std::env::var("TUNAROUND_OLLAMA_URL")
+            .unwrap_or_else(|_| "http://127.0.0.1:11435".to_string());
+        let model = std::env::var("TUNAROUND_EMBED_MODEL")
+            .unwrap_or_else(|_| Self::DEFAULT_MODEL.to_string());
+        Self::new(&endpoint, &model)
+    }
 }
 
 #[cfg(feature = "semantic")]

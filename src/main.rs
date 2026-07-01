@@ -174,9 +174,7 @@ fn main() {
         // 벡터 임베더(semantic이면 재임베딩; model_id 키로 모델 교체 시 갱신).
         #[cfg(feature = "semantic")]
         let emb: Option<Box<dyn tunaround::store::embedding::Embedder>> = {
-            let endpoint = std::env::var("TUNAROUND_OLLAMA_URL")
-                .unwrap_or_else(|_| "http://127.0.0.1:11435".to_string());
-            Some(Box::new(tunaround::store::embedding::OllamaEmbedder::new(&endpoint, "bge-m3")))
+            Some(Box::new(tunaround::store::embedding::OllamaEmbedder::from_env()))
         };
         #[cfg(not(feature = "semantic"))]
         let emb: Option<Box<dyn tunaround::store::embedding::Embedder>> = None;
@@ -252,9 +250,7 @@ fn main() {
         });
         #[cfg(feature = "semantic")]
         let emb: Option<Box<dyn tunaround::store::embedding::Embedder>> = {
-            let endpoint = std::env::var("TUNAROUND_OLLAMA_URL")
-                .unwrap_or_else(|_| "http://127.0.0.1:11435".to_string());
-            Some(Box::new(tunaround::store::embedding::OllamaEmbedder::new(&endpoint, "bge-m3")))
+            Some(Box::new(tunaround::store::embedding::OllamaEmbedder::from_env()))
         };
         #[cfg(not(feature = "semantic"))]
         let emb: Option<Box<dyn tunaround::store::embedding::Embedder>> = None;
@@ -422,11 +418,7 @@ fn main() {
                 // semantic 피처: OllamaEmbedder 인스턴스(indexer용). 연결 실패는 best-effort.
                 #[cfg(feature = "semantic")]
                 let emb_idx: Option<Box<dyn tunaround::store::embedding::Embedder>> = {
-                    let endpoint = std::env::var("TUNAROUND_OLLAMA_URL")
-                        .unwrap_or_else(|_| "http://127.0.0.1:11435".to_string());
-                    Some(Box::new(tunaround::store::embedding::OllamaEmbedder::new(
-                        &endpoint, "bge-m3",
-                    )))
+                    Some(Box::new(tunaround::store::embedding::OllamaEmbedder::from_env()))
                 };
                 #[cfg(not(feature = "semantic"))]
                 let emb_idx: Option<Box<dyn tunaround::store::embedding::Embedder>> = None;
@@ -473,11 +465,7 @@ fn main() {
                 // semantic 피처: OllamaEmbedder 인스턴스(retriever용). 연결 실패는 best-effort.
                 #[cfg(feature = "semantic")]
                 let emb_ret: Option<Box<dyn tunaround::store::embedding::Embedder>> = {
-                    let endpoint = std::env::var("TUNAROUND_OLLAMA_URL")
-                        .unwrap_or_else(|_| "http://127.0.0.1:11435".to_string());
-                    Some(Box::new(tunaround::store::embedding::OllamaEmbedder::new(
-                        &endpoint, "bge-m3",
-                    )))
+                    Some(Box::new(tunaround::store::embedding::OllamaEmbedder::from_env()))
                 };
                 #[cfg(not(feature = "semantic"))]
                 let emb_ret: Option<Box<dyn tunaround::store::embedding::Embedder>> = None;
@@ -754,9 +742,7 @@ fn build_http_mcp_backends(ctx: &str, db_str: &str) -> HttpMcpBackends {
     });
     #[cfg(feature = "semantic")]
     let emb: Option<Box<dyn tunaround::store::embedding::Embedder>> = {
-        let endpoint = std::env::var("TUNAROUND_OLLAMA_URL")
-            .unwrap_or_else(|_| "http://127.0.0.1:11435".to_string());
-        Some(Box::new(tunaround::store::embedding::OllamaEmbedder::new(&endpoint, "bge-m3")))
+        Some(Box::new(tunaround::store::embedding::OllamaEmbedder::from_env()))
     };
     #[cfg(not(feature = "semantic"))]
     let emb: Option<Box<dyn tunaround::store::embedding::Embedder>> = None;

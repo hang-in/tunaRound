@@ -499,3 +499,10 @@
 - **측정 결과**: **mean R@5 0.958 / P@5 0.621 / MRR 1.000**(n=12). 합성 확장셋(0.857/0.592)보다 높고, MRR 1.0=모든 질의 첫 히트가 gold. 유일 약점=Q2 "모델 바꾸면 재색인"(재색인↔무효화 동의어 갭, R@5 0.5, 3은 찾고 11 놓침). 결론: **검색 스택이 실 한국어 설계토론 어휘(굴절·외래어·코드용어 BM25/codex/pull/bearer)에서도 품질 유지 실증.** 합성 코퍼스 대표성 우려 해소.
 - **회귀 가드**: floor R@5>=0.85, P@5>=0.55. 새 파일 clippy 클린(기존 테스트 4경고는 --tests 전용·범위밖).
 - **한계(정직)**: 18발언 소규모(검정력 제한), 라벨=Opus 도메인 판단(주관성), 발언이 주로 assistant 턴이라 문체 동질. recency 유기 검증은 step 5c 라이브로 이미 실증해 별도 테스트 생략(실 날짜 코퍼스라 향후 확장 여지).
+
+## 2026-07-02 세션5: 임베딩 모델 비교 bge-m3 vs qwen3-embedding:0.6b
+
+- **동기**: qwen3-embedding:0.6b가 bge-m3보다 낫다는 얘기 확인 요청. 실측으로 판단.
+- **셋업**: Ollama 터널(11435)에 두 모델 존재, 둘 다 dim 1024(드롭인 교체 가능). tests/embed_model_compare.rs(#[ignore] 수동): real corpus 18발언에 각 모델로 색인→vec-only/hybrid의 R@5·MRR을 나란히.
+- **결과(12질의)**: vecR@5·hybR@5는 둘 다 1.000(recall 포화=코퍼스가 작고 쉬움). 차이는 MRR: bge-m3 vecMRR 0.903/hybMRR 0.917 vs **qwen3 vecMRR 0.958/hybMRR 1.000**. qwen3가 12질의 전부 gold를 1순위에 놓음. bge-m3는 "풀 모드 토큰 절감"·"검색 디버그 창구"에서 1순위 놓침. **결론: qwen3-embedding:0.6b 랭킹 우위 실증(단, recall 포화라 차이는 MRR에만, 소코퍼스 검정력 한계, qwen3 색인 체감 느림).**
+- **적용**: OllamaEmbedder::from_env() 추가(TUNAROUND_OLLAMA_URL + TUNAROUND_EMBED_MODEL, DEFAULT_MODEL=qwen3-embedding:0.6b). main.rs 4곳 하드코딩 "bge-m3"→from_env()로 DRY. bge-m3 복귀=TUNAROUND_EMBED_MODEL=bge-m3. 모델 교체 시 model_id 무효화 키가 재임베딩 자동 처리(step 2 인프라 덕). README·CLAUDE.md 갱신. 기본 161 pass, clippy 클린.

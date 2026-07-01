@@ -87,8 +87,8 @@ cargo run --features "sqlite morphology semantic mcp" -- --db tuna.db
   한국어 검색을 위해 형태소 분석을 사용합니다. 예를 들어 “검색을” 같은 표현도 “검색”으로 잘 잡도록 돕습니다. 더 정확한 Kiwi를 우선 쓰고, 없으면 lindera로 자동 폴백합니다. Windows에서 Kiwi를 쓰려면 `scripts/install-kiwi-windows.sh`로 libkiwi를 설치합니다([docs/reference/kiwi-windows-setup.md](docs/reference/kiwi-windows-setup.md)).
 
 - `semantic`  
-  bge-m3 임베딩으로 의미 검색을 추가합니다. 기본 임베딩 서버는 `http://127.0.0.1:11435`입니다.  
-  필요하면 `TUNAROUND_OLLAMA_URL`로 바꿀 수 있습니다.
+  Ollama 임베딩으로 의미 검색을 추가합니다. 기본 임베딩 서버는 `http://127.0.0.1:11435`, 기본 모델은 `qwen3-embedding:0.6b`입니다(실코퍼스에서 bge-m3보다 랭킹 우위).  
+  서버는 `TUNAROUND_OLLAMA_URL`, 모델은 `TUNAROUND_EMBED_MODEL`(예: `bge-m3`)로 바꿀 수 있습니다. 모델을 바꾸면 다음 색인 때 자동 재임베딩됩니다.
 
 - `mcp`  
   에이전트가 토론 중 직접 과거 맥락을 검색(`search_context`)하고, 지금까지의 전사를 읽어올(`read_transcript`) 수 있도록 도구를 붙입니다.
