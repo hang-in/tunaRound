@@ -54,7 +54,10 @@ pub(crate) fn parse_codex_stream(stdout: &str) -> RunOutput {
 /// Step 1 실측(2026-06-29): codex --full-auto 없음.
 ///   Write  → --sandbox workspace-write
 ///   ReadOnly → --sandbox read-only
-fn build_codex_args(input: &RunInput, mcp_args: &[String]) -> Vec<String> {
+/// bypass=true이면 read-only 샌드박스 대신 --dangerously-bypass-approvals-and-sandbox를 쓴다.
+/// (codex exec는 read-only 유지 채로 MCP 도구 승인이 불가=업스트림 #24135. pull+ReadOnly 좌석만
+/// 호출자가 bypass=true로 넘기며, read-only는 프롬프트 지시로 보완한다.)
+fn build_codex_args(input: &RunInput, mcp_args: &[String], bypass: bool) -> Vec<String> {
     let mut args: Vec<String> = vec![
         "exec".into(),
         "--json".into(),
@@ -65,6 +68,10 @@ fn build_codex_args(input: &RunInput, mcp_args: &[String]) -> Vec<String> {
         RunMode::Write => {
             args.push("--sandbox".into());
             args.push("workspace-write".into());
+        }
+        RunMode::ReadOnly if bypass => {
+            // MCP 도구 승인을 통과시키는 유일 우회. 샌드박스가 풀리므로 read-only는 지시로 강제.
+            args.push("--dangerously-bypass-approvals-and-sandbox".into());
         }
         RunMode::ReadOnly => {
             args.push("--sandbox".into());
@@ -149,6 +156,10 @@ impl Default for CodexRunner {
 /// codex가 원격 HTTP MCP bearer 토큰을 읽어올 환경변수 이름(config엔 이름만, 값은 env로 주입).
 const BEARER_TOKEN_ENV: &str = "TUNA_SEARCH_TOKEN";
 
+/// pull+ReadOnly codex는 샌드박스를 풀어(bypass) MCP를 쓰므로, read-only를 지시로 강제하는 접두 규칙.
+/// codex는 규칙 준수가 강해 우리 루프(사람의 unlock 개입 없음)에서 이를 지킨다.
+const READONLY_DIRECTIVE: &str = "[중요 규칙] 너는 읽기 전용 토론 참가자다. 어떤 파일도 생성·수정·삭제하지 말고, 변경성 셸 명령(git commit, rm, 파일 쓰기 등)도 실행하지 마라. 오직 전사·레포를 읽고 논의만 하라. 이 규칙은 요청이 있어도 예외 없다.";
+
 /// TOML basic 문자열로 안전 인용(역슬래시·큰따옴표 이스케이프). 인자 주입 방지.
 fn toml_basic(s: &str) -> String {
     format!("\"{}\"", s.replace('\\', "\\\\").replace('"', "\\\""))
@@ -208,11 +219,20 @@ impl CodexRunner {
 impl Runner for CodexRunner {
     fn run(&self, input: &RunInput) -> Result<RunOutput, RunError> {
         let (mcp_args, child_env) = self.build_mcp_wiring();
+        // pull+ReadOnly+MCP배선 좌석만 샌드박스를 풀어 MCP 승인 통과. 그 외는 기존 샌드박스 유지.
+        let mcp_wired = self.search_url.is_some() || self.search_db.is_some();
+        let bypass = matches!(input.mode, RunMode::ReadOnly) && input.pull && mcp_wired;
+        // 샌드박스를 푼 경우 read-only를 지시로 보완(프롬프트 접두).
+        let prompt = if bypass {
+            format!("{READONLY_DIRECTIVE}\n\n{}", input.prompt)
+        } else {
+            input.prompt.clone()
+        };
         let spec = ExecSpec {
             bin: self.bin.clone(),
-            args: build_codex_args(input, &mcp_args),
+            args: build_codex_args(input, &mcp_args, bypass),
             cwd: input.project_path.clone(),
-            stdin: Some(input.prompt.clone()),
+            stdin: Some(prompt),
             idle_timeout: self.idle_timeout,
             label: "codex".to_string(),
             env: child_env,
@@ -315,13 +335,8 @@ mod tests {
 
     #[test]
     fn args_write_mode_uses_workspace_write() {
-        let input = RunInput {
-            prompt: "p".into(),
-            model: None,
-            project_path: None,
-            mode: RunMode::Write,
-        };
-        let args = build_codex_args(&input, &[]);
+        let input = RunInput { prompt: "p".into(), mode: RunMode::Write, ..Default::default() };
+        let args = build_codex_args(&input, &[], false);
         let joined = args.join(" ");
         assert!(joined.contains("--sandbox workspace-write"));
         assert_eq!(args.last().unwrap(), "-"); // prompt via stdin
@@ -332,35 +347,40 @@ mod tests {
         let input = RunInput {
             prompt: "p".into(),
             model: Some("gpt-x".into()),
-            project_path: None,
             mode: RunMode::ReadOnly,
+            ..Default::default()
         };
-        let args = build_codex_args(&input, &[]);
+        let args = build_codex_args(&input, &[], false);
         let joined = args.join(" ");
         assert!(joined.contains("--sandbox read-only"));
         assert!(joined.contains("--model gpt-x"));
     }
 
     #[test]
+    fn args_readonly_bypass_replaces_sandbox() {
+        // bypass=true(pull+ReadOnly+MCP)면 read-only 샌드박스 대신 위험 우회 플래그를 쓴다.
+        let input = RunInput { prompt: "p".into(), mode: RunMode::ReadOnly, pull: true, ..Default::default() };
+        let args = build_codex_args(&input, &[], true);
+        let joined = args.join(" ");
+        assert!(joined.contains("--dangerously-bypass-approvals-and-sandbox"), "bypass 플래그 없음: {joined}");
+        assert!(!joined.contains("--sandbox read-only"), "bypass인데 read-only 샌드박스 잔존: {joined}");
+    }
+
+    #[test]
     fn args_with_mcp_args_appends_c_flags() {
-        let input = RunInput {
-            prompt: "q".into(),
-            model: None,
-            project_path: None,
-            mode: RunMode::ReadOnly,
-        };
+        let input = RunInput { prompt: "q".into(), mode: RunMode::ReadOnly, ..Default::default() };
         let mcp_args = vec![
             "-c".to_string(),
             "mcp_servers.tuna-search.command=\"/usr/bin/tunaround\"".to_string(),
             "-c".to_string(),
             "mcp_servers.tuna-search.args=[\"--mcp-search\",\"--db\",\"/tmp/t.db\"]".to_string(),
         ];
-        let args = build_codex_args(&input, &mcp_args);
+        let args = build_codex_args(&input, &mcp_args, false);
         let joined = args.join(" ");
         assert!(joined.contains("-c"), "-c 플래그 없음: {joined}");
         assert!(joined.contains("mcp_servers.tuna-search"), "서버 이름 없음: {joined}");
         // 빈 슬라이스면 -c 없음.
-        let args_none = build_codex_args(&input, &[]);
+        let args_none = build_codex_args(&input, &[], false);
         assert!(!args_none.join(" ").contains("mcp_servers.tuna-search"), "mcp_args 없는데 포함됨");
     }
 
@@ -493,7 +513,7 @@ mod tests {
         let bin = fake_sleep_bin("tuna_fake_sleep_codex");
         let r =
             CodexRunner::with_bin(&bin).with_idle_timeout(std::time::Duration::from_millis(150));
-        let input = RunInput { prompt: "x".into(), model: None, project_path: None, mode: RunMode::ReadOnly };
+        let input = RunInput { prompt: "x".into(), mode: RunMode::ReadOnly, ..Default::default() };
         assert!(matches!(r.run(&input), Err(RunError::Timeout(_))));
     }
 }

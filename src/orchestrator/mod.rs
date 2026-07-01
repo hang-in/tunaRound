@@ -15,11 +15,12 @@ pub enum ContextMode {
     Pull,
 }
 
-/// pull(전사 당기기)이 실제로 검증된 좌석 판별. 현재는 claude뿐이다.
-/// codex exec는 MCP 도구 호출을 승인 모델이 막아(헤드리스 "사용자 취소") read_transcript가
-/// 안 되므로 pull 대상에서 빼고 push로 폴백한다. codex pull 활성화는 후속(승인 설정 조사).
+/// pull(전사 당기기) 가능 좌석 판별. claude + codex.
+/// codex exec는 read-only 샌드박스를 유지한 채로는 MCP 도구 승인이 불가(업스트림 openai/codex#24135)
+/// 하므로, pull+ReadOnly 좌석에 한해 codex 러너가 --dangerously-bypass-approvals-and-sandbox로
+/// 샌드박스를 풀고(유일 우회) read-only는 프롬프트 지시로 강제한다(codex의 강한 규칙 준수 활용).
 pub fn is_mcp_capable(engine: &str) -> bool {
-    matches!(engine, "claude")
+    matches!(engine, "claude" | "codex")
 }
 
 /// 토론 한 자리. 엔진(어떤 러너로 구동) + 역할 + 추가 지시.
@@ -188,6 +189,7 @@ pub fn run_round(
             model: None,
             project_path: None,
             mode,
+            pull,
         };
         let out = runner.run(&run_input)?;
         same_round.push(Utterance { speaker: part.label(), content: out.content });
@@ -201,10 +203,10 @@ mod tests {
     use super::is_mcp_capable;
 
     #[test]
-    fn pull_capable_is_claude_only() {
-        // pull은 claude만 검증됨. codex는 승인 블록으로 push 폴백, 그 외도 push.
+    fn pull_capable_is_claude_and_codex() {
+        // claude + codex가 pull 가능(codex는 bypass+지시로 read-only 유지). 나머지는 push 폴백.
         assert!(is_mcp_capable("claude"));
-        assert!(!is_mcp_capable("codex"));
+        assert!(is_mcp_capable("codex"));
         assert!(!is_mcp_capable("ollama"));
         assert!(!is_mcp_capable("opencode"));
     }

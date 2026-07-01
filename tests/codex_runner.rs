@@ -27,9 +27,8 @@ fn codex_runner_spawns_and_parses_fixture() {
     let runner = CodexRunner::with_bin(&fixture_bin());
     let input = RunInput {
         prompt: "이 설계 어떤가요?".into(),
-        model: None,
-        project_path: None,
         mode: RunMode::ReadOnly,
+        ..Default::default()
     };
     let out = runner.run(&input).expect("run ok");
     assert_eq!(out.content, "fixture 응답");

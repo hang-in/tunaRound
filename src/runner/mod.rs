@@ -7,17 +7,21 @@ pub mod http;
 pub mod opencode;
 
 /// 한 턴 입력. v1은 매 턴 전사를 prompt에 주입하므로 resume 토큰은 두지 않는다.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct RunInput {
     pub prompt: String,
     pub model: Option<String>,
     pub project_path: Option<String>,
     pub mode: RunMode,
+    /// 이 턴이 pull 모드(포인터 프롬프트 + 에이전트가 MCP로 전사 당김)인지.
+    /// codex는 pull+ReadOnly일 때 샌드박스를 풀어 MCP 승인을 통과시키므로 러너가 알아야 한다.
+    pub pull: bool,
 }
 
 /// 말하기 턴(읽기 전용) vs 사람이 지목한 쓰기 턴. 쓰기 하드 분리.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RunMode {
+    #[default]
     ReadOnly,
     Write,
 }

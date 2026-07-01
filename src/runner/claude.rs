@@ -241,7 +241,7 @@ mod tests {
 
     #[test]
     fn args_have_stream_json_and_prompt() {
-        let input = RunInput { prompt: "이 설계 어떤가요?".into(), model: None, project_path: None, mode: RunMode::ReadOnly };
+        let input = RunInput { prompt: "이 설계 어떤가요?".into(), mode: RunMode::ReadOnly, ..Default::default() };
         let args = build_claude_args(&input, None);
         let joined = args.join(" ");
         assert!(joined.contains("-p 이 설계 어떤가요?"));
@@ -250,7 +250,7 @@ mod tests {
 
     #[test]
     fn args_write_mode_skips_permissions() {
-        let input = RunInput { prompt: "p".into(), model: Some("claude-x".into()), project_path: None, mode: RunMode::Write };
+        let input = RunInput { prompt: "p".into(), model: Some("claude-x".into()), mode: RunMode::Write, ..Default::default() };
         let joined = build_claude_args(&input, None).join(" ");
         assert!(joined.contains("--dangerously-skip-permissions"));
         assert!(joined.contains("--model claude-x"));
@@ -258,7 +258,7 @@ mod tests {
 
     #[test]
     fn args_with_mcp_config_appends_flag() {
-        let input = RunInput { prompt: "q".into(), model: None, project_path: None, mode: RunMode::ReadOnly };
+        let input = RunInput { prompt: "q".into(), mode: RunMode::ReadOnly, ..Default::default() };
         let json = r#"{"mcpServers":{"tuna-search":{"command":"/usr/bin/tunaround","args":["--mcp-search","--db","/tmp/t.db"]}}}"#;
         let args = build_claude_args(&input, Some(json));
         let joined = args.join(" ");
@@ -397,7 +397,7 @@ mod tests {
         let bin = fake_sleep_bin("tuna_fake_sleep_claude");
         let r =
             ClaudeRunner::with_bin(&bin).with_idle_timeout(std::time::Duration::from_millis(150));
-        let input = RunInput { prompt: "x".into(), model: None, project_path: None, mode: RunMode::ReadOnly };
+        let input = RunInput { prompt: "x".into(), mode: RunMode::ReadOnly, ..Default::default() };
         assert!(matches!(r.run(&input), Err(RunError::Timeout(_))));
     }
 }

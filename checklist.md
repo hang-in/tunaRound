@@ -212,6 +212,16 @@
 - [ ] ⚠ 라이브 미검증: codex exec 승인 이슈로 codex MCP 도구 호출은 여전히 막힘(pull=claude 전용 결정). bearer는 인증 배선 완결이나 codex 도구사용 활성화는 별개(승인 심층조사 후속)
 ### C. abstraction/anchors 생성 파이프라인 (별도 세션, 에이전트 요약 설계 필요)
 
+## codex pull 활성화 (behavioral read-only, 2026-07-01 세션5)
+> 근거: codex exec는 read-only 샌드박스 유지한 채 MCP 승인 불가(업스트림 #24135). 유일 우회=--dangerously-bypass-approvals-and-sandbox(샌드박스 제거). codex는 규칙 준수가 강해 read-only를 지시로 강제 가능(동구님 통찰). 결정: 프롬프트 지시 주입 + pull+ReadOnly+MCP일 때만 발동.
+- [x] is_mcp_capable에 codex 추가(claude|codex) + 테스트/주석 갱신
+- [x] RunInput에 pull: bool + Default 파생(RunMode도 Default=ReadOnly). run_round가 per-seat pull로 채움. 나머지 리터럴은 ..Default::default()
+- [x] codex: build_codex_args(input, mcp_args, bypass). ReadOnly && pull && (search_url|search_db) → `--dangerously-bypass-approvals-and-sandbox`(read-only 대체). Write=workspace-write, 비pull ReadOnly=read-only 유지
+- [x] READONLY_DIRECTIVE를 bypass 시 codex 프롬프트에 prepend
+- [x] 테스트: args_readonly_bypass_replaces_sandbox · is_mcp_capable(claude|codex) · 리터럴 갱신
+- [x] 검증: 기본 161 / features 175 pass, clippy 클린
+- [ ] ⚠ 라이브(미실행): codex가 read_transcript로 pull하고 bypass 상태서도 편집 안 하는지(규칙 준수) 실측. 실 codex + core 필요
+
 ## v2 백로그 (착수 전 결정 필요)
 - [~] 분리 터미널 A2A 협업 — (A) 설계로 승격(위), 자율(B)은 Stage 4로 분리
 - [x] 신규 엔진 러너(HTTP): ollama·lmstudio·openai (Plan 17 done). opencode CLI 참가자는 후속(외부 CLI 통합)

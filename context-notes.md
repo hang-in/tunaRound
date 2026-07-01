@@ -466,4 +466,27 @@
   - **⚠ 라이브 미검증 + 한계**: 이전 결정대로 codex exec는 MCP 도구 호출 승인이 막혀 pull=claude 전용. bearer는 codex의 원격 서버 인증 배선을 완결하나, codex가 실제로 search_context/read_transcript를 호출하려면 승인 문제가 별도로 풀려야 함. 즉 이 커밋은 "인증 준비 완료"지 "codex 원격 pull 작동"은 아님. 라이브 e2e는 승인 해소 후.
 - **abstraction/anchors(C)**: 별도 세션. message_validity 컬럼은 있으나 채우는 로직(에이전트 요약/앵커 추출) 설계 필요. set_annotation은 준비됨.
 
+## 2026-07-01 세션5: codex 실행 모드 조사(pull=claude-only 원인 확정, 업스트림 근거)
+
+- **배경**: 동구님이 "codex는 -p 외 다른 모드가 있고 tunaFlow가 그걸 쓴다, 업스트림 참고하라" 지적. codex pull=claude-only 결정 재검토.
+- **확인(설치 codex-cli 0.142.5)**:
+  - `-p`는 codex에선 `--profile`(config profile)이지 claude의 print 아님. codex 비대화형=`exec`. 우리 러너는 `codex exec --json --sandbox <mode> -`(정상적인 모드 선택).
+  - codex 서브커맨드: exec / app-server[experimental] / exec-server[EXPERIMENTAL] / mcp / mcp-server / remote-control. `--full-auto`는 0.142.5 exec엔 없음(구 tunaFlow가 쓰던 것, 게다가 full-auto=workspace-write라 read-only 아님).
+  - 승인 모델=프로젝트 `[projects."path"] trust_level` + `approval_policy` + `sandbox`. `-c approval_policy="never"`는 예전 시도서 MCP 도구 "사용자 취소" 못 막음.
+- **업스트림 확정(핵심)**: openai/codex **issue #24135** = "codex exec: MCP 도구 호출을 --dangerously-bypass-approvals-and-sandbox 없이 비대화형 허용 불가". `approval_policy=never`·`mcp_approval_policy=never`·`tools_require_approval=false`·`trusted_mcp_servers` 전부 무효. 유일 우회=`--dangerously-bypass-approvals-and-sandbox`(샌드박스까지 제거). **즉 우리 "codex exec에서 pull 불가"는 우리 버그 아니라 codex 제약이 맞았음.**
+- **tunaFlow의 실제 방식**: (1) 구 exec `--full-auto`, (2) 현 `codex app-server`(영속 WS/JSON-RPC v2, codex_app_server.rs). **둘 다 read-only 유지 안 함**: app-server도 `thread/start`에 `approvalPolicy:"never" + sandbox:"danger-full-access"`(claude --dangerously-skip-permissions 등가) 사용. 즉 tunaFlow는 codex에 풀 액세스를 주는 트레이드오프를 택함.
+- **우리 함의(결정 필요)**: codex pull 활성화 = read-only 포기(빠름·불안전) 또는 app-server + 선택적 승인 구현(정석·큼=Stage 3e).
+  - 옵션A: exec에 `--dangerously-bypass-approvals-and-sandbox`(또는 app-server danger-full-access). ~1줄로 오늘 pull 작동하나 **codex ReadOnly 좌석이 파일편집·쉘 가능=read-only fail-safe 붕괴**(우리 제품 핵심 가치와 충돌). 비권장.
+  - 옵션B: `codex app-server` 영속 러너 포팅 + `approvalPolicy=on-request`류로 per-tool 승인 이벤트를 받아 **MCP 읽기 도구만 프로그래밍적 승인, 쓰기/쉘은 거부**. read-only 의도 보존. 상당한 신규 작업(WS 클라이언트+프로토콜+승인 이벤트 루프), = Stage 3e 영속 codex. tunaFlow는 이 선택적 승인까진 안 하고 그냥 never+full-access.
+  - **결론(현시점)**: codex pull=claude-only 유지가 정당(문서화됨). 옵션B(app-server 선택적 승인)를 Stage 3e로 스케줄. bearer-env 커밋은 exec에선 무의미하나 app-server 원격 인증에 재사용되므로 forward-useful.
+
+## 2026-07-01 세션5: codex pull 활성화(behavioral read-only) 구현
+
+- **결정(동구님)**: codex는 규칙 준수가 강해(Claude/Gemini와 달리 명시적 unlock 요청도 안 어김) read-only를 샌드박스가 아니라 지시로 강제 가능. → 옵션A를 채택하되 안전하게: (1)강제수단=프롬프트 지시 주입, (2)발동=pull+ReadOnly+MCP일 때만.
+- **구현**: is_mcp_capable=claude|codex. RunInput에 `pull: bool`(+Default 파생, RunMode Default=ReadOnly)로 run_round가 per-seat pull(ctx_mode==Pull && is_mcp_capable)을 러너까지 전파. codex `build_codex_args(input, mcp_args, bypass)`: `ReadOnly && input.pull && (search_url|search_db)`이면 `--dangerously-bypass-approvals-and-sandbox`로 `--sandbox read-only` 대체(exec의 MCP 승인 우회 유일 수단). 같은 조건에서 프롬프트에 `READONLY_DIRECTIVE`(편집·변경성 명령 금지, 예외 없음) 접두. Write=workspace-write, 비pull ReadOnly=read-only 유지(불변).
+- **트레이드오프(수용)**: bypass는 fs/네트워크/셸 전부 개방 → read-only가 하드(샌드박스)→소프트(codex 규칙 준수)로 하강. pull+ReadOnly+MCP로 발동 범위 최소화. 잔여 리스크=codex가 규칙 무시 시 실제 편집 가능(관측상 안 일어남 전제).
+- **검증**: 기본 161 / features 175 pass, clippy 클린. 신규 테스트 args_readonly_bypass_replaces_sandbox + is_mcp_capable(claude|codex).
+- **⚠ 라이브 미실행**: codex가 실제 read_transcript로 pull하는지 + bypass에서도 편집 안 하는지 실측 필요(실 codex + core). 이전 "pull=claude only" 결정을 근거와 함께 뒤집는 변경이라 라이브 확인 권장.
+- **관련**: 이번에 codex도 pull 가능해지며 세션4의 bearer-env(원격 HTTP MCP 인증)가 비로소 exec 경로에서도 의미. 단 원격 코어+bearer 조합 라이브는 별도.
+
 - **범위**: 스키마 v5 + INSERT 2경로 created_at + rerank recency + created_at 읽기 + 테스트(마이그레이션·save_session created_at 불변·recency 동작·기존 랭킹 불변). 외부 백엔드/코퍼스 불요, 자체 완결.

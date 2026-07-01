@@ -131,9 +131,8 @@ mod tests {
     fn args_have_run_json_and_model() {
         let input = RunInput {
             prompt: "이 설계 어때?".into(),
-            model: None,
-            project_path: None,
             mode: RunMode::ReadOnly,
+            ..Default::default()
         };
         let args = build_opencode_args(&input, Some("ollama-cloud/gemma3:4b"));
         let j = args.join(" ");
