@@ -210,7 +210,11 @@
 - [x] 단위테스트: with_search_token_wires_bearer_env_not_argv · no_token_means_no_bearer_wiring + 기존 url 테스트를 build_mcp_wiring 직접 호출로 강화
 - [x] 검증: 기본 160 / features 174 pass, clippy 클린. A/B 커밋 분리
 - [ ] ⚠ 라이브 미검증: codex exec 승인 이슈로 codex MCP 도구 호출은 여전히 막힘(pull=claude 전용 결정). bearer는 인증 배선 완결이나 codex 도구사용 활성화는 별개(승인 심층조사 후속)
-### C. abstraction/anchors 생성 파이프라인 (별도 세션, 에이전트 요약 설계 필요)
+### C. abstraction/anchors 생성 파이프라인 → 보류(2026-07-01 세션5)
+> 결정 B: 결정적(first_clause) 버전은 carry_forward_digest와 중복=저가치, 에이전트(LLM) 요약은 진짜 가치나 트리거·비용 설계 필요=큼. 실사용에서 "retrieved 주입이 무겁다" 신호 나오면 A(에이전트 요약)로 착수(YAGNI). 지금은 억지 결정적 버전 안 만듦.
+
+### read-only 강제 수준 (2026-07-01 세션5 방침)
+> 동구님: read-only는 하드(샌드박스)로 꼭 지킬 필요 없음. 프론티어 모델은 지시를 잘 따르고, 1년전 저성능 LLM/Gemini나 안 지킴. → codex bypass+지시(behavioral) posture 유지가 정답. codex app-server(Stage 3e)를 "하드 read-only" 목적으로 밀어붙이지 않음.
 
 ## codex pull 활성화 (behavioral read-only, 2026-07-01 세션5)
 > 근거: codex exec는 read-only 샌드박스 유지한 채 MCP 승인 불가(업스트림 #24135). 유일 우회=--dangerously-bypass-approvals-and-sandbox(샌드박스 제거). codex는 규칙 준수가 강해 read-only를 지시로 강제 가능(동구님 통찰). 결정: 프롬프트 지시 주입 + pull+ReadOnly+MCP일 때만 발동.
