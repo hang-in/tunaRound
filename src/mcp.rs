@@ -106,8 +106,19 @@ impl TunaSearchServer {
         &self,
         Parameters(p): Parameters<SearchParams>,
     ) -> Result<CallToolResult, McpError> {
+        // retrieve는 SQLite 락 + (semantic 시) 동기 임베딩 HTTP 호출이라 blocking이다.
+        // async executor 스레드를 막지 않도록 spawn_blocking으로 넘긴다.
+        let retriever = Arc::clone(&self.retriever);
+        let query = p.query;
+        let limit = p.limit.unwrap_or(10).min(50);
         let hits: Vec<Utterance> =
-            self.retriever.retrieve(&p.query, p.limit.unwrap_or(10).min(50));
+            match tokio::task::spawn_blocking(move || retriever.retrieve(&query, limit)).await {
+                Ok(h) => h,
+                Err(e) => {
+                    eprintln!("[tunaRound] search_context blocking 태스크 실패(빈 결과 폴백): {e}");
+                    Vec::new()
+                }
+            };
         let text = if hits.is_empty() {
             "검색 결과 없음".to_string()
         } else {
