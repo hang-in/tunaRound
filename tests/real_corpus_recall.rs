@@ -131,13 +131,12 @@ fn real_corpus_fts_recall() {
     println!("{:-<94}", "");
     println!();
 
-    // 실코퍼스 baseline floor(측정값 R@5 0.878 / P@5 0.494, lindera 결정적). 여유를 둔 회귀 가드.
-    // ⚠ 실발견: "리프레시 토큰 어디 저장"(gold 20) R@5 0.0 = 한국어 외래어 "리프레시"와 영어 "refresh"
-    //   음역 갭을 FTS 형태소가 못 이음(외래어 표기 정규화 미구현). auth 질의가 검색-인프라 발언을
-    //   distractor로 끌어 P 하락. 쉬운 코퍼스(0.958)가 숨긴 실난이도 → 확장 코퍼스가 노출.
-    //   음역 갭이 하이브리드(다국어 임베딩)로 메워지는지는 real_corpus_hybrid_recall(수동)에서 잰다.
-    assert!(mr5 >= 0.80, "mean recall@5 회귀: {mr5:.3} < 0.80 (실코퍼스 baseline 0.878)");
-    assert!(mp5 >= 0.42, "mean precision@5 회귀: {mp5:.3} < 0.42 (실코퍼스 baseline 0.494)");
+    // 실코퍼스 baseline floor(측정값 R@5 0.944 / P@5 0.508, lindera 결정적). 여유를 둔 회귀 가드.
+    // 외래어 음역 병기 색인(loanword_aliases) 적용 후: "리프레시 토큰 어디 저장"(gold 20) R@5 0.0→1.0
+    //   (질의 리프레시→refresh 확장이 영어 발언과 이어짐). FTS R@5 0.878→0.944, MRR만 0.900→0.869
+    //   (OR 확장 노이즈=recall 이득의 대가, top-k 주입엔 수용). 하이브리드는 real_corpus_hybrid_recall.
+    assert!(mr5 >= 0.88, "mean recall@5 회귀: {mr5:.3} < 0.88 (실코퍼스 baseline 0.944)");
+    assert!(mp5 >= 0.45, "mean precision@5 회귀: {mp5:.3} < 0.45 (실코퍼스 baseline 0.508)");
 }
 
 /// FTS-only vs 하이브리드(다국어 임베딩) 실코퍼스 비교. 특히 외래어 음역 갭(리프레시↔refresh)을

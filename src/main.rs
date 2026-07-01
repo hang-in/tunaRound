@@ -234,6 +234,8 @@ fn main() {
                     eprintln!("[mcp-search] 토크나이저 실패, 폴백: {e}");
                     Box::new(|s: &str| {
                         let mut toks = tunaround::search::tokenize_fallback(s);
+                        let al: Vec<String> = toks.iter().flat_map(|t| tunaround::search::loanword_aliases(t)).collect();
+                        toks.extend(al);
                         toks.sort();
                         toks.dedup();
                         toks.into_iter().map(|t| format!("{t}*")).collect::<Vec<_>>().join(" ")
@@ -244,6 +246,8 @@ fn main() {
         #[cfg(not(feature = "morphology"))]
         let tok: Box<dyn Fn(&str) -> String + Send + Sync> = Box::new(|s: &str| {
             let mut toks = tunaround::search::tokenize_fallback(s);
+            let al: Vec<String> = toks.iter().flat_map(|t| tunaround::search::loanword_aliases(t)).collect();
+            toks.extend(al);
             toks.sort();
             toks.dedup();
             toks.into_iter().map(|t| format!("{t}*")).collect::<Vec<_>>().join(" ")

@@ -31,9 +31,14 @@ pub trait Tokenizer: Send + Sync {
 
     /// 질의용 FTS5 표현: 형태소+raw 토큰 distinct에 prefix(*) 붙여 OR. 빈 입력은 빈 문자열.
     /// OR+bm25 조합으로 리콜 보장(다토큰 매치 문서가 bm25 상위로 올라 정밀도 보존).
+    /// 외래어 음역 병기 확장(리프레시→refresh 등)으로 교차스크립트 갭을 메운다(임베딩도 못 잇는 케이스).
     fn fts_query(&self, text: &str) -> String {
         let mut toks = self.tokenize(text);
         toks.extend(self.raw_tokens(text));
+        // 음역 alias는 원 토큰들 기준으로 모아서 추가(확장 토큰이 다시 확장되지 않도록 사후 추가).
+        let aliases: Vec<String> =
+            toks.iter().flat_map(|t| super::loanword_aliases(t)).collect();
+        toks.extend(aliases);
         toks.sort();
         toks.dedup();
         toks.into_iter().map(|t| format!("{t}*")).collect::<Vec<_>>().join(" OR ")

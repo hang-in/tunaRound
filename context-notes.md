@@ -520,3 +520,9 @@
 - **가설**: 외래어 음역 갭(리프레시↔refresh)은 FTS-only 한계고 다국어 임베딩(qwen3/bge-m3) 하이브리드가 메울 것.
 - **실측(real_corpus_hybrid_recall, #[ignore], qwen3-embedding)**: 하이브리드 mean R@5 0.933/MRR 0.933 (FTS-only 0.878/0.900보다 상승). 동의어 갭 회복 확인: "모델 바꾸면 재색인" 0.5→1.0, "토큰 회전 필요한가" 0.667/0.5→1.0/1.0. **그러나 "리프레시 토큰 어디 저장"은 하이브리드도 R@5 0.0**(발언20=access메모리/refresh keychain/SPA httpOnly, 영어 조밀). 관련 refresh-토큰 발언(19/21/23, 한국어 조밀)이 위로, 정작 storage 답(20)은 top5 밖.
 - **결론**: 다국어 임베딩은 **동의어·의역**은 잘 잇지만, **한국어 로안워드 질의 ↔ 영어term 조밀 발언**의 교차스크립트+코드믹싱은 못 이음(FTS·벡터 둘 다). → 이 케이스엔 **어휘층 병기(alias) 색인**이 직접적. ES synonym 필터 패턴을 토크나이저에 이식(리프레시↔refresh 등 개발 외래어 사전, 양방향 index+query 확장). 결정적·고정밀, 라이브러리 불요(음역 자동화=Knight&Graehl/NEWS 태스크지만 개인도구엔 과함, 로마자변환 라이브러리는 리프레시→ripeuresi라 refresh와 무관=해법 아님).
+
+## 2026-07-02: 외래어 음역 병기 색인 구현 (로안워드 갭 해소)
+
+- **구현**: search/mod.rs LOANWORD_GROUPS(음역 페어 32그룹: refresh↔리프레시, embedding↔임베딩 등, 모호단음절 풀/락/큐 제외) + loanword_aliases(token). tokenizer.rs fts_query(default trait)가 질의 토큰별 alias를 사후 추가(index 무변경=재색인 불요, 모든 백엔드 공유). main.rs 비morphology fallback 2곳도 동일 확장. 번역(검색↔search)은 제외=임베딩 담당(noise 회피).
+- **효과(실측)**: 목표 갭 해소 - "리프레시 토큰 어디 저장" R@5 0.0→1.0(질의 리프레시→refresh 확장이 영어 조밀 발언20과 이어짐). FTS mean R@5 0.878→**0.944**, P@5 0.494→0.508. 하이브리드 R@5 0.933→**0.978**. 대가=MRR 소폭↓(FTS 0.900→0.869, hyb 0.933→0.883): OR 확장이 상위 랭크 흔듦, top-k 주입 용도엔 수용(recall 우선). **합성 코퍼스(search_recall) R@5 0.857 불변**=기존 훼손 없음. 기본 164 pass(loanword 단위 3 추가), clippy 클린.
+- **설계 판단**: 음역만 겨냥(의역은 임베딩이 이미 처리 실측). 질의확장 방식(index 불변). 자동 음역모델(Knight&Graehl/NEWS) 비채택=개인도구 과함. 흔한 공통어(토큰/token) alias는 noise 대가 있으나 소코퍼스 과적합 회피 위해 유지(향후 실사용서 재튜닝 여지). floor R@5>=0.88, P@5>=0.45로 상향.
