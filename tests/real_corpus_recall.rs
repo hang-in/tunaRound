@@ -135,6 +135,58 @@ fn real_corpus_fts_recall() {
     // ⚠ 실발견: "리프레시 토큰 어디 저장"(gold 20) R@5 0.0 = 한국어 외래어 "리프레시"와 영어 "refresh"
     //   음역 갭을 FTS 형태소가 못 이음(외래어 표기 정규화 미구현). auth 질의가 검색-인프라 발언을
     //   distractor로 끌어 P 하락. 쉬운 코퍼스(0.958)가 숨긴 실난이도 → 확장 코퍼스가 노출.
+    //   음역 갭이 하이브리드(다국어 임베딩)로 메워지는지는 real_corpus_hybrid_recall(수동)에서 잰다.
     assert!(mr5 >= 0.80, "mean recall@5 회귀: {mr5:.3} < 0.80 (실코퍼스 baseline 0.878)");
     assert!(mp5 >= 0.42, "mean precision@5 회귀: {mp5:.3} < 0.42 (실코퍼스 baseline 0.494)");
+}
+
+/// FTS-only vs 하이브리드(다국어 임베딩) 실코퍼스 비교. 특히 외래어 음역 갭(리프레시↔refresh)을
+/// 벡터가 메우는지 본다. Ollama 터널(11435, TUNAROUND_EMBED_MODEL) 필요.
+/// cargo test --features "semantic morphology" --test real_corpus_recall -- --ignored --nocapture
+#[cfg(feature = "semantic")]
+#[test]
+#[ignore]
+fn real_corpus_hybrid_recall() {
+    use tunaround::orchestrator::ContextRetriever;
+    use tunaround::store::embedding::OllamaEmbedder;
+    use tunaround::store::retriever::SqliteRetriever;
+
+    let path = std::env::temp_dir().join("tuna_real_hybrid.db");
+    let _ = std::fs::remove_file(&path);
+    let p = path.to_str().unwrap();
+    let tok = create_tokenizer("lindera").unwrap();
+    let store_w = SqliteStore::open(p).unwrap();
+    let ss = corpus();
+    store_w.save_session("real", &ss, |t| tok.fts_index(t)).unwrap();
+    let embedder = OllamaEmbedder::from_env();
+    store_w.index_vectors("real", &ss, &embedder).expect("index_vectors (터널?)");
+    drop(store_w);
+
+    let id_of = |c: &str| -> Option<u64> { ss.messages.iter().find(|x| x.content == c).map(|x| x.id) };
+    let store_fts = SqliteStore::open(p).unwrap();
+    let tok2 = create_tokenizer("lindera").unwrap();
+    let hybrid = SqliteRetriever::new(
+        SqliteStore::open(p).unwrap(),
+        Box::new(move |t: &str| tok2.fts_query(t)),
+        Some(Box::new(OllamaEmbedder::from_env())),
+    );
+
+    const K: usize = 5;
+    let (mut fr, mut fm, mut hr, mut hm) = (0.0f64, 0.0, 0.0, 0.0);
+    println!("\n{:-<80}", "");
+    println!("{:<26} {:>7} {:>7} {:>7} {:>7}  종류", "질의", "ftsR", "ftsM", "hybR", "hybM");
+    println!("{:-<80}", "");
+    for (q, gold, kind) in QUERIES {
+        let fts_ids: Vec<u64> = store_fts.search(&tok.fts_query(q), K).unwrap_or_default().iter().map(|h| h.msg_id).collect();
+        let hyb_ids: Vec<u64> = hybrid.retrieve(q, K).iter().filter_map(|u| id_of(&u.content)).collect();
+        let (a, b) = (recall_at_k(&fts_ids, gold, K), mrr(&fts_ids, gold));
+        let (c, d) = (recall_at_k(&hyb_ids, gold, K), mrr(&hyb_ids, gold));
+        fr += a; fm += b; hr += c; hm += d;
+        println!("{q:<26} {a:>7.3} {b:>7.3} {c:>7.3} {d:>7.3}  {kind}");
+    }
+    let n = QUERIES.len() as f64;
+    println!("{:-<80}", "");
+    println!("{:<26} {:>7.3} {:>7.3} {:>7.3} {:>7.3}  (mean, n={})", "MEAN", fr / n, fm / n, hr / n, hm / n, QUERIES.len());
+    println!("{:-<80}", "");
+    let _ = std::fs::remove_file(&path);
 }
