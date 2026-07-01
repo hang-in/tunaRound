@@ -2,6 +2,13 @@
 
 > 작업 중 결정과 근거. 계속 append. (규율 #7) 다음 세션이 결정을 재유도하지 않게.
 
+## 2026-07-01 step 7 완료: /explain 검색 디버그
+
+- **ContextRetriever::debug_retrieve(query, limit, current_session) default 메서드**(기본은 결과 목록만). SqliteRetriever가 리치 버전: 질의→**토큰화(fts_query 결과)**→후보별 [msg_id, session, **bm25 점수**, valid_state, cur-session 표시] + 스니펫. 한국어 토큰화·랭킹 디버깅 가시성.
+- REPL `/explain <질의>` 커맨드(--db 필요). /help 갱신.
+- **검증**: 기본 158 pass, clippy 클린. debug_retrieve가 토큰화·bm25·유효성·현재세션 표시 확인.
+- 다음 = step 8(reindex/lint 명령).
+
 ## 2026-07-01 step 5b 완료: 분기/세션 인지 랭킹 (Plan 32)
 
 - **문제(아키텍트 리뷰 약점3)**: 검색이 분기 비인지 → checkout으로 버려진 분기 발언이 retrieve로 끌려옴.

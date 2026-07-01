@@ -61,6 +61,18 @@ pub trait ContextRetriever: Send + Sync {
     fn retrieve_ctx(&self, query: &str, limit: usize, _current_session: &str) -> Vec<Utterance> {
         self.retrieve(query, limit)
     }
+
+    /// 검색 디버그 출력(질의→토큰화→히트 score/유효성). /explain·search_context explain용(step 7).
+    /// 기본 구현은 점수/토큰화 없이 결과 목록만(리치 버전은 SqliteRetriever가 제공).
+    fn debug_retrieve(&self, query: &str, limit: usize, current_session: &str) -> String {
+        let hits = self.retrieve_ctx(query, limit, current_session);
+        let mut out = format!("질의: {query}\n결과({}건):\n", hits.len());
+        for u in &hits {
+            let snippet: String = u.content.chars().take(60).collect();
+            out.push_str(&format!("  {}: {}\n", u.speaker, snippet));
+        }
+        out
+    }
 }
 
 /// 세션 전사를 읽어 오는 추상(코어를 백엔드로 노출하는 오케스트레이션 primitive).

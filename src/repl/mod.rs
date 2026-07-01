@@ -38,6 +38,8 @@ pub enum Command {
     Write { engine: String, text: String },
     Debate { turns: usize, topic: String },
     Search(String),
+    /// 검색 디버그: 질의→토큰화→히트 bm25/유효성 표시.
+    Explain(String),
     Branches,
     Checkout(u64),
     /// 발언을 superseded로 표시(선택적으로 대체 발언 id). 유효성 지정(HITL).
@@ -66,6 +68,10 @@ pub fn parse_command(line: &str) -> Command {
             "conclude" => Command::Conclude(arg.filter(|s| !s.is_empty())),
             "search" => match arg.filter(|s| !s.is_empty()) {
                 Some(q) => Command::Search(q),
+                None => Command::Message(line.to_string()),
+            },
+            "explain" => match arg.filter(|s| !s.is_empty()) {
+                Some(q) => Command::Explain(q),
                 None => Command::Message(line.to_string()),
             },
             "branches" | "tree" => Command::Branches,
@@ -493,7 +499,7 @@ impl Session {
             Command::Quit => StepOutcome::Exit,
             Command::Noop => StepOutcome::Noop,
             Command::Help => StepOutcome::Print(
-                "메시지를 입력하면 두 에이전트가 응답합니다. @engine 메시지로 한 자리만 지목(읽기), @engine! 메시지로 쓰기 턴(에이전트가 레포 편집), /debate [n] <주제>로 에이전트 N턴 자동 교환(기본 3, 최대 10), /conclude [engine] 종합, /save [경로] 결과 저장, /search <질의>로 인덱스 검색(--db 필요), /branches 트리 목록, /checkout <id> 분기 전환, /supersede <id> [<대체id>] 발언을 대체됨으로 표시, /reject <id> 발언을 기각으로 표시(검색 제외), /quit 종료.".into(),
+                "메시지를 입력하면 두 에이전트가 응답합니다. @engine 메시지로 한 자리만 지목(읽기), @engine! 메시지로 쓰기 턴(에이전트가 레포 편집), /debate [n] <주제>로 에이전트 N턴 자동 교환(기본 3, 최대 10), /conclude [engine] 종합, /save [경로] 결과 저장, /search <질의>로 인덱스 검색(--db 필요), /explain <질의>로 검색 디버그(토큰화·bm25·유효성), /branches 트리 목록, /checkout <id> 분기 전환, /supersede <id> [<대체id>] 발언을 대체됨으로 표시, /reject <id> 발언을 기각으로 표시(검색 제외), /quit 종료.".into(),
             ),
             Command::Save(path) => StepOutcome::Save {
                 path: path.unwrap_or_else(|| DEFAULT_SAVE_PATH.to_string()),
@@ -592,6 +598,13 @@ impl Session {
                             StepOutcome::Print(format!("검색 결과({}건):\n\n{}", hits.len(), render(&hits)))
                         }
                     }
+                }
+            }
+            Command::Explain(q) => {
+                const EXPLAIN_K: usize = 10;
+                match &self.retriever {
+                    None => StepOutcome::Print("검색이 비활성화돼 있습니다. --db <경로>로 실행하세요.".into()),
+                    Some(r) => StepOutcome::Print(r.debug_retrieve(&q, EXPLAIN_K, &self.session_id)),
                 }
             }
             Command::Branches => StepOutcome::Print(crate::store::tree_summary(&self.messages, self.head)),
@@ -701,6 +714,8 @@ mod tests {
         assert_eq!(parse_command("/supersede 3"), Command::Supersede { id: 3, by: None });
         assert_eq!(parse_command("/supersede 3 7"), Command::Supersede { id: 3, by: Some(7) });
         assert_eq!(parse_command("/reject 4"), Command::Reject(4));
+        assert_eq!(parse_command("/explain 검색 질의"), Command::Explain("검색 질의".into()));
+        assert_eq!(parse_command("/explain"), Command::Message("/explain".into()));
         // 인자 없으면 일반 메시지로 폴스루.
         assert_eq!(parse_command("/supersede"), Command::Message("/supersede".into()));
         assert_eq!(parse_command("/reject x"), Command::Message("/reject x".into()));

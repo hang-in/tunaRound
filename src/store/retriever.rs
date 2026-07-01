@@ -173,6 +173,38 @@ mod sqlite_retriever {
         fn retrieve_ctx(&self, query: &str, limit: usize, current_session: &str) -> Vec<Utterance> {
             self.retrieve_impl(query, limit, Some(current_session))
         }
+
+        /// 리치 디버그: 토큰화 결과 + FTS bm25 점수 + 유효성 + 분기 표시(step 7).
+        fn debug_retrieve(&self, query: &str, limit: usize, current_session: &str) -> String {
+            if query.trim().is_empty() {
+                return "질의가 비어 있습니다.".to_string();
+            }
+            let q = (self.tok)(query);
+            let store = self.store.lock().unwrap_or_else(|e| e.into_inner());
+            let hits = store.search(&q, limit * OVERFETCH).unwrap_or_default();
+            let hybrid = if self.embedder.is_some() { " (+벡터 하이브리드)" } else { "" };
+            let mut out = format!(
+                "질의: {query}\n토큰화(FTS{hybrid}): {q}\n후보({}건, 상위 {} 표시):\n",
+                hits.len(),
+                limit.min(hits.len())
+            );
+            for h in hits.iter().take(limit) {
+                let state = store
+                    .get_validity(&h.session_id, h.msg_id)
+                    .ok()
+                    .flatten()
+                    .map(|v| v.valid_state)
+                    .unwrap_or_else(|| "active".to_string());
+                let branch = if current_session == h.session_id { " cur-session" } else { "" };
+                let snippet: String = h.content.chars().take(50).collect();
+                out.push_str(&format!(
+                    "  [#{} sid={} bm25={:.3} valid={}{}] {}: {}\n",
+                    h.msg_id, h.session_id, h.score, state, branch, h.speaker, snippet
+                ));
+            }
+            out.push_str("(bm25: 낮을수록 관련 높음. valid=rejected는 제외·superseded/stale·cur-session off-branch는 강등.)");
+            out
+        }
     }
 }
 
@@ -354,6 +386,36 @@ mod tests {
         assert!(pos_active.is_some() && pos_super.is_some(), "active·superseded 모두 존재: {contents:?}");
         assert!(pos_active < pos_super, "active가 superseded보다 앞: {contents:?}");
 
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn debug_retrieve_shows_tokenization_score_and_validity() {
+        use crate::orchestrator::ContextRetriever;
+        let dir = std::env::temp_dir();
+        let path = dir.join("tuna_retriever_debug.db");
+        let _ = std::fs::remove_file(&path);
+        let p = path.to_str().unwrap();
+        let store_w = SqliteStore::open(p).unwrap();
+        store_w
+            .save_session(
+                "s",
+                &StoredSession {
+                    messages: vec![StoredMessage { id: 1, parent_id: None, speaker: "a".into(), content: "검색 랭킹".into() }],
+                    head: Some(1),
+                },
+                |t| t.to_string(),
+            )
+            .unwrap();
+        store_w.set_validity("s", 1, "superseded", None).unwrap();
+        drop(store_w);
+        let store_r = SqliteStore::open(p).unwrap();
+        let retriever = SqliteRetriever::new(store_r, Box::new(|t: &str| t.to_string()), None);
+        let out = retriever.debug_retrieve("검색", 10, "s");
+        assert!(out.contains("토큰화"), "토큰화 라인: {out}");
+        assert!(out.contains("bm25="), "bm25 점수: {out}");
+        assert!(out.contains("valid=superseded"), "유효성 표시: {out}");
+        assert!(out.contains("cur-session"), "현재세션 표시: {out}");
         let _ = std::fs::remove_file(&path);
     }
 
