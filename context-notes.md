@@ -490,3 +490,12 @@
 - **관련**: 이번에 codex도 pull 가능해지며 세션4의 bearer-env(원격 HTTP MCP 인증)가 비로소 exec 경로에서도 의미. 단 원격 코어+bearer 조합 라이브는 별도.
 
 - **범위**: 스키마 v5 + INSERT 2경로 created_at + rerank recency + created_at 읽기 + 테스트(마이그레이션·save_session created_at 불변·recency 동작·기존 랭킹 불변). 외부 백엔드/코퍼스 불요, 자체 완결.
+
+## 2026-07-01 세션5: step 6 실코퍼스 regression (seCall 복구 후)
+
+- **배경**: 앞서 seCall이 semantic 다운 + 한국어 keyword 비동작으로 막혔으나, 재시도 시 **복구됨(v0.6.4, 3142세션/53726턴, semantic+한국어 BM25 동작)**. project=tunaRound 세션들이 뜸(이 세션 dff85fb8 포함, 06-30 아키텍처리뷰 6274470d 722턴 등).
+- **코퍼스**: seCall 실 턴에서 발췌한 18발언(출처 주석 session:turn). 6274470d:175(대형 아키텍처 리뷰=형태소FTS·RRF·임베딩무효화·recency·분기·retrieved cap·kiwi unsafe 등 다논점)·37b034cb:2(캐시 content-addressed/gen-stamp)·6274470d:89(HTTP코어 bearer)·dff85fb8(codex #24135/behavioral·recency v5·debug_retrieve). 1발언=1논점으로 분해.
+- **질의**: 12개, 코퍼스 원문과 다른 표현(굴절·동의어·외래어)로 변형해 형태소 검색 실난이도 측정. tests/real_corpus_recall.rs(search_recall.rs 패턴, lindera 결정적, 하드코딩).
+- **측정 결과**: **mean R@5 0.958 / P@5 0.621 / MRR 1.000**(n=12). 합성 확장셋(0.857/0.592)보다 높고, MRR 1.0=모든 질의 첫 히트가 gold. 유일 약점=Q2 "모델 바꾸면 재색인"(재색인↔무효화 동의어 갭, R@5 0.5, 3은 찾고 11 놓침). 결론: **검색 스택이 실 한국어 설계토론 어휘(굴절·외래어·코드용어 BM25/codex/pull/bearer)에서도 품질 유지 실증.** 합성 코퍼스 대표성 우려 해소.
+- **회귀 가드**: floor R@5>=0.85, P@5>=0.55. 새 파일 clippy 클린(기존 테스트 4경고는 --tests 전용·범위밖).
+- **한계(정직)**: 18발언 소규모(검정력 제한), 라벨=Opus 도메인 판단(주관성), 발언이 주로 assistant 턴이라 문체 동질. recency 유기 검증은 step 5c 라이브로 이미 실증해 별도 테스트 생략(실 날짜 코퍼스라 향후 확장 여지).

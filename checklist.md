@@ -226,6 +226,15 @@
 - [x] 검증: 기본 161 / features 175 pass, clippy 클린
 - [x] ⚠ 라이브 e2e 통과: 실 codex 0.142.5로 --serve-mcp 코어(seed=PELICAN/이벤트소싱) + 별도 codex-only pull REPL. codex가 tuna-search MCP 호출→전사 정확 인용("코드명 PELICAN", 프롬프트에 없던 것=실제 pull) + read-only 준수(파일 변경 0). "사용자 취소" 사라짐. [ctx] mode=pull 확인
 
+## step 6 실코퍼스 regression (2026-07-01 세션5 완료, seCall 복구 후)
+> 소스=seCall project=tunaRound 실 턴(06-30~07-01). semantic+한국어 keyword 복구(v0.6.4, 3142세션).
+- [x] 실 턴 발췌: 6274470d:175(아키텍처리뷰)·37b034cb:2(캐시)·6274470d:89(코어)·dff85fb8(codex/recency). 18발언
+- [x] tests/real_corpus_recall.rs: 실 발언 코퍼스(1발언=1논점) + 12질의(굴절·동의어로 변형) + R@k/MRR/P@k. 하드코딩(search_recall 패턴)
+- [x] **측정: mean R@5 0.958 / P@5 0.621 / MRR 1.000** (합성 확장셋 0.857/0.592보다 높음). 유일 약점=재색인↔무효화 동의어(Q2 R@5 0.5)
+- [x] 회귀 floor R@5>=0.85, P@5>=0.55 (lindera 결정적). 새 파일 clippy 클린
+- [~] recency 유기 검증: step 5c 라이브 e2e로 이미 실증(별도 flaky 테스트 안 만듦). 실 날짜 코퍼스라 향후 확장 가능
+- [x] ⚠ 라벨=Opus 판단(주관성)·18발언 소규모(검정력 한계)·발언이 주로 assistant 턴(문체 동질) 명시. 결론: 검색 스택이 실 한국어 설계토론 어휘서도 품질 유지 실증
+
 ## v2 백로그 (착수 전 결정 필요)
 - [~] 분리 터미널 A2A 협업 — (A) 설계로 승격(위), 자율(B)은 Stage 4로 분리
 - [x] 신규 엔진 러너(HTTP): ollama·lmstudio·openai (Plan 17 done). opencode CLI 참가자는 후속(외부 CLI 통합)
