@@ -6,6 +6,14 @@
 
 | 문서 | 우선순위 | 상태 | 요약 |
 |---|---|---|---|
+| [v2-33-reindex-lint.md](v2-33-reindex-lint.md) | P1 | done | 로드맵 step 8: `--reindex` 서브모드(모든 세션 FTS·벡터 재생성, 모델·스키마 교체 후 복구) + SqliteStore list_sessions/index_stats. 라이브 스모크. 3071281 |
+| [v2-32-branch-aware-ranking.md](v2-32-branch-aware-ranking.md) | P1 | done | 로드맵 step 5b: 분기/세션 인지 랭킹. ContextRetriever::retrieve_ctx(default 위임) + 현재 세션 off-branch(버려진 분기) 디프리오리티(penalty +1). repl이 retrieve_ctx 호출. 08d1d5e |
+| [v2-31-validity-ranking.md](v2-31-validity-ranking.md) | P1 | done | 로드맵 step 5: 유효성 인지 랭킹(rejected 드롭·superseded/stale 강등, penalty 정렬) + ValiditySink + /supersede·/reject 커맨드(HITL). 7fe9715 |
+| [v2-30-validity-metadata.md](v2-30-validity-metadata.md) | P1 | done | 로드맵 step 4: 별도 message_validity 테이블(valid_state/superseded_by/abstraction/anchors, 스키마 v4). StoredMessage 불변(Memora식 원문/메타 분리). set_validity/set_annotation/get_validity. fb68aea |
+| [v2-29-retrieved-caps.md](v2-29-retrieved-caps.md) | P1 | done | 로드맵 step 3: retrieved 길이 cap(MAX_RETRIEVED_CHARS 2000) + session diversity cap(cap_per_session_backfill, over-fetch 4배, 단일세션 backfill로 불변). 065318d |
+| [v2-28-embedding-invalidation-key.md](v2-28-embedding-invalidation-key.md) | P1 | done | 로드맵 step 2(실버그): 임베딩 무효화 키에 model_id. Embedder::model_id + message_vectors.model_id(스키마 v3). 모델 교체 시 재임베딩(전엔 content만 해싱=stale skip). ec4ba0f |
+| [v2-27-post-turn-get-roster.md](v2-27-post-turn-get-roster.md) | P0 | done | Stage 3d: 원격 쓰기 권위. append_turn(증분 INSERT, DB id 권위) + post_turn/get_roster MCP + REPL core-sync 병합(옵션 B, adopt+append, 클로버 차단). 라이브 e2e: 원격 post_turn→흡수→claude 인용. d90d867+c28561d+f500840+8a80cfe |
+| [v2-26-front-equals-core.md](v2-26-front-equals-core.md) | P0 | done | Stage 3a-3: `--core <addr>` front=core 단일 프로세스(REPL+in-process HTTP MCP 코어). **서버는 전용 OS 스레드 block_on**(공유 rt spawn은 유휴 중 간헐 신뢰불가). 라이브 e2e. c08ad62+14f9ab2 |
 | [v2-20-opencode-runner.md](v2-20-opencode-runner.md) | P1 | done | opencode CLI 엔진 러너: `opencode run --format json` JSONL 파싱(text/step_finish) + 로스터 engine "opencode"(seat.model). 신규 의존성 0, gotcha #4 spawn. ollama cloud 검증. HTTP 엔진(17)과 함께 신규 엔진 완성. 기본 105/전체 112 pass. 7fedac2 |
 | [v2-19-enable-kiwi-windows.md](v2-19-enable-kiwi-windows.md) | P1 | done | Windows Kiwi 활성화: cfg 허용 + keep-tags base 매칭(VA-I 등). 규명=kiwi-rs auto-download 깨짐·v0.23.2 ABI crash → v0.22.2 수동 libkiwi(%LOCALAPPDATA%\kiwi, env 불필요), 미설치 시 lindera 폴백. install 스크립트+문서. **Kiwi v0.22.2 Windows 작동 검증.** fe0ec71 |
 | [v2-18-fts-recall.md](v2-18-fts-recall.md) | P1 | done | FTS 리콜 보강: raw 토큰 색인 + prefix 질의로 lindera 외래어 누락("임베딩") 메움. index/query 클로저 분리. 기존 "검색을→검색" 보존. 품질 게이지 tests/search_quality.rs. 기본 103/전체 105 pass. 45cf0c8 |

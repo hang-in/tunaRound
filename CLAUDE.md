@@ -18,14 +18,18 @@
 - **#6 새 소스 파일 첫 줄 = 역할 한국어 한 줄 주석.** Rust 예: `// 토론 라운드 프롬프트를 조립하는 순수 함수`. config 파일 제외.
 - **#7 비trivial 작업 전 plan + `checklist.md` + `context-notes.md`.** plan만 주고 코딩 요청 시 멈추고 checklist·notes 먼저 만들지 묻는다.
 
-## 현재 상태 (2026-06-30, Windows 세션 3)
+## 현재 상태 (2026-07-01, Windows 세션 4)
 
-- **세션 3: (A) 코어-백엔드 half-a2a Stage 0~3a + 코드리뷰/리팩토링.** Stage 0(검색 OR 개선·요약이월·eval 확대 → 벡터측정으로 쿼리확장/리랭커 도입취소) · Stage 1(read_transcript·세션id) · **Stage 2 push→pull 라이브검증**(토큰 80~95%↓·grounding 유지, pull=claude전용·codex=push폴백) · Stage 3 설계(Plan 25)+3a-1(`--serve-mcp` HTTP MCP 상주)+3a-2(러너 URL 접속). Batch A/B(리뷰 버그수정·리팩토링). 기본 ~128/전체 ~135 pass.
-- **v1 완료 + v2 Plan 01~19 완성.** 01~08(Mac): watchdog·로스터·협업코딩·session_bus·세션모델·Redis통합·/debate·토크나이저. 09~20(Windows): 09 SQLite+FTS5 · 10 라이브 색인 · 11 검색주입(RAG) · 12 /search · 13 벡터/하이브리드 · 14 에이전트 MCP(search_context) · 15 gotcha#4(Windows .cmd spawn) · 16 재주입축소(--recent-turns) · 17 HTTP 엔진 러너(ollama/lmstudio/openai) · 18 FTS 리콜 보강 · 19 Windows Kiwi 활성화 · 20 opencode CLI 러너. 검증: 기본 105 / `--features "semantic morphology mcp engines"` 112 pass, clippy 클린. 전부 origin/main 푸시.
-- 현행 spec: [docs/design/tunaRound-v1-design_2026-06-29.md](docs/design/tunaRound-v1-design_2026-06-29.md). 진행: [docs/plans/index.md](docs/plans/index.md)(v1 01~06, v2 01~08 done).
-- **>>> 최신 핸드오프: [docs/prompts/v2-handoff_2026-06-30_session3.md](docs/prompts/v2-handoff_2026-06-30_session3.md) 먼저 읽기 <<<** (half-a2a Stage 0~3a + 코드리뷰 + 남은 항목). 정본 방향: [docs/design/v2-A2A-core-backend_2026-06-30.md](docs/design/v2-A2A-core-backend_2026-06-30.md). 이전: [session2](docs/prompts/v2-handoff_2026-06-30_session2.md)
-- **북극성(2026-06-30):** 계층형 공유 맥락 + 능동 검색. **1차 완결**: 형태소 FTS(Kiwi v0.22.2 수동/lindera 폴백) + RAG 주입 + /search + BGE-M3 벡터/하이브리드 + 에이전트 MCP 도구 + 재주입 축소. 설계 [docs/design/v2-context-memory-direction_2026-06-30.md](docs/design/v2-context-memory-direction_2026-06-30.md). **남은 항목:** 검색 품질 추가 개선(현실 코퍼스) · 요약 carry-forward · 예시 로스터 확장 · 리치 프론트(보류). **검토할 방향:** 코어-백엔드 + 에이전트-클라이언트(A2A) - 핸드오프 ⑧-A. 신규 엔진(HTTP+opencode)·Kiwi·검색스택은 done.
-- **검증/주의:** 멀티세션 라이브 검증 통과(맥, 로컬 Redis). 임베딩=원격 Ollama(SSH `-p [사설포트]` 터널, bge-m3 dim 1024, 검증됨). **⚠️ Kiwi 런타임 버그**(libkiwi 404)->현재 lindera 실효; **Windows는 Kiwi cfg 제외=lindera만**이라 무관. 맥 정리: redis 내림·SSH터널 종료(brew redis 설치는 남음).
+- **세션 4: Stage 3a-3(front=core) + Stage 3d(원격 쓰기 권위) + 시간성·유효성 로드맵 step 2~8.** 전부 origin/main 푸시(= 3071281).
+  - **3a-3**: `--core <addr>` 단일 프로세스(REPL+in-process HTTP MCP 코어). **서버=전용 OS 스레드 block_on**(공유 rt spawn은 유휴 중 간헐 신뢰불가). 라이브 e2e.
+  - **3d(옵션 B front=core 병합)**: `append_turn`(증분·DB id 권위) + `post_turn`/`get_roster` MCP + REPL core-sync(adopt+append, 클로버 차단). 라이브 e2e: 원격 post_turn→흡수→claude 인용.
+  - **로드맵(외부 memory 프레임워크 리뷰 후, SQLite-light·graph DB 비채택)**: step2 model_id 무효화키(실버그) · step3 retrieved 길이·세션 다양성 cap · step4 message_validity 테이블(스키마 v4) · step5 유효성 랭킹+/supersede·/reject · step5b 분기/세션 인지 랭킹 · step7 /explain 디버그 · step8 --reindex.
+- **v1 완료 + v2 Plan 01~20 + 3a-2 + 세션4(3a-3·3d·step2~8) 완성.** 검증: **기본 160 / `--features "semantic morphology mcp serve"` 174 pass, clippy 클린.** 스키마 v4.
+- 현행 spec: [docs/design/tunaRound-v1-design_2026-06-29.md](docs/design/tunaRound-v1-design_2026-06-29.md). 진행: [docs/plans/index.md](docs/plans/index.md).
+- **>>> 최신 핸드오프: [docs/prompts/v2-handoff_2026-07-01_session4.md](docs/prompts/v2-handoff_2026-07-01_session4.md) 먼저 읽기 <<<** (3a-3·3d·시간성유효성 + 서버 호스팅 교훈 + 남은 항목). 정본 방향: [A2A](docs/design/v2-A2A-core-backend_2026-06-30.md) + [시간성·유효성](docs/design/v2-temporal-validity-direction_2026-07-01.md). 이전: [session3](docs/prompts/v2-handoff_2026-06-30_session3.md)
+- **⚠ 서버 호스팅 교훈**: `--core`는 메인이 동기 블로킹 REPL이라 서버를 **전용 스레드 block_on**으로 서빙해야 함(공유 rt spawn 신뢰불가). 라이브 e2e 디버깅 시 타이밍 함정(Kiwi ~3초 기동/FIFO 미flush/agent ~35초) 주의 → 준비 폴링 + 파이프 입력 + 넉넉한 타임아웃.
+- **남은 항목**: step 6 실코퍼스 regression(실제 전사 코퍼스 확보 선행, 코드만으론 불가) · step 5c recency(messages에 created_at 컬럼) · abstraction/anchors 생성 파이프라인 · codex bearer-env·codex pull 활성화 · 잠재리뷰(unsafe Send Kiwi·session_bus unbounded).
+- **검증/주의:** 임베딩=원격 Ollama(SSH `-p [사설포트]` 터널, bge-m3 dim 1024). Redis 6379(3d/랭킹엔 불요). **⚠️ Kiwi 런타임 버그**(libkiwi 404)->lindera 실효; Windows는 Kiwi cfg 제외=lindera만.
 
 ## 무엇을 만드나 (요약)
 
