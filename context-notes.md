@@ -2,6 +2,13 @@
 
 > 작업 중 결정과 근거. 계속 append. (규율 #7) 다음 세션이 결정을 재유도하지 않게.
 
+## 2026-07-01 step 5b 완료: 분기/세션 인지 랭킹 (Plan 32)
+
+- **문제(아키텍트 리뷰 약점3)**: 검색이 분기 비인지 → checkout으로 버려진 분기 발언이 retrieve로 끌려옴.
+- **수정**: ContextRetriever에 `retrieve_ctx(query, limit, current_session)` **default 메서드**(기본 retrieve 위임 → 다른 impl/MCP ripple 없음). SqliteRetriever가 penalty 기반 재랭크로 통합: rejected 드롭 / superseded·stale +2 / **현재 세션 off-branch +1**(활성경로 콘텐츠는 repl이 이미 제외하므로 남은 현재-세션 히트 ≈ 버려진 분기). 안정 정렬로 relevance 순서 보존. repl이 retrieve_ctx(topic, K, session_id) 호출.
+- **검증**: 기본 157/features 167 pass, clippy 클린. 현재세션 off-branch가 타세션보다 뒤로, 컨텍스트 없는 retrieve 불변.
+- **recency는 후속(5c)**: 메시지 타임스탬프 컬럼 없음(msg_id는 세션별이라 cross-session 비교 불가) → messages에 created_at 추가 필요. 다음 = step 7(/search --debug).
+
 ## 2026-07-01 step 5 완료: 유효성 인지 검색 랭킹 + 지정 커맨드 (Plan 31)
 
 - **랭킹(SqliteRetriever)**: 후보에 rerank_by_validity 적용 - **rejected 드롭, superseded/stale은 active 뒤로 강등**(순서 보존), active/unknown/미설정은 유지. FTS단독·RRF·폴백 모두. 유효성 미설정 시 동작 불변.

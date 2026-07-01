@@ -55,6 +55,12 @@ pub trait RunnerRegistry {
 /// topic으로 관련 과거 맥락 슬라이스를 끌어오는 경계(RunnerRegistry와 동형, 비게이트).
 pub trait ContextRetriever: Send + Sync {
     fn retrieve(&self, query: &str, limit: usize) -> Vec<Utterance>;
+
+    /// 현재 세션 컨텍스트로 분기 인지 검색(현재 세션 off-branch=버려진 분기를 디프리오리티, step 5b).
+    /// 기본 구현은 retrieve에 위임한다(컨텍스트 미지원 impl은 동작 불변).
+    fn retrieve_ctx(&self, query: &str, limit: usize, _current_session: &str) -> Vec<Utterance> {
+        self.retrieve(query, limit)
+    }
 }
 
 /// 세션 전사를 읽어 오는 추상(코어를 백엔드로 노출하는 오케스트레이션 primitive).

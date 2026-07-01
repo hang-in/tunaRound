@@ -39,35 +39,48 @@ mod sqlite_retriever {
         }
     }
 
-    /// 유효성 재랭크: rejected는 드롭, superseded/stale은 active 뒤로 강등(순서 보존).
-    /// 유효성 미설정(None)이나 active/unknown은 그대로 앞에 둔다(step 5). 제네릭 값 T는 유지.
-    fn rerank_by_validity<T>(store: &SqliteStore, items: Vec<(String, u64, T)>) -> Vec<(String, u64, T)> {
-        let mut active: Vec<(String, u64, T)> = Vec::new();
-        let mut demoted: Vec<(String, u64, T)> = Vec::new();
+    /// penalty 기반 재랭크(안정 정렬로 같은 penalty 내 relevance 순서 보존).
+    /// rejected 드롭 / superseded·stale +2 / 현재 세션 off-branch(버려진 분기) +1(step 5b).
+    /// 유효성 미설정·active·unknown은 penalty 0. current_session=None이면 분기 페널티 없음.
+    fn rerank<T>(
+        store: &SqliteStore,
+        items: Vec<(String, u64, T)>,
+        current_session: Option<&str>,
+    ) -> Vec<(String, u64, T)> {
+        let mut scored: Vec<(u32, String, u64, T)> = Vec::new();
         for (sid, mid, v) in items {
             let state = store.get_validity(&sid, mid).ok().flatten().map(|x| x.valid_state);
+            let mut penalty = 0u32;
             match state.as_deref() {
-                Some("rejected") => {} // 드롭.
-                Some("superseded") | Some("stale") => demoted.push((sid, mid, v)),
-                _ => active.push((sid, mid, v)), // active | unknown | None.
+                Some("rejected") => continue, // 드롭.
+                Some("superseded") | Some("stale") => penalty += 2,
+                _ => {} // active | unknown | None.
             }
+            if current_session == Some(sid.as_str()) {
+                // 현재 세션의 off-branch 히트(활성경로 콘텐츠는 repl이 이미 제외) = 버려진 분기.
+                penalty += 1;
+            }
+            scored.push((penalty, sid, mid, v));
         }
-        active.into_iter().chain(demoted).collect()
+        scored.sort_by_key(|(p, _, _, _)| *p); // 안정 정렬.
+        scored.into_iter().map(|(_, sid, mid, v)| (sid, mid, v)).collect()
     }
 
-    /// (session_id, Utterance) 항목을 유효성 재랭크 후 세션 다양성 cap + limit으로 마무리한다.
+    /// (session_id, Utterance) 항목을 재랭크(유효성+분기) 후 세션 다양성 cap + limit으로 마무리한다.
     fn finish(
         store: &SqliteStore,
         cands: Vec<(String, u64, Utterance)>,
         limit: usize,
+        current_session: Option<&str>,
     ) -> Vec<Utterance> {
-        let reranked = rerank_by_validity(store, cands);
+        let reranked = rerank(store, cands, current_session);
         let items: Vec<(String, Utterance)> = reranked.into_iter().map(|(sid, _, u)| (sid, u)).collect();
         crate::store::cap_per_session_backfill(items, MAX_PER_SESSION, limit)
     }
 
-    impl crate::orchestrator::ContextRetriever for SqliteRetriever {
-        fn retrieve(&self, query: &str, limit: usize) -> Vec<Utterance> {
+    impl SqliteRetriever {
+        /// retrieve/retrieve_ctx 공용 구현. current_session=Some이면 분기 인지 디프리오리티.
+        fn retrieve_impl(&self, query: &str, limit: usize, current_session: Option<&str>) -> Vec<Utterance> {
             if query.trim().is_empty() {
                 return Vec::new();
             }
@@ -90,7 +103,7 @@ mod sqlite_retriever {
                     .into_iter()
                     .map(|h| (h.session_id, h.msg_id, Utterance { speaker: h.speaker, content: h.content }))
                     .collect();
-                return finish(&store, cands, limit);
+                return finish(&store, cands, limit, current_session);
             };
 
             // FTS 결과 키 리스트 + content_map 구축.
@@ -113,7 +126,7 @@ mod sqlite_retriever {
                 Ok(v) => v,
                 Err(e) => {
                     eprintln!("[tunaRound] 쿼리 임베딩 실패(FTS 단독 폴백): {e}");
-                    return finish(&store, cands_from_map(content_map), limit);
+                    return finish(&store, cands_from_map(content_map), limit, current_session);
                 }
             };
 
@@ -122,7 +135,7 @@ mod sqlite_retriever {
                 Ok(hits) => hits,
                 Err(e) => {
                     eprintln!("[tunaRound] 벡터 검색 실패(FTS 단독 폴백): {e}");
-                    return finish(&store, cands_from_map(content_map), limit);
+                    return finish(&store, cands_from_map(content_map), limit, current_session);
                 }
             };
 
@@ -149,7 +162,16 @@ mod sqlite_retriever {
                     cands.push((key.0, key.1, u));
                 }
             }
-            finish(&store, cands, limit)
+            finish(&store, cands, limit, current_session)
+        }
+    }
+
+    impl crate::orchestrator::ContextRetriever for SqliteRetriever {
+        fn retrieve(&self, query: &str, limit: usize) -> Vec<Utterance> {
+            self.retrieve_impl(query, limit, None)
+        }
+        fn retrieve_ctx(&self, query: &str, limit: usize, current_session: &str) -> Vec<Utterance> {
+            self.retrieve_impl(query, limit, Some(current_session))
         }
     }
 }
@@ -331,6 +353,52 @@ mod tests {
         let pos_super = contents.iter().position(|c| c.contains("대체"));
         assert!(pos_active.is_some() && pos_super.is_some(), "active·superseded 모두 존재: {contents:?}");
         assert!(pos_active < pos_super, "active가 superseded보다 앞: {contents:?}");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn retrieve_ctx_demotes_current_session_offbranch() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("tuna_retriever_branch.db");
+        let _ = std::fs::remove_file(&path);
+        let p = path.to_str().unwrap();
+        let store_w = SqliteStore::open(p).unwrap();
+        store_w
+            .save_session(
+                "cur",
+                &StoredSession {
+                    messages: vec![StoredMessage { id: 1, parent_id: None, speaker: "a".into(), content: "검색 현재세션".into() }],
+                    head: Some(1),
+                },
+                |t| t.to_string(),
+            )
+            .unwrap();
+        store_w
+            .save_session(
+                "oth",
+                &StoredSession {
+                    messages: vec![StoredMessage { id: 1, parent_id: None, speaker: "b".into(), content: "검색 다른세션".into() }],
+                    head: Some(1),
+                },
+                |t| t.to_string(),
+            )
+            .unwrap();
+        drop(store_w);
+
+        let store_r = SqliteStore::open(p).unwrap();
+        let retriever = SqliteRetriever::new(store_r, Box::new(|t: &str| t.to_string()), None);
+
+        // 현재 세션="cur" → cur의 off-branch 히트가 타 세션(oth)보다 뒤로 강등.
+        let hits = retriever.retrieve_ctx("검색", 10, "cur");
+        let contents: Vec<&str> = hits.iter().map(|u| u.content.as_str()).collect();
+        let pos_other = contents.iter().position(|c| c.contains("다른세션"));
+        let pos_cur = contents.iter().position(|c| c.contains("현재세션"));
+        assert!(pos_other.is_some() && pos_cur.is_some(), "둘 다 존재: {contents:?}");
+        assert!(pos_other < pos_cur, "다른 세션이 현재세션 off-branch보다 앞: {contents:?}");
+
+        // 컨텍스트 없는 retrieve는 분기 페널티 없음(둘 다 반환).
+        assert_eq!(retriever.retrieve("검색", 10).len(), 2);
 
         let _ = std::fs::remove_file(&path);
     }

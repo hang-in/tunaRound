@@ -349,9 +349,9 @@ impl Session {
     /// retrieve_for의 path 파라미터 버전. active_path 재호출 없이 호출 가능.
     fn retrieve_for_from_path(&self, topic: &str, active: &[Utterance]) -> Vec<Utterance> {
         let Some(r) = &self.retriever else { return Vec::new(); };
-        // 활성 경로에 이미 있는 내용은 중복이므로 제외.
+        // 활성 경로에 이미 있는 내용은 중복이므로 제외. retrieve_ctx로 분기 인지(현재 세션 off-branch 디프리오리티).
         let deduped = r
-            .retrieve(topic, RETRIEVE_K)
+            .retrieve_ctx(topic, RETRIEVE_K, &self.session_id)
             .into_iter()
             .filter(|u| !active.iter().any(|a| a.content == u.content));
         // 누적 글자수가 MAX_RETRIEVED_CHARS를 넘으면 이후 발언 드롭(최소 1건은 보장, UTF-8 안전).
