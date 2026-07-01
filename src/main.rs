@@ -22,6 +22,9 @@ fn main() {
     let mut pull_context = false;
     #[cfg(feature = "sqlite")]
     let mut db_path: Option<String> = None;
+    // --reindex: 모든 세션의 FTS·벡터 인덱스를 SoR(messages)에서 재생성(모델·토크나이저 교체 후 복구).
+    #[cfg(feature = "sqlite")]
+    let mut reindex = false;
     #[cfg(feature = "mcp")]
     let mut mcp_search = false;
     // --serve-mcp <addr>: HTTP MCP 서버 상주 모드(헤드리스, REPL 없음. serve 피처 전용).
@@ -71,6 +74,11 @@ fn main() {
             "--mcp-search" => {
                 #[cfg(feature = "mcp")]
                 { mcp_search = true; }
+                i += 1;
+            }
+            "--reindex" => {
+                #[cfg(feature = "sqlite")]
+                { reindex = true; }
                 i += 1;
             }
             "--serve-mcp" => {
@@ -135,6 +143,71 @@ fn main() {
             }
             let _ = subscriber.await;
         });
+        return;
+    }
+
+    // --reindex 모드: 모든 세션의 FTS·벡터 인덱스를 messages(SoR)에서 재생성(sqlite 피처 전용).
+    #[cfg(feature = "sqlite")]
+    if reindex {
+        let db_str = match &db_path {
+            Some(p) => p.clone(),
+            None => { eprintln!("[reindex] --db <경로> 필요"); std::process::exit(1); }
+        };
+        let store = match tunaround::store::sqlite::SqliteStore::open(&db_str) {
+            Ok(s) => s,
+            Err(e) => { eprintln!("[reindex] DB 열기 실패: {e}"); std::process::exit(1); }
+        };
+        // 색인용 fts 토크나이저(fts_index: 형태소+raw).
+        #[cfg(feature = "morphology")]
+        let tok: Box<dyn Fn(&str) -> String + Send + Sync> = {
+            match tunaround::search::tokenizer::create_tokenizer("kiwi") {
+                Ok(t) => Box::new(move |s: &str| t.fts_index(s)),
+                Err(e) => {
+                    eprintln!("[reindex] 토크나이저 실패, 폴백: {e}");
+                    Box::new(|s: &str| tunaround::search::tokenize_fallback(s).join(" "))
+                }
+            }
+        };
+        #[cfg(not(feature = "morphology"))]
+        let tok: Box<dyn Fn(&str) -> String + Send + Sync> =
+            Box::new(|s: &str| tunaround::search::tokenize_fallback(s).join(" "));
+        // 벡터 임베더(semantic이면 재임베딩; model_id 키로 모델 교체 시 갱신).
+        #[cfg(feature = "semantic")]
+        let emb: Option<Box<dyn tunaround::store::embedding::Embedder>> = {
+            let endpoint = std::env::var("TUNAROUND_OLLAMA_URL")
+                .unwrap_or_else(|_| "http://127.0.0.1:11435".to_string());
+            Some(Box::new(tunaround::store::embedding::OllamaEmbedder::new(&endpoint, "bge-m3")))
+        };
+        #[cfg(not(feature = "semantic"))]
+        let emb: Option<Box<dyn tunaround::store::embedding::Embedder>> = None;
+
+        let before = store.index_stats().unwrap_or((0, 0, 0, 0, 0));
+        let sessions = match store.list_sessions() {
+            Ok(v) => v,
+            Err(e) => { eprintln!("[reindex] 세션 목록 실패: {e}"); std::process::exit(1); }
+        };
+        println!("[reindex] 세션 {}개 재색인 시작...", sessions.len());
+        let mut ok = 0usize;
+        for sid in &sessions {
+            let Ok(Some(ss)) = store.load_session(sid) else { continue; };
+            // FTS 재생성(전량 교체).
+            if let Err(e) = store.save_session(sid, &ss, |t| tok(t)) {
+                eprintln!("[reindex] {sid} FTS 재색인 실패: {e}");
+                continue;
+            }
+            // 벡터 재색인(best-effort; model_id 키로 모델 교체 시 재임베딩).
+            if let Some(e) = &emb
+                && let Err(err) = store.index_vectors(sid, &ss, e.as_ref())
+            {
+                eprintln!("[reindex] {sid} 벡터 재색인 경고: {err}");
+            }
+            ok += 1;
+        }
+        let after = store.index_stats().unwrap_or((0, 0, 0, 0, 0));
+        println!("[reindex] 완료: {ok}/{} 세션. 인덱스(전): sessions={} messages={} fts={} vectors={} validity={}",
+            sessions.len(), before.0, before.1, before.2, before.3, before.4);
+        println!("[reindex] 인덱스(후): sessions={} messages={} fts={} vectors={} validity={}",
+            after.0, after.1, after.2, after.3, after.4);
         return;
     }
 

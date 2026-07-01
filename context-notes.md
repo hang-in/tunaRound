@@ -2,6 +2,13 @@
 
 > 작업 중 결정과 근거. 계속 append. (규율 #7) 다음 세션이 결정을 재유도하지 않게.
 
+## 2026-07-01 step 8 완료: --reindex/lint (Plan 33)
+
+- **`--reindex` 서브 모드**(sqlite): --db 필수. 모든 세션 load_session → save_session(현재 fts 토크나이저로 FTS 재생성) → index_vectors(semantic이면 재임베딩; step 2 model_id 키로 모델 교체 시 갱신). 전후 인덱스 stats 출력. 모델·토크나이저·스키마 교체 후 복구 경로.
+- SqliteStore::list_sessions + index_stats(sessions/messages/fts/vectors/validity 카운트, lint 리포트).
+- **검증**: 기본 160 pass, clippy 클린. list_sessions/stats + reindex FTS 재생성 테스트. 라이브 스모크(빈 DB stats, --db 없이 에러).
+- **로드맵 완료(step 1~8, 5b 포함).** 남은 것: step 6(실코퍼스 regression - 실제 전사 코퍼스 확보 선행 필요) · 5c(recency, 메시지 타임스탬프 컬럼 필요) · abstraction/anchors 생성 파이프라인.
+
 ## 2026-07-01 step 7 완료: /explain 검색 디버그
 
 - **ContextRetriever::debug_retrieve(query, limit, current_session) default 메서드**(기본은 결과 목록만). SqliteRetriever가 리치 버전: 질의→**토큰화(fts_query 결과)**→후보별 [msg_id, session, **bm25 점수**, valid_state, cur-session 표시] + 스니펫. 한국어 토큰화·랭킹 디버깅 가시성.

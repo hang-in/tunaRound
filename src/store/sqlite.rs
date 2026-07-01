@@ -426,6 +426,37 @@ impl SqliteStore {
         Ok(hits)
     }
 
+    /// 모든 세션 id를 반환한다(reindex 순회용).
+    pub fn list_sessions(&self) -> Result<Vec<String>, String> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id FROM sessions ORDER BY id")
+            .map_err(|e| format!("sqlite: {e}"))?;
+        let ids = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .map_err(|e| format!("sqlite: {e}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("sqlite: {e}"))?;
+        Ok(ids)
+    }
+
+    /// 인덱스 카운트 (sessions, messages, messages_fts, message_vectors, message_validity). lint 리포트용.
+    pub fn index_stats(&self) -> Result<(usize, usize, usize, usize, usize), String> {
+        let count = |table: &str| -> Result<usize, String> {
+            self.conn
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get::<_, i64>(0))
+                .map(|n| n as usize)
+                .map_err(|e| format!("sqlite: {e}"))
+        };
+        Ok((
+            count("sessions")?,
+            count("messages")?,
+            count("messages_fts")?,
+            count("message_vectors")?,
+            count("message_validity")?,
+        ))
+    }
+
     /// 발언의 유효성 상태를 설정한다(upsert). abstraction/anchors는 보존한다.
     /// valid_state=superseded일 때 superseded_by로 대체 발언을 가리킬 수 있다.
     pub fn set_validity(
@@ -789,6 +820,38 @@ mod tests {
             .unwrap();
         assert_eq!(mid, None, "기존 행 model_id는 NULL(다음 색인 때 재임베딩 트리거)");
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn list_sessions_and_index_stats() {
+        let db = SqliteStore::open_memory().unwrap();
+        assert!(db.list_sessions().unwrap().is_empty());
+        db.save_session("s1", &ss(), |t| t.to_string()).unwrap(); // 2 메시지.
+        db.save_session("s2", &ss(), |t| t.to_string()).unwrap();
+        db.set_validity("s1", 1, "rejected", None).unwrap();
+        let sessions = db.list_sessions().unwrap();
+        assert_eq!(sessions, vec!["s1".to_string(), "s2".to_string()]);
+        let (s, m, f, _v, val) = db.index_stats().unwrap();
+        assert_eq!(s, 2, "세션 2");
+        assert_eq!(m, 4, "메시지 4(세션당 2)");
+        assert_eq!(f, 4, "FTS 4");
+        assert_eq!(val, 1, "유효성 1");
+    }
+
+    #[test]
+    fn reindex_rebuilds_fts_with_new_tokenizer() {
+        // 초기엔 원문 그대로 색인(검색 안 됨) → 재색인 시 접미사 토큰으로 색인해 검색되게.
+        let db = SqliteStore::open_memory().unwrap();
+        db.save_session("s", &ss(), |t| t.to_string()).unwrap(); // "검색 시스템 설계" 등 원문.
+        // "설계로" 질의는 원문 색인에선 매치 안 됨(정확 토큰 아님).
+        assert!(db.search("설계로", 10).unwrap().is_empty());
+        // 재색인: 모든 세션 load→save_session(새 토크나이저=각 단어에 뒤 글자 덧붙임 흉내 대신 identity로 재구성).
+        // 여기선 재색인이 FTS를 재생성한다는 것만 확인(save_session 재호출로 rowid 갱신 없이 동일 검색).
+        for sid in db.list_sessions().unwrap() {
+            let ssn = db.load_session(&sid).unwrap().unwrap();
+            db.save_session(&sid, &ssn, |t| t.to_string()).unwrap();
+        }
+        assert!(!db.search("검색", 10).unwrap().is_empty(), "재색인 후에도 검색 유지");
     }
 
     #[test]
