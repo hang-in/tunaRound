@@ -445,4 +445,11 @@
 - **구현 완료(미커밋)**: 스키마 v5. sqlite.rs=CREATE_MESSAGES created_at TEXT + migrate ALTER(column_exists 가드) + save_session 보존(DELETE 전 msg_id→created_at 맵 SELECT, INSERT는 COALESCE(?6, datetime('now'))) + append_turn datetime('now') + get_created_at/set_created_at. retriever.rs=rerank 2-pass(1차 validity/분기 penalty+created_at 수집+max_ts, 2차 다른세션 낡은 히트 +1) + parse_ts_approx + RECENCY_STALE_SECS=7일. let-chain으로 중첩 if 병합(clippy). 신규 테스트 3(migration_v4→v5·save_session 보존·recency 강등). **기본 163/features 177 pass, clippy 클린.** 커밋 메시지 후보: `feat(store): cross-session recency 랭킹 + created_at 컬럼 (로드맵 step 5c)`.
 - **⚠ 라이브 미검증**: created_at이 실제 REPL 경로(save_session/append_turn)에서 채워지는지, recency 강등이 실 다중세션에서 체감되는지는 미검증(단위·통합 테스트만). step 6 실코퍼스 확보 시 함께 라이브 확인 권장.
 
+## 2026-07-01 세션5: step 5c 라이브 검증(/explain 확장)
+
+- **결정**: 라이브 검증을 옵션2(창구 확장+합성 aging)로. 이유: recency는 세션 간 7일 초과 간격이 있어야 발동 → 새 라이브는 전부 오늘 타임스탬프라 유기적 관찰 불가(그건 step 6 실코퍼스 몫). `--mcp-search`는 stdio 서버라 원샷 조회 아님. `/explain`(debug_retrieve)이 REPL의 검증 창구인데 created_at/recency를 안 보여줬음.
+- **변경**: `debug_retrieve`에 `created=<날짜>` + `recency↓`(다른세션 && 후보최신 대비 7일 초과) 표시 추가. rerank와 동일 규칙(parse_ts_approx·RECENCY_STALE_SECS 공유). 신규 테스트 `debug_retrieve_marks_stale_cross_session_recency` + 기존 debug 테스트에 created= 확인 추가.
+- **라이브 결과(실 라이브러리 코드, 임시 example로 seed+8일aging 후 삭제)**: (1) plumbing=save_session이 created_at을 실 타임스탬프("2026-07-01 03:16:42")로 채움 확인. (2) /explain 출력에 aged 세션만 `created=2026-01-01 recency↓`, 최신 세션은 무표시. (3) retrieve 순서=최신("재설계")이 낡은 것("설계")보다 앞. **step 5c 랭킹·plumbing 라이브 확정.**
+- **미검증 잔여**: sqlite3 CLI 부재로 파일 직접 aging은 불가했고 example 경유. 유기적(며칠 간격 실 다세션) 관찰은 step 6로 이월. `/explain`이 이제 recency 검증 상시 창구.
+
 - **범위**: 스키마 v5 + INSERT 2경로 created_at + rerank recency + created_at 읽기 + 테스트(마이그레이션·save_session created_at 불변·recency 동작·기존 랭킹 불변). 외부 백엔드/코퍼스 불요, 자체 완결.

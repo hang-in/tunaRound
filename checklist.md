@@ -195,8 +195,9 @@
 - [x] 랭킹(정책 A=보수): rerank 2-pass. 다른세션 && created_at존재 && 후보최신 대비 7일 초과 히트만 +1. 현재세션·active·최신·NULL은 불변(relevance/validity 우선). parse_ts_approx 단조 파싱
 - [x] get_created_at 헬퍼 + set_created_at(백필/테스트용). NULL=recency 판단 유보(강등 없음)
 - [x] 테스트: migration_v4_to_v5_adds_created_at_nullable · save_session_preserves_created_at_on_resave · retrieve_demotes_stale_cross_session. 기존 랭킹 테스트 불변
-- [x] 검증: 기본 163 / features 177 pass, clippy 클린(양쪽). **커밋 대기(미커밋)**
-- [ ] 잔여: recency 라이브 e2e(실 세션 다수 필요, step 6 실코퍼스와 함께) · created_at 실제 채워지는지 라이브 확인
+- [x] 검증: 기본 163 / features 177 pass, clippy 클린(양쪽). 커밋 1aa0661 push됨
+- [x] 라이브 검증(/explain 확장): debug_retrieve에 created_at + recency↓ 표시. 실 라이브러리 코드로 seed+8일aging 확인 - plumbing(save_session이 created_at 실제 채움) + /explain에 recency↓ 표시 + retrieve 순서 최신 우선. 신규 테스트 debug_retrieve_marks_stale_cross_session_recency
+- [ ] 잔여: 유기적 recency(며칠 간격 실 다세션)는 step 6 실코퍼스와 함께
 
 ## v2 백로그 (착수 전 결정 필요)
 - [~] 분리 터미널 A2A 협업 — (A) 설계로 승격(위), 자율(B)은 Stage 4로 분리

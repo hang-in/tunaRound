@@ -213,7 +213,7 @@ mod sqlite_retriever {
             self.retrieve_impl(query, limit, Some(current_session))
         }
 
-        /// 리치 디버그: 토큰화 결과 + FTS bm25 점수 + 유효성 + 분기 표시(step 7).
+        /// 리치 디버그: 토큰화 결과 + FTS bm25 점수 + 유효성 + 분기 + created_at/recency 표시(step 7·5c).
         fn debug_retrieve(&self, query: &str, limit: usize, current_session: &str) -> String {
             if query.trim().is_empty() {
                 return "질의가 비어 있습니다.".to_string();
@@ -222,6 +222,12 @@ mod sqlite_retriever {
             let store = self.store.lock().unwrap_or_else(|e| e.into_inner());
             let hits = store.search(&q, limit * OVERFETCH).unwrap_or_default();
             let hybrid = if self.embedder.is_some() { " (+벡터 하이브리드)" } else { "" };
+            // recency: 후보 최신 created_at 대비 임계 초과한 다른 세션 히트를 표시(rerank와 동일 규칙, step 5c).
+            let max_ts: Option<i64> = hits
+                .iter()
+                .filter_map(|h| store.get_created_at(&h.session_id, h.msg_id).ok().flatten())
+                .filter_map(|s| parse_ts_approx(&s))
+                .max();
             let mut out = format!(
                 "질의: {query}\n토큰화(FTS{hybrid}): {q}\n후보({}건, 상위 {} 표시):\n",
                 hits.len(),
@@ -235,13 +241,27 @@ mod sqlite_retriever {
                     .map(|v| v.valid_state)
                     .unwrap_or_else(|| "active".to_string());
                 let branch = if current_session == h.session_id { " cur-session" } else { "" };
+                let created = store.get_created_at(&h.session_id, h.msg_id).ok().flatten();
+                let ts = created.as_deref().and_then(parse_ts_approx);
+                let recency = match (ts, max_ts) {
+                    (Some(t), Some(m))
+                        if h.session_id != current_session && m - t > RECENCY_STALE_SECS =>
+                    {
+                        " recency↓"
+                    }
+                    _ => "",
+                };
+                let created_disp: String = created
+                    .as_deref()
+                    .map(|s| s.chars().take(10).collect())
+                    .unwrap_or_else(|| "?".to_string());
                 let snippet: String = h.content.chars().take(50).collect();
                 out.push_str(&format!(
-                    "  [#{} sid={} bm25={:.3} valid={}{}] {}: {}\n",
-                    h.msg_id, h.session_id, h.score, state, branch, h.speaker, snippet
+                    "  [#{} sid={} bm25={:.3} valid={}{} created={}{}] {}: {}\n",
+                    h.msg_id, h.session_id, h.score, state, branch, created_disp, recency, h.speaker, snippet
                 ));
             }
-            out.push_str("(bm25: 낮을수록 관련 높음. valid=rejected는 제외·superseded/stale·cur-session off-branch는 강등.)");
+            out.push_str("(bm25: 낮을수록 관련 높음. valid=rejected는 제외·superseded/stale·cur-session off-branch는 강등. recency↓=다른 세션의 낡은 후보 강등.)");
             out
         }
     }
@@ -500,6 +520,40 @@ mod tests {
         assert!(out.contains("bm25="), "bm25 점수: {out}");
         assert!(out.contains("valid=superseded"), "유효성 표시: {out}");
         assert!(out.contains("cur-session"), "현재세션 표시: {out}");
+        assert!(out.contains("created="), "created_at 표시: {out}");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn debug_retrieve_marks_stale_cross_session_recency() {
+        use crate::orchestrator::ContextRetriever;
+        let dir = std::env::temp_dir();
+        let path = dir.join("tuna_retriever_debug_recency.db");
+        let _ = std::fs::remove_file(&path);
+        let p = path.to_str().unwrap();
+        let store_w = SqliteStore::open(p).unwrap();
+        // 두 세션, 같은 질의어. old를 8일 과거로 aging(임계 7일 초과).
+        for (sid, body) in [("old", "검색 오래된"), ("new", "검색 최신")] {
+            store_w
+                .save_session(
+                    sid,
+                    &StoredSession {
+                        messages: vec![StoredMessage { id: 1, parent_id: None, speaker: "a".into(), content: body.into() }],
+                        head: Some(1),
+                    },
+                    |t| t.to_string(),
+                )
+                .unwrap();
+        }
+        store_w.set_created_at("old", 1, "2026-01-01 00:00:00").unwrap();
+        store_w.set_created_at("new", 1, "2026-01-09 00:00:00").unwrap();
+        drop(store_w);
+        let store_r = SqliteStore::open(p).unwrap();
+        let retriever = SqliteRetriever::new(store_r, Box::new(|t: &str| t.to_string()), None);
+        // current_session은 제3자("none")라 old·new 모두 다른 세션 → old만 recency 강등 표시돼야.
+        let out = retriever.debug_retrieve("검색", 10, "none");
+        assert!(out.contains("recency↓"), "낡은 다른세션 후보에 recency 표시: {out}");
+        assert!(out.contains("created=2026-01-01"), "created_at 날짜 표시: {out}");
         let _ = std::fs::remove_file(&path);
     }
 
