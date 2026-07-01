@@ -13,6 +13,11 @@ mod sqlite_retriever {
     use crate::orchestrator::Utterance;
     use crate::store::sqlite::SqliteStore;
 
+    /// 세션 다양성 cap: 한 세션이 결과를 독점하지 않도록 우선 뽑는 세션당 최대 개수.
+    const MAX_PER_SESSION: usize = 2;
+    /// 다양성 cap을 적용하려면 limit보다 넉넉히 후보를 모아야 한다(over-fetch 배수).
+    const OVERFETCH: usize = 4;
+
     /// SqliteStore 읽기 연결 + 선-토크나이즈 closure + 선택적 Embedder를 묶은 맥락 검색기.
     /// rusqlite::Connection은 Send이지만 Sync가 아니므로 Mutex로 감싼다.
     pub struct SqliteRetriever {
@@ -41,8 +46,8 @@ mod sqlite_retriever {
             let q = (self.tok)(query);
             let store = self.store.lock().unwrap_or_else(|e| e.into_inner());
 
-            // FTS 검색.
-            let lex_hits = match store.search(&q, limit) {
+            // FTS 검색(세션 다양성 cap을 위해 over-fetch).
+            let lex_hits = match store.search(&q, limit * OVERFETCH) {
                 Ok(hits) => hits,
                 Err(e) => {
                     eprintln!("[tunaRound] FTS 검색 실패: {e}");
@@ -50,12 +55,13 @@ mod sqlite_retriever {
                 }
             };
 
-            // embedder 없으면 FTS 단독(기존 경로, 동작 불변).
+            // embedder 없으면 FTS 단독. over-fetch 후 세션 다양성 cap + limit(단일 세션은 동작 불변).
             let Some(emb) = &self.embedder else {
-                return lex_hits
+                let items: Vec<(String, Utterance)> = lex_hits
                     .into_iter()
-                    .map(|h| Utterance { speaker: h.speaker, content: h.content })
+                    .map(|h| (h.session_id.clone(), Utterance { speaker: h.speaker, content: h.content }))
                     .collect();
+                return crate::store::cap_per_session_backfill(items, MAX_PER_SESSION, limit);
             };
 
             // FTS 결과 키 리스트 + content_map 구축.
@@ -71,22 +77,24 @@ mod sqlite_retriever {
                 Ok(v) => v,
                 Err(e) => {
                     eprintln!("[tunaRound] 쿼리 임베딩 실패(FTS 단독 폴백): {e}");
-                    return content_map
-                        .into_values()
-                        .map(|(sp, ct)| Utterance { speaker: sp, content: ct })
+                    let items: Vec<(String, Utterance)> = content_map
+                        .into_iter()
+                        .map(|((sid, _), (sp, ct))| (sid, Utterance { speaker: sp, content: ct }))
                         .collect();
+                    return crate::store::cap_per_session_backfill(items, MAX_PER_SESSION, limit);
                 }
             };
 
-            // 벡터 검색.
-            let vec_hits = match store.vector_search(&qvec, limit) {
+            // 벡터 검색(세션 다양성 cap을 위해 over-fetch).
+            let vec_hits = match store.vector_search(&qvec, limit * OVERFETCH) {
                 Ok(hits) => hits,
                 Err(e) => {
                     eprintln!("[tunaRound] 벡터 검색 실패(FTS 단독 폴백): {e}");
-                    return content_map
-                        .into_values()
-                        .map(|(sp, ct)| Utterance { speaker: sp, content: ct })
+                    let items: Vec<(String, Utterance)> = content_map
+                        .into_iter()
+                        .map(|((sid, _), (sp, ct))| (sid, Utterance { speaker: sp, content: ct }))
                         .collect();
+                    return crate::store::cap_per_session_backfill(items, MAX_PER_SESSION, limit);
                 }
             };
 
@@ -96,9 +104,14 @@ mod sqlite_retriever {
             // RRF 융합.
             let fused = crate::store::reciprocal_rank_fusion(&lex_keys, &vec_keys);
 
-            // 상위 limit 키를 Utterance로 변환.
-            let mut result = Vec::with_capacity(limit.min(fused.len()));
-            for key in fused.into_iter().take(limit) {
+            // 세션 다양성 cap(다중 세션 다양화, 단일 세션 backfill) 후 상위 limit 키를 Utterance로 변환.
+            let capped_keys = crate::store::cap_per_session_backfill(
+                fused.into_iter().map(|k| (k.0.clone(), k)).collect(),
+                MAX_PER_SESSION,
+                limit,
+            );
+            let mut result = Vec::with_capacity(capped_keys.len());
+            for key in capped_keys {
                 let utt = if let Some((sp, ct)) = content_map.remove(&key) {
                     // FTS 결과에 있으면 캐시 사용.
                     Some(Utterance { speaker: sp, content: ct })

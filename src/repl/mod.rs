@@ -138,6 +138,9 @@ const DEFAULT_SAVE_PATH: &str = "tunaround-discussion.md";
 /// retrieve_for가 검색 시 끌어올 최대 슬라이스 수.
 const RETRIEVE_K: usize = 5;
 
+/// retrieved(검색) 주입의 누적 글자수 상한. 초과분 발언은 드롭(프롬프트 팽창 방지, carried MAX_CARRY 답습).
+const MAX_RETRIEVED_CHARS: usize = 2000;
+
 /// step이 active_path를 한 번만 계산해 파생하는 라운드 맥락 묶음.
 struct RoundContext {
     /// run_round에 넘길 prior 슬라이스(recent_turns 적용 후).
@@ -319,11 +322,23 @@ impl Session {
     /// retrieve_for의 path 파라미터 버전. active_path 재호출 없이 호출 가능.
     fn retrieve_for_from_path(&self, topic: &str, active: &[Utterance]) -> Vec<Utterance> {
         let Some(r) = &self.retriever else { return Vec::new(); };
-        r.retrieve(topic, RETRIEVE_K)
+        // 활성 경로에 이미 있는 내용은 중복이므로 제외.
+        let deduped = r
+            .retrieve(topic, RETRIEVE_K)
             .into_iter()
-            // 활성 경로에 이미 있는 내용은 중복이므로 제외.
-            .filter(|u| !active.iter().any(|a| a.content == u.content))
-            .collect()
+            .filter(|u| !active.iter().any(|a| a.content == u.content));
+        // 누적 글자수가 MAX_RETRIEVED_CHARS를 넘으면 이후 발언 드롭(최소 1건은 보장, UTF-8 안전).
+        let mut used = 0usize;
+        let mut out: Vec<Utterance> = Vec::new();
+        for u in deduped {
+            let len = u.content.chars().count();
+            if used + len > MAX_RETRIEVED_CHARS && !out.is_empty() {
+                break;
+            }
+            used += len;
+            out.push(u);
+        }
+        out
     }
 
     /// topic으로 retriever를 검색하고 활성 경로 중복을 제외한 슬라이스를 반환한다.
@@ -633,6 +648,24 @@ mod tests {
             Participant { engine: "codex".into(), role: Some("reviewer".into()), instruction: String::new() },
         ];
         Session::new(participants, Box::new(reg)).with_core_sync(Some(Box::new(cs)))
+    }
+
+    /// 긴 발언 여러 개를 반환하는 가짜 retriever(길이 cap 테스트용).
+    struct LongRetriever;
+    impl crate::orchestrator::ContextRetriever for LongRetriever {
+        fn retrieve(&self, _q: &str, _limit: usize) -> Vec<Utterance> {
+            (0..3)
+                .map(|i| Utterance { speaker: format!("s{i}"), content: "가".repeat(1200) })
+                .collect()
+        }
+    }
+
+    #[test]
+    fn retrieved_injection_is_capped_by_chars() {
+        // 1200자 발언 3개(총 3600 > MAX_RETRIEVED_CHARS 2000) → 누적 초과 전까지만(1건).
+        let s = session_with_two_seats().with_retriever(Some(Box::new(LongRetriever)));
+        let got = s.retrieve_for("주제");
+        assert_eq!(got.len(), 1, "글자수 cap으로 초과 발언 드롭(최소 1건 보장)");
     }
 
     #[test]

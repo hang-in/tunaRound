@@ -2,6 +2,14 @@
 
 > 작업 중 결정과 근거. 계속 append. (규율 #7) 다음 세션이 결정을 재유도하지 않게.
 
+## 2026-07-01 step 3 완료: retrieved 길이 cap + session diversity cap (Plan 29)
+
+- **session diversity(SqliteRetriever)**: store.search/vector_search를 `limit*4` over-fetch → `cap_per_session_backfill(max_per_session=2, limit)`. 다중 세션이면 다양화, **단일 세션이면 backfill로 limit까지 채워 동작 불변**(under-fill 없음). FTS단독·RRF·폴백 경로 모두 적용.
+- **retrieved 길이 cap(repl)**: `MAX_RETRIEVED_CHARS=2000`. retrieve_for_from_path에서 dedup 후 누적 글자수 초과 발언 드롭(최소 1건 보장, UTF-8 안전).
+- **핵심 뉘앙스**: tunaRound 토론은 보통 단일 세션이라 무조건 세션 cap하면 손해 → backfill로 단일 세션 불변 보장.
+- **검증**: 기본 149/features 159 pass, clippy 클린. 신규: cap_per_session_backfill(다중 다양성/단일 full-fill), 길이 cap(초과 드롭). eval 하네스는 store.search 직접 호출이라 무영향.
+- 다음 = step 4(valid_state/superseded_by/abstraction/anchors 컬럼 = 시간성·유효성 흡수 시작).
+
 ## 2026-07-01 step 2 완료: 임베딩 무효화 키에 model_id (실버그 수정, Plan 28)
 
 - **문제**: `index_vectors` 증분 가드가 content_hash(내용만)로 skip → 모델 교체 시 stale 벡터 유지(차원/공간 섞임, 조용한 저하).

@@ -45,6 +45,31 @@ pub(crate) fn reciprocal_rank_fusion(
     ranked
 }
 
+/// 검색 결과 세션 다양성: 순서를 보존하며 session_id별 최대 max_per_session개를 우선(primary)으로
+/// 뽑고, limit에 못 미치면 나머지(overflow)로 backfill해 limit까지 채운다.
+/// 다중 세션이면 다양하게, 단일 세션이면 그 세션으로 가득 채워 동작이 불변이다(under-fill 없음).
+#[cfg(feature = "sqlite")]
+pub(crate) fn cap_per_session_backfill<T>(
+    items: Vec<(String, T)>,
+    max_per_session: usize,
+    limit: usize,
+) -> Vec<T> {
+    use std::collections::HashMap;
+    let mut counts: HashMap<String, usize> = HashMap::new();
+    let mut primary: Vec<T> = Vec::new();
+    let mut overflow: Vec<T> = Vec::new();
+    for (sid, item) in items {
+        let c = counts.entry(sid).or_insert(0);
+        if *c < max_per_session {
+            *c += 1;
+            primary.push(item);
+        } else {
+            overflow.push(item);
+        }
+    }
+    primary.into_iter().chain(overflow).take(limit).collect()
+}
+
 #[cfg(all(test, feature = "sqlite"))]
 mod rrf_tests {
     use super::reciprocal_rank_fusion;
@@ -66,6 +91,30 @@ mod rrf_tests {
         assert!(!result.is_empty());
         // ("s1", 1)은 두 리스트에서 모두 rank=0 -> 가장 높은 RRF 점수를 가져야 한다.
         assert_eq!(result[0], ("s1".to_string(), 1u64), "양쪽 상위 키가 최상위여야 함");
+    }
+
+    use super::cap_per_session_backfill;
+
+    #[test]
+    fn cap_diverse_prefers_other_sessions_then_backfills() {
+        // s1이 3개 연속, s2가 1개. max_per_session=2, limit=4 → primary=[s1,s1,s2], backfill=[s1].
+        let items = vec![
+            ("s1".to_string(), "a"),
+            ("s1".to_string(), "b"),
+            ("s1".to_string(), "c"),
+            ("s2".to_string(), "d"),
+        ];
+        let out = cap_per_session_backfill(items, 2, 4);
+        // 다양성 우선: s1 2개 + s2 1개 먼저, 그 뒤 s1 overflow 1개로 채움.
+        assert_eq!(out, vec!["a", "b", "d", "c"]);
+    }
+
+    #[test]
+    fn cap_single_session_fills_without_underfill() {
+        // 단일 세션 5개, max_per_session=2, limit=5 → backfill로 5개 모두(동작 불변).
+        let items: Vec<(String, i32)> = (0..5).map(|i| ("s1".to_string(), i)).collect();
+        let out = cap_per_session_backfill(items, 2, 5);
+        assert_eq!(out, vec![0, 1, 2, 3, 4], "단일 세션은 under-fill 없이 가득 채워야 함");
     }
 
     #[test]
