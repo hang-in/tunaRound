@@ -486,7 +486,7 @@
 - **구현**: is_mcp_capable=claude|codex. RunInput에 `pull: bool`(+Default 파생, RunMode Default=ReadOnly)로 run_round가 per-seat pull(ctx_mode==Pull && is_mcp_capable)을 러너까지 전파. codex `build_codex_args(input, mcp_args, bypass)`: `ReadOnly && input.pull && (search_url|search_db)`이면 `--dangerously-bypass-approvals-and-sandbox`로 `--sandbox read-only` 대체(exec의 MCP 승인 우회 유일 수단). 같은 조건에서 프롬프트에 `READONLY_DIRECTIVE`(편집·변경성 명령 금지, 예외 없음) 접두. Write=workspace-write, 비pull ReadOnly=read-only 유지(불변).
 - **트레이드오프(수용)**: bypass는 fs/네트워크/셸 전부 개방 → read-only가 하드(샌드박스)→소프트(codex 규칙 준수)로 하강. pull+ReadOnly+MCP로 발동 범위 최소화. 잔여 리스크=codex가 규칙 무시 시 실제 편집 가능(관측상 안 일어남 전제).
 - **검증**: 기본 161 / features 175 pass, clippy 클린. 신규 테스트 args_readonly_bypass_replaces_sandbox + is_mcp_capable(claude|codex).
-- **⚠ 라이브 미실행**: codex가 실제 read_transcript로 pull하는지 + bypass에서도 편집 안 하는지 실측 필요(실 codex + core). 이전 "pull=claude only" 결정을 근거와 함께 뒤집는 변경이라 라이브 확인 권장.
+- **⚠ 라이브 e2e 통과(2026-07-01)**: 실 codex 0.142.5. 구성=`--serve-mcp 127.0.0.1:8791`(seed.db 세션 default에 "이벤트소싱 채택, 코드명 PELICAN" 1턴) + 별도 codex-only 로스터 pull REPL(`--search-url .../mcp --search-token --pull-context`). 결과: codex가 **tuna-search MCP 도구를 실제 호출**(예전 "사용자 취소" 사라짐)→전사를 정확 인용("코드명 PELICAN"은 프롬프트에 없고 전사에만=진짜 pull 증거) + "읽기 전용으로 전사만 확인" 명시하며 **파일 변경 0**(bypass여도 규칙 준수). `[ctx] seat=codex mode=pull` 확인. **behavioral read-only + codex pull 실증 완료.** (임시 seed_e2e.rs 예제·target/e2e 아티팩트는 검증 후 삭제.)
 - **관련**: 이번에 codex도 pull 가능해지며 세션4의 bearer-env(원격 HTTP MCP 인증)가 비로소 exec 경로에서도 의미. 단 원격 코어+bearer 조합 라이브는 별도.
 
 - **범위**: 스키마 v5 + INSERT 2경로 created_at + rerank recency + created_at 읽기 + 테스트(마이그레이션·save_session created_at 불변·recency 동작·기존 랭킹 불변). 외부 백엔드/코퍼스 불요, 자체 완결.

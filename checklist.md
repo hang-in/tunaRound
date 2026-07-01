@@ -220,7 +220,7 @@
 - [x] READONLY_DIRECTIVE를 bypass 시 codex 프롬프트에 prepend
 - [x] 테스트: args_readonly_bypass_replaces_sandbox · is_mcp_capable(claude|codex) · 리터럴 갱신
 - [x] 검증: 기본 161 / features 175 pass, clippy 클린
-- [ ] ⚠ 라이브(미실행): codex가 read_transcript로 pull하고 bypass 상태서도 편집 안 하는지(규칙 준수) 실측. 실 codex + core 필요
+- [x] ⚠ 라이브 e2e 통과: 실 codex 0.142.5로 --serve-mcp 코어(seed=PELICAN/이벤트소싱) + 별도 codex-only pull REPL. codex가 tuna-search MCP 호출→전사 정확 인용("코드명 PELICAN", 프롬프트에 없던 것=실제 pull) + read-only 준수(파일 변경 0). "사용자 취소" 사라짐. [ctx] mode=pull 확인
 
 ## v2 백로그 (착수 전 결정 필요)
 - [~] 분리 터미널 A2A 협업 — (A) 설계로 승격(위), 자율(B)은 Stage 4로 분리
