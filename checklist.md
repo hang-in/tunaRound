@@ -189,6 +189,15 @@
   - [ ] 3a 잔여: codex bearer-env · post_turn 권한/인가 · --core+resume 검증 · 3e 영속 에이전트(보류)
 - [ ] Stage 4(범위 밖): 영속 에이전트 세션 + AutoLoop = (B), 경제 조건 입증 시에만
 
+## 시간성·유효성 로드맵 step 5c: recency 랭킹 (2026-07-01 세션5 완료, 정책 A=보수)
+- [x] 스키마 v5: messages에 created_at TEXT(nullable) 추가. CREATE_MESSAGES + migrate(ALTER, column_exists 가드). 기존 행 NULL.
+- [x] INSERT 경로 2곳에 created_at: append_turn=datetime('now') / save_session=기존 보존(DELETE 전 SELECT→맵→COALESCE(?, now))
+- [x] 랭킹(정책 A=보수): rerank 2-pass. 다른세션 && created_at존재 && 후보최신 대비 7일 초과 히트만 +1. 현재세션·active·최신·NULL은 불변(relevance/validity 우선). parse_ts_approx 단조 파싱
+- [x] get_created_at 헬퍼 + set_created_at(백필/테스트용). NULL=recency 판단 유보(강등 없음)
+- [x] 테스트: migration_v4_to_v5_adds_created_at_nullable · save_session_preserves_created_at_on_resave · retrieve_demotes_stale_cross_session. 기존 랭킹 테스트 불변
+- [x] 검증: 기본 163 / features 177 pass, clippy 클린(양쪽). **커밋 대기(미커밋)**
+- [ ] 잔여: recency 라이브 e2e(실 세션 다수 필요, step 6 실코퍼스와 함께) · created_at 실제 채워지는지 라이브 확인
+
 ## v2 백로그 (착수 전 결정 필요)
 - [~] 분리 터미널 A2A 협업 — (A) 설계로 승격(위), 자율(B)은 Stage 4로 분리
 - [x] 신규 엔진 러너(HTTP): ollama·lmstudio·openai (Plan 17 done). opencode CLI 참가자는 후속(외부 CLI 통합)

@@ -39,15 +39,38 @@ mod sqlite_retriever {
         }
     }
 
+    /// cross-session recency 임계(step 5c). 후보 집합 최신 대비 이보다 오래된 "다른 세션" 히트만 소폭 강등.
+    const RECENCY_STALE_SECS: i64 = 7 * 86_400;
+
+    /// "YYYY-MM-DD HH:MM:SS"를 단조 증가 정수(초 근사)로 파싱한다. 임계 비교 전용이라 절대 epoch
+    /// 정확성은 불요하고 단조성만 필요(월=31일 근사 허용). 파싱 실패는 None.
+    fn parse_ts_approx(s: &str) -> Option<i64> {
+        let s = s.trim();
+        let (date, time) = s.split_once(' ').unwrap_or((s, "00:00:00"));
+        let mut dp = date.split('-');
+        let y: i64 = dp.next()?.parse().ok()?;
+        let mo: i64 = dp.next()?.parse().ok()?;
+        let d: i64 = dp.next()?.parse().ok()?;
+        let mut tp = time.split(':');
+        let h: i64 = tp.next()?.parse().ok()?;
+        let mi: i64 = tp.next()?.parse().ok()?;
+        let se: i64 = tp.next().unwrap_or("0").parse().ok()?;
+        Some((((y * 12 + mo) * 31 + d) * 24 + h) * 3600 + mi * 60 + se)
+    }
+
     /// penalty 기반 재랭크(안정 정렬로 같은 penalty 내 relevance 순서 보존).
-    /// rejected 드롭 / superseded·stale +2 / 현재 세션 off-branch(버려진 분기) +1(step 5b).
+    /// rejected 드롭 / superseded·stale +2 / 현재 세션 off-branch(버려진 분기) +1(step 5b) /
+    /// 다른 세션의 낡은(후보 집합 최신 대비 임계 초과) 히트 +1(step 5c, recency 정책 A=보수).
     /// 유효성 미설정·active·unknown은 penalty 0. current_session=None이면 분기 페널티 없음.
+    /// created_at NULL(마이그레이션 기존행)은 recency 판단 유보(강등 없음).
     fn rerank<T>(
         store: &SqliteStore,
         items: Vec<(String, u64, T)>,
         current_session: Option<&str>,
     ) -> Vec<(String, u64, T)> {
-        let mut scored: Vec<(u32, String, u64, T)> = Vec::new();
+        // 1차: rejected 드롭 + 유효성/분기 penalty + created_at(초 근사) 수집 + 후보 최신 타임스탬프 산출.
+        let mut staged: Vec<(u32, String, u64, T, Option<i64>)> = Vec::new();
+        let mut max_ts: Option<i64> = None;
         for (sid, mid, v) in items {
             let state = store.get_validity(&sid, mid).ok().flatten().map(|x| x.valid_state);
             let mut penalty = 0u32;
@@ -58,6 +81,22 @@ mod sqlite_retriever {
             }
             if current_session == Some(sid.as_str()) {
                 // 현재 세션의 off-branch 히트(활성경로 콘텐츠는 repl이 이미 제외) = 버려진 분기.
+                penalty += 1;
+            }
+            let ts = store.get_created_at(&sid, mid).ok().flatten().and_then(|s| parse_ts_approx(&s));
+            if let Some(t) = ts {
+                max_ts = Some(max_ts.map_or(t, |m| m.max(t)));
+            }
+            staged.push((penalty, sid, mid, v, ts));
+        }
+        // 2차: cross-session recency 강등(정책 A=보수). 다른 세션 && ts 존재 && 최신 대비 임계 초과 → +1.
+        // 현재 세션·active·최신·created_at 미상은 불변(relevance/validity 우선 보존).
+        let mut scored: Vec<(u32, String, u64, T)> = Vec::with_capacity(staged.len());
+        for (mut penalty, sid, mid, v, ts) in staged {
+            if current_session != Some(sid.as_str())
+                && let (Some(t), Some(m)) = (ts, max_ts)
+                && m - t > RECENCY_STALE_SECS
+            {
                 penalty += 1;
             }
             scored.push((penalty, sid, mid, v));
@@ -385,6 +424,51 @@ mod tests {
         let pos_super = contents.iter().position(|c| c.contains("대체"));
         assert!(pos_active.is_some() && pos_super.is_some(), "active·superseded 모두 존재: {contents:?}");
         assert!(pos_active < pos_super, "active가 superseded보다 앞: {contents:?}");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn retrieve_demotes_stale_cross_session() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("tuna_retriever_recency.db");
+        let _ = std::fs::remove_file(&path);
+        let p = path.to_str().unwrap();
+        let store_w = SqliteStore::open(p).unwrap();
+        // 두 세션, 각 1발언, 같은 질의어 "검색" 포함(동일 relevance). "old"를 먼저 저장(기본 순서상 앞).
+        store_w
+            .save_session(
+                "old",
+                &StoredSession {
+                    messages: vec![StoredMessage { id: 1, parent_id: None, speaker: "a".into(), content: "검색 오래된".into() }],
+                    head: Some(1),
+                },
+                |t| t.to_string(),
+            )
+            .unwrap();
+        store_w
+            .save_session(
+                "new",
+                &StoredSession {
+                    messages: vec![StoredMessage { id: 1, parent_id: None, speaker: "b".into(), content: "검색 최신".into() }],
+                    head: Some(1),
+                },
+                |t| t.to_string(),
+            )
+            .unwrap();
+        // 8일 간격(임계 7일 초과) → 낡은 세션 히트가 강등돼야 함.
+        store_w.set_created_at("old", 1, "2026-01-01 00:00:00").unwrap();
+        store_w.set_created_at("new", 1, "2026-01-09 00:00:00").unwrap();
+        drop(store_w);
+
+        let store_r = SqliteStore::open(p).unwrap();
+        let retriever = SqliteRetriever::new(store_r, Box::new(|t: &str| t.to_string()), None);
+        let hits = retriever.retrieve("검색", 10);
+        let contents: Vec<&str> = hits.iter().map(|u| u.content.as_str()).collect();
+        let pos_new = contents.iter().position(|c| c.contains("최신"));
+        let pos_old = contents.iter().position(|c| c.contains("오래된"));
+        assert!(pos_new.is_some() && pos_old.is_some(), "두 발언 모두 존재: {contents:?}");
+        assert!(pos_new < pos_old, "최신 세션이 낡은 세션보다 앞(recency 강등): {contents:?}");
 
         let _ = std::fs::remove_file(&path);
     }

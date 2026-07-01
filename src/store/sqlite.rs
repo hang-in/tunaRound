@@ -5,7 +5,7 @@ use rusqlite::Connection;
 use crate::store::{StoredMessage, StoredSession};
 
 // 스키마 버전 상수. v3: message_vectors.model_id. v4: message_validity(유효성 메타).
-const CURRENT_SCHEMA_VERSION: u32 = 4;
+const CURRENT_SCHEMA_VERSION: u32 = 5;
 
 // config 테이블 생성 SQL.
 const CREATE_CONFIG: &str = "CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT);";
@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS messages (
     parent_id   INTEGER,
     speaker     TEXT NOT NULL,
     content     TEXT NOT NULL,
+    created_at  TEXT,
     UNIQUE(session_id, msg_id)
 );
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
@@ -154,6 +155,13 @@ impl SqliteStore {
                     .execute("ALTER TABLE message_vectors ADD COLUMN model_id TEXT", [])
                     .map_err(|e| format!("sqlite: {e}"))?;
             }
+            // v5: messages.created_at(cross-session recency 랭킹용). ALTER는 비상수 default 불가라
+            // nullable로 추가하고 값은 INSERT에서 명시(datetime('now')). 기존 행은 NULL(=recency 판단 유보).
+            if !self.column_exists("messages", "created_at") {
+                self.conn
+                    .execute("ALTER TABLE messages ADD COLUMN created_at TEXT", [])
+                    .map_err(|e| format!("sqlite: {e}"))?;
+            }
             self.conn
                 .execute(
                     "INSERT OR REPLACE INTO config(key, value) VALUES('schema_version', ?1)",
@@ -201,7 +209,29 @@ impl SqliteStore {
                 )
                 .map_err(|e| format!("sqlite: {e}"))?;
 
-            // (2) 기존 메시지/FTS 전량 삭제.
+            // (2a) 전량 교체 전에 기존 created_at을 보존한다(save_session은 DELETE+INSERT라
+            // now로 덮으면 매 스냅샷마다 타임스탬프가 리셋돼 recency 신호가 무의미해짐).
+            let mut prev_created: std::collections::HashMap<i64, String> =
+                std::collections::HashMap::new();
+            {
+                let mut stmt = self
+                    .conn
+                    .prepare("SELECT msg_id, created_at FROM messages WHERE session_id=?1")
+                    .map_err(|e| format!("sqlite: {e}"))?;
+                let rows = stmt
+                    .query_map([session_id], |r| {
+                        Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?))
+                    })
+                    .map_err(|e| format!("sqlite: {e}"))?;
+                for row in rows {
+                    let (mid, ca) = row.map_err(|e| format!("sqlite: {e}"))?;
+                    if let Some(ca) = ca {
+                        prev_created.insert(mid, ca);
+                    }
+                }
+            }
+
+            // (2b) 기존 메시지/FTS 전량 삭제.
             self.conn
                 .execute("DELETE FROM messages WHERE session_id=?1", [session_id])
                 .map_err(|e| format!("sqlite: {e}"))?;
@@ -209,16 +239,17 @@ impl SqliteStore {
                 .execute("DELETE FROM messages_fts WHERE session_id=?1", [session_id])
                 .map_err(|e| format!("sqlite: {e}"))?;
 
-            // (3) 각 메시지 삽입.
+            // (3) 각 메시지 삽입. created_at은 보존값 우선, 없으면(신규) now.
             for msg in &ss.messages {
                 let msg_id = msg.id as i64;
                 let parent_id: Option<i64> = msg.parent_id.map(|p| p as i64);
+                let created: Option<String> = prev_created.get(&msg_id).cloned();
 
                 self.conn
                     .execute(
-                        "INSERT INTO messages(session_id, msg_id, parent_id, speaker, content) \
-                         VALUES(?1, ?2, ?3, ?4, ?5)",
-                        rusqlite::params![session_id, msg_id, parent_id, msg.speaker, msg.content],
+                        "INSERT INTO messages(session_id, msg_id, parent_id, speaker, content, created_at) \
+                         VALUES(?1, ?2, ?3, ?4, ?5, COALESCE(?6, datetime('now')))",
+                        rusqlite::params![session_id, msg_id, parent_id, msg.speaker, msg.content, created],
                     )
                     .map_err(|e| format!("sqlite: {e}"))?;
 
@@ -294,8 +325,8 @@ impl SqliteStore {
 
             self.conn
                 .execute(
-                    "INSERT INTO messages(session_id, msg_id, parent_id, speaker, content) \
-                     VALUES(?1, ?2, ?3, ?4, ?5)",
+                    "INSERT INTO messages(session_id, msg_id, parent_id, speaker, content, created_at) \
+                     VALUES(?1, ?2, ?3, ?4, ?5, datetime('now'))",
                     rusqlite::params![session_id, new_id, parent, speaker, content],
                 )
                 .map_err(|e| format!("sqlite: {e}"))?;
@@ -383,6 +414,21 @@ impl SqliteStore {
             Err(e) => return Err(format!("sqlite: {e}")),
         };
         Ok(row)
+    }
+
+    /// 메시지의 created_at(절대 타임스탬프 문자열)을 조회한다. 미설정(마이그레이션 기존행)·부재는 None.
+    /// cross-session recency 랭킹(step 5c)용. 포맷은 datetime('now')="YYYY-MM-DD HH:MM:SS".
+    pub fn get_created_at(&self, session_id: &str, msg_id: u64) -> Result<Option<String>, String> {
+        let msg_id_i64 = msg_id as i64;
+        match self.conn.query_row(
+            "SELECT created_at FROM messages WHERE session_id=?1 AND msg_id=?2",
+            rusqlite::params![session_id, msg_id_i64],
+            |row| row.get::<_, Option<String>>(0),
+        ) {
+            Ok(v) => Ok(v),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(format!("sqlite: {e}")),
+        }
     }
 
     /// 선-형태소화된 FTS 쿼리로 메시지를 검색한다. 빈 쿼리는 빈 결과를 반환한다.
@@ -531,6 +577,18 @@ impl SqliteStore {
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(format!("sqlite: {e}")),
         }
+    }
+
+    /// 메시지의 created_at을 직접 설정한다(전사 import 백필·테스트용). 포맷은 "YYYY-MM-DD HH:MM:SS".
+    /// 대상 메시지가 없으면 아무 행도 갱신하지 않는다(무해).
+    pub fn set_created_at(&self, session_id: &str, msg_id: u64, ts: &str) -> Result<(), String> {
+        self.conn
+            .execute(
+                "UPDATE messages SET created_at=?3 WHERE session_id=?1 AND msg_id=?2",
+                rusqlite::params![session_id, msg_id as i64, ts],
+            )
+            .map_err(|e| format!("sqlite: {e}"))?;
+        Ok(())
     }
 
     /// 세션 메시지를 벡터 색인한다. content_hash가 동일하면 skip(증분). sqlite 피처 전용.
@@ -820,6 +878,51 @@ mod tests {
             .unwrap();
         assert_eq!(mid, None, "기존 행 model_id는 NULL(다음 색인 때 재임베딩 트리거)");
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn migration_v4_to_v5_adds_created_at_nullable() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("tuna_mig_v4v5.db");
+        let _ = std::fs::remove_file(&path);
+        let p = path.to_str().unwrap();
+        // v4 스키마 수동 구성: messages에 created_at 없음 + schema_version=4 + 기존 행 1건.
+        {
+            let conn = rusqlite::Connection::open(p).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE config(key TEXT PRIMARY KEY, value TEXT);
+                 CREATE TABLE sessions(id TEXT PRIMARY KEY, head_id INTEGER, \
+                     created_at TEXT, updated_at TEXT);
+                 CREATE TABLE messages(rowid INTEGER PRIMARY KEY AUTOINCREMENT, \
+                     session_id TEXT NOT NULL, msg_id INTEGER NOT NULL, parent_id INTEGER, \
+                     speaker TEXT NOT NULL, content TEXT NOT NULL, UNIQUE(session_id, msg_id));
+                 INSERT INTO sessions(id, head_id) VALUES('s', 1);
+                 INSERT INTO messages(session_id,msg_id,parent_id,speaker,content) \
+                     VALUES('s',1,NULL,'a','hi');
+                 INSERT INTO config(key,value) VALUES('schema_version','4');",
+            )
+            .unwrap();
+        }
+        // open → migrate v4→v5(ALTER로 created_at 추가).
+        let db = SqliteStore::open(p).unwrap();
+        assert!(db.column_exists("messages", "created_at"), "마이그레이션이 created_at 추가");
+        let ca: Option<String> = db.get_created_at("s", 1).unwrap();
+        assert_eq!(ca, None, "기존 행 created_at은 NULL(recency 판단 유보)");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn save_session_preserves_created_at_on_resave() {
+        let db = SqliteStore::open_memory().unwrap();
+        db.save_session("s", &ss(), |t| t.to_string()).unwrap();
+        // 기존 created_at을 알려진 과거값으로 고정.
+        db.set_created_at("s", 1, "2020-01-01 00:00:00").unwrap();
+        // 같은 세션 재저장(전량 교체) 후에도 created_at 보존(now로 리셋 금지)이어야 한다.
+        db.save_session("s", &ss(), |t| t.to_string()).unwrap();
+        let ca = db.get_created_at("s", 1).unwrap();
+        assert_eq!(ca.as_deref(), Some("2020-01-01 00:00:00"), "재저장 시 created_at 보존");
+        // 보존값 없던 메시지(msg 2)는 now로 채워져 NULL이 아니어야 한다.
+        assert!(db.get_created_at("s", 2).unwrap().is_some(), "보존값 없는 메시지는 now로 채움");
     }
 
     #[test]

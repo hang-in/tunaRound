@@ -427,3 +427,22 @@
 - **라이브 e2e(성공)**: 코어 `--serve-mcp 127.0.0.1:8766 --db shared2.db --token TOK123`(serve feature) 상주 → 별도 REPL이 `--db shared2.db --search-url http://127.0.0.1:8766/mcp --search-token TOK123 --pull-context`. claude(pull, 439/646자)가 **원격 HTTP MCP(bearer)에서 read_transcript 호출 → 별도 프로세스가 쓴 전사 정확 인용**("전사를 확인했습니다. 첫 주제는 이벤트소싱 vs CRUD..."). 인증: no-token 401, with-token 통과. **remote core = half-a2a 네트워크 실증.**
 - **세션3 핸드오프**: docs/prompts/v2-handoff_2026-06-30_session3.md. README·CLAUDE.md(상태 세션3)·핸드오프 갱신.
 - **3a 잔여**: 3a-3 front=core(REPL+HTTP MCP 단일 프로세스, 현재는 serve+REPL 2프로세스로 e2e), 3d post_turn/get_roster, codex bearer-env(ExecSpec env), 영속 에이전트(3e 보류).
+
+## 2026-07-01 세션5: step 5c recency 랭킹 설계 노트(착수 전)
+
+- **목표**: cross-session 최신성을 랭킹에 약하게 반영. msg_id는 세션별이라 세션간 비교 불가 → messages에 created_at(절대 타임스탬프) 필요.
+
+- **⚠ 함정 1 (save_session 타임스탬프 리셋)**: save_session은 세션을 **전량 DELETE+INSERT**한다(sqlite.rs:206~). INSERT에서 created_at=datetime('now')를 쓰면 **스냅샷 저장할 때마다 모든 메시지의 created_at이 now로 덮어써져** recency 신호가 무의미(전부 마지막 저장 시각)해진다. StoredMessage엔 created_at 필드 없음(step 4에서 리터럴붕괴·직렬화 하위호환 회피로 원문/메타 분리한 방침 유지). **해결=save_session 트랜잭션 안에서 DELETE 전에 기존 (msg_id→created_at) 맵을 SELECT해두고 재INSERT 시 COALESCE(기존값 있으면 유지, 없으면 now).** append_turn은 순수 증분이라 그냥 now.
+
+- **⚠ 함정 2 (ALTER 비상수 default 불가)**: SQLite는 `ALTER TABLE ADD COLUMN`에 비상수 default(`datetime('now')`/`CURRENT_TIMESTAMP`)를 금지한다. → created_at은 **nullable(DEFAULT 없음)** 컬럼으로 추가하고 값은 INSERT에서 명시. model_id(v3) 마이그레이션과 동일 패턴. 기존 행은 NULL → 랭킹에서 "가장 오래됨"으로 관대 처리.
+
+- **결정 필요 (recency 강도 정책, precision 트레이드오프)**: rerank는 현재 정수 penalty 버킷+안정정렬이라 penalty가 relevance보다 우선. recency를 penalty에 더하면 **relevance보다 강해져** 매우 관련성 높은 오래된 발언이 강등될 위험(OR-query precision 트레이드오프와 동종). 두 정책:
+  - **정책 A(보수, 추천)**: valid_state가 이미 명시적 노후화 채널(supersede/reject/stale)이므로 recency는 그 위에 약하게만. 다른 세션의 낡은 후보에만 소폭 penalty(예: 최신 후보 대비 age 임계 초과 시 +1), 현재 세션·active·관련성 높은 건 보존. 설계 토론 도구 특성상 "오래됐지만 관련 높은 초기 결정"을 못 찾으면 손해.
+  - **정책 B(적극)**: 낡음을 시간으로 확실히 강등(age 버킷 penalty를 validity와 합산). 최신성 강하게 반영하나 precision 훼손 가능.
+  - Opus 추천=**A**. 이유: 유효성 랭킹이 노후화를 이미 담당, recency는 동률대 보조로 충분. **사용자 확정=A(2026-07-01).**
+- **정책 A 구현 확정**: recency penalty `+1`을 (현재 세션 아님) && (created_at 존재) && (후보집합 max created_at 대비 임계 초과) 교집합에만. off-branch/superseded와 동급 최소 강등. **NULL created_at=판단 유보 penalty 0**(마이그레이션 기존행 관대 처리, "가장 오래됨"보다 보수적). 임계는 후보 상대 기준(비결정 now 회피=테스트 가능), 타임스탬프 단조 파싱은 월별 일수 근사 허용(약한 신호).
+
+- **구현 완료(미커밋)**: 스키마 v5. sqlite.rs=CREATE_MESSAGES created_at TEXT + migrate ALTER(column_exists 가드) + save_session 보존(DELETE 전 msg_id→created_at 맵 SELECT, INSERT는 COALESCE(?6, datetime('now'))) + append_turn datetime('now') + get_created_at/set_created_at. retriever.rs=rerank 2-pass(1차 validity/분기 penalty+created_at 수집+max_ts, 2차 다른세션 낡은 히트 +1) + parse_ts_approx + RECENCY_STALE_SECS=7일. let-chain으로 중첩 if 병합(clippy). 신규 테스트 3(migration_v4→v5·save_session 보존·recency 강등). **기본 163/features 177 pass, clippy 클린.** 커밋 메시지 후보: `feat(store): cross-session recency 랭킹 + created_at 컬럼 (로드맵 step 5c)`.
+- **⚠ 라이브 미검증**: created_at이 실제 REPL 경로(save_session/append_turn)에서 채워지는지, recency 강등이 실 다중세션에서 체감되는지는 미검증(단위·통합 테스트만). step 6 실코퍼스 확보 시 함께 라이브 확인 권장.
+
+- **범위**: 스키마 v5 + INSERT 2경로 created_at + rerank recency + created_at 읽기 + 테스트(마이그레이션·save_session created_at 불변·recency 동작·기존 랭킹 불변). 외부 백엔드/코퍼스 불요, 자체 완결.
