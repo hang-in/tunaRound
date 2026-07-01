@@ -473,7 +473,11 @@ impl Session {
     /// 현재 트리를 StoredSession JSON으로 직렬화한다(종료 시 Redis 동기 스냅샷 flush용).
     pub fn snapshot_json(&self) -> String {
         serde_json::to_string(&StoredSession { messages: self.messages.clone(), head: self.head })
-            .unwrap_or_default()
+            .unwrap_or_else(|e| {
+                // 직렬화 실패 시 빈 스냅샷을 조용히 발행하면 크로스터미널 상태가 덮여 유실될 수 있어 로그를 남긴다.
+                eprintln!("[tunaRound] 스냅샷 직렬화 실패(빈 스냅샷 반환): {e}");
+                String::new()
+            })
     }
 
     /// 현재 인메모리 트리를 StoredSession으로 복제한다(--core seed를 코어 DB에 권위로 반영할 때 사용).

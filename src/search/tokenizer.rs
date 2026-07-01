@@ -97,7 +97,13 @@ mod kiwi_impl {
     /// kiwi_rs::Kiwi를 스레드 간 이동 가능하게 감싸는 뉴타입 래퍼.
     pub(super) struct KiwiWrapper(pub(super) kiwi_rs::Kiwi);
 
-    // SAFETY: kiwi_rs::Kiwi는 C 포인터 래퍼. 동시 접근은 아래 Mutex로 직렬화.
+    // SAFETY: kiwi_rs::Kiwi는 libkiwi C 핸들 래퍼라 auto-Send가 안 붙는다. 이 래퍼는 항상
+    // `Mutex<KiwiWrapper>`(KiwiTokenizer.kiwi)로만 보관되어 한 순간 한 스레드만 접근하므로,
+    // 소유권이 스레드 간 이동하더라도(=Send) 동시 접근으로 인한 C측 데이터 경합은 없다.
+    // 잔여 리스크: libkiwi가 내부적으로 thread-local/전역 상태에 스레드 정체성을 묶는다면
+    // Mutex 직렬화로도 부족할 수 있다(공식 스레드모델 문서로 미확인). 현재까지 관측된 문제는 없고,
+    // thread_local!로 스레드마다 Kiwi를 두는 대안은 인스턴스당 init(~수초·모델 로드) 비용 때문에 비채택.
+    // morphology 피처 전용이며 Windows 빌드는 Kiwi를 제외(lindera)하므로 이 경로는 비활성.
     unsafe impl Send for KiwiWrapper {}
 
     /// kiwi-rs 기반 한국어 형태소 분석 토크나이저.

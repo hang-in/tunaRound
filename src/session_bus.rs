@@ -250,15 +250,19 @@ enum RedisBusMessage {
     Snapshot { session_id: String, payload: String },
 }
 
+/// 유계 채널 용량. Redis writer가 밀리면 이 이상 쌓이지 않고 drop(무한 증가=OOM 방지).
+/// 스냅샷/이벤트 발행률은 낮아 정상 상황에서 도달하지 않는다.
+const BUS_CHANNEL_CAP: usize = 1024;
+
 /// 동기 호출자(REPL 스레드)가 쓰는 fire-and-forget async writer. tokio 태스크가 실제 Redis 쓰기를 수행한다.
 #[derive(Clone)]
 pub struct RedisBusHandle {
-    tx: mpsc::UnboundedSender<RedisBusMessage>,
+    tx: mpsc::Sender<RedisBusMessage>,
 }
 
 impl RedisBusHandle {
     pub fn spawn(bus: RedisBus) -> Self {
-        let (tx, mut rx) = mpsc::unbounded_channel::<RedisBusMessage>();
+        let (tx, mut rx) = mpsc::channel::<RedisBusMessage>(BUS_CHANNEL_CAP);
         tokio::spawn(async move {
             while let Some(msg) = rx.recv().await {
                 let result = match msg {
@@ -285,23 +289,38 @@ impl RedisBusHandle {
     }
 }
 
+impl RedisBusHandle {
+    /// 유계 채널에 fire-and-forget 비블로킹 발행. 가득 차면(writer 지연) drop+경고, 채널이 닫혔으면 무시.
+    /// REPL 스레드가 Redis 지연에 블로킹되지 않도록 try_send만 쓴다.
+    fn enqueue(&self, msg: RedisBusMessage) {
+        use mpsc::error::TrySendError;
+        match self.tx.try_send(msg) {
+            Ok(()) => {}
+            Err(TrySendError::Full(_)) => {
+                eprintln!("[tunaRound] redis bus 채널 포화(용량 {BUS_CHANNEL_CAP}) - 메시지 drop");
+            }
+            Err(TrySendError::Closed(_)) => {} // writer 태스크 종료(정상 shutdown 등).
+        }
+    }
+}
+
 impl SessionBus for RedisBusHandle {
     fn submit_command_json(&self, session_id: &str, payload: &str) {
-        let _ = self.tx.send(RedisBusMessage::Command {
+        self.enqueue(RedisBusMessage::Command {
             session_id: session_id.to_string(),
             payload: payload.to_string(),
         });
     }
 
     fn publish_event_json(&self, session_id: &str, payload: &str) {
-        let _ = self.tx.send(RedisBusMessage::Event {
+        self.enqueue(RedisBusMessage::Event {
             session_id: session_id.to_string(),
             payload: payload.to_string(),
         });
     }
 
     fn snapshot_json(&self, session_id: &str, payload: &str) {
-        let _ = self.tx.send(RedisBusMessage::Snapshot {
+        self.enqueue(RedisBusMessage::Snapshot {
             session_id: session_id.to_string(),
             payload: payload.to_string(),
         });
