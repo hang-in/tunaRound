@@ -9,6 +9,15 @@
 - 구현 위임은 **Sonnet 서브에이전트**(codex 비사용), Opus가 스펙·리뷰·검증.
 - 한 세션 한 목적. 검증(build/test)과 commit/push는 분리.
 
+## 맥↔윈도우 협업 규약 (git 교통정리, 2026-07-03)
+
+> 충돌 발원지 = CLAUDE.md "현재 상태" 서술 + 진입점 포인터를 양쪽이 같은 줄로 다시 써서 부딪힘. 규약으로 같은 줄 경합을 없앤다.
+
+- **"현재 상태" 서술 블록 = Windows(home) 단독 편집.** 맥은 서술을 건드리지 않는다. 맥 상태는 맥 자기 핸드오프 파일에 적고, CLAUDE.md 서술 갱신이 필요하면 Windows에 위임한다(또는 A2A task).
+- **진입점 포인터 = 줄 분리.** `WIN 최신:` 줄은 윈도우만, `MAC 최신:` 줄은 맥만 편집한다. 서로 다른 줄이라 rebase가 깔끔히 병합된다.
+- **세션별 상태·서술 = 각자 자기 핸드오프 파일**(`_session*.md`=윈도우 / `_mac-*.md`=맥). 한 파일을 양쪽이 동시에 열지 않는다.
+- **rebase 위생(공통).** 세션 시작 + 매 push 직전 `git pull --rebase origin main`. 작은 커밋 자주 push. 공유 파일 편집을 핸드오프 너머로 들고 있지 않는다.
+
 ## 개발 행동 규율 (이 프로젝트 실험 적용, 2026-06-29)
 
 > 전역 규칙 아님. 이 레포 실험 적용. **전문·근거·예시·위임 라우팅은 [docs/reference/development-guidelines.md](docs/reference/development-guidelines.md)**.
@@ -29,7 +38,10 @@
   - **로드맵(외부 memory 프레임워크 리뷰 후, SQLite-light·graph DB 비채택)**: step2 model_id 무효화키(실버그) · step3 retrieved 길이·세션 다양성 cap · step4 message_validity 테이블(스키마 v4) · step5 유효성 랭킹+/supersede·/reject · step5b 분기/세션 인지 랭킹 · step7 /explain 디버그 · step8 --reindex.
 - **v1 + v2 검색/맥락 로드맵(step 2~8) + Stage 3a~3d + codex pull(behavioral) + 실코퍼스 회귀(step6) + 외래어 병기 + 임베딩 qwen3 + 배포/온보딩(clap·cargo-dist·프로파일) 완성.** 검증: **기본 184 lib+6 cli / `--features "semantic morphology mcp serve"` 198 lib+9 cli pass, clippy 클린(no-default 포함).** 스키마 **v5**(created_at).
 - 현행 spec: [docs/design/tunaRound-v1-design_2026-06-29.md](docs/design/tunaRound-v1-design_2026-06-29.md). 진행: [docs/plans/index.md](docs/plans/index.md).
-- **>>> 최신 핸드오프(둘 다): [session6](docs/prompts/v2-handoff_2026-07-03_session6.md)(윈도우: semi-a2a Phase 1 + **Task 5 도그푸딩 = 다음 세션 진입점**) + [mac-rc1](docs/prompts/v2-handoff_2026-07-03_mac-rc1.md)(맥: v0.1.0-rc.1 발행 + 티키타카) 먼저 읽기 <<<**. 이전 [session5](docs/prompts/v2-handoff_2026-07-02_session5.md). 맥↔윈도우 왕복은 [docs/reference/dev-mac-windows.md](docs/reference/dev-mac-windows.md).
+- **>>> 진입점 먼저 읽기 (각 줄은 해당 머신만 편집) <<<**
+  - **WIN 최신**: [session6](docs/prompts/v2-handoff_2026-07-03_session6.md) - 윈도우: semi-a2a Phase 1 + Task 5 도그푸딩 = 다음 세션 진입점.
+  - **MAC 최신**: [mac-rc1](docs/prompts/v2-handoff_2026-07-03_mac-rc1.md) - 맥: v0.1.0-rc.1 발행 + 티키타카.
+- 이전 [session5](docs/prompts/v2-handoff_2026-07-02_session5.md). 맥↔윈도우 왕복은 [docs/reference/dev-mac-windows.md](docs/reference/dev-mac-windows.md). 협업 규약은 위 "맥↔윈도우 협업 규약" 섹션.
 - **⚠️ Cargo.toml `version="0.1.0-rc.1"`**(rc 발행용). **최종 v0.1.0 태그 전 `0.1.0`으로 되돌릴 것.** 프리릴리스 v0.1.0-rc.1 live(CI green, 4타깃). 릴리스 교훈=[dev-mac-windows §6](docs/reference/dev-mac-windows.md). 정본 방향: [배포·온보딩](docs/design/v2-deploy-onboarding_2026-07-02.md) + [A2A](docs/design/v2-A2A-core-backend_2026-06-30.md) + [시간성·유효성](docs/design/v2-temporal-validity-direction_2026-07-01.md). 이전: [session4](docs/prompts/v2-handoff_2026-07-01_session4.md)
 - **⚠ 서버 호스팅 교훈**: `--core`(=`core` 서브커맨드)는 메인이 동기 블로킹 REPL이라 서버를 **전용 스레드 block_on**으로 서빙(공유 rt spawn 신뢰불가). 라이브 e2e 타이밍 함정(Kiwi ~3초/FIFO 미flush/agent ~35초) → 준비 폴링 + 파이프 입력 + 넉넉한 타임아웃.
 - **남은 항목**: 공개 릴리스=**`v0.1.0-rc.1` 먼저**(맥 도그푸딩 판정: 6타깃 CI 미검증이라 rc로 CI 검증 후 최종 태그. 상세 [release-readiness](docs/reference/release-readiness-v0.1.0_2026-07-02.md)) · 온보딩 Stage 4 doctor · abstraction/anchors 생성 파이프라인(보류=YAGNI) · **분산 크로스머신 스모크=claude leg 통과**(맥.184→윈도우.179 read_transcript 실증 2026-07-02), codex leg는 승인취약(#24135)→app-server(3e) 후속 · 홈랩 코어 호스팅(보류) · opencode 검색 배선.
