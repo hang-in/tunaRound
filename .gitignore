@@ -5,6 +5,8 @@
 # 환경/비밀
 .env
 .env.local
+# 실제 값(사설 도메인·토큰)이 들어갈 수 있는 로컬 설정. 예시는 tunaround.toml.example(커밋됨).
+/tunaround.toml
 
 # OS
 .DS_Store

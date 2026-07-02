@@ -62,6 +62,12 @@ struct CommonSessionArgs {
     /// 원격 HTTP MCP 서버 bearer 토큰(Authorization 헤더).
     #[arg(long = "search-token")]
     search_token: Option<String>,
+    /// 설정 파일 경로 명시(지정 시 탐색 없이 이 파일만 사용). 기본 탐색: ./tunaround.toml -> ~/.config/tunaround/config.toml.
+    #[arg(long)]
+    config: Option<String>,
+    /// tunaround.toml의 프로파일 이름(미지정 시 default_profile 또는 자동/대화형 선택).
+    #[arg(long)]
+    profile: Option<String>,
 }
 
 /// `chat` 서브커맨드(기본 REPL) 옵션.
@@ -121,6 +127,12 @@ struct JoinArgs {
     /// 동적 좌석 로스터 JSON 경로.
     #[arg(long)]
     roster: Option<String>,
+    /// 설정 파일 경로 명시(지정 시 탐색 없이 이 파일만 사용). 기본 탐색: ./tunaround.toml -> ~/.config/tunaround/config.toml.
+    #[arg(long)]
+    config: Option<String>,
+    /// tunaround.toml의 프로파일 이름(미지정 시 default_profile 또는 자동/대화형 선택).
+    #[arg(long)]
+    profile: Option<String>,
 }
 
 /// `mcp-search` 서브커맨드(mcp 피처 전용, 러너가 self-exe로 spawn하는 내부 모드) 옵션.
@@ -163,8 +175,15 @@ fn main() {
     // Pull 컨텍스트 모드 활성화 플래그. --db 없으면 무의미하므로 경고 후 Push 유지.
     let mut pull_context = false;
     // 모든 서브커맨드 분기가 정확히 1회 채운다(초기값 없이 선언 -> dead store 경고 회피).
+    // mut인 이유: match 후 tunaround.toml 프로파일 병합이 CLI 미지정 필드를 채울 수 있어서다.
     #[cfg(feature = "sqlite")]
-    let db_path: Option<String>;
+    let mut db_path: Option<String>;
+    // --config <경로>: 설정 파일 명시 경로(chat/core/join 전용, 그 외 서브커맨드는 None 유지=무시).
+    let mut config_path: Option<String> = None;
+    // --profile <이름>: tunaround.toml 프로파일 이름(chat/core/join 전용).
+    let mut profile_name: Option<String> = None;
+    // config/profile 병합이 적용되는 서브커맨드인지(chat/core/join만 true).
+    let mut profile_capable = false;
     // reindex: 모든 세션의 FTS·벡터 인덱스를 SoR(messages)에서 재생성(모델·토크나이저 교체 후 복구).
     #[cfg(feature = "sqlite")]
     let mut reindex = false;
@@ -195,6 +214,9 @@ fn main() {
             redis_session_id = a.common.session;
             search_url = a.common.search_url;
             search_token = a.common.search_token;
+            config_path = a.common.config;
+            profile_name = a.common.profile;
+            profile_capable = true;
             #[cfg(feature = "sqlite")]
             {
                 db_path = a.common.db;
@@ -206,6 +228,9 @@ fn main() {
             pull_context = true;
             search_url = Some(a.url);
             search_token = a.token;
+            config_path = a.config;
+            profile_name = a.profile;
+            profile_capable = true;
             #[cfg(feature = "sqlite")]
             {
                 db_path = a.db;
@@ -220,6 +245,9 @@ fn main() {
             redis_session_id = a.common.session;
             search_url = a.common.search_url;
             search_token = a.common.search_token;
+            config_path = a.common.config;
+            profile_name = a.common.profile;
+            profile_capable = true;
             serve_token = a.token;
             core_addr = Some(a.addr);
             db_path = a.common.db;
@@ -240,6 +268,61 @@ fn main() {
         Commands::Reindex(a) => {
             reindex = true;
             db_path = a.db;
+        }
+    }
+
+    // tunaround.toml 프로파일 병합(chat/core/join 경로에서만, profile_capable=false면 완전히 건너뜀
+    // = serve/mcp-search/reindex는 --config/--profile을 아예 안 받으니 기존 동작과 100% 동일).
+    // 우선순위: CLI 플래그(위 match에서 이미 채운 값) > 선택된 프로파일 > 각 로컬의 초기 기본값.
+    if profile_capable {
+        match tunaround::config::load_config(config_path.as_deref()) {
+            Ok(None) => {
+                if profile_name.is_some() {
+                    eprintln!(
+                        "[설정] --profile이 지정됐으나 설정 파일을 찾을 수 없습니다. \
+                         --config <경로> 또는 ./tunaround.toml, ~/.config/tunaround/config.toml을 확인하세요."
+                    );
+                    std::process::exit(1);
+                }
+            }
+            Ok(Some(cfg)) => match tunaround::config::select_profile(&cfg, profile_name.as_deref(), true) {
+                Ok(selected) => {
+                    #[cfg(feature = "sqlite")]
+                    let db_for_merge = db_path.clone();
+                    #[cfg(not(feature = "sqlite"))]
+                    let db_for_merge: Option<String> = None;
+                    let merged = tunaround::config::merge_profile_into(
+                        tunaround::config::MergedSessionArgs {
+                            db: db_for_merge,
+                            roster: roster_path.clone(),
+                            recent_turns,
+                            pull_context,
+                            session: redis_session_id.clone(),
+                            search_url: search_url.clone(),
+                            search_token: search_token.clone(),
+                        },
+                        selected,
+                    );
+                    #[cfg(feature = "sqlite")]
+                    {
+                        db_path = merged.db;
+                    }
+                    roster_path = merged.roster;
+                    recent_turns = merged.recent_turns;
+                    pull_context = merged.pull_context;
+                    redis_session_id = merged.session;
+                    search_url = merged.search_url;
+                    search_token = merged.search_token;
+                }
+                Err(e) => {
+                    eprintln!("[설정] {e}");
+                    std::process::exit(1);
+                }
+            },
+            Err(e) => {
+                eprintln!("[설정] {e}");
+                std::process::exit(1);
+            }
         }
     }
 

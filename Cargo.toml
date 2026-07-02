@@ -11,6 +11,7 @@ license = "AGPL-3.0-only"
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+toml = "0.8"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 futures-util = "0.3"
 redis = { version = "0.32", default-features = false, features = ["tokio-comp", "streams"] }

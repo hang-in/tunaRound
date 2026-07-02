@@ -252,7 +252,7 @@
 - [x] 라이선스 확정: **AGPL-3.0**(동구님 2026-07-02). Cargo.toml `license="AGPL-3.0-only"` + LICENSE(공식 전문 661줄). dist plan이 각 아티팩트에 LICENSE 번들.
 - [x] 맥-윈도우 왕복 개발 핸드오프: docs/reference/dev-mac-windows.md(상시 참조, 사설 도메인 미포함).
 - [ ] **Stage 2 릴리스(도그푸딩 후, 동구님 승인)**: 맥에서 git pull/clone로 빌드·실행 확인 → 며칠 사용 후 `git tag v0.1.0` 푸시 → 공개 Release + homebrew-tap 발행. 맥 brew install + Kiwi 자동다운로드 실기 확인
-- [ ] **Stage 3 tunaround.toml + 프로파일**: [profile.*] 로드·머지(플래그>프로파일>기본), 토큰=*_env 참조, `--profile`+대화형 픽커, 탐색경로. 도메인/토큰 레포 미포함
+- [x] **Stage 3 tunaround.toml + 프로파일**(Sonnet5 구현): 신규 `src/config.rs`(Config/Profile serde, parse_config/load_config/discover_config_path, expand_home, resolve_search_token, select_profile 순수함수 + match_profile_pick 순수매칭/prompt_profile_pick stdin분리, MergedSessionArgs+merge_profile_into 순수병합). main.rs: CommonSessionArgs(chat/core 공유)+JoinArgs에 `--config`/`--profile` 추가, match 직후 profile_capable 게이트(chat/core/join만)로 병합 블록 삽입(db_path를 mut로 변경). pull_context는 OR 병합, 나머지는 CLI 우선. `tunaround.toml.example`(레포 루트, 플레이스홀더) + `.gitignore`에 `/tunaround.toml` 추가 + README "설정 프로파일" 섹션 + dev-mac-windows.md 갱신. 검증: 기본 184+6/풀피처 198+9 pass(신규 테스트 ~20개), clippy 3조합(기본/풀피처/no-default) 0경고. **미커밋(Opus 리뷰 대기)**
 - [ ] Stage 4(다음) doctor: claude/codex·Ollama·Kiwi·포트·코어도달 프리플라이트
 - [ ] 각 단계 cargo test(기본/features)+clippy, 커밋 분리
 

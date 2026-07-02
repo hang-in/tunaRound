@@ -2,6 +2,21 @@
 
 > 작업 중 결정과 근거. 계속 append. (규율 #7) 다음 세션이 결정을 재유도하지 않게.
 
+## 2026-07-02 Stage 3 tunaround.toml + 프로파일 완료 (Sonnet5 구현, 미커밋)
+
+- **설계 기준**: docs/design/v2-deploy-onboarding_2026-07-02.md §2 설계 B. checklist.md에 이미 스텁이 있던 항목이라 별도 plan 문서 없이 그 스펙(위임 프롬프트)을 그대로 plan으로 취급하고 착수(체크리스트·컨텍스트노트 규율 #7은 이미 만족된 상태로 판단).
+- **신규 모듈 `src/config.rs`**: Config{default_profile, profile: HashMap<String,Profile>} / Profile(전부 Option: db·roster·recent_turns·pull_context·session·search_url·search_token·search_token_env). parse_config/load_config_file/discover_config_path(명시>./tunaround.toml>~/.config/tunaround/config.toml, 명시인데 없으면 Err)/load_config. expand_home(HOME 우선, 없으면 USERPROFILE, 외부crate 0). resolve_search_token(평문 우선, 없으면 *_env로 std::env::var).
+- **select_profile 시그니처는 스펙 그대로**: `fn select_profile<'a>(cfg: &'a Config, requested: Option<&str>, interactive: bool) -> Result<Option<&'a Profile>, String>`. HashMap 순회 순서가 불안정하므로 "다중 프로파일" 케이스는 항상 이름 정렬 후 결정. interactive=false면 정렬된 첫 이름(테스트 결정적), interactive=true면 실제 stdin 픽커.
+- **판단 갈린 지점 1(대화형 픽커 아키텍처)**: 스펙 문구("이 stdin 읽기는 select_profile 밖에서 하고, 선택 로직만 순수함수로")를 문자 그대로 읽으면 stdin이 main.rs에 있어야 하는데, select_profile의 반환타입(`Result<Option<&Profile>, String>`)엔 "대화형 필요" 시그널을 실어보낼 자리가 없어 물리적으로 불가능(콜백 파라미터도 스펙 시그니처엔 없음). **해석**: "밖에서"를 "핵심 결정 로직 바깥의 별도 함수로 분리"로 읽어, select_profile은 그대로 두고 내부에서 다중+비default+interactive 분기에서만 `prompt_profile_pick`(실제 stdin, println+read_line)을 호출하게 하고, 그 안에서 다시 순수 `match_profile_pick(input, names)`(번호/이름 매칭)를 호출하도록 3단 분리. 테스트는 select_profile의 결정적 케이스(설정없음/지정/default/단일/다중-비interactive) + match_profile_pick 자체(번호·이름·범위밖·빈입력)만 커버 = "대화형 stdin은 순수 선택 로직만 테스트" 요구를 문자 그대로 만족.
+- **판단 갈린 지점 2(병합을 순수함수로 분리)**: main.rs 지역변수 직접 mutate로도 스펙을 만족하지만, "merge 우선순위(CLI>프로파일) 단위테스트" 요구를 main() 안에서 검증할 방법이 없어 `MergedSessionArgs`(db/roster/recent_turns/pull_context/session/search_url/search_token) + `merge_profile_into(cli, Option<&Profile>) -> MergedSessionArgs` 순수함수로 뽑음(선제설계 5원칙 #3 "분기·계산은 순수함수로"와도 정합). main.rs는 이 구조체를 조립→호출→분해만 한다. pull_context는 스펙대로 OR, 나머지는 `cli.is_none()`이면 프로파일 값(경로류는 expand_home 통과).
+- **main.rs 배선**: CommonSessionArgs(chat+core가 flatten 공유)와 JoinArgs 양쪽에 `--config`/`--profile` 추가. 기존 `let db_path: Option<String>;`(단일 대입 관례)를 `let mut`으로 변경(병합 단계에서 2차 대입 필요). 신규 로컬 `profile_capable: bool`(Chat/Core/Join 분기에서만 true)로 병합 블록 전체를 게이트 → serve/mcp-search/reindex는 tunaround.toml이 cwd에 있어도 완전히 무시(스펙 요구 그대로, auto-discovery도 미적용).
+- **에러 처리**: `--profile` 지정했는데 설정 자체가 없음 → 안내 후 exit(1). `--profile`이 맵에 없음 / `default_profile`이 가리키는 이름이 맵에 없음 → 둘 다 Err→exit(1)(default_profile 오탈자를 조용히 무시하지 않음, 스펙엔 명시 안 됐으나 안전한 기본값으로 판단).
+- **테스트 전략(env/파일 I/O 안정성)**: `std::env::set_var`는 edition 2024라 `unsafe`(session_bus.rs 기존 컨벤션 그대로 답습, 동일 주석 문구). 파일 존재 탐색 테스트는 cwd(`./tunaround.toml`)를 직접 건드리지 않고 `std::env::temp_dir()`에 유니크 파일명으로 생성/삭제(CI·병렬테스트 안전). `discover_config_path`의 "명시 경로 없을 때 cwd/home 탐색" 분기 자체는 자동테스트 미커버(cwd 오염 리스크 회피 목적, first_existing 순수함수 테스트로 핵심 로직은 커버됨) — 코드리뷰로 갈음.
+- **⚠ 실발견(레이스) + 수정**: 처음엔 "단일 테스트 함수 안에서 HOME을 저장→변경→복구"로 테스트 간 레이스를 피했다고 판단했으나, `expand_home_variants`와 `merge_profile_into_fills_unset_fields_from_profile` **두 개의 서로 다른 테스트 함수**가 각자 HOME을 건드려 cargo test 기본 병렬 실행(멀티스레드, 환경변수는 프로세스 전역)에서 실제로 레이스 발생(`cargo test --lib config::` 단독 실행 시 1/1 재현: "둘 다 없으면 원본" 케이스가 실제 Windows USERPROFILE 값을 봄). **수정**: `static ENV_LOCK: Mutex<()>`를 테스트 모듈에 추가하고 HOME을 건드리는 두 테스트(+ 일관성 위해 토큰-env 테스트도) 시작 시 `ENV_LOCK.lock()`으로 직렬화. 수정 후 5회 연속 + 전체 스위트 2회 연속 재실행으로 안정성 확인. **교훈**: env var를 건드리는 테스트가 파일 내 1개뿐일 때만 "단일 테스트 함수 내 저장/복구"로 충분하고, 2개 이상이면 처음부터 공유 락이 필요(session_bus.rs는 현재 1개뿐이라 우연히 안전했던 것).
+- **문서**: `tunaround.toml.example`(레포 루트, 플레이스홀더 도메인/토큰) + `.gitignore`에 `/tunaround.toml` 추가(실값 커밋 방지, 서비스 비공개 원칙과 정합) + README "설정 프로파일" 섹션 + dev-mac-windows.md 경로 설명 갱신 + 상태 라인(Stage 3 구현완료·리뷰대기로 갱신).
+- **검증**: 기본 184(lib)+6(main) / 풀피처 198(lib)+9(main) pass, 신규 실패 0. clippy 프로젝트 표준커맨드(기본/풀피처/no-default, `--all-targets` 없이) 0경고. `--all-targets`로 보면 claude.rs/repl-mod.rs에 기존 경고 2건이 뜨지만 이 세션 변경과 무관(사전 존재, 미접촉 파일).
+- **미커밋**: Opus 리뷰 후 커밋 예정(지시 준수).
+
 ## 2026-07-01 step 8 완료: --reindex/lint (Plan 33)
 
 - **`--reindex` 서브 모드**(sqlite): --db 필수. 모든 세션 load_session → save_session(현재 fts 토크나이저로 FTS 재생성) → index_vectors(semantic이면 재임베딩; step 2 model_id 키로 모델 교체 시 갱신). 전후 인덱스 stats 출력. 모델·토크나이저·스키마 교체 후 복구 경로.

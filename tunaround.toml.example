@@ -1,0 +1,31 @@
+# tunaRound 설정 프로파일 예시 파일입니다.
+# 사용법: 이 파일을 저장소 루트에 tunaround.toml로 복사한 뒤 값을 채우고 --profile로 골라 씁니다.
+#   cp tunaround.toml.example tunaround.toml
+#   tunaround chat --profile homelab
+#
+# 탐색 우선순위: --config <경로> > ./tunaround.toml > ~/.config/tunaround/config.toml
+# 값 우선순위: CLI 플래그 > 선택된 프로파일 > 프로그램 기본값
+# 적용 범위: chat / core / join 서브커맨드만. serve / mcp-search / reindex는 이 파일을 쓰지 않습니다.
+#
+# ⚠ 사설 도메인이나 실제 토큰은 이 예시 파일(레포에 커밋됨)이 아니라 tunaround.toml(gitignore 대상)에만 적으세요.
+
+# --profile 미지정 시 기본으로 쓸 프로파일 이름(선택). 없으면 프로파일이 1개면 그것을, 여러 개면
+# 번호를 고르는 대화형 프롬프트를 띄웁니다.
+default_profile = "local"
+
+# 단독 로컬 세션 프로파일 예시.
+[profile.local]
+db = "~/.tunaround/local.db"
+# roster = "~/.tunaround/roster.json"   # 선택: 동적 좌석 로스터 파일
+# recent_turns = 20                     # 선택: 프롬프트 재주입 최근 턴 수 캡
+pull_context = false
+
+# 원격 코어(예: 홈랩 상주 core)에 접속하는 프론트 프로파일 예시.
+[profile.homelab]
+db = "~/.tunaround/homelab.db"
+search_url = "https://your-core-host.example/mcp"   # 실제 도메인은 여기(비커밋 파일)에만
+# 토큰은 평문보다 환경변수 이름 참조를 권장합니다(레포·설정파일에 토큰 평문이 남지 않도록).
+search_token_env = "TUNA_TOKEN"
+# search_token = "plain-token-not-recommended"       # 평문도 허용되나 비권장
+pull_context = true
+# session = "my-session-id"                          # 선택: Redis 세션 재개(TUNAROUND_REDIS_URL 필요)
