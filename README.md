@@ -84,7 +84,7 @@ cargo run --features "sqlite morphology semantic mcp" -- --db tuna.db
   대화와 문서를 SQLite에 저장하고 FTS5로 검색합니다. `/search` 명령도 사용할 수 있습니다.
 
 - `morphology`  
-  한국어 검색을 위해 형태소 분석을 사용합니다. 예를 들어 “검색을” 같은 표현도 “검색”으로 잘 잡도록 돕습니다. 더 정확한 Kiwi를 우선 쓰고, 없으면 lindera로 자동 폴백합니다. Windows에서 Kiwi를 쓰려면 `scripts/install-kiwi-windows.sh`로 libkiwi를 설치합니다([docs/reference/kiwi-windows-setup.md](docs/reference/kiwi-windows-setup.md)).
+  한국어 검색을 위해 형태소 분석을 사용합니다. 예를 들어 “검색을” 같은 표현도 “검색”으로 잘 잡도록 돕습니다. 더 정확한 Kiwi를 우선 쓰고, 없으면 lindera로 자동 폴백합니다. 빌드는 순수 Rust라 macOS·Windows·Linux 모두 그대로 됩니다. Kiwi 네이티브 라이브러리(libkiwi)+모델은 첫 실행 때 OS 캐시에 자동으로 내려받습니다(실패해도 lindera로 동작). 자동 다운로드가 막히면 `KIWI_RS_VERSION`/`KIWI_LIBRARY_PATH` 환경변수로 지정하거나 캐시를 수동 설치합니다.
 
 - `semantic`  
   Ollama 임베딩으로 의미 검색을 추가합니다. 기본 임베딩 서버는 `http://127.0.0.1:11435`, 기본 모델은 `qwen3-embedding:0.6b`입니다(실코퍼스에서 bge-m3보다 랭킹 우위).  

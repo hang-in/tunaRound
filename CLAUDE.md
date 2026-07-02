@@ -29,7 +29,8 @@
 - **>>> 최신 핸드오프: [docs/prompts/v2-handoff_2026-07-01_session4.md](docs/prompts/v2-handoff_2026-07-01_session4.md) 먼저 읽기 <<<** (3a-3·3d·시간성유효성 + 서버 호스팅 교훈 + 남은 항목). 정본 방향: [A2A](docs/design/v2-A2A-core-backend_2026-06-30.md) + [시간성·유효성](docs/design/v2-temporal-validity-direction_2026-07-01.md). 이전: [session3](docs/prompts/v2-handoff_2026-06-30_session3.md)
 - **⚠ 서버 호스팅 교훈**: `--core`는 메인이 동기 블로킹 REPL이라 서버를 **전용 스레드 block_on**으로 서빙해야 함(공유 rt spawn 신뢰불가). 라이브 e2e 디버깅 시 타이밍 함정(Kiwi ~3초 기동/FIFO 미flush/agent ~35초) 주의 → 준비 폴링 + 파이프 입력 + 넉넉한 타임아웃.
 - **남은 항목**: step 6 실코퍼스 regression(실제 전사 코퍼스 확보 선행, 코드만으론 불가) · step 5c recency(messages에 created_at 컬럼) · abstraction/anchors 생성 파이프라인 · codex bearer-env·codex pull 활성화 · 잠재리뷰(unsafe Send Kiwi·session_bus unbounded).
-- **검증/주의:** 임베딩=원격 Ollama(SSH `-p [사설포트]` 터널, dim 1024). 기본 모델 `qwen3-embedding:0.6b`(bge-m3보다 hybrid MRR 우위 측정), `TUNAROUND_EMBED_MODEL`로 교체. Redis 6379(3d/랭킹엔 불요). **⚠️ Kiwi 런타임 버그**(libkiwi 404)->lindera 실효; Windows는 Kiwi cfg 제외=lindera만.
+- **검증/주의:** 임베딩=원격 Ollama(SSH `-p [사설포트]` 터널, dim 1024). 기본 모델 `qwen3-embedding:0.6b`(bge-m3보다 hybrid MRR 우위 측정), `TUNAROUND_EMBED_MODEL`로 교체. Redis 6379(3d/랭킹엔 불요).
+- **Kiwi(정정 2026-07-02):** kiwi-rs 0.1.4는 **순수 Rust 빌드**(dep=regex만, build.rs·네이티브 링크 없음)라 **macOS/Win/Linux 모두 빌드됨**(kiwi cfg는 linux-aarch64만 제외). libkiwi(.dll/.dylib/.so)+모델은 **런타임에 bab2min/Kiwi 릴리스에서 다운로드**(캐시=OS cache dir 또는 `KIWI_LIBRARY_PATH`/`KIWI_MODEL_PATH`/`KIWI_RS_VERSION` env). 과거 "libkiwi 404"는 빌드가 아니라 런타임 자산 다운로드 실패(버전/자산)로, `scripts/install-kiwi-*.sh`가 캐시를 pre-seed해 우회. 실패해도 **lindera 자동 폴백**이라 빌드·실행 안 죽음. bab2min/Kiwi v0.22.2에 맥 자산 존재(`kiwi_mac_arm64`/`kiwi_mac_x86_64`).
 
 ## 무엇을 만드나 (요약)
 
