@@ -1,6 +1,6 @@
 // 토론 맥락 검색 MCP 서버: rmcp stdio 서버로 search_context 툴 하나를 노출한다.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
@@ -11,6 +11,8 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 
 use crate::orchestrator::{ContextRetriever, RosterSeat, TranscriptReader, TranscriptWriter, Utterance};
+use crate::store::a2a::{Artifact, Part, TaskState};
+use crate::store::sqlite::SqliteStore;
 
 /// search_context 툴 파라미터.
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -48,6 +50,29 @@ pub struct RosterParams {
     pub session_id: Option<String>,
 }
 
+/// poll_tasks 툴 파라미터.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct PollTasksParams {
+    /// 조회할 에이전트 id(A2A task의 to_agent).
+    pub agent: String,
+}
+
+/// claim_task 툴 파라미터.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ClaimTaskParams {
+    /// 착수할 task id.
+    pub task_id: String,
+}
+
+/// complete_task 툴 파라미터.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct CompleteTaskParams {
+    /// 완료할 task id.
+    pub task_id: String,
+    /// 결과 텍스트(단일 텍스트 Artifact로 감싸 저장한다).
+    pub result: String,
+}
+
 /// rmcp MCP 서버 핸들러. ContextRetriever를 감싸 search_context/read_transcript 툴을 노출한다.
 #[derive(Clone)]
 pub struct TunaSearchServer {
@@ -59,10 +84,13 @@ pub struct TunaSearchServer {
     roster: Option<Vec<RosterSeat>>,
     /// session_id 파라미터 생략 시 기본으로 사용할 세션 id.
     default_session: String,
+    /// A2A task 저장소(inbox 툴 poll_tasks/claim_task/complete_task 전용). None이면 세 툴 모두 비활성
+    /// 안내 텍스트를 반환한다(stdio mcp-search 경로처럼 A2A가 배선되지 않은 경우).
+    a2a_store: Option<Arc<Mutex<SqliteStore>>>,
 }
 
 impl TunaSearchServer {
-    /// retriever Arc를 받아 새 서버 인스턴스를 반환한다(reader/writer=None, default_session="default", 기존 시그니처 유지).
+    /// retriever Arc를 받아 새 서버 인스턴스를 반환한다(reader/writer/a2a_store=None, default_session="default", 기존 시그니처 유지).
     pub fn new(retriever: Arc<dyn ContextRetriever>) -> Self {
         Self {
             tool_router: Self::tool_router(),
@@ -71,6 +99,7 @@ impl TunaSearchServer {
             writer: None,
             roster: None,
             default_session: "default".to_string(),
+            a2a_store: None,
         }
     }
 
@@ -97,6 +126,62 @@ impl TunaSearchServer {
         self.default_session = session;
         self
     }
+
+    /// A2A task 저장소를 연결한 빌더 메서드(poll_tasks/claim_task/complete_task 활성화). 호출자가 이미
+    /// 들고 있는 Arc를 그대로 넘겨 같은 mutex를 공유한다(새 SQLite 커넥션을 열지 않음).
+    pub fn with_a2a_store(mut self, store: Arc<Mutex<SqliteStore>>) -> Self {
+        self.a2a_store = Some(store);
+        self
+    }
+}
+
+/// poll_tasks 순수 로직: agent 앞으로 열린(submitted/working/input_required) task 목록을 사람이 읽기
+/// 쉬운 텍스트로 조립한다. SQLite 호출은 하되 MCP/async 계층과 무관해 in-memory store로 단위테스트 가능.
+fn poll_tasks_text(store: &SqliteStore, agent: &str) -> Result<String, String> {
+    let tasks = store.list_open_tasks_for(agent)?;
+    Ok(format_open_tasks(agent, &tasks))
+}
+
+/// task 목록을 `[id] from=... state=... msg=...` 줄들로 조립하는 순수 함수(SQLite 없이 테스트 가능).
+fn format_open_tasks(agent: &str, tasks: &[crate::store::a2a::Task]) -> String {
+    if tasks.is_empty() {
+        return format!("{agent} 앞 열린 task 없음");
+    }
+    tasks
+        .iter()
+        .map(|t| {
+            let msg = t
+                .status_message
+                .as_ref()
+                .and_then(|m| m.parts.first())
+                .and_then(|p| p.text.as_deref())
+                .unwrap_or("(본문 없음)");
+            format!("[{}] from={} state={} msg={}", t.id, t.from_agent, t.state.as_str(), msg)
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n")
+}
+
+/// claim_task 순수 로직: task를 working으로 전이하고 확인 텍스트를 만든다. 대상 task가 없으면 Err.
+fn claim_task_text(store: &SqliteStore, task_id: &str) -> Result<String, String> {
+    if store.get_task(task_id)?.is_none() {
+        return Err(format!("task 없음: task_id={task_id}"));
+    }
+    store.update_task_state(task_id, TaskState::Working, None)?;
+    Ok(format!("착수됨: task_id={task_id} state=working"))
+}
+
+/// complete_task 순수 로직: result 텍스트를 단일 Artifact로 감싸 completed로 마감한다. 대상 task가
+/// 없으면 Err. artifact_id는 store.new_task_id()로 발급받아 신규 crate 의존 없이 고유성을 확보한다.
+fn complete_task_text(store: &SqliteStore, task_id: &str, result: &str) -> Result<String, String> {
+    if store.get_task(task_id)?.is_none() {
+        return Err(format!("task 없음: task_id={task_id}"));
+    }
+    let artifact_id = store.new_task_id()?;
+    let artifacts =
+        vec![Artifact { artifact_id, name: None, parts: vec![Part { text: Some(result.to_string()), ..Default::default() }] }];
+    store.complete_task(task_id, &artifacts)?;
+    Ok(format!("완료됨: task_id={task_id} state=completed"))
 }
 
 #[tool_router]
@@ -193,6 +278,81 @@ impl TunaSearchServer {
         };
         Ok(CallToolResult::success(vec![Content::text(text)]))
     }
+
+    #[tool(description = "내 앞으로 온 A2A task 목록을 조회한다(열린 상태: submitted/working/input_required).")]
+    async fn poll_tasks(
+        &self,
+        Parameters(p): Parameters<PollTasksParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let Some(store) = self.a2a_store.clone() else {
+            return Ok(CallToolResult::success(vec![Content::text(
+                "A2A task 저장소 미구성(poll_tasks 비활성)".to_string(),
+            )]));
+        };
+        // SQLite 락 호출이라 blocking이다. a2a_store는 A2A JSON-RPC 엔드포인트(a2a_server::a2a_handler)와
+        // 동시에 경합할 수 있어 async executor 스레드를 막지 않도록 spawn_blocking으로 넘긴다(같은 관례).
+        let agent = p.agent;
+        let outcome = tokio::task::spawn_blocking(move || {
+            let store = store.lock().unwrap_or_else(|e| e.into_inner());
+            poll_tasks_text(&store, &agent)
+        })
+        .await
+        .unwrap_or_else(|e| Err(format!("작업 실패: {e}")));
+        let text = match outcome {
+            Ok(t) => t,
+            Err(e) => format!("조회 실패: {e}"),
+        };
+        Ok(CallToolResult::success(vec![Content::text(text)]))
+    }
+
+    #[tool(description = "task에 착수했음을 표시한다(submitted/input_required -> working).")]
+    async fn claim_task(
+        &self,
+        Parameters(p): Parameters<ClaimTaskParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let Some(store) = self.a2a_store.clone() else {
+            return Ok(CallToolResult::success(vec![Content::text(
+                "A2A task 저장소 미구성(claim_task 비활성)".to_string(),
+            )]));
+        };
+        let task_id = p.task_id;
+        let outcome = tokio::task::spawn_blocking(move || {
+            let store = store.lock().unwrap_or_else(|e| e.into_inner());
+            claim_task_text(&store, &task_id)
+        })
+        .await
+        .unwrap_or_else(|e| Err(format!("작업 실패: {e}")));
+        let text = match outcome {
+            Ok(t) => t,
+            Err(e) => format!("착수 실패: {e}"),
+        };
+        Ok(CallToolResult::success(vec![Content::text(text)]))
+    }
+
+    #[tool(description = "task 결과를 보고하고 완료 처리한다(-> completed, 결과는 텍스트 Artifact로 저장).")]
+    async fn complete_task(
+        &self,
+        Parameters(p): Parameters<CompleteTaskParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let Some(store) = self.a2a_store.clone() else {
+            return Ok(CallToolResult::success(vec![Content::text(
+                "A2A task 저장소 미구성(complete_task 비활성)".to_string(),
+            )]));
+        };
+        let task_id = p.task_id;
+        let result = p.result;
+        let outcome = tokio::task::spawn_blocking(move || {
+            let store = store.lock().unwrap_or_else(|e| e.into_inner());
+            complete_task_text(&store, &task_id, &result)
+        })
+        .await
+        .unwrap_or_else(|e| Err(format!("작업 실패: {e}")));
+        let text = match outcome {
+            Ok(t) => t,
+            Err(e) => format!("완료 처리 실패: {e}"),
+        };
+        Ok(CallToolResult::success(vec![Content::text(text)]))
+    }
 }
 
 #[tool_handler]
@@ -277,6 +437,9 @@ pub async fn serve_http_mcp_on_listener(
     let bound_addr = listener.local_addr()?;
     let a2a_url = core_a2a_url(&bound_addr.to_string());
     let agent_card = crate::a2a_server::build_agent_card(&a2a_url);
+    // MCP inbox 툴(poll_tasks/claim_task/complete_task)도 같은 a2a_store Arc를 공유한다(새 커넥션을
+    // 만들지 않고 단일 mutex로 직렬화. Phase 1 저볼륨 전제. docs/design/v2-a2a-partner-delegation_2026-07-02.md §10-1).
+    let a2a_store_for_mcp = a2a_store.clone();
     let a2a_router = crate::a2a_server::build_router(a2a_store, agent_card);
 
     let retriever2 = retriever.clone();
@@ -287,7 +450,8 @@ pub async fn serve_http_mcp_on_listener(
     let service: StreamableHttpService<TunaSearchServer, LocalSessionManager> =
         StreamableHttpService::new(
             move || {
-                let mut s = TunaSearchServer::new(retriever2.clone());
+                let mut s =
+                    TunaSearchServer::new(retriever2.clone()).with_a2a_store(a2a_store_for_mcp.clone());
                 if let Some(r) = &reader2 {
                     s = s.with_transcript_reader(r.clone());
                 }
@@ -490,6 +654,102 @@ mod tests {
             // read_transcript → 방금 post한 발언이 보임(쓰기→읽기 일관).
             let read_text = post(call_body(4, "read_transcript", "{}")).await;
             assert!(read_text.contains("살구"), "read_transcript에 post_turn 내용 없음: {read_text}");
+        }
+
+        /// HTTP MCP로 poll_tasks→claim_task→complete_task 왕복을 검증한다. Task 2(a2a_server)가 만든
+        /// a2a_store Arc를 serve_http_mcp_on_listener가 TunaSearchServer와 실제로 공유하는지까지 확인한다.
+        #[tokio::test]
+        async fn http_poll_claim_complete_task_e2e() {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+            let port = listener.local_addr().unwrap().port();
+
+            let store = test_a2a_store();
+            // 미리 task 하나를 심어둔다(mac-claude 앞).
+            let seeded_id = {
+                let s = store.lock().unwrap();
+                let now = s.now().unwrap();
+                let id = s.new_task_id().unwrap();
+                let task = crate::store::a2a::Task::new(id, None, "win-claude", "mac-claude", now);
+                s.create_task(&task).unwrap();
+                task.id
+            };
+
+            let retriever = Arc::new(NullRetriever) as Arc<dyn crate::orchestrator::ContextRetriever>;
+            let store_for_server = store.clone();
+            tokio::spawn(async move {
+                let _ =
+                    serve_http_mcp_on_listener(listener, retriever, None, None, None, None, store_for_server).await;
+            });
+            tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+
+            let client = reqwest::Client::new();
+            let url = format!("http://127.0.0.1:{port}/mcp");
+            let accept = "application/json, text/event-stream";
+
+            let init = client
+                .post(&url)
+                .header("Content-Type", "application/json")
+                .header("Accept", accept)
+                .body(INIT_BODY)
+                .send()
+                .await
+                .expect("init");
+            let sid = init
+                .headers()
+                .get("mcp-session-id")
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_string())
+                .expect("mcp-session-id 헤더 필요");
+            let _ = client
+                .post(&url)
+                .header("Content-Type", "application/json")
+                .header("Accept", accept)
+                .header("mcp-session-id", &sid)
+                .body(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#)
+                .send()
+                .await
+                .expect("initialized");
+
+            let post = |body: String| {
+                let client = client.clone();
+                let url = url.clone();
+                let sid = sid.clone();
+                async move {
+                    client
+                        .post(&url)
+                        .header("Content-Type", "application/json")
+                        .header("Accept", accept)
+                        .header("mcp-session-id", &sid)
+                        .body(body)
+                        .send()
+                        .await
+                        .expect("call")
+                        .text()
+                        .await
+                        .expect("text")
+                }
+            };
+
+            // poll_tasks → 심어둔 task가 보임.
+            let poll_text = post(call_body(2, "poll_tasks", r#"{"agent":"mac-claude"}"#)).await;
+            assert!(poll_text.contains(&seeded_id), "poll_tasks 응답에 task_id 없음: {poll_text}");
+
+            // claim_task → working 전이.
+            let claim_body = format!(r#"{{"task_id":"{seeded_id}"}}"#);
+            let claim_text = post(call_body(3, "claim_task", &claim_body)).await;
+            assert!(claim_text.contains("state=working"), "claim_task 응답: {claim_text}");
+
+            // complete_task → completed 전이 + artifact 저장.
+            let complete_body = format!(r#"{{"task_id":"{seeded_id}","result":"작업 결과 요약"}}"#);
+            let complete_text = post(call_body(4, "complete_task", &complete_body)).await;
+            assert!(complete_text.contains("state=completed"), "complete_task 응답: {complete_text}");
+
+            // DB 상태 최종 확인(HTTP 왕복 후 실제로 반영됐는지. serve_http_mcp_on_listener가 넘겨받은
+            // 그 a2a_store Arc가 TunaSearchServer 쪽에도 공유됐다는 증거).
+            let final_task = store.lock().unwrap().get_task(&seeded_id).unwrap().expect("존재해야 함");
+            assert_eq!(final_task.state, TaskState::Completed);
+            assert_eq!(final_task.artifacts.len(), 1);
+            assert_eq!(final_task.artifacts[0].parts[0].text.as_deref(), Some("작업 결과 요약"));
         }
 
         #[test]
@@ -826,5 +1086,189 @@ mod tests {
         assert!(result.is_ok());
         let text = format!("{:?}", result.unwrap().content);
         assert!(text.contains("로스터 미연결"), "미연결 안내 불일치: {text}");
+    }
+
+    // --- A2A inbox 툴(poll_tasks/claim_task/complete_task): 순수 함수 단위테스트 ---
+
+    /// task 하나를 심고 store에 영속한다(inbox 테스트 공용 헬퍼).
+    fn seed_task(store: &SqliteStore, id: &str, from: &str, to: &str, created_at: &str) {
+        let task = crate::store::a2a::Task::new(id, None, from, to, created_at);
+        store.create_task(&task).unwrap();
+    }
+
+    #[test]
+    fn format_open_tasks_empty_says_no_open_tasks() {
+        let text = format_open_tasks("mac-claude", &[]);
+        assert!(text.contains("mac-claude"), "agent 언급 없음: {text}");
+        assert!(text.contains("없음"), "빈 목록 안내가 아님: {text}");
+    }
+
+    #[test]
+    fn format_open_tasks_lists_task_id_from_agent_state_and_message() {
+        let mut task =
+            crate::store::a2a::Task::new("t1", None, "win-claude", "mac-claude", "2026-07-02 09:00:00");
+        task.status_message = Some(crate::store::a2a::Message {
+            message_id: "m1".into(),
+            role: "user".into(),
+            parts: vec![Part { text: Some("리뷰 부탁".into()), ..Default::default() }],
+            task_id: Some("t1".into()),
+            context_id: None,
+        });
+        let text = format_open_tasks("mac-claude", &[task]);
+        assert!(text.contains("t1"), "task id 누락: {text}");
+        assert!(text.contains("win-claude"), "from_agent 누락: {text}");
+        assert!(text.contains("submitted"), "state 누락: {text}");
+        assert!(text.contains("리뷰 부탁"), "메시지 본문 누락: {text}");
+    }
+
+    #[test]
+    fn poll_tasks_text_filters_agent_and_excludes_completed() {
+        let store = SqliteStore::open_memory().unwrap();
+        seed_task(&store, "t1", "win", "mac", "2026-07-02 09:00:00"); // open, mac 앞.
+        let mut t2 = crate::store::a2a::Task::new("t2", None, "win", "mac", "2026-07-02 09:05:00");
+        t2.state = TaskState::Completed;
+        store.create_task(&t2).unwrap(); // completed, mac 앞 → 제외돼야 함.
+        seed_task(&store, "t3", "win", "other", "2026-07-02 09:10:00"); // open, other 앞 → 제외돼야 함.
+
+        let text = poll_tasks_text(&store, "mac").unwrap();
+        assert!(text.contains("t1"), "열린 task 누락: {text}");
+        assert!(!text.contains("t2"), "completed가 섞여 들어옴: {text}");
+        assert!(!text.contains("t3"), "다른 agent 앞 task가 섞여 들어옴: {text}");
+    }
+
+    #[test]
+    fn claim_task_text_transitions_to_working() {
+        let store = SqliteStore::open_memory().unwrap();
+        seed_task(&store, "t1", "win", "mac", "2026-07-02 09:00:00");
+        let text = claim_task_text(&store, "t1").unwrap();
+        assert!(text.contains("state=working"), "응답 불일치: {text}");
+        let reloaded = store.get_task("t1").unwrap().unwrap();
+        assert_eq!(reloaded.state, TaskState::Working);
+    }
+
+    #[test]
+    fn claim_task_text_missing_task_is_err() {
+        let store = SqliteStore::open_memory().unwrap();
+        let err = claim_task_text(&store, "nope").unwrap_err();
+        assert!(err.contains("nope"), "에러 메시지에 task_id 없음: {err}");
+    }
+
+    #[test]
+    fn complete_task_text_sets_completed_with_artifact() {
+        let store = SqliteStore::open_memory().unwrap();
+        seed_task(&store, "t1", "win", "mac", "2026-07-02 09:00:00");
+        let text = complete_task_text(&store, "t1", "작업 결과").unwrap();
+        assert!(text.contains("state=completed"), "응답 불일치: {text}");
+        let reloaded = store.get_task("t1").unwrap().unwrap();
+        assert_eq!(reloaded.state, TaskState::Completed);
+        assert_eq!(reloaded.artifacts.len(), 1);
+        assert_eq!(reloaded.artifacts[0].parts[0].text.as_deref(), Some("작업 결과"));
+    }
+
+    #[test]
+    fn complete_task_text_missing_task_is_err() {
+        let store = SqliteStore::open_memory().unwrap();
+        let err = complete_task_text(&store, "nope", "결과").unwrap_err();
+        assert!(err.contains("nope"), "에러 메시지에 task_id 없음: {err}");
+    }
+
+    // --- A2A inbox 툴: MCP 계층(#[tool] 메서드) 테스트 ---
+
+    /// in-memory store를 a2a_store로 연결한 서버를 만든다(inbox 툴 3종 테스트 공용).
+    fn server_with_a2a_store(store: SqliteStore) -> TunaSearchServer {
+        TunaSearchServer::new(Arc::new(FakeRetriever(vec![]))).with_a2a_store(Arc::new(Mutex::new(store)))
+    }
+
+    #[tokio::test]
+    async fn poll_tasks_without_store_returns_not_connected() {
+        let server = TunaSearchServer::new(Arc::new(FakeRetriever(vec![])));
+        let result = server.poll_tasks(Parameters(PollTasksParams { agent: "mac".into() })).await;
+        assert!(result.is_ok());
+        let text = format!("{:?}", result.unwrap().content);
+        assert!(text.contains("A2A task 저장소 미구성"), "미구성 안내 불일치: {text}");
+    }
+
+    #[tokio::test]
+    async fn claim_task_without_store_returns_not_connected() {
+        let server = TunaSearchServer::new(Arc::new(FakeRetriever(vec![])));
+        let result = server.claim_task(Parameters(ClaimTaskParams { task_id: "t1".into() })).await;
+        assert!(result.is_ok());
+        let text = format!("{:?}", result.unwrap().content);
+        assert!(text.contains("A2A task 저장소 미구성"), "미구성 안내 불일치: {text}");
+    }
+
+    #[tokio::test]
+    async fn complete_task_without_store_returns_not_connected() {
+        let server = TunaSearchServer::new(Arc::new(FakeRetriever(vec![])));
+        let result = server
+            .complete_task(Parameters(CompleteTaskParams { task_id: "t1".into(), result: "결과".into() }))
+            .await;
+        assert!(result.is_ok());
+        let text = format!("{:?}", result.unwrap().content);
+        assert!(text.contains("A2A task 저장소 미구성"), "미구성 안내 불일치: {text}");
+    }
+
+    #[tokio::test]
+    async fn poll_tasks_tool_returns_open_tasks_via_server() {
+        let store = SqliteStore::open_memory().unwrap();
+        seed_task(&store, "t1", "win", "mac", "2026-07-02 09:00:00");
+        let server = server_with_a2a_store(store);
+        let result = server.poll_tasks(Parameters(PollTasksParams { agent: "mac".into() })).await;
+        assert!(result.is_ok());
+        let text = format!("{:?}", result.unwrap().content);
+        assert!(text.contains("t1"), "task 목록 누락: {text}");
+    }
+
+    #[tokio::test]
+    async fn claim_task_tool_transitions_via_server() {
+        let store = SqliteStore::open_memory().unwrap();
+        seed_task(&store, "t1", "win", "mac", "2026-07-02 09:00:00");
+        let a2a = Arc::new(Mutex::new(store));
+        let server = TunaSearchServer::new(Arc::new(FakeRetriever(vec![]))).with_a2a_store(a2a.clone());
+        let result = server.claim_task(Parameters(ClaimTaskParams { task_id: "t1".into() })).await;
+        assert!(result.is_ok());
+        let text = format!("{:?}", result.unwrap().content);
+        assert!(text.contains("state=working"), "응답 불일치: {text}");
+        let reloaded = a2a.lock().unwrap().get_task("t1").unwrap().unwrap();
+        assert_eq!(reloaded.state, TaskState::Working);
+    }
+
+    #[tokio::test]
+    async fn complete_task_tool_completes_via_server() {
+        let store = SqliteStore::open_memory().unwrap();
+        seed_task(&store, "t1", "win", "mac", "2026-07-02 09:00:00");
+        let a2a = Arc::new(Mutex::new(store));
+        let server = TunaSearchServer::new(Arc::new(FakeRetriever(vec![]))).with_a2a_store(a2a.clone());
+        let result = server
+            .complete_task(Parameters(CompleteTaskParams { task_id: "t1".into(), result: "완료 보고".into() }))
+            .await;
+        assert!(result.is_ok());
+        let text = format!("{:?}", result.unwrap().content);
+        assert!(text.contains("state=completed"), "응답 불일치: {text}");
+        let reloaded = a2a.lock().unwrap().get_task("t1").unwrap().unwrap();
+        assert_eq!(reloaded.state, TaskState::Completed);
+        assert_eq!(reloaded.artifacts[0].parts[0].text.as_deref(), Some("완료 보고"));
+    }
+
+    #[tokio::test]
+    async fn claim_task_tool_missing_task_returns_error_text() {
+        let store = SqliteStore::open_memory().unwrap();
+        let server = server_with_a2a_store(store);
+        let result = server.claim_task(Parameters(ClaimTaskParams { task_id: "nope".into() })).await;
+        assert!(result.is_ok());
+        let text = format!("{:?}", result.unwrap().content);
+        assert!(text.contains("착수 실패"), "에러 안내 불일치: {text}");
+    }
+
+    #[tokio::test]
+    async fn complete_task_tool_missing_task_returns_error_text() {
+        let store = SqliteStore::open_memory().unwrap();
+        let server = server_with_a2a_store(store);
+        let result = server
+            .complete_task(Parameters(CompleteTaskParams { task_id: "nope".into(), result: "결과".into() }))
+            .await;
+        assert!(result.is_ok());
+        let text = format!("{:?}", result.unwrap().content);
+        assert!(text.contains("완료 처리 실패"), "에러 안내 불일치: {text}");
     }
 }
