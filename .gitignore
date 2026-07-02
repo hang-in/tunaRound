@@ -7,6 +7,8 @@
 .env.local
 # 실제 값(사설 도메인·토큰)이 들어갈 수 있는 로컬 설정. 예시는 tunaround.toml.example(커밋됨).
 /tunaround.toml
+# 사설 백엔드 접속 실값(호스트/IP/계정/포트/터널). tracked 문서엔 placeholder만.
+/docs/reference/backend-private.md
 
 # OS
 .DS_Store

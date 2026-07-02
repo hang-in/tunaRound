@@ -2,6 +2,15 @@
 
 > 작업 중 결정과 근거. 계속 append. (규율 #7) 다음 세션이 결정을 재유도하지 않게.
 
+## 2026-07-02 세션6: rc.1 CI green + Windows rc 아티팩트 검증
+
+- **rc.1 CI 완전 green**(run 28564666085, 태그 v0.1.0-rc.1 = 19f3ce0): plan → 빌드 4타깃(mac arm64 3m45s / mac x86 8m39s / win x64 11m24s / **linux x64 7m4s**) → global artifacts → host 발행(28s) 전부 ✓. **크로스컴파일 리스크(ring C·rusqlite bundled)가 linux x64에서 실증 통과**(rc.1의 존재 이유였음). GitHub prerelease 발행됨(isDraft=false, isPrerelease=true), 아티팩트 15개 = 4바이너리 + sha256 + installer.ps1/sh + tunaround.rb(homebrew formula) + source.
+- **Windows rc 아티팩트 검증(수동 다운로드+실행, CI 미접촉)**: sha256 발행값과 일치 · 번들(tunaround.exe 46MB + LICENSE(AGPL 전문) + README + CHANGELOG) · `--version` = 0.1.0-rc.1 · 전 서브커맨드(chat/core/serve/join/mcp-search/reindex)+플래그(--pull-context/--search-url/--config/--profile 등) 노출 = **semantic/mcp/serve/sqlite 피처가 릴리스 빌드에 실제 컴파일됨 확인**. win x64 바이너리 양호.
+- **⚠ 실발견(공개 설치 경로 게이트)**: `tunaround-installer.ps1`(및 sh/homebrew) 익명 다운로드는 **레포가 private이라 404**(Net.WebClient·Invoke-WebRequest 둘 다, 릴리스 페이지 자체도 익명 404). `gh release download`(인증 토큰)만 성공. **스크립트·아티팩트 결함 아님** — 아티팩트명(tunaround-x86_64-pc-windows-msvc.zip)·URL·메커니즘 전부 정확. **함의: 공개 설치 경로(ps1/sh/brew) 전부 레포 public 전환 전엔 작동 불가**(릴리스 download URL을 익명으로 치기 때문). homebrew-tap이 public이어도 release asset이 private면 `brew install`도 404. 이건 설계 의도(소스공개=릴리스 행위)이자 **동구님 go/no-go**. **진짜 installer/brew 테스트는 레포 public 후에만 가능**, 그 전 Windows 최대 검증치 = 아티팩트 무결성+실행(= 통과).
+- 릴리스 이름 `0.1.0-rc.1 - 미발행` = CHANGELOG.md 헤딩 플레이스홀더("미발행")를 cargo-dist가 릴리스 제목으로 상속. 기능 무관, 최종 v0.1.0 전 헤딩을 날짜로 정리 권장(cosmetic).
+- 로컬 상태: main=origin/main(c59be32), src/ 무변경(c89da05 이후 전부 docs·CHANGELOG·Cargo.toml 버전/profile.dist·dist 설정) = 테스트 베이스라인 184+6 / 198+9 유효(재실행 불요). CI는 맥 주도 유지(윈도우 미개입).
+- **사설 IP 전방 redact((나) 단계, 세션6)**: 홈 서버 공인 IP·DDNS 호스트명이 tracked 문서 4곳(context-notes·session2/3/4 핸드오프)+히스토리에 있던 것 발견. 트리에서 `[사설IP]`/`[사설호스트]` placeholder로 치환, 실값은 gitignored `docs/reference/backend-private.md`로 이관(+.gitignore 등록). 계정(`d9ng`)·포트(`2232`)는 non-secret라 유지(계정만으론 접속 불가, 보안=키). **전방 정리만** — 과거 히스토리엔 잔존(레포 private라 저위험). 공유/공개 결정 시에만 `git filter-repo` 히스토리 퍼지(맥 조율=rc.1 태그·발행 릴리스 재생성 동반). 배포 자체가 이 프로젝트 비우선(동구님).
+
 ## 2026-07-02 Stage 3 tunaround.toml + 프로파일 완료 (Sonnet5 구현, 미커밋)
 
 - **설계 기준**: docs/design/v2-deploy-onboarding_2026-07-02.md §2 설계 B. checklist.md에 이미 스텁이 있던 항목이라 별도 plan 문서 없이 그 스펙(위임 프롬프트)을 그대로 plan으로 취급하고 착수(체크리스트·컨텍스트노트 규율 #7은 이미 만족된 상태로 판단).
