@@ -61,6 +61,12 @@ cargo clippy --features "semantic morphology mcp serve"
 - 설정: `dist-workspace.toml`(+ `.github/workflows/release.yml`). 드라이런: `dist plan`.
 - **실제 릴리스는 도그푸딩 후 태그 푸시**: `git tag v0.1.0 && git push origin v0.1.0` → 공개 Release + `hang-in/homebrew-tap` 발행. 라이선스=AGPL-3.0.
 - ⚠ 크로스컴파일 리스크(rusqlite bundled C·reqwest rustls·axum, 특히 aarch64-linux)는 첫 릴리스 CI에서 확인.
+- **rc.1 실전 교훈(2026-07-02, CI 전용 버그 3개 = 로컬 미검출):**
+  1. **cargo-dist는 git 태그 버전 = Cargo.toml 패키지 버전을 요구.** rc는 Cargo.toml `version="X.Y.Z-rc.N"` + 태그 `vX.Y.Z-rc.N`. 로컬 `dist plan`은 기본 태그라 안 걸리고, CI가 명시 태그 `--tag`로 실패("nothing to Release"). 최종은 `version="X.Y.Z"` 되돌리고 `vX.Y.Z`.
+  2. **`[profile.dist]` 필수**(Cargo.toml, `inherits="release" lto="thin"`). 없으면 build 잡이 `profile dist is not defined`로 전멸. `dist init` 미완 흔적.
+  3. **aarch64 크로스는 ring C가 깨짐**(arm64-windows: cargo-xwin clang `/imsvc` 오류 / arm64-linux 유사). **v0.1.0은 4타깃**(mac arm64·x64, win x64, linux x64)만. arm64 크로스는 zigbuild/xwin ring 설정 후 후속.
+  - **prerelease(`-rc.N`) 태그는 homebrew publish 잡을 자동 skip**(확인됨) → tap/시크릿 없이 rc CI 안전. tap은 최종 정식 태그 전에만 필요.
+  - 검증: rc 태그 → `gh run view <id> --json jobs`로 **잡별 결론 직접 확인**(`gh run watch --exit-status`의 exit code는 신뢰 불가, 실제 실패해도 0 반환 사례 있었음) + `gh release view <tag>`.
 
 ## 7. 분산(맥 ↔ 윈도우) 실행
 

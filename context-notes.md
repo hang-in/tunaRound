@@ -564,7 +564,7 @@
 - 윈도우 개발분 pull(HEAD 7428fd7→d4526a7). 맥에서 **빌드·테스트·설치 전부 통과**: `cargo build`(기본/풀피처), `cargo test` 195/212, clippy 클린, `cargo install --features "semantic mcp serve"`(release) → `~/.cargo/bin/tunaround v0.1.0`. **크로스플랫폼 컴파일 이슈 없음**(rusqlite bundled·rustls·axum·kiwi-rs·lindera 맥 OK).
 - **E2E 도그푸딩**: tunaround chat로 "v0.1.0 릴리스 준비" 토론 → claude+codex 정상 라운드, 결과문서·DB 생성. graceful 저하 확인: Kiwi→lindera(자산404), semantic→FTS(터널없음), 미설치CLI→`[에러] Spawn`(패닉X). **판정=v0.1.0-rc.1 먼저**(6타깃 CI 미검증).
 - **크로스머신 A2A 스모크(맥→윈도우 코어 192.0.2.10:8770)**: 네트워크 401/200 ✅, **claude가 원격 전사 ALBATROSS 인용 = half-A2A 읽기 실증 ✅**. 단 codex read_transcript 취소(codex pull 취약, 기존 한계). 임시 핸드오프 `docs/prompts/smoke-cross-machine_2026-07-02.md`(완료 후 삭제 예정, codex leg 남아 보류).
-- **릴리스-준비 배치 처리**: README macOS 상태 갱신(확인됨) · CLAUDE.md `install-kiwi-*.sh`→windows 하나 정정 + 맥 Kiwi 실측 · `CHANGELOG.md` 최소본 · `dist plan` 6타깃 유효 · `docs/reference/release-readiness-v0.1.0_2026-07-02.md`(도그푸딩+검증+체크리스트). 남은 릴리스 액션은 동구님(rc.1 태그→CI→tap→최종태그).
+- **릴리스-준비 배치 처리**: README macOS 상태 갱신(확인됨) · CLAUDE.md `install-kiwi-*.sh`→windows 하나 정정 + 맥 Kiwi 실측 · `CHANGELOG.md` 최소본 · `dist plan` 6타깃 유효 · `docs/reference/release-readiness-v0.1.0_2026-07-02.md`(도그푸딩+검증+체크리스트).
 
 ## 2026-07-02 오후: A2A 성숙도 정직화 (용어 정렬) + rc.1 CI + 크로스머신 스모크
 
@@ -572,3 +572,11 @@
 - **rc.1 CI(맥 주도)**: 도그푸딩 판정으로 v0.1.0-rc.1 먼저. CI가 우리 예측 리스크를 실제로 노출 - **aarch64 크로스(arm64-win/linux) ring C 크로스컴파일 실패** → 맥이 4타깃(mac arm64/x86, win x64, linux x64)으로 축소 + 버전=태그 일치 + [profile.dist] 추가. 최신 run 진행중. **CI는 맥이 잡음, 윈도우 미개입.**
 - **A2A 용어 정렬(동구님과 합의)**: 코드/커밋의 "half-a2a"는 **데이터 평면(공유 전사 pull/post)만** 뜻함. **제어 평면(누가·언제·왜·종료)은 사람** = 현재는 "공유맥락 + 사람 오케스트레이션". 동구님이 목표로 말한 "진짜 A2A"는 **자율 제어 평면=AutoLoop(Stage 4, 미구현)**: 모더레이터 에이전트가 턴·종료 자율 결정 + 합의/교착 감지 + (선택)영속 에이전트. 설계가 "사람 주도(종료는 사람)"로 일부러 뺐고 "경제 조건 입증 시에만". 최소 경로=/debate 고정N→LLM 모더레이터. **비명시적 AutoLoop 없음이 맞음.**
 - **부수 통찰**: 코어=범용 공유토론 MCP서버. 대화형 Claude/Codex 터미널 2개에 코어를 MCP 등록하면 공유토론 가능(대화형 codex는 사람 승인→#24135 우회). 협업 크로스머신=git + 핸드오프 문서(맥락 운반), 전사는 코어공유면 live. 사람 relay 없애기=gh watch(CI)·/loop git-fetch·푸시알림. 순차 solo면 크로스머신 이득 얇음, 병렬일 때 값.
+## rc.1 릴리스 CI 성공 (2026-07-02, 맥에서 태그·수리)
+
+- 동구님 지시로 `v0.1.0-rc.1` 태그. **rc.1이 CI 전용 버그 3개를 순차로 잡음(로컬 미검출)** → 4회차만에 성공:
+  1. **버전=태그 불일치**: cargo-dist 태그버전=Cargo.toml버전 요구 → `version="0.1.0-rc.1"`(c20267f).
+  2. **`[profile.dist]` 누락** → 추가 + 로컬 `--profile dist` 검증(59e0c74).
+  3. **aarch64 ring 크로스컴파일 실패**(`/imsvc`, arm64-win xwin 난제) → **arm64-win/linux 제외, 4타깃**(19f3ce0).
+- **최종 성공**: run 28564666085 all-green, **프리릴리스 v0.1.0-rc.1 생성**(15 assets: 4타깃+sha256, sh/ps1 인스톨러, tunaround.rb, source). **homebrew publish=prerelease라 skipped 확정**(tap 불요).
+- 교훈은 [[dev-mac-windows §6]]에 영속 기록. **최종 v0.1.0**: Cargo.toml `0.1.0` 되돌림 + `git tag v0.1.0`(동구님, rc 아티팩트 설치검증 + tap/시크릿 후). **주의: gh run watch --exit-status의 exit code 신뢰 불가**(실패해도 0), 잡 결론 직접 확인.

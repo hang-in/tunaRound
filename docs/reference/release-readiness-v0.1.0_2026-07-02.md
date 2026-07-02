@@ -41,11 +41,19 @@ summary: tunaround 자체로 v0.1.0 릴리스 준비를 도그푸딩한 결과 +
 - [x] `CHANGELOG.md` 최소본 추가
 - [x] 크로스머신 A2A 스모크(claude leg 실증)
 
-**동구님-action (외부·태그, 남음):**
-- [ ] `git tag v0.1.0-rc.1 && push` → 6타깃 빌드 CI 관찰(aarch64-linux 크로스컴파일 확인)
-- [ ] rc 아티팩트 맥/윈도우 각 1회 설치·실행
-- [ ] `hang-in/homebrew-tap` 레포 생성 + `HOMEBREW_TAP_TOKEN` 시크릿
-- [ ] `git tag v0.1.0 && push` → 최종 릴리스 + `brew install` 검증
+**rc.1 CI (완료, 2026-07-02):**
+- [x] `v0.1.0-rc.1` 태그 → 릴리스 CI **성공**. **프리릴리스 생성**(assets 15: 4타깃 tarball/zip+sha256, shell/powershell 인스톨러, tunaround.rb, source, manifest).
+- rc.1이 잡은 CI 전용 버그 3개(전부 로컬 미검출, 순차 수정):
+  1. **버전=태그 불일치**: cargo-dist는 git 태그 버전 = Cargo.toml 패키지 버전 요구 → Cargo.toml `0.1.0-rc.1`(프리릴리스 관례). 최종엔 `0.1.0`으로.
+  2. **`[profile.dist]` 누락**: `dist init`이 넣어야 할 프로파일 없어 `cargo build --profile dist` 실패 → Cargo.toml에 `[profile.dist] inherits="release" lto="thin"` 추가.
+  3. **aarch64 크로스컴파일 실패**(ring C의 `/imsvc`, arm64-win는 cargo-xwin ring 난제) → **arm64-windows·arm64-linux 제외, 4타깃**(mac arm64·x64, win x64, linux x64).
+- **homebrew publish = prerelease라 skipped 확정**(codex 예측 맞음, tap 없이도 rc 안전).
+
+**동구님-action (남음):**
+- [ ] rc 아티팩트 맥/윈도우 각 1회 설치·실행(installer.sh/ps1 또는 tarball).
+- [ ] `hang-in/homebrew-tap` 레포 생성 + `HOMEBREW_TAP_TOKEN` 시크릿(최종 brew용).
+- [ ] **최종 v0.1.0**: Cargo.toml `version="0.1.0"`으로 되돌림 + `git tag v0.1.0 && push` → 정식 Release + homebrew 발행 + `brew install` 검증.
+- [ ] (후속) arm64-windows/linux 크로스는 zigbuild/xwin ring 설정 조정 후 재추가.
 
 ## 알려진 제약 (릴리스 노트 반영)
 
