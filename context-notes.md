@@ -644,3 +644,10 @@
 - 검증: 기본 218 / 풀피처+worker 286 lib pass, clippy 클린.
 - **(a)=(b) 확인**: 워커 데몬의 --runner가 파트너 종류. (b) 이기종 = `--runner http`(OpenAiChatRunner, engines)를 Ollama OpenAI-compat(/v1/chat/completions)에 붙이면 로컬LLM 워커 = 다음(W4b). Ollama chat endpoint/model 필요(사용자 원격 Ollama 터널).
 - 스코프: opt-in 데몬, read-only 기본, dispatcher-side 사람 목표 발행(semi-a2a HITL). 러너 실패 시 task 'working' 고착(requeue/timeout 후속).
+
+## 2026-07-03 세션8: (b) 이기종 파트너 실증 (Codex 워커) + Ollama-http 코드완성/GPU블록
+
+- **(b) 성공(codex 러너)**: 같은 `tunaround work` 데몬을 `--runner codex`로 띄우니 **Claude 아닌 Codex가 워커**로 자율 처리. dispatcher SendStreamingMessage(to=codex-worker) -> 데몬이 poll->claim(SSE working 도착)->codex exec 실행->complete. GetTask=completed + codex 생성 artifact("A2A 프로토콜의 목적은 서로 다른 AI 에이전트가 표준화된 방식으로...협업하도록..."). **(a)=(b) 실증: 같은 데몬, --runner만 교체 = 파트너 종류 교체.** (codex는 단순 prompt라 #24135 무관 - MCP 툴 승인 불필요.)
+- SSE 꼬리 유실: codex가 curl --max-time(150s) 넘겨 completed 프레임은 SSE 대신 GetTask로 확인(codex 느림, ~2분). working까지는 SSE 실시간, 완료는 GetTask. 실전엔 dispatcher가 SSE를 넉넉/무한 유지하거나 재구독(SubscribeToTask)하면 됨.
+- **Ollama-http 경로**: `--runner http`(OpenAiChatRunner, engines) **코드 완성**. 로컬 Ollama(11434) chat 모델(qwen3.5:4b/gemma4:e4b) 있으나 **GPU OOM**으로 라이브 실패(qwen3.5:4b가 5.4GB 점유, gemma4=CUDA OOM+CLIP 로드실패). 인프라 이슈, GPU 정리하면 됨. **minor 코드**: main.rs http factory가 `--token`(코어 bearer)을 러너 api_key로 넘김 - Ollama는 무시라 무해하나, 별도 --http-api-key로 분리하는 게 정직(후속).
+- 정리: 셸 taskkill이 간헐 행(tasklist 지연) -> PowerShell Stop-Process로 코어 종료 확인.
