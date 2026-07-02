@@ -99,17 +99,11 @@ pub struct TaskIdParams {
     pub history_length: Option<i64>,
 }
 
-/// SendMessage 순수 로직: task_id·시각을 store에서 발급받아 submitted Task를 만들고 영속한다.
-/// status_message와 history 첫 항목 모두 요청 메시지를 그대로 보존한다.
+/// SendMessage 순수 로직: 얇은 래퍼. task 조립(task_id·시각 발급, status_message/history 세팅,
+/// 영속)은 store::create_task_from_message로 위임한다(mcp::send_task 툴과 공유하는 헬퍼 - DRY 우선,
+/// serve<->mcp 크로스피처 직접의존 회피. docs/design/v2-a2a-partner-delegation_2026-07-02.md §10-1).
 pub fn handle_send(store: &SqliteStore, params: SendParams) -> Result<Task, String> {
-    let id = store.new_task_id()?;
-    let now = store.now()?;
-    let context_id = params.message.context_id.clone();
-    let mut task = Task::new(id, context_id, params.from_agent, params.to_agent, now);
-    task.status_message = Some(params.message.clone());
-    task.history = vec![params.message];
-    store.create_task(&task)?;
-    Ok(task)
+    store.create_task_from_message(&params.from_agent, &params.to_agent, params.message)
 }
 
 /// GetTask 순수 로직: 단순 조회 위임(없으면 Ok(None)).

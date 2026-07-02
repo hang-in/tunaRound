@@ -791,6 +791,26 @@ impl SqliteStore {
         Ok(())
     }
 
+    /// 메시지 하나로 submitted task를 만들어 영속한다(A2A SendMessage와 MCP send_task 툴이 공유하는
+    /// 헬퍼). task_id/시각은 이 함수가 발급하고, message는 status_message이자 history의 첫 항목으로
+    /// 그대로 보존한다. a2a_server::handle_send와 mcp::send_task 양쪽이 이 함수로 수렴해 "메시지로
+    /// task를 튼다"는 로직이 store 레이어 한 곳에만 존재하게 한다(serve<->mcp 크로스피처 의존 회피).
+    pub fn create_task_from_message(
+        &self,
+        from_agent: &str,
+        to_agent: &str,
+        message: Message,
+    ) -> Result<Task, String> {
+        let id = self.new_task_id()?;
+        let now = self.now()?;
+        let context_id = message.context_id.clone();
+        let mut task = Task::new(id, context_id, from_agent, to_agent, now);
+        task.status_message = Some(message.clone());
+        task.history = vec![message];
+        self.create_task(&task)?;
+        Ok(task)
+    }
+
     /// task_id로 단건 조회한다. 없으면 Ok(None)(load_session 폴리시 답습: QueryReturnedNoRows만 None).
     pub fn get_task(&self, task_id: &str) -> Result<Option<Task>, String> {
         let row: TaskRow = match self.conn.query_row(
@@ -1470,6 +1490,41 @@ mod tests {
         fn get_task_missing_is_none() {
             let db = SqliteStore::open_memory().unwrap();
             assert!(db.get_task("nope").unwrap().is_none());
+        }
+
+        #[test]
+        fn create_task_from_message_creates_submitted_task_and_persists_message() {
+            let db = SqliteStore::open_memory().unwrap();
+            let msg = sample_message("m1");
+            let task = db.create_task_from_message("win-claude", "mac-claude", msg.clone()).unwrap();
+
+            assert_eq!(task.state, TaskState::Submitted);
+            assert_eq!(task.id.len(), 32, "task_id는 randomblob(16) hex 32자여야 함: {}", task.id);
+            assert_eq!(task.from_agent, "win-claude");
+            assert_eq!(task.to_agent, "mac-claude");
+            assert_eq!(task.status_message, Some(msg.clone()));
+            assert_eq!(task.history, vec![msg]);
+
+            // store에도 실제로 영속되었는지 확인(round-trip).
+            let persisted = db.get_task(&task.id).unwrap().expect("영속되어야 함");
+            assert_eq!(persisted, task);
+        }
+
+        #[test]
+        fn create_task_from_message_preserves_context_id_from_message() {
+            let db = SqliteStore::open_memory().unwrap();
+            let mut msg = sample_message("m1");
+            msg.context_id = Some("ctx1".into());
+            let task = db.create_task_from_message("a", "b", msg).unwrap();
+            assert_eq!(task.context_id.as_deref(), Some("ctx1"));
+        }
+
+        #[test]
+        fn create_task_from_message_two_calls_produce_distinct_task_ids() {
+            let db = SqliteStore::open_memory().unwrap();
+            let t1 = db.create_task_from_message("a", "b", sample_message("m1")).unwrap();
+            let t2 = db.create_task_from_message("a", "b", sample_message("m2")).unwrap();
+            assert_ne!(t1.id, t2.id);
         }
 
         #[test]

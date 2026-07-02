@@ -11,7 +11,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 
 use crate::orchestrator::{ContextRetriever, RosterSeat, TranscriptReader, TranscriptWriter, Utterance};
-use crate::store::a2a::{Artifact, Part, TaskState};
+use crate::store::a2a::{Artifact, Message, Part, TaskState};
 use crate::store::sqlite::SqliteStore;
 
 /// search_context 툴 파라미터.
@@ -71,6 +71,26 @@ pub struct CompleteTaskParams {
     pub task_id: String,
     /// 결과 텍스트(단일 텍스트 Artifact로 감싸 저장한다).
     pub result: String,
+}
+
+/// send_task 툴 파라미터(dispatcher가 새 A2A task를 위임할 때 사용).
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SendTaskParams {
+    /// 보내는 에이전트 id(A2A task의 from_agent).
+    pub from_agent: String,
+    /// 받는 에이전트 id(A2A task의 to_agent).
+    pub to_agent: String,
+    /// 작업 지시 본문.
+    pub text: String,
+    /// 대화 맥락 id(생략 가능).
+    pub context_id: Option<String>,
+}
+
+/// get_task 툴 파라미터(dispatcher가 위임한 task의 상태·결과를 확인할 때 사용).
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct GetTaskParams {
+    /// 조회할 task id.
+    pub task_id: String,
 }
 
 /// rmcp MCP 서버 핸들러. ContextRetriever를 감싸 search_context/read_transcript 툴을 노출한다.
@@ -182,6 +202,54 @@ fn complete_task_text(store: &SqliteStore, task_id: &str, result: &str) -> Resul
         vec![Artifact { artifact_id, name: None, parts: vec![Part { text: Some(result.to_string()), ..Default::default() }] }];
     store.complete_task(task_id, &artifacts)?;
     Ok(format!("완료됨: task_id={task_id} state=completed"))
+}
+
+/// send_task 순수 로직: text 하나를 A2A Message로 감싸 store::create_task_from_message에 위임한다.
+/// message_id는 store.new_task_id()로 발급(신규 crate 의존 없이 고유성 확보, complete_task_text의
+/// artifact_id 발급과 같은 관례).
+fn send_task_text(
+    store: &SqliteStore,
+    from_agent: &str,
+    to_agent: &str,
+    text: &str,
+    context_id: Option<String>,
+) -> Result<String, String> {
+    let message_id = store.new_task_id()?;
+    let message = Message {
+        message_id,
+        role: "user".to_string(),
+        parts: vec![Part { text: Some(text.to_string()), ..Default::default() }],
+        task_id: None,
+        context_id,
+    };
+    let task = store.create_task_from_message(from_agent, to_agent, message)?;
+    Ok(format!("생성됨: task_id={} state={}", task.id, task.state.as_str()))
+}
+
+/// get_task 순수 로직: task를 조회해 상태를 요약한다. completed면 artifact 텍스트들을 이어붙인다.
+/// 대상 task가 없어도 Err가 아니라 안내 문구를 Ok로 반환한다(poll_tasks의 빈 목록 관례와 동일 - "없음"은
+/// 실패가 아니라 정상적인 조회 결과이므로).
+fn get_task_text(store: &SqliteStore, task_id: &str) -> Result<String, String> {
+    match store.get_task(task_id)? {
+        None => Ok(format!("task 없음: task_id={task_id}")),
+        Some(task) => Ok(format_task_status(&task)),
+    }
+}
+
+/// task 상태를 `[id] state=...` 한 줄로 조립하고, completed면 artifact 텍스트를 이어붙이는 순수 함수
+/// (SQLite 없이 테스트 가능).
+fn format_task_status(task: &crate::store::a2a::Task) -> String {
+    let mut out = format!("[{}] state={}", task.id, task.state.as_str());
+    if task.state == TaskState::Completed {
+        let texts: Vec<&str> =
+            task.artifacts.iter().flat_map(|a| a.parts.iter()).filter_map(|p| p.text.as_deref()).collect();
+        if !texts.is_empty() {
+            out.push('\n');
+            out.push('\n');
+            out.push_str(&texts.join("\n\n"));
+        }
+    }
+    out
 }
 
 #[tool_router]
@@ -353,6 +421,54 @@ impl TunaSearchServer {
         };
         Ok(CallToolResult::success(vec![Content::text(text)]))
     }
+
+    #[tool(description = "다른 에이전트에게 새 A2A task를 위임한다(생성 즉시 submitted 상태, dispatcher용).")]
+    async fn send_task(
+        &self,
+        Parameters(p): Parameters<SendTaskParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let Some(store) = self.a2a_store.clone() else {
+            return Ok(CallToolResult::success(vec![Content::text(
+                "A2A task 저장소 미구성(send_task 비활성)".to_string(),
+            )]));
+        };
+        let SendTaskParams { from_agent, to_agent, text, context_id } = p;
+        let outcome = tokio::task::spawn_blocking(move || {
+            let store = store.lock().unwrap_or_else(|e| e.into_inner());
+            send_task_text(&store, &from_agent, &to_agent, &text, context_id)
+        })
+        .await
+        .unwrap_or_else(|e| Err(format!("작업 실패: {e}")));
+        let text = match outcome {
+            Ok(t) => t,
+            Err(e) => format!("전송 실패: {e}"),
+        };
+        Ok(CallToolResult::success(vec![Content::text(text)]))
+    }
+
+    #[tool(description = "위임한 A2A task의 상태를 조회한다(completed면 결과 텍스트도 함께 반환, dispatcher용).")]
+    async fn get_task(
+        &self,
+        Parameters(p): Parameters<GetTaskParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let Some(store) = self.a2a_store.clone() else {
+            return Ok(CallToolResult::success(vec![Content::text(
+                "A2A task 저장소 미구성(get_task 비활성)".to_string(),
+            )]));
+        };
+        let task_id = p.task_id;
+        let outcome = tokio::task::spawn_blocking(move || {
+            let store = store.lock().unwrap_or_else(|e| e.into_inner());
+            get_task_text(&store, &task_id)
+        })
+        .await
+        .unwrap_or_else(|e| Err(format!("작업 실패: {e}")));
+        let text = match outcome {
+            Ok(t) => t,
+            Err(e) => format!("조회 실패: {e}"),
+        };
+        Ok(CallToolResult::success(vec![Content::text(text)]))
+    }
 }
 
 #[tool_handler]
@@ -360,7 +476,10 @@ impl ServerHandler for TunaSearchServer {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_instructions(
-                "토론 맥락을 검색하려면 search_context(query)를, 전사 통째를 읽으려면 read_transcript(session_id?, max_turns?)를 호출하세요.".to_string(),
+                "토론 맥락을 검색하려면 search_context(query)를, 전사 통째를 읽으려면 read_transcript(session_id?, max_turns?)를 호출하세요. \
+                 작업을 맡기는 쪽(dispatcher)은 send_task(from_agent, to_agent, text, context_id?)로 위임하고 get_task(task_id)로 결과를 확인하세요. \
+                 작업을 받는 쪽(worker)은 poll_tasks(agent)로 확인하고 claim_task(task_id)로 착수, complete_task(task_id, result)로 완료를 보고하세요."
+                    .to_string(),
             )
     }
 }
@@ -1270,5 +1389,123 @@ mod tests {
         assert!(result.is_ok());
         let text = format!("{:?}", result.unwrap().content);
         assert!(text.contains("완료 처리 실패"), "에러 안내 불일치: {text}");
+    }
+
+    // --- A2A dispatcher 툴(send_task/get_task): 순수 함수 단위테스트 ---
+
+    #[test]
+    fn send_task_text_creates_submitted_task_and_preserves_text() {
+        let store = SqliteStore::open_memory().unwrap();
+        let text =
+            send_task_text(&store, "win-claude", "mac-claude", "리뷰 부탁", Some("ctx1".into())).unwrap();
+        assert!(text.contains("state=submitted"), "응답 불일치: {text}");
+
+        // store에 실제로 submitted task가 생겼는지, 메시지 본문이 보존됐는지 확인(round-trip).
+        let tasks = store.list_open_tasks_for("mac-claude").unwrap();
+        assert_eq!(tasks.len(), 1, "mac-claude 앞 task 하나가 생겨야 함");
+        let task = &tasks[0];
+        assert_eq!(task.from_agent, "win-claude");
+        assert_eq!(task.context_id.as_deref(), Some("ctx1"));
+        assert_eq!(
+            task.status_message.as_ref().and_then(|m| m.parts.first()).and_then(|p| p.text.as_deref()),
+            Some("리뷰 부탁")
+        );
+    }
+
+    #[test]
+    fn get_task_text_missing_task_says_not_found() {
+        let store = SqliteStore::open_memory().unwrap();
+        let text = get_task_text(&store, "nope").unwrap();
+        assert!(text.contains("없음"), "미존재 안내 불일치: {text}");
+        assert!(text.contains("nope"), "task_id 언급 없음: {text}");
+    }
+
+    #[test]
+    fn get_task_text_open_task_shows_state_without_artifacts() {
+        let store = SqliteStore::open_memory().unwrap();
+        seed_task(&store, "t1", "win", "mac", "2026-07-02 09:00:00");
+        let text = get_task_text(&store, "t1").unwrap();
+        assert!(text.contains("state=submitted"), "state 누락: {text}");
+    }
+
+    #[test]
+    fn get_task_text_completed_task_appends_artifact_text() {
+        let store = SqliteStore::open_memory().unwrap();
+        seed_task(&store, "t1", "win", "mac", "2026-07-02 09:00:00");
+        complete_task_text(&store, "t1", "작업 결과 요약").unwrap();
+        let text = get_task_text(&store, "t1").unwrap();
+        assert!(text.contains("state=completed"), "state 누락: {text}");
+        assert!(text.contains("작업 결과 요약"), "artifact 텍스트 누락: {text}");
+    }
+
+    // --- A2A dispatcher 툴: MCP 계층(#[tool] 메서드) 테스트 ---
+
+    #[tokio::test]
+    async fn send_task_without_store_returns_not_connected() {
+        let server = TunaSearchServer::new(Arc::new(FakeRetriever(vec![])));
+        let result = server
+            .send_task(Parameters(SendTaskParams {
+                from_agent: "win".into(),
+                to_agent: "mac".into(),
+                text: "부탁".into(),
+                context_id: None,
+            }))
+            .await;
+        assert!(result.is_ok());
+        let text = format!("{:?}", result.unwrap().content);
+        assert!(text.contains("A2A task 저장소 미구성"), "미구성 안내 불일치: {text}");
+    }
+
+    #[tokio::test]
+    async fn get_task_without_store_returns_not_connected() {
+        let server = TunaSearchServer::new(Arc::new(FakeRetriever(vec![])));
+        let result = server.get_task(Parameters(GetTaskParams { task_id: "t1".into() })).await;
+        assert!(result.is_ok());
+        let text = format!("{:?}", result.unwrap().content);
+        assert!(text.contains("A2A task 저장소 미구성"), "미구성 안내 불일치: {text}");
+    }
+
+    #[tokio::test]
+    async fn send_task_tool_creates_task_via_server_and_get_task_reads_it_back() {
+        let store = SqliteStore::open_memory().unwrap();
+        let a2a = Arc::new(Mutex::new(store));
+        let server = TunaSearchServer::new(Arc::new(FakeRetriever(vec![]))).with_a2a_store(a2a.clone());
+
+        let send_result = server
+            .send_task(Parameters(SendTaskParams {
+                from_agent: "win-claude".into(),
+                to_agent: "mac-claude".into(),
+                text: "리뷰 부탁".into(),
+                context_id: None,
+            }))
+            .await;
+        assert!(send_result.is_ok());
+        let send_text = format!("{:?}", send_result.unwrap().content);
+        assert!(send_text.contains("state=submitted"), "send_task 응답 불일치: {send_text}");
+
+        // 실제로 mac-claude 앞으로 열린 task가 생겼는지 store에서 직접 확인.
+        let seeded_id = {
+            let s = a2a.lock().unwrap();
+            let tasks = s.list_open_tasks_for("mac-claude").unwrap();
+            assert_eq!(tasks.len(), 1);
+            tasks[0].id.clone()
+        };
+
+        // get_task 툴로도 같은 task를 읽을 수 있어야 한다(dispatcher가 보내고 확인하는 왕복).
+        let get_result = server.get_task(Parameters(GetTaskParams { task_id: seeded_id.clone() })).await;
+        assert!(get_result.is_ok());
+        let get_text = format!("{:?}", get_result.unwrap().content);
+        assert!(get_text.contains(&seeded_id), "get_task 응답에 task_id 없음: {get_text}");
+        assert!(get_text.contains("state=submitted"), "get_task 응답 불일치: {get_text}");
+    }
+
+    #[tokio::test]
+    async fn get_task_tool_missing_task_returns_not_found_text() {
+        let store = SqliteStore::open_memory().unwrap();
+        let server = server_with_a2a_store(store);
+        let result = server.get_task(Parameters(GetTaskParams { task_id: "nope".into() })).await;
+        assert!(result.is_ok());
+        let text = format!("{:?}", result.unwrap().content);
+        assert!(text.contains("없음"), "미존재 안내 불일치: {text}");
     }
 }

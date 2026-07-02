@@ -265,7 +265,7 @@
 - [x] Task 1: A2A 데이터모델(Task/TaskState/Message/Part/Artifact serde) + tasks 테이블(스키마 v6) + store ops(create/get/list_open_for/update_state/complete/append_history) + 마이그레이션 + 라운드트립·상태전이·필터·마이그레이션 테스트. 격리 store 모듈(src/store/a2a.rs), sqlite 게이트. **완료(Sonnet 구현+Opus 리뷰): lib +19 test green(203 기본/217 풀피처), clippy 클린.** 리뷰노트: Artifact=A2A스펙(artifact_id/name/parts) · timestamp create=호출자/update=datetime('now')(dispatcher는 SQLite호환 포맷) · wire camelCase는 Task 2 요건.
 - [x] Task 2: A2A 서버 엔드포인트(SendMessage/GetTask/CancelTask JSON-RPC + /.well-known/agent-card.json) 코어 axum(serve)에 + bearer 재사용. **완료(Sonnet+Opus): src/a2a_server.rs, 메서드=ADR-001 PascalCase(스펙확정), camelCase wire, task_id=randomblob, merge 마운트+bearer 공유, 신규 dep 0(axum json 회피). lib +18 test(206 기본/235 풀피처), clippy 클린.** Phase2 interop 후속: Agent Card 최소필드·공개(현 bearer 뒤)·TaskState SCREAMING_SNAKE.
 - [x] Task 3: inbox MCP 툴(poll_tasks/claim_task/complete_task) 코어 MCP(mcp+serve)에. **완료(Sonnet+Opus): TunaSearchServer에 a2a_store(Task2 Arc 공유, 새 커넥션 0) + 3툴, 순수함수 분리, 존재검증, HTTP e2e(poll→claim→complete+DB확인). src/mcp.rs만 수정, 신규 dep 0. mcp 31 test(+16), 풀피처 lib 251.** 후속: get_info instructions에 inbox 툴 언급(Task 4).
-- [ ] Task 4: worker 루프 관례(/loop 레시피/헬퍼) + dispatcher 배선.
+- [x] Task 4: dispatcher MCP 툴(send_task/get_task, worker와 대칭) + create_task_from_message DRY 헬퍼(a2a_server::handle_send와 공유) + get_info instructions + **/loop 워커 레시피·dispatcher 흐름(설계문서 §12)**. **완료(Sonnet 코드+Opus 리뷰·레시피): 풀피처 lib 262(+11), 기본 209, clippy 클린, 신규 dep 0.** get_task 부재=Ok안내(조회는 실패 아님).
 - [ ] Task 5: 라이브 e2e(윈 dispatch→맥 worker→artifacts→검토) 최소 round-trip.
 - [x] 후속: half-a2a→semi-a2a 용어 정정 완료(CLAUDE.md·CHANGELOG. README엔 해당 용어 없음, 역사적 핸드오프는 시점기록이라 미변경).
 

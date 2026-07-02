@@ -71,3 +71,28 @@
 ## 11. 검증
 
 - Phase 1 최소 e2e: 윈도우 dispatch -> 맥 worker 수행 -> artifacts -> 검토. 라이브 타이밍 함정 주의(코어 Kiwi init ~3초, 폴링 간격, FIFO flush = Stage 3d 교훈 답습).
+
+## 12. 사용 레시피 (Phase 1)
+
+Phase 1은 dispatcher·worker 둘 다 대화형 Claude Code가 코어를 MCP로 등록해 MCP 툴로 구동한다(/a2a JSON-RPC 엔드포인트는 Phase 2 외부 interop용). 사람이 MCP 도구 호출을 승인하므로 #24135 무관.
+
+**셋업**
+1. 코어 기동(한 머신, 예 윈도우): `tunaround serve 0.0.0.0:8770 --db core.db --token <TOK>`(헤드리스) 또는 `tunaround core 0.0.0.0:8770 --db core.db --token <TOK>`(REPL 겸용). 서빙 머신 방화벽 인바운드 8770 개방.
+2. 각 대화형 에이전트가 코어를 MCP 서버로 등록(boss=윈도우 Claude, worker=맥 Claude):
+   `claude mcp add --transport http tuna-core http://<코어IP>:8770/mcp --header "Authorization: Bearer <TOK>"`.
+   -> 5개 A2A 툴(send_task/get_task/poll_tasks/claim_task/complete_task) 사용 가능.
+
+**worker(맥) 루프** (opportunistic: 앱+루프 떠 있을 때만 진행):
+```
+/loop 30s "poll_tasks agent=mac-claude. 열린 task가 있으면 각각 claim_task로 착수 표시 후 지시대로 수행하고, 끝나면 complete_task에 결과 요약을 넣어라. 없으면 다음 폴링까지 대기."
+```
+
+**dispatcher(윈도우 boss)**:
+1. `send_task from_agent=win-claude to_agent=mac-claude text="<작업 지시>"` -> `task_id` 획득.
+2. `get_task task_id=<id>` 폴링 -> `state=completed`면 결과(artifact 텍스트) 확인.
+3. 검토 후 재지시(다시 send_task) 또는 마무리.
+
+**주의**
+- 에이전트 id(from/to)는 사전 약속 이름(win-claude / mac-claude 등).
+- 전체가 semi-a2a(HITL): worker·dispatcher 양쪽 사람이 감독. 자율 루프(AutoLoop)는 Stage 4(보류).
+- 이 흐름의 라이브 e2e 확인이 Phase 1 Task 5.
