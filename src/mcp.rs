@@ -205,20 +205,33 @@ impl ServerHandler for TunaSearchServer {
     }
 }
 
-/// 코어 bind 주소(`host:port`)를 로컬 좌석이 접속할 HTTP MCP URL로 변환한다.
-/// 와일드카드 host(0.0.0.0 / :: / [::])는 loopback(127.0.0.1)으로 치환하고 `/mcp` 경로를 붙인다.
+/// bind 주소 문자열(`host:port`)에서 와일드카드 host(0.0.0.0 / :: / [::])를 loopback(127.0.0.1)으로
+/// 치환한 base URL("http://host:port", 경로 접미사 없음)을 만든다. core_local_url(/mcp)과
+/// a2a_server의 Agent Card(/a2a) 양쪽이 이 매핑을 공유한다.
 #[cfg(feature = "serve")]
-pub fn core_local_url(addr: &str) -> String {
+fn local_base_url(addr: &str) -> String {
     // 마지막 ':'로 host/port 분리. IPv6 "[::]:8771"도 마지막 ':'가 port 앞이라 host="[::]"가 된다.
     let (host, port) = match addr.rsplit_once(':') {
         Some((h, p)) => (h, p),
-        None => return format!("http://{addr}/mcp"), // 포트 없음(비정상): 그대로 감싼다.
+        None => return format!("http://{addr}"), // 포트 없음(비정상): 그대로 감싼다.
     };
     let host = match host {
         "0.0.0.0" | "::" | "[::]" => "127.0.0.1",
         other => other,
     };
-    format!("http://{host}:{port}/mcp")
+    format!("http://{host}:{port}")
+}
+
+/// 코어 bind 주소를 로컬 좌석이 접속할 HTTP MCP URL로 변환한다(`/mcp` 접미사).
+#[cfg(feature = "serve")]
+pub fn core_local_url(addr: &str) -> String {
+    format!("{}/mcp", local_base_url(addr))
+}
+
+/// 코어 bind 주소를 A2A JSON-RPC 엔드포인트 URL로 변환한다(`/a2a` 접미사). Agent Card의 `url` 필드에 쓴다.
+#[cfg(feature = "serve")]
+pub fn core_a2a_url(addr: &str) -> String {
+    format!("{}/a2a", local_base_url(addr))
 }
 
 /// HTTP MCP 서버를 기동한다. serve 피처 전용.
@@ -230,12 +243,15 @@ pub async fn start_http_mcp_server(
     writer: Option<Arc<dyn TranscriptWriter>>,
     roster: Option<Vec<RosterSeat>>,
     token: Option<String>,
+    a2a_store: Arc<std::sync::Mutex<crate::store::sqlite::SqliteStore>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    serve_http_mcp_on_listener(listener, retriever, reader, writer, roster, token).await
+    serve_http_mcp_on_listener(listener, retriever, reader, writer, roster, token, a2a_store).await
 }
 
 /// 이미 바인드된 TcpListener로 HTTP MCP 서버를 서빙한다(테스트에서도 재사용).
+/// 같은 axum app에 MCP(`/mcp`)와 A2A(`/a2a`, `/.well-known/agent-card.json`)를 함께 마운트한다
+/// (docs/design/v2-a2a-partner-delegation_2026-07-02.md §4: "코어 = A2A 서버 + 기존 axum HTTP 재사용").
 #[cfg(feature = "serve")]
 pub async fn serve_http_mcp_on_listener(
     listener: tokio::net::TcpListener,
@@ -244,6 +260,7 @@ pub async fn serve_http_mcp_on_listener(
     writer: Option<Arc<dyn TranscriptWriter>>,
     roster: Option<Vec<RosterSeat>>,
     token: Option<String>,
+    a2a_store: Arc<std::sync::Mutex<crate::store::sqlite::SqliteStore>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use axum::{
         Router,
@@ -255,6 +272,12 @@ pub async fn serve_http_mcp_on_listener(
     use rmcp::transport::streamable_http_server::{
         StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
     };
+
+    // A2A Agent Card는 bind 주소에서 파생되는 정적 값이라 router 조립 전에 먼저 만든다.
+    let bound_addr = listener.local_addr()?;
+    let a2a_url = core_a2a_url(&bound_addr.to_string());
+    let agent_card = crate::a2a_server::build_agent_card(&a2a_url);
+    let a2a_router = crate::a2a_server::build_router(a2a_store, agent_card);
 
     let retriever2 = retriever.clone();
     let reader2 = reader.clone();
@@ -281,6 +304,9 @@ pub async fn serve_http_mcp_on_listener(
             StreamableHttpServerConfig::default().disable_allowed_hosts(),
         );
 
+    // MCP(/mcp)와 A2A(/a2a, /.well-known/agent-card.json)를 같은 axum app으로 병합한다.
+    let merged = Router::new().nest_service("/mcp", service).merge(a2a_router);
+
     let router: Router = if let Some(tok) = token {
         let tok = Arc::new(tok);
         let bearer = middleware::from_fn(move |request: Request, next: Next| {
@@ -299,12 +325,11 @@ pub async fn serve_http_mcp_on_listener(
                 }
             }
         });
-        Router::new().nest_service("/mcp", service).layer(bearer)
+        merged.layer(bearer)
     } else {
-        Router::new().nest_service("/mcp", service)
+        merged
     };
 
-    let bound_addr = listener.local_addr()?;
     eprintln!("[serve-mcp] HTTP MCP 서버 기동: {bound_addr}");
     axum::serve(listener, router).await?;
     Ok(())
@@ -374,6 +399,13 @@ mod tests {
             )
         }
 
+        /// serve_http_mcp_on_listener 테스트 호출용 인메모리 A2A store(MCP 자체와 무관, 배선 검증용).
+        fn test_a2a_store() -> Arc<std::sync::Mutex<crate::store::sqlite::SqliteStore>> {
+            Arc::new(std::sync::Mutex::new(
+                crate::store::sqlite::SqliteStore::open_memory().expect("in-memory sqlite"),
+            ))
+        }
+
         /// HTTP MCP로 get_roster·post_turn·read_transcript를 실제 왕복 검증한다.
         /// 핸드셰이크: initialize→(mcp-session-id 캡처)→initialized→tools/call들.
         #[tokio::test]
@@ -390,7 +422,7 @@ mod tests {
                 RosterSeat { engine: "codex".into(), role: Some("reviewer".into()) },
             ]);
             tokio::spawn(async move {
-                let _ = serve_http_mcp_on_listener(listener, retriever, reader, writer, roster, None).await;
+                let _ = serve_http_mcp_on_listener(listener, retriever, reader, writer, roster, None, test_a2a_store()).await;
             });
             tokio::time::sleep(std::time::Duration::from_millis(120)).await;
 
@@ -469,6 +501,13 @@ mod tests {
             assert_eq!(core_local_url("192.0.2.20:9000"), "http://192.0.2.20:9000/mcp");
         }
 
+        #[test]
+        fn core_a2a_url_mirrors_core_local_url_with_a2a_suffix() {
+            // core_local_url과 동일한 host 매핑 + /a2a 접미사(Agent Card url 필드용).
+            assert_eq!(core_a2a_url("0.0.0.0:8771"), "http://127.0.0.1:8771/a2a");
+            assert_eq!(core_a2a_url("127.0.0.1:8771"), "http://127.0.0.1:8771/a2a");
+        }
+
         #[tokio::test]
         async fn http_mcp_bearer_auth() {
             // 포트 :0 으로 바인드해 OS가 빈 포트를 할당하도록 한다(포트 경합 없음).
@@ -480,7 +519,7 @@ mod tests {
             let token = Some("secret-tok".to_string());
 
             tokio::spawn(async move {
-                let _ = serve_http_mcp_on_listener(listener, retriever, None, None, None, token).await;
+                let _ = serve_http_mcp_on_listener(listener, retriever, None, None, None, token, test_a2a_store()).await;
             });
             // axum이 accept를 시작할 시간을 준다.
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -522,6 +561,18 @@ mod tests {
                 .await
                 .expect("요청 실패");
             assert_eq!(resp.status(), 200, "올바른 토큰으로 200이어야 함");
+
+            // A2A 라우트도 같은 bearer 미들웨어를 공유한다(마운트·인증 재사용 확인).
+            let card_url = format!("http://127.0.0.1:{port}/.well-known/agent-card.json");
+            let resp = client.get(&card_url).send().await.expect("요청 실패");
+            assert_eq!(resp.status(), 401, "A2A도 토큰 없이 401이어야 함");
+            let resp = client
+                .get(&card_url)
+                .header("Authorization", "Bearer secret-tok")
+                .send()
+                .await
+                .expect("요청 실패");
+            assert_eq!(resp.status(), 200, "A2A도 올바른 토큰으로 200이어야 함");
         }
 
         #[tokio::test]
@@ -534,7 +585,7 @@ mod tests {
             let retriever = Arc::new(NullRetriever) as Arc<dyn crate::orchestrator::ContextRetriever>;
 
             tokio::spawn(async move {
-                let _ = serve_http_mcp_on_listener(listener, retriever, None, None, None, None).await;
+                let _ = serve_http_mcp_on_listener(listener, retriever, None, None, None, None, test_a2a_store()).await;
             });
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
@@ -551,6 +602,13 @@ mod tests {
                 .await
                 .expect("요청 실패");
             assert_eq!(resp.status(), 200, "token=None이면 200이어야 함");
+
+            // A2A 라우트도 같은 app에 마운트되어 응답한다(404가 아님).
+            let card_url = format!("http://127.0.0.1:{port}/.well-known/agent-card.json");
+            let resp = client.get(&card_url).send().await.expect("요청 실패");
+            assert_eq!(resp.status(), 200, "agent-card.json이 마운트되어야 함");
+            let body: serde_json::Value = resp.json().await.expect("agent card json 파싱");
+            assert_eq!(body["name"], "tunaround-core");
         }
     }
 

@@ -742,6 +742,22 @@ impl SqliteStore {
         Ok(scored)
     }
 
+    /// 현재 SQLite 시각을 `datetime('now')` 포맷 문자열로 반환한다. A2A task 생성 등 애플리케이션단에서
+    /// 타임스탬프를 미리 stamping해야 하는 호출자(예: JSON-RPC send 핸들러)가 사용하는 공용 헬퍼다.
+    pub fn now(&self) -> Result<String, String> {
+        self.conn
+            .query_row("SELECT datetime('now')", [], |row| row.get(0))
+            .map_err(|e| format!("sqlite: {e}"))
+    }
+
+    /// 신규 A2A task_id를 생성한다. SQLite 내장 randomblob(16)을 hex로 인코딩(32자)해 신규 crate 의존
+    /// 없이 고유 식별자를 얻는다(uuid crate 등 도입 회피).
+    pub fn new_task_id(&self) -> Result<String, String> {
+        self.conn
+            .query_row("SELECT lower(hex(randomblob(16)))", [], |row| row.get(0))
+            .map_err(|e| format!("sqlite: {e}"))
+    }
+
     /// A2A task를 신규 생성한다(INSERT). created_at/updated_at은 Task 값을 그대로 쓴다(SQL 기본값 없음).
     /// 호출자(dispatcher)가 시각을 stamping해 전달하는 것을 전제한다(round-trip 필드 보존 우선).
     pub fn create_task(&self, task: &Task) -> Result<(), String> {
@@ -1405,6 +1421,26 @@ mod tests {
                 task_id: Some("t1".into()),
                 context_id: None,
             }
+        }
+
+        #[test]
+        fn now_returns_nonempty_datetime_string() {
+            let db = SqliteStore::open_memory().unwrap();
+            let ts = db.now().unwrap();
+            // "YYYY-MM-DD HH:MM:SS" 형식(datetime('now') 기본 포맷). 정확한 파싱보다 형태만 가드.
+            assert_eq!(ts.len(), 19, "datetime('now') 포맷 불일치: {ts}");
+            assert!(ts.contains('-') && ts.contains(':'), "datetime('now') 포맷 불일치: {ts}");
+        }
+
+        #[test]
+        fn new_task_id_is_unique_and_hex() {
+            let db = SqliteStore::open_memory().unwrap();
+            let a = db.new_task_id().unwrap();
+            let b = db.new_task_id().unwrap();
+            assert_ne!(a, b, "연속 생성 id가 겹치면 안 됨");
+            assert_eq!(a.len(), 32, "randomblob(16) hex는 32자여야 함: {a}");
+            assert!(a.chars().all(|c| c.is_ascii_hexdigit()), "hex가 아님: {a}");
+            assert_eq!(a, a.to_lowercase(), "lower(hex(...))인데 대문자 포함: {a}");
         }
 
         #[test]

@@ -9,3 +9,5 @@ pub mod session_bus;
 pub mod search;
 #[cfg(feature = "mcp")]
 pub mod mcp;
+#[cfg(feature = "serve")]
+pub mod a2a_server;

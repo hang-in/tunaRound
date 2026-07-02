@@ -502,10 +502,10 @@ fn main() {
             #[cfg(not(feature = "sqlite"))]
             { eprintln!("[serve-mcp] sqlite 피처 없음"); std::process::exit(1); }
         };
-        let (retriever_arc, reader_arc, writer_arc) = build_http_mcp_backends("serve-mcp", &db_str);
+        let (retriever_arc, reader_arc, writer_arc, a2a_store_arc) = build_http_mcp_backends("serve-mcp", &db_str);
         // 헤드리스 코어: post_turn 활성(단일 writer라 클로버 없음), 로스터 없음.
         if let Err(e) = rt.block_on(tunaround::mcp::start_http_mcp_server(
-            addr, retriever_arc, reader_arc, Some(writer_arc), None, serve_token.clone(),
+            addr, retriever_arc, reader_arc, Some(writer_arc), None, serve_token.clone(), a2a_store_arc,
         )) {
             eprintln!("[serve-mcp] 서버 오류: {e}");
             std::process::exit(1);
@@ -823,7 +823,7 @@ fn main() {
             }
         }
         // HTTP MCP 코어 백엔드 + 전용 스레드(자체 런타임 block_on) 서빙(로스터 포함).
-        let (retriever_arc, reader_arc, writer_arc) = build_http_mcp_backends("core", &db_str);
+        let (retriever_arc, reader_arc, writer_arc, a2a_store_arc) = build_http_mcp_backends("core", &db_str);
         let serve_tok = serve_token.clone();
         let addr_owned = addr.clone();
         // 메인 스레드는 동기 블로킹 REPL(std stdin)이라 공유 rt에 spawn하면 서버 accept 루프가
@@ -836,7 +836,7 @@ fn main() {
             };
             srt.block_on(async move {
                 if let Err(e) = tunaround::mcp::start_http_mcp_server(
-                    &addr_owned, retriever_arc, reader_arc, Some(writer_arc), core_roster, serve_tok,
+                    &addr_owned, retriever_arc, reader_arc, Some(writer_arc), core_roster, serve_tok, a2a_store_arc,
                 ).await {
                     eprintln!("[core] HTTP MCP 서버 종료: {e}");
                 }
@@ -911,12 +911,13 @@ fn build_index_tokenizer(ctx: &str) -> Box<dyn Fn(&str) -> String + Send + Sync>
     }
 }
 
-/// build_http_mcp_backends 반환 묶음: (retriever, 전사 리더, writer).
+/// build_http_mcp_backends 반환 묶음: (retriever, 전사 리더, writer, A2A store).
 #[cfg(feature = "serve")]
 type HttpMcpBackends = (
     std::sync::Arc<dyn tunaround::orchestrator::ContextRetriever>,
     Option<std::sync::Arc<dyn tunaround::orchestrator::TranscriptReader>>,
     std::sync::Arc<dyn tunaround::orchestrator::TranscriptWriter>,
+    std::sync::Arc<std::sync::Mutex<tunaround::store::sqlite::SqliteStore>>,
 );
 
 /// HTTP MCP 코어용 retriever + 전사 리더 + writer를 --db 경로로 빌드한다(--serve-mcp / --core 공용).
@@ -973,6 +974,13 @@ fn build_http_mcp_backends(ctx: &str, db_str: &str) -> HttpMcpBackends {
             std::process::exit(1);
         }
     };
+    let store4 = match tunaround::store::sqlite::SqliteStore::open(db_str) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("[{ctx}] A2A store DB 열기 실패: {e}");
+            std::process::exit(1);
+        }
+    };
     let retriever = tunaround::store::retriever::SqliteRetriever::new(store, tok, emb);
     let retriever_arc = std::sync::Arc::new(retriever)
         as std::sync::Arc<dyn tunaround::orchestrator::ContextRetriever>;
@@ -982,7 +990,10 @@ fn build_http_mcp_backends(ctx: &str, db_str: &str) -> HttpMcpBackends {
     let writer = tunaround::store::retriever::SqliteTranscriptWriter::new(store3, build_index_tokenizer(ctx));
     let writer_arc = std::sync::Arc::new(writer)
         as std::sync::Arc<dyn tunaround::orchestrator::TranscriptWriter>;
-    (retriever_arc, reader_arc, writer_arc)
+    // A2A JSON-RPC 핸들러(a2a_server)가 create_task/get_task 등 SqliteStore 메서드를 직접 호출한다
+    // (다른 백엔드처럼 orchestrator 트레이트로 감싸지 않음. A2A는 orchestrator 개념과 무관한 신규 축).
+    let a2a_store_arc = std::sync::Arc::new(std::sync::Mutex::new(store4));
+    (retriever_arc, reader_arc, writer_arc, a2a_store_arc)
 }
 
 #[cfg(test)]

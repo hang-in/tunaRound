@@ -48,7 +48,9 @@ impl TaskState {
 }
 
 /// 콘텐츠 컨테이너. text|data|url 중 하나만 채워지는 것을 기대한다(A2A Part).
+/// Wire(JSON-RPC 전송)는 camelCase(mediaType). Rust 필드명은 snake_case를 유지한다.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Part {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
@@ -61,7 +63,9 @@ pub struct Part {
 }
 
 /// A2A 메시지. 요청 본문·task 상태 메시지·history 항목 공용 타입. role은 "user"|"agent".
+/// Wire는 camelCase(messageId/taskId/contextId).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Message {
     pub message_id: String,
     pub role: String,
@@ -73,7 +77,9 @@ pub struct Message {
 }
 
 /// 위임 결과 산출물(A2A Artifact). Part를 재사용해 여러 콘텐츠 조각으로 구성될 수 있다.
+/// Wire는 camelCase(artifactId).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Artifact {
     pub artifact_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -82,7 +88,10 @@ pub struct Artifact {
 }
 
 /// A2A task: 위임 단위의 상태·이력·산출물 전체.
+/// Wire는 camelCase(contextId/fromAgent/toAgent/statusMessage/createdAt/updatedAt). from_agent/to_agent는
+/// 순정 A2A에 없는 tunaRound 중앙-브로커 라우팅 확장 필드(docs/design/v2-a2a-partner-delegation_2026-07-02.md §4).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Task {
     pub id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -248,6 +257,48 @@ mod tests {
         assert!(t.artifacts.is_empty());
         assert!(t.history.is_empty());
         assert!(t.status_message.is_none());
+    }
+
+    #[test]
+    fn wire_json_uses_camel_case_field_names() {
+        // Task 2(A2A JSON-RPC 엔드포인트) 소비 전제: Message/Task/Artifact/Part는 camelCase로 방출되어야 한다.
+        // TaskState는 예외(snake_case 유지, 위 task_state_serde_roundtrip_matches_a2a_wire_strings로 별도 커버).
+        let msg = Message {
+            message_id: "m1".into(),
+            role: "user".into(),
+            parts: vec![Part {
+                text: Some("본문".into()),
+                media_type: Some("text/plain".into()),
+                ..Default::default()
+            }],
+            task_id: Some("t1".into()),
+            context_id: Some("ctx1".into()),
+        };
+        let msg_json = serde_json::to_value(&msg).unwrap();
+        assert!(msg_json.get("messageId").is_some(), "messageId 없음: {msg_json}");
+        assert!(msg_json.get("taskId").is_some(), "taskId 없음: {msg_json}");
+        assert!(msg_json.get("contextId").is_some(), "contextId 없음: {msg_json}");
+        assert!(msg_json.get("message_id").is_none(), "snake_case 잔존: {msg_json}");
+        let part_json = &msg_json["parts"][0];
+        assert!(part_json.get("mediaType").is_some(), "mediaType 없음: {part_json}");
+
+        let mut task = Task::new("t1", Some("ctx1".into()), "win-claude", "mac-claude", "2026-07-02 09:00:00");
+        task.status_message = Some(msg.clone());
+        task.artifacts = vec![Artifact { artifact_id: "a1".into(), name: None, parts: vec![] }];
+        let task_json = serde_json::to_value(&task).unwrap();
+        assert!(task_json.get("contextId").is_some(), "contextId 없음: {task_json}");
+        assert!(task_json.get("fromAgent").is_some(), "fromAgent 없음: {task_json}");
+        assert!(task_json.get("toAgent").is_some(), "toAgent 없음: {task_json}");
+        assert!(task_json.get("statusMessage").is_some(), "statusMessage 없음: {task_json}");
+        assert!(task_json.get("createdAt").is_some(), "createdAt 없음: {task_json}");
+        assert!(task_json.get("updatedAt").is_some(), "updatedAt 없음: {task_json}");
+        assert_eq!(task_json["artifacts"][0]["artifactId"], "a1");
+        // state는 snake_case 그대로(A2A wire 관례, task 지시로 변경 금지).
+        assert_eq!(task_json["state"], "submitted");
+
+        // 대칭 확인: camelCase JSON에서 역직렬화해도 원래 구조체와 같아야 한다(round-trip 불변).
+        let msg_back: Message = serde_json::from_value(msg_json).unwrap();
+        assert_eq!(msg_back, msg);
     }
 
     fn sample_message(id: &str) -> Message {
