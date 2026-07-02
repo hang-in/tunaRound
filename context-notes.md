@@ -622,3 +622,9 @@
 - **T6 라이브 데모 성공(복붙 0)**: 로컬 코어(with_task_events) + boss가 SendStreamingMessage로 SSE 개방 -> 워커가 MCP(/mcp) claim/complete -> **같은 store 버스 통해** SSE(/a2a)에 task(submitted)->statusUpdate(working,final:false)->artifactUpdate(lastChunk:true)->statusUpdate(completed,final:true) 실시간 도착 후 종료. keep-alive `:` 확인. agent-card `"streaming":true,"pushNotifications":false` 라이브. = 사람 릴레이 없이 boss가 위임 생명주기 실시간 관찰("복붙 왜?"의 코드 답).
 - **검증 총계**: 기본 218 / 풀피처(morphology mcp serve) 279 lib pass, clippy 클린(기존 무관 경고 2개만). a2a_server 22 tests.
 - **스코프 경계 유지**: 워커 방향 push(코어->워커 inbound 알림)는 미구현(브로커 폴링 유지). 스트리밍=dispatcher-facing 실시간 읽기 + 외부 A2A interop. push_notifications(webhook)·discovery·다중auth는 후속(YAGNI). 우리 자신 UX 이득은 modest, 값=interop/스펙준수/학습.
+
+## 2026-07-03 세션8: 크로스머신 SSE 스트리밍 스모크 성공 + "복붙 잔존" 정직화
+
+- **스모크 성공**: Windows 코어 LAN 호스팅(192.0.2.10:8770, with_task_events, agent-card streaming:true) + **맥=원격 dispatcher**가 SendStreamingMessage를 SSE로 LAN 너머 개방 -> Windows=worker가 poll_tasks(win-claude) 발견->claim->complete -> **맥 SSE에 submitted->(heartbeat)->working(final:false)->artifactUpdate(lastChunk:true)->completed(final:true) 4프레임 실시간 도착 후 정상 종료**(task 53806631, artifact caa49a9e). = SSE-over-LAN 실증. 레시피 docs/prompts/a2a-stream-smoke-mac-dispatcher_2026-07-03.md.
+- **동구님 정곡: "아직은 내가 복붙하는게 맞지?" = 맞다, 단 복붙의 내용이 줄었다.** SSE가 제거한 것 = (1) 작업 결과/프레임 relay(맥이 프레임을 붙여넣지 않음, SSE가 나름), (2) dispatcher의 "다 됐나?" 폴링(SSE가 completed를 push = 마찰 #3의 dispatcher-notify 절반 해소). **아직 사람이 나르는 것 = 트리거/조정 신호**("SSE 열었다"->윈도우가 처리 시작, "처리 완료"->맥이 확인). 근데 이 트리거도 제거 가능: 워커가 auto-poll 루프면 "처리 시작" 릴레이 불요, dispatcher는 이미 SSE로 완료를 받으니 "처리 완료" 릴레이는 애초에 redundant였음(SSE가 이미 알림). **결론: 워커 auto-poll + dispatcher SSE = 사람은 목표를 dispatcher에 1회만 말하고, 기계끼리 트리거+데이터+완료통지 자율.** 마찰 #3 = dispatcher-notify(SSE로 해소)/worker-discovery(아직 폴링=워커 auto-poll로 해소) 두 절반.
+- 남은 마지막 조각 = **워커 auto-poll 루프**(background poll_tasks -> task 뜨면 claim/처리/complete). 이게 붙으면 사람 트리거 릴레이가 사라진다. 이기종 파트너(Codex-on-Ollama worker)는 그 위에.
