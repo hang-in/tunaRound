@@ -10,10 +10,10 @@ ci = "github"
 # The installers to generate for each app
 installers = ["shell", "powershell", "homebrew"]
 # Target platforms to build apps for (Rust target-triple syntax)
+# v0.1.0: aarch64 크로스(arm64-windows/arm64-linux)는 ring C 크로스컴파일 실패로 제외.
+# 주 플랫폼(mac arm64·x64, windows x64, linux x64)만. arm64 크로스는 후속(zigbuild/xwin 조정).
 targets = [
     "aarch64-apple-darwin",
-    "aarch64-pc-windows-msvc",
-    "aarch64-unknown-linux-gnu",
     "x86_64-apple-darwin",
     "x86_64-pc-windows-msvc",
     "x86_64-unknown-linux-gnu",
