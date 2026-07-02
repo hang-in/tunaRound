@@ -2,7 +2,9 @@
 
 use rusqlite::Connection;
 
-use crate::store::a2a::{append_history_json, Artifact, Message, Task, TaskRow, TaskState};
+use crate::store::a2a::{
+    append_history_json, Artifact, Message, Task, TaskEvent, TaskRow, TaskState,
+};
 use crate::store::{StoredMessage, StoredSession};
 
 // 스키마 버전 상수. v3: message_vectors.model_id. v4: message_validity(유효성 메타).
@@ -100,6 +102,8 @@ const TASK_COLUMNS: &str = "task_id, context_id, from_agent, to_agent, state, \
 /// SQLite 기반 메시지 트리 저장소.
 pub struct SqliteStore {
     conn: Connection,
+    /// A2A task 상태변이 broadcast 버스. None이면(스트리밍 미사용 구성) emit은 no-op(§2.1).
+    event_bus: Option<tokio::sync::broadcast::Sender<TaskEvent>>,
 }
 
 /// FTS 검색 결과 한 건.
@@ -119,7 +123,7 @@ impl SqliteStore {
             "PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;",
         )
         .map_err(|e| format!("sqlite: {e}"))?;
-        let db = Self { conn };
+        let db = Self { conn, event_bus: None };
         db.migrate()?;
         Ok(db)
     }
@@ -129,9 +133,32 @@ impl SqliteStore {
         let conn = Connection::open_in_memory().map_err(|e| format!("sqlite: {e}"))?;
         conn.execute_batch("PRAGMA foreign_keys=ON;")
             .map_err(|e| format!("sqlite: {e}"))?;
-        let db = Self { conn };
+        let db = Self { conn, event_bus: None };
         db.migrate()?;
         Ok(db)
+    }
+
+    /// broadcast 채널 용량. 구독자가 이 이상 뒤처지면 오래된 이벤트부터 유실(SSE는 최신 상태만 중요하므로 허용).
+    const TASK_EVENT_CAP: usize = 256;
+
+    /// task 이벤트 broadcast 채널을 활성화한다(빌더). 이후 `task_event_sender()`로 구독 가능해진다.
+    /// 초기 Receiver는 즉시 drop해도 된다(broadcast::Sender는 live receiver 없이도 send 가능).
+    pub fn with_task_events(mut self) -> Self {
+        let (tx, _rx) = tokio::sync::broadcast::channel(Self::TASK_EVENT_CAP);
+        self.event_bus = Some(tx);
+        self
+    }
+
+    /// 구독자가 `.subscribe()`할 수 있도록 broadcast Sender를 clone해 반환한다. 버스 미활성화 시 None.
+    pub fn task_event_sender(&self) -> Option<tokio::sync::broadcast::Sender<TaskEvent>> {
+        self.event_bus.clone()
+    }
+
+    /// task 이벤트를 버스에 publish한다. 버스가 없거나 수신자가 없으면 조용히 무시한다(no-op).
+    fn emit_task_event(&self, ev: TaskEvent) {
+        if let Some(tx) = &self.event_bus {
+            let _ = tx.send(ev);
+        }
     }
 
     /// 스키마 마이그레이션을 실행한다. config 테이블 먼저, schema_version 없으면 v0->v1 일괄 적용.
@@ -808,6 +835,7 @@ impl SqliteStore {
         task.status_message = Some(message.clone());
         task.history = vec![message];
         self.create_task(&task)?;
+        self.emit_task_event(TaskEvent::Status(task.clone()));
         Ok(task)
     }
 
@@ -863,6 +891,9 @@ impl SqliteStore {
                 rusqlite::params![task_id, state.as_str(), message_json],
             )
             .map_err(|e| format!("sqlite: {e}"))?;
+        if let Some(task) = self.get_task(task_id)? {
+            self.emit_task_event(TaskEvent::Status(task));
+        }
         Ok(())
     }
 
@@ -877,6 +908,9 @@ impl SqliteStore {
                 rusqlite::params![task_id, TaskState::Completed.as_str(), artifacts_json],
             )
             .map_err(|e| format!("sqlite: {e}"))?;
+        if let Some(task) = self.get_task(task_id)? {
+            self.emit_task_event(TaskEvent::Completed(task));
+        }
         Ok(())
     }
 
@@ -1601,6 +1635,55 @@ mod tests {
             let db = SqliteStore::open_memory().unwrap();
             let m1 = sample_message("h1");
             assert!(db.append_history("nope", &m1).is_err());
+        }
+
+        #[test]
+        fn task_events_emit_status_then_status_then_completed_in_order() {
+            let db = SqliteStore::open_memory().unwrap().with_task_events();
+            let mut rx = db.task_event_sender().expect("with_task_events 후엔 버스 활성화").subscribe();
+
+            let msg = sample_message("m1");
+            let task = db.create_task_from_message("win-claude", "mac-claude", msg).unwrap();
+
+            let working_msg = sample_message("wm1");
+            db.update_task_state(&task.id, TaskState::Working, Some(&working_msg)).unwrap();
+
+            let artifacts = vec![Artifact {
+                artifact_id: "a1".into(),
+                name: Some("결과물".into()),
+                parts: vec![Part { text: Some("완료 보고".into()), ..Default::default() }],
+            }];
+            db.complete_task(&task.id, &artifacts).unwrap();
+
+            // 1) create_task_from_message -> Status(submitted).
+            match rx.try_recv().expect("첫 이벤트 없음") {
+                TaskEvent::Status(t) => assert_eq!(t.state, TaskState::Submitted),
+                other => panic!("Status(submitted) 기대, 실제: {other:?}"),
+            }
+            // 2) update_task_state(Working) -> Status(working).
+            match rx.try_recv().expect("둘째 이벤트 없음") {
+                TaskEvent::Status(t) => assert_eq!(t.state, TaskState::Working),
+                other => panic!("Status(working) 기대, 실제: {other:?}"),
+            }
+            // 3) complete_task -> Completed(completed, artifacts 포함).
+            match rx.try_recv().expect("셋째 이벤트 없음") {
+                TaskEvent::Completed(t) => {
+                    assert_eq!(t.state, TaskState::Completed);
+                    assert_eq!(t.artifacts, artifacts);
+                }
+                other => panic!("Completed 기대, 실제: {other:?}"),
+            }
+            assert!(rx.try_recv().is_err(), "이벤트가 3건보다 많음");
+        }
+
+        #[test]
+        fn task_events_no_bus_is_noop() {
+            // with_task_events()를 호출하지 않으면 emit이 조용히 무시된다(기존 unary 경로 무영향).
+            let db = SqliteStore::open_memory().unwrap();
+            assert!(db.task_event_sender().is_none());
+            let msg = sample_message("m1");
+            let task = db.create_task_from_message("win-claude", "mac-claude", msg).unwrap();
+            assert_eq!(task.state, TaskState::Submitted);
         }
 
         #[test]

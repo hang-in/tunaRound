@@ -109,6 +109,15 @@ pub struct Task {
     pub updated_at: String,
 }
 
+/// A2A task 상태변이 이벤트. SSE 스트리밍 구독자에게 broadcast된다.
+#[derive(Clone, Debug)]
+pub enum TaskEvent {
+    /// 생성(submitted) 또는 상태 전이(working/canceled). 변이 후 Task 전체 스냅샷.
+    Status(Task),
+    /// 완료(completed + artifacts). 변이 후 Task 전체 스냅샷(artifacts 포함).
+    Completed(Task),
+}
+
 impl Task {
     /// 신규 submitted task를 만든다. 시각은 호출자가 넘긴다(테스트·실사용 모두 결정적, 숨은 시계 의존 없음).
     pub fn new(
