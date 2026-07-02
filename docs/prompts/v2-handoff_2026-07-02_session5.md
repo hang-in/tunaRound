@@ -62,3 +62,30 @@
 - `src/store/sqlite.rs`: 스키마 v5(created_at) + get/set_created_at + save_session created_at 보존. `src/store/retriever.rs`: rerank recency(정책 A) + debug_retrieve created_at/recency.
 - `src/store/embedding.rs`: `OllamaEmbedder::from_env`(기본 qwen3). `src/runner/{codex,claude}.rs`: mcp-search 서브커맨드 spawn + codex bypass/bearer.
 - `dist-workspace.toml`·`.github/workflows/release.yml`·`Cargo.toml`(메타+license)·`LICENSE`·`tunaround.toml.example`.
+
+---
+
+## 세션5 후반 업데이트 (2026-07-02 오후): 크로스머신 스모크 + rc.1 CI + A2A 성숙도
+
+### 크로스머신 A2A 스모크 (claude leg ✅)
+- 윈도우(.179) `serve 0.0.0.0:8770` 코어(시드 ALBATROSS) + 맥(.184) join, 같은 LAN. 윈도우 방화벽 인바운드 8770(Private) 규칙.
+- **맥 claude가 원격 read_transcript로 ALBATROSS 인용 = half-A2A 읽기 실제 두 머신에서 실증**(그간 loopback→크로스머신 확장). 401/200 bearer OK.
+- **codex leg 실패**: 맥 codex read_transcript "사용자 취소"(#24135 승인 취약). 윈도우 loopback e2e(PELICAN)에선 됐으나 맥-원격에선 실패 = **환경 의존적 취약**. bypass도 완전 보장 못 함. → 로버스트 해법=codex app-server 선택적 승인(Stage 3e) 또는 **대화형 codex(사람 승인)**. codex leg는 후속.
+
+### rc.1 릴리스 CI (맥 주도, 진행중)
+- 맥 도그푸딩 판정=**v0.1.0-rc.1 먼저**(6타깃 CI 미검증 위험). CHANGELOG + `docs/reference/release-readiness-v0.1.0_2026-07-02.md` 작성.
+- CI 반복 수정(맥): 패키지버전=태그(0.1.0-rc.1) 일치 · `[profile.dist]` 누락 추가 · **aarch64 크로스(arm64-win/linux) 제외**(ring C 크로스컴파일 실패=우리가 예측한 리스크 실현) → **4타깃**(mac arm64/x86, win x64, linux x64). 최신 run in_progress.
+- **⚠ 다음 세션: CI는 맥이 잡는 중.** 윈도우에서 건드리지 말 것. CI green 되면 진행.
+
+### A2A 성숙도 (정직한 정리 - 중요)
+- **현재 = "공유 맥락(데이터 평면) + 사람 오케스트레이션(제어 평면)".** run_round(각 좌석 1회 순차)·/debate N(고정 루프)은 사람이 운전. read_transcript/post_turn/pull은 공유 데이터 평면. "half-a2a"는 이 데이터 평면만 뜻함.
+- **진짜 A2A = 자율 제어 평면 = AutoLoop(Stage 4, 미구현·의도적 보류)**: 모더레이터 에이전트가 다음화자·프롬프트·종료를 LLM으로 결정 + 자율 합의/교착 감지 + (선택)영속 에이전트 루프. 설계 원칙 "사람 주도(종료는 사람)"라 v1/v2에서 일부러 뺌("경제 조건 입증 시에만"). 이유: 자율 루프 토큰 폭식·수렴실패·설계토론엔 사람 판단이 더 나음.
+- **최소 구현 경로**: /debate의 고정 N → "LLM 모더레이터가 매 턴 결정"으로 교체 + 하드캡·토큰예산. 기반(코어·post_turn·read_transcript·get_roster)은 이미 있음.
+- **부수 발견**: tunaRound 코어=범용 "공유 토론 메모리 MCP 서버". 대화형 Claude Code·Codex를 각 터미널에 열고 코어를 MCP로 등록하면 공유 전사 토론 가능(대화형 codex는 사람이 도구 승인→#24135 우회). turn=1라운드=각 좌석 1회 순차-인지. 협업 크로스머신=git push/pull + 핸드오프 문서가 맥락 운반(전사는 코어 공유면 live).
+
+### 다음 세션 우선순위
+1. **CI green 확인**(맥 주도) → 되면 최종 v0.1.0 태그(homebrew tap 발행) 판단.
+2. **codex 먼저 해결**: 크로스머신/일반 codex pull = app-server(Stage 3e) 또는 대화형 승인. 이게 풀려야 codex leg 스모크·진짜 2에이전트 A2A 완성.
+3. CI green + codex 해결 후 **맥이랑 크로스머신 스모크 이어가기**(codex leg 포함, 양방향 post_turn).
+4. (선택) 진짜 A2A/AutoLoop(Stage 4) 프로토타입 = 모더레이터 에이전트. 별도 큰 작업, 토큰·품질 리스크 감안.
+5. 잔여: doctor(Stage 4 온보딩), abstraction/anchors(보류), 홈랩 코어 호스팅(보류), 사람 relay 자동화(/loop git-fetch 감시 or gh watch or 푸시알림).
