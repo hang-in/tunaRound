@@ -1,0 +1,249 @@
+// 원격 tunaRound 코어의 MCP 툴을 HTTP(streamable-http)로 호출하는 워커용 클라이언트.
+
+use serde_json::{Value, json};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+/// MCP 2025-03-26 protocolVersion(서버측 `src/mcp.rs` 테스트의 INIT_BODY와 동일 값).
+const PROTOCOL_VERSION: &str = "2025-03-26";
+const ACCEPT_HEADER: &str = "application/json, text/event-stream";
+
+/// 원격 코어 `/mcp` 엔드포인트에 세션을 맺고 tools/call을 반복 호출하는 클라이언트.
+pub struct McpHttpClient {
+    http: reqwest::Client,
+    mcp_url: String,
+    token: Option<String>,
+    session_id: String,
+    next_id: AtomicU64,
+}
+
+impl McpHttpClient {
+    /// initialize(POST) -> 응답 헤더 mcp-session-id 캡처 -> notifications/initialized(POST) 순서로
+    /// 핸드셰이크한다. 세션 확립 후에만 tools/call이 유효하다(MCP streamable-http 관례).
+    pub async fn connect(mcp_url: impl Into<String>, token: Option<String>) -> Result<Self, String> {
+        let mcp_url = mcp_url.into();
+        let http = reqwest::Client::new();
+
+        let init_body = json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": PROTOCOL_VERSION,
+                "capabilities": {},
+                "clientInfo": {"name": "tunaround-worker", "version": env!("CARGO_PKG_VERSION")}
+            }
+        });
+
+        let mut req = http
+            .post(&mcp_url)
+            .header("Content-Type", "application/json")
+            .header("Accept", ACCEPT_HEADER);
+        if let Some(tok) = &token {
+            req = req.header("Authorization", format!("Bearer {tok}"));
+        }
+        let resp = req
+            .body(init_body.to_string())
+            .send()
+            .await
+            .map_err(|e| format!("initialize 요청 실패: {e}"))?;
+
+        if !resp.status().is_success() {
+            return Err(format!("initialize 응답 실패: HTTP {}", resp.status()));
+        }
+
+        let session_id = resp
+            .headers()
+            .get("mcp-session-id")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string())
+            .ok_or_else(|| "initialize 응답에 mcp-session-id 헤더 없음".to_string())?;
+
+        // notifications/initialized는 알림이라 서버가 바디를 돌려주지 않을 수 있다. 네트워크 자체
+        // 에러(연결 끊김 등)만 치명적으로 취급하고, 응답 바디 내용은 검사하지 않는다.
+        let mut req = http
+            .post(&mcp_url)
+            .header("Content-Type", "application/json")
+            .header("Accept", ACCEPT_HEADER)
+            .header("mcp-session-id", &session_id);
+        if let Some(tok) = &token {
+            req = req.header("Authorization", format!("Bearer {tok}"));
+        }
+        req.body(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#)
+            .send()
+            .await
+            .map_err(|e| format!("notifications/initialized 요청 실패: {e}"))?;
+
+        Ok(Self { http, mcp_url, token, session_id, next_id: AtomicU64::new(2) })
+    }
+
+    /// tools/call로 원격 MCP 툴 하나를 호출하고 결과 텍스트를 반환한다.
+    pub async fn call_tool(&self, name: &str, args: Value) -> Result<String, String> {
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
+        let body = json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": "tools/call",
+            "params": {"name": name, "arguments": args}
+        });
+
+        let mut req = self
+            .http
+            .post(&self.mcp_url)
+            .header("Content-Type", "application/json")
+            .header("Accept", ACCEPT_HEADER)
+            .header("mcp-session-id", &self.session_id);
+        if let Some(tok) = &self.token {
+            req = req.header("Authorization", format!("Bearer {tok}"));
+        }
+        let resp = req
+            .body(body.to_string())
+            .send()
+            .await
+            .map_err(|e| format!("tools/call({name}) 요청 실패: {e}"))?;
+
+        if !resp.status().is_success() {
+            return Err(format!("tools/call({name}) 응답 실패: HTTP {}", resp.status()));
+        }
+
+        let text = resp
+            .text()
+            .await
+            .map_err(|e| format!("tools/call({name}) 응답 읽기 실패: {e}"))?;
+        parse_jsonrpc_sse(&text, name)
+    }
+
+    /// poll_tasks(agent) 얇은 래퍼.
+    pub async fn poll_tasks(&self, agent: &str) -> Result<String, String> {
+        self.call_tool("poll_tasks", json!({ "agent": agent })).await
+    }
+
+    /// claim_task(task_id) 얇은 래퍼.
+    pub async fn claim_task(&self, task_id: &str) -> Result<String, String> {
+        self.call_tool("claim_task", json!({ "task_id": task_id })).await
+    }
+
+    /// complete_task(task_id, result) 얇은 래퍼.
+    pub async fn complete_task(&self, task_id: &str, result: &str) -> Result<String, String> {
+        self.call_tool("complete_task", json!({ "task_id": task_id, "result": result }))
+            .await
+    }
+}
+
+/// SSE 프레이밍(`data: ...` 라인들) 안에서 JSON-RPC 응답 페이로드를 찾아 파싱한다. 서버(rmcp
+/// StreamableHttpService)는 빈 하트비트 `data: \n` 라인과 실제 페이로드 `data: {json}\n` 라인을 함께
+/// 내려보낼 수 있다(관찰된 원문 예: `data: \nid: 0/0\nretry: 3000\n\ndata: {"jsonrpc":"2.0","id":2,
+/// "result":{...}}\nid: 1/0\n\n`). `data: ` 접두를 뗀 뒤 비어있지 않고 JSON으로 파싱되는 첫 줄을 쓴다.
+fn parse_jsonrpc_sse(text: &str, tool_name: &str) -> Result<String, String> {
+    let payload: Value = text
+        .lines()
+        .filter_map(|line| line.strip_prefix("data: "))
+        .filter(|data| !data.is_empty())
+        .find_map(|data| serde_json::from_str::<Value>(data).ok())
+        .ok_or_else(|| format!("tools/call({tool_name}) 응답에서 JSON-RPC 페이로드를 못 찾음: {text}"))?;
+
+    if let Some(err) = payload.get("error") {
+        return Err(format!("tools/call({tool_name}) JSON-RPC 에러: {err}"));
+    }
+
+    let result = payload
+        .get("result")
+        .ok_or_else(|| format!("tools/call({tool_name}) 응답에 result 없음: {text}"))?;
+
+    let is_error = result.get("isError").and_then(|v| v.as_bool()).unwrap_or(false);
+
+    let content_text = result
+        .get("content")
+        .and_then(|c| c.as_array())
+        .and_then(|arr| arr.first())
+        .and_then(|first| first.get("text"))
+        .and_then(|t| t.as_str())
+        .map(|s| s.to_string());
+
+    if is_error {
+        return Err(content_text.unwrap_or_else(|| {
+            format!("tools/call({tool_name}) isError=true(본문 파싱 실패): {text}")
+        }));
+    }
+
+    content_text
+        .ok_or_else(|| format!("tools/call({tool_name}) 응답에서 content[0].text를 못 찾음: {text}"))
+}
+
+#[cfg(all(test, feature = "worker", feature = "serve"))]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    /// 테스트 전용 빈 retriever(mcp.rs의 NullRetriever와 동등, 이 모듈 자체에는 검색 로직 불요).
+    struct NullRetriever;
+    impl crate::orchestrator::ContextRetriever for NullRetriever {
+        fn retrieve(&self, _q: &str, _limit: usize) -> Vec<crate::orchestrator::Utterance> {
+            vec![]
+        }
+    }
+
+    /// 인메모리 A2A store(mcp.rs test_a2a_store()와 동등한 최소 헬퍼).
+    fn test_a2a_store() -> Arc<std::sync::Mutex<crate::store::sqlite::SqliteStore>> {
+        Arc::new(std::sync::Mutex::new(
+            crate::store::sqlite::SqliteStore::open_memory().expect("in-memory sqlite"),
+        ))
+    }
+
+    /// ephemeral 포트로 HTTP MCP 서버를 띄우고 그 base URL("http://127.0.0.1:PORT/mcp")을 반환한다.
+    async fn spawn_test_server(token: Option<String>) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let port = listener.local_addr().unwrap().port();
+        let retriever = Arc::new(NullRetriever) as Arc<dyn crate::orchestrator::ContextRetriever>;
+        tokio::spawn(async move {
+            let _ = crate::mcp::serve_http_mcp_on_listener(
+                listener,
+                retriever,
+                None,
+                None,
+                None,
+                token,
+                test_a2a_store(),
+            )
+            .await;
+        });
+        // axum이 accept를 시작할 시간을 준다(기존 mcp.rs 테스트와 동일한 관례).
+        tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+        format!("http://127.0.0.1:{port}/mcp")
+    }
+
+    #[tokio::test]
+    async fn connect_and_poll_tasks_returns_empty_message() {
+        let url = spawn_test_server(None).await;
+        let client = McpHttpClient::connect(url, None)
+            .await
+            .expect("connect 성공해야 함");
+
+        let text = client
+            .poll_tasks("nobody")
+            .await
+            .expect("poll_tasks 성공해야 함");
+        assert!(
+            text.contains("nobody 앞 열린 task 없음"),
+            "poll_tasks 빈 결과 문구 불일치: {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn connect_with_bearer_token_succeeds() {
+        let url = spawn_test_server(Some("secret-tok".to_string())).await;
+        let client = McpHttpClient::connect(url, Some("secret-tok".to_string()))
+            .await
+            .expect("토큰으로 connect 성공해야 함");
+
+        let text = client
+            .poll_tasks("mac-claude")
+            .await
+            .expect("토큰 인증 후 call_tool 성공해야 함");
+        assert!(
+            text.contains("mac-claude 앞 열린 task 없음"),
+            "poll_tasks 빈 결과 문구 불일치: {text}"
+        );
+    }
+}

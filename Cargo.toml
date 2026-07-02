@@ -37,6 +37,8 @@ engines = ["dep:reqwest"]
 mcp = ["sqlite", "dep:rmcp", "dep:schemars"]
 # serve: HTTP MCP 서버 상주 모드(axum + rmcp streamable-http). 기본 꺼짐.
 serve = ["mcp", "dep:axum", "rmcp?/transport-streamable-http-server"]
+# worker: 원격 코어의 MCP HTTP 엔드포인트를 호출하는 A2A 워커 클라이언트(reqwest만 필요, 서버쪽 dep 불요).
+worker = ["dep:reqwest"]
 
 # cargo-dist가 릴리스 아티팩트를 빌드할 때 쓰는 프로파일(release CI의 `cargo build --profile dist`).
 [profile.dist]
