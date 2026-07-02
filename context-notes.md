@@ -628,3 +628,10 @@
 - **스모크 성공**: Windows 코어 LAN 호스팅(192.0.2.10:8770, with_task_events, agent-card streaming:true) + **맥=원격 dispatcher**가 SendStreamingMessage를 SSE로 LAN 너머 개방 -> Windows=worker가 poll_tasks(win-claude) 발견->claim->complete -> **맥 SSE에 submitted->(heartbeat)->working(final:false)->artifactUpdate(lastChunk:true)->completed(final:true) 4프레임 실시간 도착 후 정상 종료**(task 53806631, artifact caa49a9e). = SSE-over-LAN 실증. 레시피 docs/prompts/a2a-stream-smoke-mac-dispatcher_2026-07-03.md.
 - **동구님 정곡: "아직은 내가 복붙하는게 맞지?" = 맞다, 단 복붙의 내용이 줄었다.** SSE가 제거한 것 = (1) 작업 결과/프레임 relay(맥이 프레임을 붙여넣지 않음, SSE가 나름), (2) dispatcher의 "다 됐나?" 폴링(SSE가 completed를 push = 마찰 #3의 dispatcher-notify 절반 해소). **아직 사람이 나르는 것 = 트리거/조정 신호**("SSE 열었다"->윈도우가 처리 시작, "처리 완료"->맥이 확인). 근데 이 트리거도 제거 가능: 워커가 auto-poll 루프면 "처리 시작" 릴레이 불요, dispatcher는 이미 SSE로 완료를 받으니 "처리 완료" 릴레이는 애초에 redundant였음(SSE가 이미 알림). **결론: 워커 auto-poll + dispatcher SSE = 사람은 목표를 dispatcher에 1회만 말하고, 기계끼리 트리거+데이터+완료통지 자율.** 마찰 #3 = dispatcher-notify(SSE로 해소)/worker-discovery(아직 폴링=워커 auto-poll로 해소) 두 절반.
 - 남은 마지막 조각 = **워커 auto-poll 루프**(background poll_tasks -> task 뜨면 claim/처리/complete). 이게 붙으면 사람 트리거 릴레이가 사라진다. 이기종 파트너(Codex-on-Ollama worker)는 그 위에.
+
+## 2026-07-03 세션8: A2A 자율 워커 데몬 설계 착수 (a=워커 auto-poll, b=이기종 파트너 통합)
+
+- 동구님 "a 먼저(중요!) 하고 b". **통찰: (a)=(b)** - 워커 데몬이 어느 Runner/model로 task 실행하냐가 곧 이기종 파트너. 신규 어댑터 불필요, 기존 Runner(claude/codex/opencode/http) 재사용.
+- 설계 정본 docs/design/v2-a2a-worker-daemon_2026-07-03.md. `tunaround work` 서브커맨드 = 헤드리스 자율 워커: poll_tasks(agent)->claim->RunInput{prompt=task text}->runner.run()->complete. claim/complete가 코어 버스로 dispatcher SSE에 실시간 흐름(스트리밍과 자동 결합) = 사람 트리거 0.
+- 재사용 조각: Runner trait(RunInput/RunOutput), MCP inbox 툴. **W1 관건 = 프로덕션 MCP HTTP 클라이언트**(현재 mcp.rs 테스트 코드에만 있는 handshake+tools/call+SSE파싱을 추출). 태스크 W1~W4(checklist).
+- 스코프: opt-in 데몬, read-only 기본(behavioral), dispatcher-side 사람이 목표 발행(semi-a2a HITL 유지). debate AutoLoop(Stage4)와 다름=위임 task 워커 자율.

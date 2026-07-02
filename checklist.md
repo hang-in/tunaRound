@@ -284,3 +284,12 @@
 - [x] T4: SubscribeToTask SSE 엔드포인트(기존 task 재구독). (ea3e855; 279 pass, Opus 리뷰·독립검증) 스냅샷 먼저->terminal=최종프레임 종료/아니면 라이브 chain, subscribe-후-get_task, 없는id=-32001.
 - [x] T5: Agent Card capabilities.streaming=true 플립(두 스트리밍 메서드 동작하니 정직). push_notifications는 false 유지. (2bc5437; 22 a2a tests pass)
 - [x] T6: 이벤트 시퀀스 검증(task_frame_json_stream 단위테스트) + content-type/-32004/-32001 oneshot 테스트 + **로컬 라이브 데모 성공(복붙 0)**. boss가 SendStreamingMessage SSE 열고 -> 워커 MCP claim/complete -> 같은 스트림에 task(submitted)->statusUpdate(working)->artifactUpdate(lastChunk)->statusUpdate(completed,final) 실시간 도착 후 종료. agent-card streaming:true 라이브 확인. = **A2A 스트리밍 Phase 2 완료.**
+
+## A2A 자율 워커 데몬 (worker auto-poll) (docs/design/v2-a2a-worker-daemon_2026-07-03.md)
+
+> (a) 워커 auto-poll = 사람 트리거 릴레이 제거 마지막 조각. (b) 이기종 파트너 = 데몬의 --runner/--model. 미착수.
+
+- [ ] W1: 프로덕션 MCP HTTP 클라이언트(handshake + call_tool + SSE 파싱) 추출·일반화 + 단위테스트.
+- [ ] W2: poll/claim/complete 래퍼 + work 루프(poll->claim->runner.run->complete, --once), fake 주입 단위테스트.
+- [ ] W3: Work 서브커맨드(WorkArgs) + main.rs 배선 + 러너 선택 factory.
+- [ ] W4: 로컬 라이브 데모(사람 트리거 0) + (b) 이기종 Codex-on-Ollama 워커 스모크.
