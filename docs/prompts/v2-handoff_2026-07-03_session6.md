@@ -23,6 +23,7 @@
 - 핵심 결정(context-notes 세션6후반): A2A 표준 채택(이기종 interop). **중앙 브로커 토폴로지**(코어=A2A서버+task큐 / worker=MCP inbox 폴링 / dispatcher=MCP send·get). worker=CLI 에이전트(모델=config). `/a2a` JSON-RPC는 Phase 2 외부 interop용. 메서드=ADR-001 PascalCase(SendMessage/GetTask/CancelTask). wire camelCase(TaskState만 snake).
 
 ## ③ Task 5 도그푸딩 재개 (다음 세션 핵심)
+> **✅ 완료(2026-07-03 세션7): 크로스머신 왕복 1회 성공 = semi-a2a Phase 1 완료.** win-claude `/a2a` SendMessage → mac-claude poll/claim/complete → 윈도우 GetTask=completed+artifact(소스 교차검증 통과, task_id 83f0e576, 19:11→19:17 맥 HITL 포함). 정정: background 코어(Start-Process)는 세션 종료 후에도 생존해 재기동 불필요했음. 아래는 당시 재개 절차(기록 보존).
 > **⚠ 이 세션의 background 코어·맥 연결은 세션 종료로 끊김. 아래로 재개.** 빌드는 이미 됨(target/debug).
 
 1. **코어 재기동**(윈도우, PowerShell background):

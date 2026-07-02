@@ -27,9 +27,11 @@
 - **#6 새 소스 파일 첫 줄 = 역할 한국어 한 줄 주석.** Rust 예: `// 토론 라운드 프롬프트를 조립하는 순수 함수`. config 파일 제외.
 - **#7 비trivial 작업 전 plan + `checklist.md` + `context-notes.md`.** plan만 주고 코딩 요청 시 멈추고 checklist·notes 먼저 만들지 묻는다.
 
-## 현재 상태 (2026-07-03, 세션 6, semi-a2a Phase 1 + 도그푸딩)
+## 현재 상태 (2026-07-03, 세션 6~7, semi-a2a Phase 1 완료 + Task 5 도그푸딩 성공)
 
-- **세션 6: rc.1 CI green 확인 + Windows 아티팩트 검증 + 사설 IP 전방 redact(backend-private.md 패턴) + Stage 3e 킬 -> semi-a2a 파트너 위임(A2A 표준) 설계·Phase 1 코드(Task 1~4 = 데이터레이어·`/a2a` 엔드포인트·worker inbox·dispatcher 툴) 완성·푸시 + Task 5 라이브 크로스머신 도그푸딩 진행중(윈도우 코어 + 맥 worker).** origin/main=`ae2fc71`. 검증 기본 209 / 풀피처 262 lib pass. 스키마 **v6**(tasks). 정본 [semi-a2a 파트너 위임](docs/design/v2-a2a-partner-delegation_2026-07-02.md).
+- **세션 6: rc.1 CI green 확인 + Windows 아티팩트 검증 + 사설 IP 전방 redact(backend-private.md 패턴) + Stage 3e 킬 -> semi-a2a 파트너 위임(A2A 표준) 설계·Phase 1 코드(Task 1~4 = 데이터레이어·`/a2a` 엔드포인트·worker inbox·dispatcher 툴) 완성·푸시 + Task 5 라이브 크로스머신 도그푸딩 착수.** 검증 기본 209 / 풀피처 262 lib pass. 스키마 **v6**(tasks). 정본 [semi-a2a 파트너 위임](docs/design/v2-a2a-partner-delegation_2026-07-02.md).
+
+- **세션 7 (2026-07-03): Task 5 크로스머신 왕복 성공 = semi-a2a Phase 1 완료.** 윈도우 코어(`serve 0.0.0.0:8770`, LAN 192.0.2.10) `/a2a` SendMessage(win-claude→mac-claude) → 맥 worker poll/claim/complete → 윈도우 GetTask=completed+artifact, 소스 교차검증 통과(task_id 83f0e576, 19:11→19:17 맥 HITL 포함). + **맥↔윈도우 git 교통정리 규약**(단일 통합자 + 진입점 포인터 WIN/MAC 줄 분리, `37a8ee1`). origin/main=`37a8ee1`.
 
 - **세션 5: 시간성·유효성 마무리(step 5c·6) + codex pull 활성화(behavioral) + 외래어 병기 색인 + 임베딩 기본 qwen3 + 배포(cargo-dist)·온보딩(clap 서브커맨드·tunaround.toml 프로파일) + AGPL-3.0 + 맥-윈도우 핸드오프.** 전부 origin/main 푸시(= c89da05).
 - **이전 세션 4: Stage 3a-3(front=core) + Stage 3d(원격 쓰기 권위) + 시간성·유효성 로드맵 step 2~8.**
