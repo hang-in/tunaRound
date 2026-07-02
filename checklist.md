@@ -281,6 +281,6 @@
 - [x] T1: 이벤트 버스(store 계층 broadcast::Sender) + 세 변이(create/update_state/complete) emit. 단위테스트. (785fb25; 기본 211/풀 264 pass, Opus 리뷰·독립검증) — ⚠T3 유의: SendStreamingMessage는 create 전에 subscribe해야 초기 submitted 이벤트 안 놓침(broadcast는 늦은 구독자에 replay 안 함). SubscribeToTask는 스냅샷 선전송 후 스트림.
 - [x] T2: 스트리밍 타입(TaskStatus/TaskStatusUpdateEvent/TaskArtifactUpdateEvent/StreamResponse) serde + 순수 task_event_to_frames 매핑. (25619c4; 218 pass, Opus 리뷰·독립검증) 와일 final/lastChunk/statusUpdate/artifactUpdate 검증, TaskState snake_case 재사용.
 - [x] T3: SendStreamingMessage SSE 엔드포인트(생성+스트림, final 종료). (9ed6380; 274 pass, Opus 정독리뷰·독립검증) subscribe-before-create, task_id 필터, testable string 스트림 분리, serve store with_task_events 배선(MCP claim/complete와 버스 공유), 버스없으면 -32004.
-- [ ] T4: SubscribeToTask SSE 엔드포인트(기존 task 재구독).
-- [ ] T5: capability 게이트(미구현=UnsupportedOperationError) -> 완료 시 streaming:true 플립.
-- [ ] T6: 통합테스트(tower oneshot 이벤트 시퀀스 assert) + 로컬 라이브 데모(복붙 0).
+- [x] T4: SubscribeToTask SSE 엔드포인트(기존 task 재구독). (ea3e855; 279 pass, Opus 리뷰·독립검증) 스냅샷 먼저->terminal=최종프레임 종료/아니면 라이브 chain, subscribe-후-get_task, 없는id=-32001.
+- [x] T5: Agent Card capabilities.streaming=true 플립(두 스트리밍 메서드 동작하니 정직). push_notifications는 false 유지. (2bc5437; 22 a2a tests pass)
+- [x] T6: 이벤트 시퀀스 검증(task_frame_json_stream 단위테스트) + content-type/-32004/-32001 oneshot 테스트 + **로컬 라이브 데모 성공(복붙 0)**. boss가 SendStreamingMessage SSE 열고 -> 워커 MCP claim/complete -> 같은 스트림에 task(submitted)->statusUpdate(working)->artifactUpdate(lastChunk)->statusUpdate(completed,final) 실시간 도착 후 종료. agent-card streaming:true 라이브 확인. = **A2A 스트리밍 Phase 2 완료.**

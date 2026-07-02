@@ -610,3 +610,15 @@
 - **정찰 = 이미 끝나 있었음(동구님 기억 맞음)**: a2a_server.rs가 스펙 §9.1(PascalCase)·§5.3(Method Mapping) 인용, 스트리밍 메서드명 SubscribeToTask 확정, Agent Card에 streaming 플래그 존재(false). **게다가 partner-delegation §65가 "SSE는 후속"으로 명시 유예한 결정이었음** -> 이번은 그 유예를 호기심·interop 근거로 **재개**(잊은 것 아님). 유일 공백=SSE 이벤트 스키마였고 스펙에서 당김(SendStreamingMessage/SubscribeToTask, StreamResponse 래퍼=task|message|statusUpdate|artifactUpdate, TaskStatusUpdateEvent{taskId,contextId,status,final,metadata}/TaskArtifactUpdateEvent{...,append,lastChunk}).
 - **설계 crux = 이벤트 버스를 store 계층에 둠**: 모든 task 변이가 SqliteStore 세 메서드(create_task_from_message/update_task_state/complete_task) 통과 -> 거기서 broadcast emit하면 /a2a·MCP 두 경로 자동 커버. broadcast::send는 sync라 rusqlite 동기 경로 OK. 정본=docs/design/v2-a2a-streaming_2026-07-03.md. checklist T1~T6. 미착수(설계 리뷰 대기).
 - **스코프 경계**: 워커 방향 push(코어->워커 inbound 알림)는 이번 스코프 아님(브로커 폴링 유지, Phase 1 결정과 동일 근거). 스트리밍=dispatcher-facing 실시간 읽기 + 외부 interop만.
+
+## 2026-07-03 세션8(후반): A2A 스트리밍(SSE) Phase 2 T1~T6 완료 + 라이브 데모
+
+- **전체 완료**(설계 docs/design/v2-a2a-streaming_2026-07-03.md, checklist T1~T6). Sonnet 위임 + Opus 정독리뷰·독립검증, 태스크별 커밋.
+- **T1**(785fb25) 이벤트 버스: SqliteStore가 Option<broadcast::Sender<TaskEvent>> 보유, 세 변이(create/update_state/complete) 커밋 후 emit -> /a2a·MCP 두 경로 자동 커버(store 단일 지점). bus=None no-op.
+- **T2**(25619c4) 스트리밍 타입: TaskStatus/TaskStatusUpdateEvent(final rename)/TaskArtifactUpdateEvent(lastChunk)/StreamResponse 래퍼 + 순수 task_event_to_frames. TaskState snake_case 재사용(unary 일관).
+- **T3**(9ed6380) SendStreamingMessage SSE: subscribe-before-create, task_id 필터, testable string 스트림 분리, main.rs serve store에 with_task_events 배선(MCP claim/complete와 버스 공유). 버스없음=-32004.
+- **T4**(ea3e855) SubscribeToTask 재구독: 스냅샷 먼저->terminal이면 최종프레임 종료/아니면 라이브 chain(Box<dyn Stream+Send> 통일), subscribe-후-get_task, 없는id=-32001.
+- **T5**(2bc5437) Agent Card streaming:true 플립(두 메서드 동작하니 정직). push_notifications=false 유지.
+- **T6 라이브 데모 성공(복붙 0)**: 로컬 코어(with_task_events) + boss가 SendStreamingMessage로 SSE 개방 -> 워커가 MCP(/mcp) claim/complete -> **같은 store 버스 통해** SSE(/a2a)에 task(submitted)->statusUpdate(working,final:false)->artifactUpdate(lastChunk:true)->statusUpdate(completed,final:true) 실시간 도착 후 종료. keep-alive `:` 확인. agent-card `"streaming":true,"pushNotifications":false` 라이브. = 사람 릴레이 없이 boss가 위임 생명주기 실시간 관찰("복붙 왜?"의 코드 답).
+- **검증 총계**: 기본 218 / 풀피처(morphology mcp serve) 279 lib pass, clippy 클린(기존 무관 경고 2개만). a2a_server 22 tests.
+- **스코프 경계 유지**: 워커 방향 push(코어->워커 inbound 알림)는 미구현(브로커 폴링 유지). 스트리밍=dispatcher-facing 실시간 읽기 + 외부 A2A interop. push_notifications(webhook)·discovery·다중auth는 후속(YAGNI). 우리 자신 UX 이득은 modest, 값=interop/스펙준수/학습.
