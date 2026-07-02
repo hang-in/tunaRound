@@ -81,3 +81,16 @@ tunaround join http://127.0.0.1:8770/mcp --token [REDACTED_TOKEN]
 6. **코어 리셋 복구 실증 + 조용한 task 소멸.** 윈도우가 코어를 리셋(DB 초기화)해도 같은 주소/토큰이면 클라이언트는 재등록·세션 재시작 없이 `send_task` 재디스패치로 즉시 복구됨(맥이 `907f5c82` 소멸 → `76ea0b9c` 재발송으로 실증). 단 옛 task_id는 "task 없음"으로 조용히 사라질 뿐 리셋 통지가 없어, dispatcher가 죽은 id를 계속 폴링할 위험 = #3(push/notify 부재)과 동근원.
 
 **다음 권장(우선순위)**: (1) real workload 왕복 1회(작은 파일수정+diff 반환)로 "경로"에서 "가치"로. (2) codex leg(app-server 3e). (3) 온보딩 마찰 완화(raw HTTP 워커 레시피 문서화 or join 일괄). (4) AutoLoop(Stage 4)는 push/notify 전까지 계속 보류.
+
+## ⑧ 크로스머신 SSE 스트리밍 스모크 (Phase 2, 2026-07-03 성공)
+
+**구도**: 맥 = 원격 dispatcher. raw curl로 Windows 코어(`192.0.2.10:8770/a2a`)에 `SendStreamingMessage`(SSE, `-N`)를 LAN 너머로 열고 `/tmp/mac-sse.out` 캡처. task는 win-claude 앞으로 생성되고 윈도우가 MCP poll→claim→complete. 지시=`docs/prompts/a2a-stream-smoke-mac-dispatcher_2026-07-03.md`, 설계=`docs/design/v2-a2a-streaming_2026-07-03.md`.
+
+**성공(4프레임 실시간 수신, task `53806631`)**: `task`(submitted) → (하트비트 `:` 코멘트로 ~110s 유휴 버팀) → `statusUpdate`(working, final:false) → `artifactUpdate`(lastChunk:true, 결과 텍스트) → `statusUpdate`(completed, **final:true**) → 스트림 정상 종료(curl exit 0, max-time 120 이내). 사전 확인: agent-card `streaming:true`·Bearer auth·LAN 도달.
+
+**교훈**:
+- **스트리밍이 ⑦#3(폴링 discovery 공백)의 실동작 답.** 하트비트로 긴 유휴를 버티며 상태변화를 push로 실시간 전달 → dispatcher가 빈 폴링 없이 수신. 자율화 병목이던 통지 채널을 SSE가 메움.
+- **맥 워커/디스패처 모두 MCP 등록·세션 재시작 불요(raw curl).** ⑦#1의 raw HTTP 회피가 dispatcher 측에서도 성립.
+- 사람 역할 = "열었다/받았다" 신호 릴레이뿐. 작업 데이터(생명주기 프레임)는 SSE가 자체 전달.
+
+**다음(성공 시)**: 이기종 파트너(Codex-on-Ollama worker) = Phase 2 파트너 확장. Agent Card skills 광고 → best-fit 선택(별도 세션).
