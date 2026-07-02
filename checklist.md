@@ -289,7 +289,7 @@
 
 > (a) 워커 auto-poll = 사람 트리거 릴레이 제거 마지막 조각. (b) 이기종 파트너 = 데몬의 --runner/--model. 미착수.
 
-- [ ] W1: 프로덕션 MCP HTTP 클라이언트(handshake + call_tool + SSE 파싱) 추출·일반화 + 단위테스트.
+- [x] W1: 프로덕션 MCP HTTP 클라이언트(handshake + call_tool + SSE 파싱) 추출·일반화 + 단위테스트. (ad5ca38; 281/218 pass, Opus 리뷰·독립검증) McpHttpClient(connect/call_tool/poll·claim·complete 래퍼), worker feature=dep:reqwest async, serve 하네스로 왕복 테스트.
 - [ ] W2: poll/claim/complete 래퍼 + work 루프(poll->claim->runner.run->complete, --once), fake 주입 단위테스트.
 - [ ] W3: Work 서브커맨드(WorkArgs) + main.rs 배선 + 러너 선택 factory.
 - [ ] W4: 로컬 라이브 데모(사람 트리거 0) + (b) 이기종 Codex-on-Ollama 워커 스모크.
