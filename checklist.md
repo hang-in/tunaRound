@@ -245,6 +245,14 @@
 - [x] 재측정: "리프레시 토큰 어디 저장" R@5 0→1.0. FTS R@5 0.878→0.944, hybrid 0.933→0.978. 합성 0.857 불변. floor R@5>=0.88/P@5>=0.45
 - [x] ⚠ 정밀도: P@5 0.494→0.508(↑), 대가는 MRR 소폭↓(OR확장, top-k주입 수용). 자동음역모델 비채택. 흔한공통어 alias는 과적합회피 위해 유지(재튜닝 여지)
 
+## 배포·온보딩 (2026-07-02 설계 확정, docs/design/v2-deploy-onboarding_2026-07-02.md)
+> 결정: 배포=cargo-dist(sshc 답습, homebrew+powershell, 풀피처 단일바이너리). scoop/winget 보류. 코어 홈랩호스팅 보류. 온보딩=clap 서브커맨드 + tunaround.toml 프로파일(진입선택). doctor 다음.
+- [ ] **Stage 1 clap 서브커맨드**: chat/core/serve/join/mcp-search/reindex. main.rs 수동파싱 교체(모드 본문 유지, dispatch만). ⚠ 러너 spawn `--mcp-search`→`mcp-search` 동시 갱신(codex/claude). behavior-preserving 테스트. feature cfg 게이트
+- [ ] **Stage 2 cargo-dist**: dist-workspace.toml(installers shell/powershell/homebrew, targets mac/win/linux, tap hang-in/homebrew-tap, features semantic/mcp/serve) + release.yml. 태그 첫 릴리스 스모크(맥 brew + Kiwi 자동다운로드 실기)
+- [ ] **Stage 3 tunaround.toml + 프로파일**: [profile.*] 로드·머지(플래그>프로파일>기본), 토큰=*_env 참조, `--profile`+대화형 픽커, 탐색경로. 도메인/토큰 레포 미포함
+- [ ] Stage 4(다음) doctor: claude/codex·Ollama·Kiwi·포트·코어도달 프리플라이트
+- [ ] 각 단계 cargo test(기본/features)+clippy, 커밋 분리
+
 ## v2 백로그 (착수 전 결정 필요)
 - [~] 분리 터미널 A2A 협업 — (A) 설계로 승격(위), 자율(B)은 Stage 4로 분리
 - [x] 신규 엔진 러너(HTTP): ollama·lmstudio·openai (Plan 17 done). opencode CLI 참가자는 후속(외부 CLI 통합)
