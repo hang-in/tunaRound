@@ -278,7 +278,7 @@
 
 > 정찰 완료(스펙 표면+현 코드 위치). 최종 목표=스펙 준수 A2A 서버(streaming:true 광고, 외부 A2A 클라가 task 던지고 SSE 실시간 구독). 비목표=자율성/워커 push. 미착수.
 
-- [ ] T1: 이벤트 버스(store 계층 broadcast::Sender) + 세 변이(create/update_state/complete) emit. 단위테스트.
+- [x] T1: 이벤트 버스(store 계층 broadcast::Sender) + 세 변이(create/update_state/complete) emit. 단위테스트. (785fb25; 기본 211/풀 264 pass, Opus 리뷰·독립검증) — ⚠T3 유의: SendStreamingMessage는 create 전에 subscribe해야 초기 submitted 이벤트 안 놓침(broadcast는 늦은 구독자에 replay 안 함). SubscribeToTask는 스냅샷 선전송 후 스트림.
 - [ ] T2: 스트리밍 타입(TaskStatusUpdateEvent/TaskArtifactUpdateEvent/StreamResponse) serde(스펙 필드명 verbatim).
 - [ ] T3: SendStreamingMessage SSE 엔드포인트(생성+스트림, final 종료).
 - [ ] T4: SubscribeToTask SSE 엔드포인트(기존 task 재구독).
