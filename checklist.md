@@ -267,7 +267,7 @@
 - [ ] Task 3: inbox MCP 툴(poll_tasks/claim_task/complete_task) 코어 MCP(mcp+serve)에.
 - [ ] Task 4: worker 루프 관례(/loop 레시피/헬퍼) + dispatcher 배선.
 - [ ] Task 5: 라이브 e2e(윈 dispatch→맥 worker→artifacts→검토) 최소 round-trip.
-- [ ] 후속: README·CLAUDE.md "half-a2a"→"semi-a2a" 정정.
+- [x] 후속: half-a2a→semi-a2a 용어 정정 완료(CLAUDE.md·CHANGELOG. README엔 해당 용어 없음, 역사적 핸드오프는 시점기록이라 미변경).
 
 ## v2 백로그 (착수 전 결정 필요)
 - [~] 분리 터미널 A2A 협업 — (A) 설계로 승격(위), 자율(B)은 Stage 4로 분리

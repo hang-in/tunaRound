@@ -55,5 +55,5 @@
 
 1. **[docs/prompts/v2-handoff_2026-07-02_session5.md](docs/prompts/v2-handoff_2026-07-02_session5.md) 먼저 읽기** + `context-notes.md`(하단) + `checklist.md` + `docs/plans/index.md`. 맥↔윈도우 왕복이면 [docs/reference/dev-mac-windows.md](docs/reference/dev-mac-windows.md)도. `cargo test`(기본) + `cargo test --features "semantic morphology mcp serve"`로 상태 확인(**cargo는 Bash 툴로**).
 2. **다음 세션 우선순위(2026-07-02 오후 확정)**: (a) **rc.1 CI green 확인**(맥이 잡는 중 - aarch64 크로스 ring C 실패로 4타깃 축소·버전·profile.dist 수정. **윈도우 미개입**) → green 시 최종 v0.1.0 태그·tap 발행 판단. (b) **codex 먼저 해결**(크로스머신 codex leg가 #24135 승인취약으로 실패 = app-server(3e) 또는 대화형 승인). (c) codex 풀리면 **맥이랑 크로스머신 스모크 이어가기**(codex leg·양방향 post_turn). (d) 선택: 진짜 A2A=AutoLoop(Stage4, 미구현·모더레이터 에이전트). 실행은 `cargo run -- chat`(서브커맨드). Kiwi 자동다운로드(실패 시 lindera). Ollama 11435, 기본 qwen3-embedding:0.6b, Redis 6379.
-   - **A2A 성숙도(정직)**: 현재=공유맥락(데이터평면)+**사람 오케스트레이션**. "half-a2a"=데이터평면만. 진짜 A2A=자율 제어평면=**AutoLoop(Stage4 미구현, 의도적 보류)**. 상세 핸드오프 세션5 후반.
+   - **A2A 성숙도(정직)**: 현재=공유맥락(데이터평면)+**사람 오케스트레이션(HITL)** = **semi-a2a**(자율수준이 "semi"=HITL, A2A 통신은 진짜 성립). 스펙트럼: 수동relay < semi-a2a < full-auto(AutoLoop=Stage4 미구현, 의도적 보류). 크로스머신 앱-투-앱 위임 설계=docs/design/v2-a2a-partner-delegation_2026-07-02.md.
 3. 작업 추적 `checklist.md`·`context-notes.md`(규율 #7). 위임 Sonnet + Opus 리뷰. 굵직한 결정 재론 금지. 서브에이전트 진행 중 파일 레이스 주의. 배포 전 도그푸딩.

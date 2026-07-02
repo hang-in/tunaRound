@@ -14,7 +14,7 @@
 - **REPL 커맨드**: `@engine`(자리 지목) · `@engine!`(쓰기 턴, 협업 코딩) · `/debate <n>`(N턴 자동 교환) · `/conclude`(종합) · `/branches`·`/checkout`(분기 트리) · `/save` · `/supersede`·`/reject`·`/explain`(유효성·검색 디버그).
 - **영속·세션**: SQLite 시스템 오브 레코드(스키마 v5, `created_at`) + in-store 트리(브랜치=세션). 멀티세션 관찰/재개(Redis, 선택).
 - **한국어 검색/맥락**: 형태소 FTS(Kiwi 메인 + lindera 폴백, POS keep-tags) + 외래어 음역 병기 색인 + 벡터 RRF + RAG 주입 + MCP 능동검색(`search_context`/`read_transcript`) + 유효성·세션·recency 인지 랭킹.
-- **half-A2A 코어 백엔드**: `core`(단일 프로세스 REPL+in-process HTTP MCP) · `serve`(헤드리스 코어) · `join`(원격 코어 접속). `post_turn`/`get_roster` + core-sync(증분 append, DB id 권위). bearer 인증.
+- **semi-A2A 코어 백엔드**: `core`(단일 프로세스 REPL+in-process HTTP MCP) · `serve`(헤드리스 코어) · `join`(원격 코어 접속). `post_turn`/`get_roster` + core-sync(증분 append, DB id 권위). bearer 인증.
 - **온보딩·배포**: clap 서브커맨드(`chat`/`core`/`serve`/`join`/`mcp-search`/`reindex`) · `tunaround.toml` 프로파일 · cargo-dist(6타깃, homebrew/shell/powershell 인스톨러).
 - **임베딩**: 원격 Ollama HTTP(기본 `qwen3-embedding:0.6b`, dim 1024, `TUNAROUND_EMBED_MODEL`로 교체) + 결정적 MockEmbedder 폴백.
 
