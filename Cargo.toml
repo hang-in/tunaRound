@@ -37,3 +37,8 @@ engines = ["dep:reqwest"]
 mcp = ["sqlite", "dep:rmcp", "dep:schemars"]
 # serve: HTTP MCP 서버 상주 모드(axum + rmcp streamable-http). 기본 꺼짐.
 serve = ["mcp", "dep:axum", "rmcp?/transport-streamable-http-server"]
+
+# cargo-dist가 릴리스 아티팩트를 빌드할 때 쓰는 프로파일(release CI의 `cargo build --profile dist`).
+[profile.dist]
+inherits = "release"
+lto = "thin"
