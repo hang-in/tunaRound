@@ -260,6 +260,15 @@
 - [ ] Stage 4(다음) doctor: claude/codex·Ollama·Kiwi·포트·코어도달 프리플라이트
 - [ ] 각 단계 cargo test(기본/features)+clippy, 커밋 분리
 
+## semi-a2a 파트너 위임 Phase 1 (2026-07-02 세션6 설계, docs/design/v2-a2a-partner-delegation_2026-07-02.md)
+> A2A 표준(Task 위임) 채택. 중앙 브로커: 코어=A2A서버+큐, worker=/loop+inbox MCP툴 폴링, dispatcher=SendMessage/GetTask. worker=CLI 에이전트(모델=config). 상세 결정 context-notes 세션6(후반).
+- [x] Task 1: A2A 데이터모델(Task/TaskState/Message/Part/Artifact serde) + tasks 테이블(스키마 v6) + store ops(create/get/list_open_for/update_state/complete/append_history) + 마이그레이션 + 라운드트립·상태전이·필터·마이그레이션 테스트. 격리 store 모듈(src/store/a2a.rs), sqlite 게이트. **완료(Sonnet 구현+Opus 리뷰): lib +19 test green(203 기본/217 풀피처), clippy 클린.** 리뷰노트: Artifact=A2A스펙(artifact_id/name/parts) · timestamp create=호출자/update=datetime('now')(dispatcher는 SQLite호환 포맷) · wire camelCase는 Task 2 요건.
+- [ ] Task 2: A2A 서버 엔드포인트(SendMessage/GetTask/CancelTask JSON-RPC + /.well-known/agent-card.json) 코어 axum(serve)에 + bearer 재사용.
+- [ ] Task 3: inbox MCP 툴(poll_tasks/claim_task/complete_task) 코어 MCP(mcp+serve)에.
+- [ ] Task 4: worker 루프 관례(/loop 레시피/헬퍼) + dispatcher 배선.
+- [ ] Task 5: 라이브 e2e(윈 dispatch→맥 worker→artifacts→검토) 최소 round-trip.
+- [ ] 후속: README·CLAUDE.md "half-a2a"→"semi-a2a" 정정.
+
 ## v2 백로그 (착수 전 결정 필요)
 - [~] 분리 터미널 A2A 협업 — (A) 설계로 승격(위), 자율(B)은 Stage 4로 분리
 - [x] 신규 엔진 러너(HTTP): ollama·lmstudio·openai (Plan 17 done). opencode CLI 참가자는 후속(외부 CLI 통합)

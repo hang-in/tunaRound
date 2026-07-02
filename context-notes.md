@@ -2,6 +2,17 @@
 
 > 작업 중 결정과 근거. 계속 append. (규율 #7) 다음 세션이 결정을 재유도하지 않게.
 
+## 2026-07-02 세션6(후반): semi-a2a 파트너 위임 설계 확정 (A2A 표준 채택)
+
+- **경위**: Stage 3e(codex app-server, #24135) 논의가 동구님 질문들로 값이 해체 → **3e 킬**. 대신 진짜 값 = **크로스머신 앱-투-앱 semi-autonomous 위임**. 설계: docs/design/v2-a2a-partner-delegation_2026-07-02.md.
+- **용어**: "half-a2a"→**"semi-a2a"**(자율수준=HITL, A2A는 진짜 성립; half=미완성 오독이라 폐기). 스펙트럼: 수동relay < semi < full-auto(AutoLoop=Stage 4 보류). README·CLAUDE.md 정정 후속.
+- **경계(동구님)**: 토론=단일머신 헤드리스로 충분(크로스머신 불요). 개발협업=git+공유레포. 크로스머신 **헤드리스는 out**, **앱-투-앱 위임만 값**(#24135 무관=사람 승인).
+- **표준 A2A 채택**(bespoke 아님). 이기종 파트너 interop이 A2A 존재이유. A2A(에이전트↔에이전트)+MCP(에이전트↔도구) 보완. 스펙 a2a-protocol.org v1.0(2026 LF): Task 8-state·SendMessage/GetTask·Agent Card·Part/Artifact.
+- **worker=CLI 에이전트, 모델=config**(동구님 교정): headless 모델 어댑터 불필요. "Ollama 파트너"=Ollama 구동 CLI 에이전트(Codex 네이티브 OpenAI-compat, Claude Code는 프록시). agentic loop 때문에 raw 모델호출 아닌 CLI 에이전트. HTTP engine runner(Plan 17)=토론 좌석용 유지.
+- **토폴로지=중앙 브로커**: 코어=A2A서버+task큐, worker=/loop+inbox MCP툴(poll/claim/complete) 폴링, dispatcher=A2A SendMessage/GetTask. 대화형 CLI가 per-agent 서버 못 띄워서. dispatch측 A2A 호환. SSE 후속.
+- **합성**: task contextId↔session, worker가 read_transcript로 맥락 pull(또는 Message parts로 push=#24135 회피).
+- **착수**: Phase 1 Task 1(A2A 데이터모델+tasks테이블 v6)부터, Sonnet 위임+Opus 리뷰.
+
 ## 2026-07-02 세션6: rc.1 CI green + Windows rc 아티팩트 검증
 
 - **rc.1 CI 완전 green**(run 28564666085, 태그 v0.1.0-rc.1 = 19f3ce0): plan → 빌드 4타깃(mac arm64 3m45s / mac x86 8m39s / win x64 11m24s / **linux x64 7m4s**) → global artifacts → host 발행(28s) 전부 ✓. **크로스컴파일 리스크(ring C·rusqlite bundled)가 linux x64에서 실증 통과**(rc.1의 존재 이유였음). GitHub prerelease 발행됨(isDraft=false, isPrerelease=true), 아티팩트 15개 = 4바이너리 + sha256 + installer.ps1/sh + tunaround.rb(homebrew formula) + source.

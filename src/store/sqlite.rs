@@ -2,10 +2,12 @@
 
 use rusqlite::Connection;
 
+use crate::store::a2a::{append_history_json, Artifact, Message, Task, TaskRow, TaskState};
 use crate::store::{StoredMessage, StoredSession};
 
 // 스키마 버전 상수. v3: message_vectors.model_id. v4: message_validity(유효성 메타).
-const CURRENT_SCHEMA_VERSION: u32 = 5;
+// v5: messages.created_at. v6: tasks(A2A task 위임, docs/design/v2-a2a-partner-delegation_2026-07-02.md).
+const CURRENT_SCHEMA_VERSION: u32 = 6;
 
 // config 테이블 생성 SQL.
 const CREATE_CONFIG: &str = "CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT);";
@@ -72,6 +74,28 @@ CREATE TABLE IF NOT EXISTS message_validity (
     PRIMARY KEY(session_id, msg_id)
 );
 ";
+
+// A2A task 위임 테이블. message_json/artifacts_json/history_json은 crate::store::a2a 타입의 직렬화본.
+// created_at/updated_at은 SQL 기본값 없이 애플리케이션(create_task)이 명시적으로 채운다.
+const CREATE_TASKS: &str = "
+CREATE TABLE IF NOT EXISTS tasks (
+    task_id        TEXT PRIMARY KEY,
+    context_id     TEXT,
+    from_agent     TEXT NOT NULL,
+    to_agent       TEXT NOT NULL,
+    state          TEXT NOT NULL,
+    message_json   TEXT,
+    artifacts_json TEXT,
+    history_json   TEXT,
+    created_at     TEXT NOT NULL,
+    updated_at     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_tasks_to_agent_state ON tasks(to_agent, state);
+";
+
+// tasks 컬럼 목록(고정 순서). SELECT/INSERT 양쪽에서 재사용해 컬럼 순서 불일치를 방지한다.
+const TASK_COLUMNS: &str = "task_id, context_id, from_agent, to_agent, state, \
+     message_json, artifacts_json, history_json, created_at, updated_at";
 
 /// SQLite 기반 메시지 트리 저장소.
 pub struct SqliteStore {
@@ -146,6 +170,10 @@ impl SqliteStore {
             // v4: 유효성 메타 테이블(새 TABLE이라 IF NOT EXISTS로 fresh·기존 모두 처리).
             self.conn
                 .execute_batch(CREATE_MESSAGE_VALIDITY)
+                .map_err(|e| format!("sqlite: {e}"))?;
+            // v6: A2A task 위임 테이블(새 TABLE이라 IF NOT EXISTS로 fresh·기존 모두 처리).
+            self.conn
+                .execute_batch(CREATE_TASKS)
                 .map_err(|e| format!("sqlite: {e}"))?;
             // v3: 기존(v2) DB의 message_vectors엔 model_id가 없으므로 ADD COLUMN으로 보강한다.
             // fresh DB는 CREATE에 이미 있어 column_exists가 true → ALTER 생략. 기존 행은 NULL이라
@@ -713,6 +741,144 @@ impl SqliteStore {
         scored.truncate(limit);
         Ok(scored)
     }
+
+    /// A2A task를 신규 생성한다(INSERT). created_at/updated_at은 Task 값을 그대로 쓴다(SQL 기본값 없음).
+    /// 호출자(dispatcher)가 시각을 stamping해 전달하는 것을 전제한다(round-trip 필드 보존 우선).
+    pub fn create_task(&self, task: &Task) -> Result<(), String> {
+        let message_json = match &task.status_message {
+            Some(m) => Some(serde_json::to_string(m).map_err(|e| format!("json: {e}"))?),
+            None => None,
+        };
+        let artifacts_json =
+            serde_json::to_string(&task.artifacts).map_err(|e| format!("json: {e}"))?;
+        let history_json =
+            serde_json::to_string(&task.history).map_err(|e| format!("json: {e}"))?;
+        self.conn
+            .execute(
+                &format!(
+                    "INSERT INTO tasks({TASK_COLUMNS}) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)"
+                ),
+                rusqlite::params![
+                    task.id,
+                    task.context_id,
+                    task.from_agent,
+                    task.to_agent,
+                    task.state.as_str(),
+                    message_json,
+                    artifacts_json,
+                    history_json,
+                    task.created_at,
+                    task.updated_at,
+                ],
+            )
+            .map_err(|e| format!("sqlite: {e}"))?;
+        Ok(())
+    }
+
+    /// task_id로 단건 조회한다. 없으면 Ok(None)(load_session 폴리시 답습: QueryReturnedNoRows만 None).
+    pub fn get_task(&self, task_id: &str) -> Result<Option<Task>, String> {
+        let row: TaskRow = match self.conn.query_row(
+            &format!("SELECT {TASK_COLUMNS} FROM tasks WHERE task_id=?1"),
+            [task_id],
+            task_row_from_sql,
+        ) {
+            Ok(r) => r,
+            Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None),
+            Err(e) => return Err(format!("sqlite: {e}")),
+        };
+        row.into_task().map(Some)
+    }
+
+    /// 특정 에이전트(to_agent) 앞으로 열려 있는(submitted/working/input_required) task를
+    /// created_at 오름차순으로 반환한다. 상태 리터럴은 TaskState::is_open과 의미를 동기 유지한다.
+    pub fn list_open_tasks_for(&self, agent: &str) -> Result<Vec<Task>, String> {
+        let mut stmt = self
+            .conn
+            .prepare(&format!(
+                "SELECT {TASK_COLUMNS} FROM tasks \
+                 WHERE to_agent=?1 AND state IN ('submitted','working','input_required') \
+                 ORDER BY created_at"
+            ))
+            .map_err(|e| format!("sqlite: {e}"))?;
+        let rows: Vec<TaskRow> = stmt
+            .query_map([agent], task_row_from_sql)
+            .map_err(|e| format!("sqlite: {e}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("sqlite: {e}"))?;
+        rows.into_iter().map(TaskRow::into_task).collect()
+    }
+
+    /// state와 동반 상태 메시지를 원자적으로 갱신한다(A2A TaskStatus 단위). status_message=None이면
+    /// 이번 전이에 메시지가 없다는 뜻으로 message_json을 비운다(이전 값 보존 아님).
+    pub fn update_task_state(
+        &self,
+        task_id: &str,
+        state: TaskState,
+        status_message: Option<&Message>,
+    ) -> Result<(), String> {
+        let message_json = match status_message {
+            Some(m) => Some(serde_json::to_string(m).map_err(|e| format!("json: {e}"))?),
+            None => None,
+        };
+        self.conn
+            .execute(
+                "UPDATE tasks SET state=?2, message_json=?3, updated_at=datetime('now') \
+                 WHERE task_id=?1",
+                rusqlite::params![task_id, state.as_str(), message_json],
+            )
+            .map_err(|e| format!("sqlite: {e}"))?;
+        Ok(())
+    }
+
+    /// task를 completed로 마감하고 산출물을 세팅한다.
+    pub fn complete_task(&self, task_id: &str, artifacts: &[Artifact]) -> Result<(), String> {
+        let artifacts_json =
+            serde_json::to_string(artifacts).map_err(|e| format!("json: {e}"))?;
+        self.conn
+            .execute(
+                "UPDATE tasks SET state=?2, artifacts_json=?3, updated_at=datetime('now') \
+                 WHERE task_id=?1",
+                rusqlite::params![task_id, TaskState::Completed.as_str(), artifacts_json],
+            )
+            .map_err(|e| format!("sqlite: {e}"))?;
+        Ok(())
+    }
+
+    /// history에 메시지를 append한다(기존 history_json을 읽어 병합 후 저장). 대상 task가 없으면 에러.
+    pub fn append_history(&self, task_id: &str, msg: &Message) -> Result<(), String> {
+        let existing: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT history_json FROM tasks WHERE task_id=?1",
+                [task_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| format!("sqlite: {e}"))?;
+        let updated = append_history_json(existing.as_deref(), msg)?;
+        self.conn
+            .execute(
+                "UPDATE tasks SET history_json=?2, updated_at=datetime('now') WHERE task_id=?1",
+                rusqlite::params![task_id, updated],
+            )
+            .map_err(|e| format!("sqlite: {e}"))?;
+        Ok(())
+    }
+}
+
+/// tasks SELECT 행 -> TaskRow. query_row/query_map 양쪽에서 재사용(fn 포인터는 Fn/FnMut 모두 충족).
+fn task_row_from_sql(row: &rusqlite::Row) -> rusqlite::Result<TaskRow> {
+    Ok(TaskRow {
+        id: row.get(0)?,
+        context_id: row.get(1)?,
+        from_agent: row.get(2)?,
+        to_agent: row.get(3)?,
+        state: row.get(4)?,
+        message_json: row.get(5)?,
+        artifacts_json: row.get(6)?,
+        history_json: row.get(7)?,
+        created_at: row.get(8)?,
+        updated_at: row.get(9)?,
+    })
 }
 
 /// FNV-1a 64bit. Rust 버전 무관 결정적이라 content_hash 안정(임베딩 재색인 방지).
@@ -1223,6 +1389,179 @@ mod tests {
             // 두 번째 색인: 동일 content_hash이므로 skip -> embed 0회 추가 호출.
             db.index_vectors("inc1", &session, &counter).unwrap();
             assert_eq!(counter.call_count(), 1, "두 번째 색인에서 embed 추가 호출 없어야 함");
+        }
+    }
+
+    // A2A tasks 테이블 테스트: sqlite 피처 전용(파일 전체가 이미 sqlite 게이트).
+    mod a2a_tests {
+        use super::*;
+        use crate::store::a2a::{Artifact, Message, Part, Task, TaskState};
+
+        fn sample_message(id: &str) -> Message {
+            Message {
+                message_id: id.into(),
+                role: "user".into(),
+                parts: vec![Part { text: Some("내용".into()), ..Default::default() }],
+                task_id: Some("t1".into()),
+                context_id: None,
+            }
+        }
+
+        #[test]
+        fn create_get_roundtrip_preserves_all_fields() {
+            let db = SqliteStore::open_memory().unwrap();
+            let msg = sample_message("m1");
+            let mut task =
+                Task::new("t1", Some("ctx1".into()), "win-claude", "mac-claude", "2026-07-02 10:00:00");
+            task.status_message = Some(msg.clone());
+            task.history = vec![msg.clone()];
+            db.create_task(&task).unwrap();
+
+            let back = db.get_task("t1").unwrap().expect("존재해야 함");
+            assert_eq!(back.id, "t1");
+            assert_eq!(back.context_id.as_deref(), Some("ctx1"));
+            assert_eq!(back.from_agent, "win-claude");
+            assert_eq!(back.to_agent, "mac-claude");
+            assert_eq!(back.state, TaskState::Submitted);
+            assert_eq!(back.status_message, Some(msg.clone()));
+            assert_eq!(back.history, vec![msg]);
+            assert!(back.artifacts.is_empty());
+            assert_eq!(back.created_at, "2026-07-02 10:00:00");
+            assert_eq!(back.updated_at, "2026-07-02 10:00:00");
+        }
+
+        #[test]
+        fn get_task_missing_is_none() {
+            let db = SqliteStore::open_memory().unwrap();
+            assert!(db.get_task("nope").unwrap().is_none());
+        }
+
+        #[test]
+        fn list_open_tasks_for_filters_agent_and_completed() {
+            let db = SqliteStore::open_memory().unwrap();
+            let t1 = Task::new("t1", None, "win", "mac", "2026-07-02 09:00:00"); // open, mac
+            let mut t2 = Task::new("t2", None, "win", "mac", "2026-07-02 09:05:00"); // completed, mac
+            t2.state = TaskState::Completed;
+            let t3 = Task::new("t3", None, "win", "other", "2026-07-02 09:10:00"); // open, other
+            db.create_task(&t1).unwrap();
+            db.create_task(&t2).unwrap();
+            db.create_task(&t3).unwrap();
+
+            let open = db.list_open_tasks_for("mac").unwrap();
+            assert_eq!(open.len(), 1, "completed 제외 + 다른 to_agent 제외");
+            assert_eq!(open[0].id, "t1");
+        }
+
+        #[test]
+        fn list_open_tasks_for_orders_by_created_at() {
+            let db = SqliteStore::open_memory().unwrap();
+            let t_later = Task::new("later", None, "win", "mac", "2026-07-02 09:10:00");
+            let t_earlier = Task::new("earlier", None, "win", "mac", "2026-07-02 09:00:00");
+            db.create_task(&t_later).unwrap();
+            db.create_task(&t_earlier).unwrap();
+            let open = db.list_open_tasks_for("mac").unwrap();
+            assert_eq!(
+                open.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(),
+                vec!["earlier", "later"]
+            );
+        }
+
+        #[test]
+        fn state_transition_submitted_to_working_to_completed_sets_artifacts() {
+            let db = SqliteStore::open_memory().unwrap();
+            let task = Task::new("t1", None, "win", "mac", "2026-07-02 09:00:00");
+            db.create_task(&task).unwrap();
+            assert_eq!(db.get_task("t1").unwrap().unwrap().state, TaskState::Submitted);
+
+            let working_msg = sample_message("wm1");
+            db.update_task_state("t1", TaskState::Working, Some(&working_msg)).unwrap();
+            let mid = db.get_task("t1").unwrap().unwrap();
+            assert_eq!(mid.state, TaskState::Working);
+            assert_eq!(mid.status_message, Some(working_msg));
+
+            let artifacts = vec![Artifact {
+                artifact_id: "a1".into(),
+                name: Some("결과물".into()),
+                parts: vec![Part { text: Some("완료 보고".into()), ..Default::default() }],
+            }];
+            db.complete_task("t1", &artifacts).unwrap();
+            let done = db.get_task("t1").unwrap().unwrap();
+            assert_eq!(done.state, TaskState::Completed);
+            assert_eq!(done.artifacts, artifacts);
+        }
+
+        #[test]
+        fn append_history_grows_in_order() {
+            let db = SqliteStore::open_memory().unwrap();
+            let task = Task::new("t1", None, "win", "mac", "2026-07-02 09:00:00");
+            db.create_task(&task).unwrap();
+
+            let m1 = sample_message("h1");
+            let m2 = sample_message("h2");
+            db.append_history("t1", &m1).unwrap();
+            db.append_history("t1", &m2).unwrap();
+
+            let back = db.get_task("t1").unwrap().unwrap();
+            assert_eq!(back.history, vec![m1, m2]);
+        }
+
+        #[test]
+        fn append_history_on_missing_task_is_err() {
+            let db = SqliteStore::open_memory().unwrap();
+            let m1 = sample_message("h1");
+            assert!(db.append_history("nope", &m1).is_err());
+        }
+
+        #[test]
+        fn migration_v5_to_v6_adds_tasks_table_and_preserves_data() {
+            let dir = std::env::temp_dir();
+            let path = dir.join("tuna_mig_v5v6.db");
+            let _ = std::fs::remove_file(&path);
+            let p = path.to_str().unwrap();
+            // v5 스키마 수동 구성: tasks 테이블 없음 + schema_version=5 + 기존 메시지 1건.
+            {
+                let conn = rusqlite::Connection::open(p).unwrap();
+                conn.execute_batch(
+                    "CREATE TABLE config(key TEXT PRIMARY KEY, value TEXT);
+                     CREATE TABLE sessions(id TEXT PRIMARY KEY, head_id INTEGER, \
+                         created_at TEXT, updated_at TEXT);
+                     CREATE TABLE messages(rowid INTEGER PRIMARY KEY AUTOINCREMENT, \
+                         session_id TEXT NOT NULL, msg_id INTEGER NOT NULL, parent_id INTEGER, \
+                         speaker TEXT NOT NULL, content TEXT NOT NULL, created_at TEXT, \
+                         UNIQUE(session_id, msg_id));
+                     INSERT INTO sessions(id, head_id) VALUES('s', 1);
+                     INSERT INTO messages(session_id,msg_id,parent_id,speaker,content) \
+                         VALUES('s',1,NULL,'a','hi');
+                     INSERT INTO config(key,value) VALUES('schema_version','5');",
+                )
+                .unwrap();
+            }
+            // open → migrate v5→v6(tasks 테이블 신설).
+            let db = SqliteStore::open(p).unwrap();
+            let table_count: i64 = db
+                .conn
+                .query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='tasks'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(table_count, 1, "마이그레이션이 tasks 테이블 생성");
+            // 기존 메시지 보존.
+            let content: String = db
+                .conn
+                .query_row(
+                    "SELECT content FROM messages WHERE session_id='s' AND msg_id=1",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(content, "hi", "기존 메시지 보존");
+            // tasks 테이블 실제 사용 가능 확인(신규 마이그레이션 스키마에 바로 INSERT 가능해야 함).
+            let task = Task::new("t1", None, "win", "mac", "2026-07-02 09:00:00");
+            db.create_task(&task).unwrap();
+            assert!(db.get_task("t1").unwrap().is_some());
+            let _ = std::fs::remove_file(&path);
         }
     }
 }
