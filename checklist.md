@@ -273,3 +273,14 @@
 - [~] 분리 터미널 A2A 협업 — (A) 설계로 승격(위), 자율(B)은 Stage 4로 분리
 - [x] 신규 엔진 러너(HTTP): ollama·lmstudio·openai (Plan 17 done). opencode CLI 참가자는 후속(외부 CLI 통합)
 - [ ] 리치 프론트(ratatui/web) — 신규 의존성 결정 필요
+
+## A2A 스트리밍 SSE (Phase 2) (docs/design/v2-a2a-streaming_2026-07-03.md)
+
+> 정찰 완료(스펙 표면+현 코드 위치). 최종 목표=스펙 준수 A2A 서버(streaming:true 광고, 외부 A2A 클라가 task 던지고 SSE 실시간 구독). 비목표=자율성/워커 push. 미착수.
+
+- [ ] T1: 이벤트 버스(store 계층 broadcast::Sender) + 세 변이(create/update_state/complete) emit. 단위테스트.
+- [ ] T2: 스트리밍 타입(TaskStatusUpdateEvent/TaskArtifactUpdateEvent/StreamResponse) serde(스펙 필드명 verbatim).
+- [ ] T3: SendStreamingMessage SSE 엔드포인트(생성+스트림, final 종료).
+- [ ] T4: SubscribeToTask SSE 엔드포인트(기존 task 재구독).
+- [ ] T5: capability 게이트(미구현=UnsupportedOperationError) -> 완료 시 streaming:true 플립.
+- [ ] T6: 통합테스트(tower oneshot 이벤트 시퀀스 assert) + 로컬 라이브 데모(복붙 0).

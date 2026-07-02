@@ -600,3 +600,13 @@
   3. **aarch64 ring 크로스컴파일 실패**(`/imsvc`, arm64-win xwin 난제) → **arm64-win/linux 제외, 4타깃**(19f3ce0).
 - **최종 성공**: run 28564666085 all-green, **프리릴리스 v0.1.0-rc.1 생성**(15 assets: 4타깃+sha256, sh/ps1 인스톨러, tunaround.rb, source). **homebrew publish=prerelease라 skipped 확정**(tap 불요).
 - 교훈은 [[dev-mac-windows §6]]에 영속 기록. **최종 v0.1.0**: Cargo.toml `0.1.0` 되돌림 + `git tag v0.1.0`(동구님, rc 아티팩트 설치검증 + tap/시크릿 후). **주의: gh run watch --exit-status의 exit code 신뢰 불가**(실패해도 0), 잡 결론 직접 확인.
+
+## 2026-07-03 세션8: 크로스머신 양방향 왕복 완료 + A2A 스트리밍(Phase 2) 설계 착수
+
+- **역방향(mac->win) 왕복 성사 = 크로스머신 양방향 다 실증.** 재부팅으로 이전 코어+temp db 소멸(옛 task 907f5c82 유실) -> Windows 코어 재기동(안정 db=LOCALAPPDATA) -> 맥이 새 task 76ea0b9c 재디스패치 -> **win-claude가 raw curl MCP**(등록·세션재시작 없이 initialize->poll->claim->complete)로 처리 -> get_task 자기검증. 교훈: (a) 워커 2세션 온보딩 마찰(#1)은 raw HTTP로 회피 가능(대가=승인 UX 없음), (b) 코어 리셋 시 옛 task_id 조용히 소멸+리셋 통지 없음(마찰 #3 동근). CLAUDE.md 현재상태 세션8 반영(2bb51dd), 맥은 _mac-rc1 ⑦(e073329).
+- **"복붙 UX면 A2A 왜?" 통찰(동구님)**: 지금 복붙이 나르는 건 작업이 아니라 **트리거(알림)**다. 작업내용·결과 artifact는 코어로 이미 자동 흐름(get_task). 복붙되는 "이제 poll해"는 코어가 poll_tasks/get_task로 노출하는 걸 사람이 대신 폴링하는 것 = 마찰 #2(사람릴레이)/#3(push부재). 도그푸딩이라 손으로 한 홉씩 밟은 것. 런타임 UX가 복붙이면 안 됨.
+- **트리거 자동화 두 단계**: (지금·코어수정0) 백그라운드 poll-watcher가 이벤트 시에만 에이전트 깨움 = 복붙0. (제대로·Phase 2) SSE push. **단, 우리 클라가 에이전트라 push든 poll이든 결국 bg가 깨우는 형태 = UX 동일. SSE 실익=폴링overhead·지연 절감뿐, 우리 스케일(분단위·에이전트)엔 거의 0.** 그래서 "복붙 죽이기"만이면 watcher가 ROI 압승.
+- **그런데 ROI가 최상위 가치는 아님(동구님 압박, 수용)**: 이 프로젝트는 A2A가 논지 자체 + privateProject(호기심 1급 사유) + AGPL 공개. **스트리밍의 진짜 값 = interop(외부 스펙 에이전트)·스펙준수·학습·서사.** 우리 UX 이득은 modest. 그래서 스트리밍은 "UX 고치기"가 아니라 "표준 A2A 시민 되기"로 프레이밍.
+- **정찰 = 이미 끝나 있었음(동구님 기억 맞음)**: a2a_server.rs가 스펙 §9.1(PascalCase)·§5.3(Method Mapping) 인용, 스트리밍 메서드명 SubscribeToTask 확정, Agent Card에 streaming 플래그 존재(false). **게다가 partner-delegation §65가 "SSE는 후속"으로 명시 유예한 결정이었음** -> 이번은 그 유예를 호기심·interop 근거로 **재개**(잊은 것 아님). 유일 공백=SSE 이벤트 스키마였고 스펙에서 당김(SendStreamingMessage/SubscribeToTask, StreamResponse 래퍼=task|message|statusUpdate|artifactUpdate, TaskStatusUpdateEvent{taskId,contextId,status,final,metadata}/TaskArtifactUpdateEvent{...,append,lastChunk}).
+- **설계 crux = 이벤트 버스를 store 계층에 둠**: 모든 task 변이가 SqliteStore 세 메서드(create_task_from_message/update_task_state/complete_task) 통과 -> 거기서 broadcast emit하면 /a2a·MCP 두 경로 자동 커버. broadcast::send는 sync라 rusqlite 동기 경로 OK. 정본=docs/design/v2-a2a-streaming_2026-07-03.md. checklist T1~T6. 미착수(설계 리뷰 대기).
+- **스코프 경계**: 워커 방향 push(코어->워커 inbound 알림)는 이번 스코프 아님(브로커 폴링 유지, Phase 1 결정과 동일 근거). 스트리밍=dispatcher-facing 실시간 읽기 + 외부 interop만.
