@@ -45,6 +45,11 @@ impl TaskState {
     pub fn is_open(&self) -> bool {
         matches!(self, TaskState::Submitted | TaskState::Working | TaskState::InputRequired)
     }
+
+    /// 종료 상태인가(is_open의 종료측 대응). SSE 스트리밍의 `final` 플래그 산출에 쓰인다.
+    pub fn is_terminal(&self) -> bool {
+        matches!(self, TaskState::Completed | TaskState::Failed | TaskState::Canceled)
+    }
 }
 
 /// 콘텐츠 컨테이너. text|data|url 중 하나만 채워지는 것을 기대한다(A2A Part).
@@ -116,6 +121,132 @@ pub enum TaskEvent {
     Status(Task),
     /// 완료(completed + artifacts). 변이 후 Task 전체 스냅샷(artifacts 포함).
     Completed(Task),
+}
+
+/// A2A TaskStatus(§4.2.1 하위 필드). state는 기존 TaskState(snake_case wire)를 그대로 재사용한다.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskStatus {
+    pub state: TaskState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<Message>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<String>,
+}
+
+/// A2A TaskStatusUpdateEvent(§4.2.1). `final`은 Rust 예약어라 필드명은 is_final,
+/// wire 표기만 `#[serde(rename = "final")]`로 스펙과 맞춘다.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskStatusUpdateEvent {
+    pub task_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_id: Option<String>,
+    pub status: TaskStatus,
+    #[serde(rename = "final")]
+    pub is_final: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
+}
+
+/// A2A TaskArtifactUpdateEvent(§4.2.2). append/last_chunk는 기본 false로 조용히 생략된다.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskArtifactUpdateEvent {
+    pub task_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_id: Option<String>,
+    pub artifact: Artifact,
+    #[serde(default, skip_serializing_if = "core::ops::Not::not")]
+    pub append: bool,
+    #[serde(default, skip_serializing_if = "core::ops::Not::not")]
+    pub last_chunk: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<serde_json::Value>,
+}
+
+/// SSE 프레임 래퍼(§3.2.3). task|message|statusUpdate|artifactUpdate 중 정확히 하나만 채운다.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StreamResponse {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task: Option<Task>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<Message>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status_update: Option<TaskStatusUpdateEvent>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub artifact_update: Option<TaskArtifactUpdateEvent>,
+}
+
+impl StreamResponse {
+    /// 초기 task 스냅샷 프레임(§2.2 1단계, SendStreamingMessage 최초 submitted 프레임).
+    pub fn from_task(task: Task) -> Self {
+        StreamResponse { task: Some(task), message: None, status_update: None, artifact_update: None }
+    }
+
+    /// message 프레임(현재 매핑 경로에선 미사용이나 spec 표면 완전성을 위해 제공).
+    pub fn from_message(message: Message) -> Self {
+        StreamResponse { task: None, message: Some(message), status_update: None, artifact_update: None }
+    }
+
+    /// statusUpdate 프레임.
+    pub fn from_status(status_update: TaskStatusUpdateEvent) -> Self {
+        StreamResponse { task: None, message: None, status_update: Some(status_update), artifact_update: None }
+    }
+
+    /// artifactUpdate 프레임.
+    pub fn from_artifact(artifact_update: TaskArtifactUpdateEvent) -> Self {
+        StreamResponse { task: None, message: None, status_update: None, artifact_update: Some(artifact_update) }
+    }
+}
+
+/// Task 스냅샷에서 TaskStatusUpdateEvent를 조립한다(Status/Completed 매핑 공용 헬퍼).
+fn status_event_from(task: &Task) -> TaskStatusUpdateEvent {
+    TaskStatusUpdateEvent {
+        task_id: task.id.clone(),
+        context_id: task.context_id.clone(),
+        status: TaskStatus {
+            state: task.state,
+            message: task.status_message.clone(),
+            timestamp: Some(task.updated_at.clone()),
+        },
+        is_final: task.state.is_terminal(),
+        metadata: None,
+    }
+}
+
+/// 내부 TaskEvent를 A2A SSE 프레임(StreamResponse) 목록으로 변환하는 순수 함수.
+/// Submitted 상태의 Status는 초기 task 스냅샷 프레임, 그 외 Status는 statusUpdate 프레임,
+/// Completed는 artifact들(각 lastChunk:true) 다음에 최종 statusUpdate(is_final:true) 순서로 나온다.
+pub fn task_event_to_frames(ev: &TaskEvent) -> Vec<StreamResponse> {
+    match ev {
+        TaskEvent::Status(task) => {
+            if task.state == TaskState::Submitted {
+                vec![StreamResponse::from_task(task.clone())]
+            } else {
+                vec![StreamResponse::from_status(status_event_from(task))]
+            }
+        }
+        TaskEvent::Completed(task) => {
+            let mut frames: Vec<StreamResponse> = task
+                .artifacts
+                .iter()
+                .map(|artifact| {
+                    StreamResponse::from_artifact(TaskArtifactUpdateEvent {
+                        task_id: task.id.clone(),
+                        context_id: task.context_id.clone(),
+                        artifact: artifact.clone(),
+                        append: false,
+                        last_chunk: true,
+                        metadata: None,
+                    })
+                })
+                .collect();
+            frames.push(StreamResponse::from_status(status_event_from(task)));
+            frames
+        }
+    }
 }
 
 impl Task {
@@ -415,5 +546,109 @@ mod tests {
         assert!(p.data.is_none());
         assert!(p.url.is_none());
         assert!(p.media_type.is_none());
+    }
+
+    #[test]
+    fn task_state_is_terminal_matches_terminal_states() {
+        assert!(!TaskState::Submitted.is_terminal());
+        assert!(!TaskState::Working.is_terminal());
+        assert!(!TaskState::InputRequired.is_terminal());
+        assert!(TaskState::Completed.is_terminal());
+        assert!(TaskState::Failed.is_terminal());
+        assert!(TaskState::Canceled.is_terminal());
+    }
+
+    fn sample_task(state: TaskState) -> Task {
+        let mut t = Task::new("t1", Some("ctx1".into()), "win-claude", "mac-claude", "2026-07-03 10:00:00");
+        t.state = state;
+        t.updated_at = "2026-07-03 10:05:00".into();
+        t
+    }
+
+    #[test]
+    fn task_status_update_event_wire_uses_task_id_and_final() {
+        let ev = TaskStatusUpdateEvent {
+            task_id: "t1".into(),
+            context_id: Some("ctx1".into()),
+            status: TaskStatus { state: TaskState::Working, message: None, timestamp: None },
+            is_final: false,
+            metadata: None,
+        };
+        let json = serde_json::to_value(&ev).unwrap();
+        assert_eq!(json["taskId"], "t1");
+        assert_eq!(json["status"]["state"], "working");
+        assert_eq!(json["final"], false);
+        assert!(json.get("is_final").is_none(), "is_final 스네이크케이스 잔존: {json}");
+        assert!(json.get("isFinal").is_none(), "isFinal 잘못된 캐멀케이스 잔존: {json}");
+    }
+
+    #[test]
+    fn stream_response_from_status_wraps_under_status_update_key() {
+        let ev = TaskStatusUpdateEvent {
+            task_id: "t1".into(),
+            context_id: None,
+            status: TaskStatus { state: TaskState::Working, message: None, timestamp: None },
+            is_final: false,
+            metadata: None,
+        };
+        let resp = StreamResponse::from_status(ev);
+        let json = serde_json::to_value(&resp).unwrap();
+        assert!(json.get("statusUpdate").is_some(), "statusUpdate 없음: {json}");
+        assert!(json.get("task").is_none());
+        assert!(json.get("message").is_none());
+        assert!(json.get("artifactUpdate").is_none());
+    }
+
+    #[test]
+    fn stream_response_from_artifact_wraps_under_artifact_update_key_with_last_chunk() {
+        let ev = TaskArtifactUpdateEvent {
+            task_id: "t1".into(),
+            context_id: None,
+            artifact: Artifact { artifact_id: "a1".into(), name: None, parts: vec![] },
+            append: false,
+            last_chunk: true,
+            metadata: None,
+        };
+        let resp = StreamResponse::from_artifact(ev);
+        let json = serde_json::to_value(&resp).unwrap();
+        let artifact_update = json.get("artifactUpdate").expect("artifactUpdate 없음");
+        assert_eq!(artifact_update["lastChunk"], true);
+        assert_eq!(artifact_update["taskId"], "t1");
+    }
+
+    #[test]
+    fn task_event_to_frames_submitted_status_yields_single_task_frame() {
+        let task = sample_task(TaskState::Submitted);
+        let frames = task_event_to_frames(&TaskEvent::Status(task.clone()));
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].task.as_ref(), Some(&task));
+        assert!(frames[0].status_update.is_none());
+    }
+
+    #[test]
+    fn task_event_to_frames_working_status_yields_single_status_update_non_final() {
+        let task = sample_task(TaskState::Working);
+        let frames = task_event_to_frames(&TaskEvent::Status(task));
+        assert_eq!(frames.len(), 1);
+        let status_update = frames[0].status_update.as_ref().expect("statusUpdate 없음");
+        assert!(!status_update.is_final);
+        assert_eq!(status_update.status.state, TaskState::Working);
+        assert!(frames[0].task.is_none());
+    }
+
+    #[test]
+    fn task_event_to_frames_completed_yields_artifacts_then_final_status() {
+        let mut task = sample_task(TaskState::Completed);
+        task.artifacts = vec![Artifact { artifact_id: "a1".into(), name: None, parts: vec![] }];
+        let frames = task_event_to_frames(&TaskEvent::Completed(task));
+        assert_eq!(frames.len(), 2);
+
+        let artifact_update = frames[0].artifact_update.as_ref().expect("artifactUpdate 없음");
+        assert!(artifact_update.last_chunk);
+        assert_eq!(artifact_update.artifact.artifact_id, "a1");
+
+        let status_update = frames[1].status_update.as_ref().expect("statusUpdate 없음");
+        assert_eq!(status_update.status.state, TaskState::Completed);
+        assert!(status_update.is_final);
     }
 }
