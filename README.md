@@ -204,3 +204,7 @@ TUI나 웹 UI는 이후 단계에서 붙일 예정입니다.
 
 - [docs/design/tunaRound-v1-design_2026-06-29.md](docs/design/tunaRound-v1-design_2026-06-29.md)
 - [docs/plans/index.md](docs/plans/index.md)
+
+## 라이선스
+
+[AGPL-3.0](LICENSE) (GNU Affero General Public License v3.0).

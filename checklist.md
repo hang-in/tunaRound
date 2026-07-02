@@ -249,7 +249,9 @@
 > 결정: 배포=cargo-dist(sshc 답습, homebrew+powershell, 풀피처 단일바이너리). scoop/winget 보류. 코어 홈랩호스팅 보류. 온보딩=clap 서브커맨드 + tunaround.toml 프로파일(진입선택). doctor 다음.
 - [x] **Stage 1 clap 서브커맨드**(Sonnet5 위임+Opus 리뷰/검증): chat/core/serve/join/mcp-search/reindex. Cli{Option<Commands>}→None=Chat, cfg 게이트 variant, CommonSessionArgs flatten, match로 기존 지역변수 매핑(본문 246+ 불변). 러너 spawn `--mcp-search`→`mcp-search`(codex build_mcp_wiring·claude build_mcp_config 추출) + 테스트 갱신. clap 단위테스트 기본6/features9. 검증: 기본166+6 / features180+9 pass, clippy 클린(no-default 포함). README 예시 서브커맨드화. ⚠ bare `tunaround file.json`→이제 에러(chat file.json 필요, 설계 의도). 미커밋→리뷰 후 커밋
 - [x] **Stage 2 cargo-dist 설정**(태그 미푸시=릴리스 안 나감): dist-workspace.toml(cargo-dist 0.31.0, installers shell/powershell/homebrew, 6타깃 mac/win/linux, tap hang-in/homebrew-tap, features semantic/mcp/serve) + .github/workflows/release.yml(dist generate). Cargo.toml에 description/repository/homepage. 검증: `dist generate --check` 동기 OK, `dist plan` v0.1.0 6바이너리+installer+formula 경고없이. **license 미정(동구님 결정)**. ⚠ 크로스컴파일 리스크(rusqlite bundled C·reqwest rustls ring, 특히 aarch64-linux)는 첫 릴리스 CI에서 확인
-- [ ] **Stage 2 릴리스(도그푸딩 후, 동구님 승인)**: 동구님 며칠 사용 후 `git tag v0.1.0` 푸시 → 공개 Release + homebrew-tap 발행. 맥 brew install + Kiwi 자동다운로드 실기 확인
+- [x] 라이선스 확정: **AGPL-3.0**(동구님 2026-07-02). Cargo.toml `license="AGPL-3.0-only"` + LICENSE(공식 전문 661줄). dist plan이 각 아티팩트에 LICENSE 번들.
+- [x] 맥-윈도우 왕복 개발 핸드오프: docs/reference/dev-mac-windows.md(상시 참조, 사설 도메인 미포함).
+- [ ] **Stage 2 릴리스(도그푸딩 후, 동구님 승인)**: 맥에서 git pull/clone로 빌드·실행 확인 → 며칠 사용 후 `git tag v0.1.0` 푸시 → 공개 Release + homebrew-tap 발행. 맥 brew install + Kiwi 자동다운로드 실기 확인
 - [ ] **Stage 3 tunaround.toml + 프로파일**: [profile.*] 로드·머지(플래그>프로파일>기본), 토큰=*_env 참조, `--profile`+대화형 픽커, 탐색경로. 도메인/토큰 레포 미포함
 - [ ] Stage 4(다음) doctor: claude/codex·Ollama·Kiwi·포트·코어도달 프리플라이트
 - [ ] 각 단계 cargo test(기본/features)+clippy, 커밋 분리
