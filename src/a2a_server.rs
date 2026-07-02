@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 
-use crate::store::a2a::{Message, Task, TaskState};
+use crate::store::a2a::{task_event_to_frames, Message, StreamResponse, Task, TaskEvent, TaskState};
 use crate::store::sqlite::SqliteStore;
 
 // JSON-RPC 2.0 표준 에러 코드(A2A 스펙 §9.5 "Standard JSON-RPC Error Codes").
@@ -14,6 +14,9 @@ const CODE_INVALID_PARAMS: i64 = -32602;
 const CODE_INTERNAL_ERROR: i64 = -32603;
 // A2A 전용 에러 코드(A2A 스펙 §5.4 "Error Code Mappings"): TaskNotFoundError.
 const CODE_TASK_NOT_FOUND: i64 = -32001;
+// A2A 전용 에러 코드: UnsupportedOperationError(§3.3.2, capability 게이트 - streaming 미활성 store에서
+// 스트리밍 메서드 호출 시 반환).
+const CODE_UNSUPPORTED_OPERATION: i64 = -32004;
 
 /// A2A JSON-RPC 메서드 문자열. 최신 A2A 스펙(a2a-protocol.org, ADR-001 protojson 채택 이후)은
 /// "Method Naming: PascalCase method names matching gRPC conventions" (§9.1)이라 SendMessage/GetTask/
@@ -22,6 +25,8 @@ mod methods {
     pub const SEND_MESSAGE: &str = "SendMessage";
     pub const GET_TASK: &str = "GetTask";
     pub const CANCEL_TASK: &str = "CancelTask";
+    /// SSE 스트리밍 엔드포인트(§3.1.2). T3에서 구현. SubscribeToTask(§3.1.6)는 별도 태스크(T4).
+    pub const SEND_STREAMING_MESSAGE: &str = "SendStreamingMessage";
 }
 
 /// JSON-RPC 2.0 요청 봉투. id는 string|number|null 어느 쪽도 올 수 있어 Value로 받는다.
@@ -240,6 +245,13 @@ async fn a2a_handler(
             return json_response(&resp);
         }
     };
+
+    // SendStreamingMessage는 SSE 응답이라 기존 unary 경로(JSON 응답)와 분리한다. 그 외 메서드는
+    // 기존 dispatch 경로를 그대로 탄다(unary 동작·테스트 무변경).
+    if req.method == methods::SEND_STREAMING_MESSAGE {
+        return handle_send_streaming_message(state, req).await;
+    }
+
     // SQLite 호출은 블로킹이라 async 실행기 스레드를 막지 않도록 spawn_blocking으로 넘긴다
     // (mcp.rs의 search_context와 동일한 관례).
     let resp = tokio::task::spawn_blocking(move || {
@@ -253,6 +265,139 @@ async fn a2a_handler(
     json_response(&resp)
 }
 
+/// `SendStreamingMessage` 처리: task를 생성하고(SendMessage와 동일 파라미터) 그 task의 상태변이를
+/// SSE로 실시간 구독한다(§2.2 1번). 버스가 비활성(streaming capability 미가동)이면 UnsupportedOperationError.
+async fn handle_send_streaming_message(state: A2aState, req: JsonRpcRequest) -> axum::response::Response {
+    use axum::response::IntoResponse;
+
+    // capability 게이트: 버스가 없으면 스트리밍 미지원(§2.3). 이 lock은 필드 clone만 하는 순간적 조회라
+    // SQLite I/O가 없으므로 spawn_blocking 불필요.
+    let sender = {
+        let store = state.store.lock().unwrap_or_else(|e| e.into_inner());
+        store.task_event_sender()
+    };
+    let Some(sender) = sender else {
+        let resp = JsonRpcResponse::error(
+            req.id,
+            CODE_UNSUPPORTED_OPERATION,
+            "UnsupportedOperationError: streaming not enabled",
+        );
+        return json_response(&resp);
+    };
+
+    // task 생성(store 커밋)보다 먼저 구독해야 초기 submitted 이벤트를 놓치지 않는다.
+    let rx = sender.subscribe();
+
+    let params: SendParams = match serde_json::from_value(req.params.clone()) {
+        Ok(p) => p,
+        Err(e) => {
+            let resp = JsonRpcResponse::error(req.id, CODE_INVALID_PARAMS, format!("Invalid parameters: {e}"));
+            return json_response(&resp);
+        }
+    };
+
+    let req_id = req.id.clone();
+    let store = state.store.clone();
+    let created = tokio::task::spawn_blocking(move || {
+        let store = store.lock().unwrap_or_else(|e| e.into_inner());
+        handle_send(&store, params)
+    })
+    .await;
+
+    let task = match created {
+        Ok(Ok(task)) => task,
+        Ok(Err(e)) => {
+            let resp = JsonRpcResponse::error(req_id, CODE_INTERNAL_ERROR, format!("Internal error: {e}"));
+            return json_response(&resp);
+        }
+        Err(e) => {
+            let resp = JsonRpcResponse::error(req_id, CODE_INTERNAL_ERROR, format!("작업 실패: {e}"));
+            return json_response(&resp);
+        }
+    };
+
+    let stream = task_frame_stream(rx, task.id, req_id);
+    axum::response::sse::Sse::new(stream).keep_alive(axum::response::sse::KeepAlive::default()).into_response()
+}
+
+/// 하나의 JSON-RPC id 아래 StreamResponse 프레임을 감싼 SSE data 문자열을 만든다(순수 함수).
+fn sse_frame_json(req_id: &serde_json::Value, frame: &StreamResponse) -> String {
+    let envelope = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": req_id,
+        "result": frame,
+    });
+    serde_json::to_string(&envelope).unwrap_or_else(|_| "{}".to_string())
+}
+
+/// broadcast 구독 상태에서 하나의 task_id에 속하는 SSE data 문자열(JSON-RPC 봉투) 스트림을 만드는
+/// 순수 스트림 함수. axum `Event`는 내부 버퍼가 crate-private이라 직접 단위테스트할 수 없으므로,
+/// 테스트 가능한 문자열 스트림을 여기서 만들고 `task_frame_stream`이 이를 `Event`로 감싸기만 한다.
+///
+/// - 다른 task_id의 이벤트는 무시(broadcast는 전역이라 필터링 필수).
+/// - 한 번의 rx.recv()가 여러 프레임(예: Completed = artifact들 + 최종 statusUpdate)을 낼 수 있으므로
+///   pending 큐에 순서대로 쌓아두고 하나씩 내보낸다.
+/// - statusUpdate.final == true인 프레임을 내보낸 뒤 스트림을 종료한다.
+/// - rx.recv()가 Err(Closed 또는 Lagged)이면 그 자리에서 스트림을 종료한다.
+fn task_frame_json_stream(
+    rx: tokio::sync::broadcast::Receiver<TaskEvent>,
+    task_id: String,
+    req_id: serde_json::Value,
+) -> impl futures_util::Stream<Item = String> {
+    struct StreamState {
+        rx: tokio::sync::broadcast::Receiver<TaskEvent>,
+        task_id: String,
+        req_id: serde_json::Value,
+        pending: std::collections::VecDeque<StreamResponse>,
+        done: bool,
+    }
+
+    let state = StreamState { rx, task_id, req_id, pending: std::collections::VecDeque::new(), done: false };
+
+    futures_util::stream::unfold(state, |mut st| async move {
+        loop {
+            if let Some(frame) = st.pending.pop_front() {
+                let is_final = frame.status_update.as_ref().map(|s| s.is_final).unwrap_or(false);
+                if is_final {
+                    st.done = true;
+                }
+                let data = sse_frame_json(&st.req_id, &frame);
+                return Some((data, st));
+            }
+            if st.done {
+                return None;
+            }
+            match st.rx.recv().await {
+                Ok(ev) => {
+                    let event_task_id = match &ev {
+                        TaskEvent::Status(task) => &task.id,
+                        TaskEvent::Completed(task) => &task.id,
+                    };
+                    if event_task_id != &st.task_id {
+                        // 다른 task의 이벤트(전역 버스라 섞여 들어옴) - 무시하고 다음 이벤트 대기.
+                        continue;
+                    }
+                    st.pending.extend(task_event_to_frames(&ev));
+                }
+                Err(_) => {
+                    // Closed 또는 Lagged 모두 스트림 종료(§T3 3번 지시).
+                    return None;
+                }
+            }
+        }
+    })
+}
+
+/// `task_frame_json_stream`의 각 JSON 문자열을 axum SSE `Event`로 감싼다(HTTP 핸들러 전용 얇은 래퍼).
+fn task_frame_stream(
+    rx: tokio::sync::broadcast::Receiver<TaskEvent>,
+    task_id: String,
+    req_id: serde_json::Value,
+) -> impl futures_util::Stream<Item = Result<axum::response::sse::Event, std::convert::Infallible>> {
+    use futures_util::StreamExt;
+    task_frame_json_stream(rx, task_id, req_id).map(|data| Ok(axum::response::sse::Event::default().data(data)))
+}
+
 /// 값을 JSON으로 직렬화해 HTTP 200 + application/json 응답을 만든다. axum "json" 피처(신규 의존)
 /// 없이 serde_json(기존 의존)만으로 처리한다.
 fn json_response<T: Serialize>(value: &T) -> axum::response::Response {
@@ -264,7 +409,7 @@ fn json_response<T: Serialize>(value: &T) -> axum::response::Response {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::a2a::Part;
+    use crate::store::a2a::{Artifact, Part};
 
     fn sample_message(context_id: Option<&str>) -> Message {
         Message {
@@ -518,5 +663,122 @@ mod tests {
         let missing_resp: serde_json::Value =
             client.post(format!("{base}/a2a")).json(&missing_body).send().await.unwrap().json().await.unwrap();
         assert_eq!(missing_resp["error"]["code"], CODE_TASK_NOT_FOUND);
+    }
+
+    // --- T3: SendStreamingMessage ---
+
+    // task_frame_json_stream 순수 로직 단위테스트(axum Event는 내부 버퍼가 crate-private이라 직접
+    // 조립 불가 - JSON 문자열 스트림 단계에서 검증한다. task_frame_stream은 이 스트림을 Event로
+    // 감싸기만 하는 얇은 래퍼라 여기서 검증하면 충분하다).
+    #[tokio::test]
+    async fn task_frame_json_stream_yields_ordered_frames_filters_other_tasks_and_stops_at_final() {
+        use futures_util::StreamExt;
+
+        let (tx, rx) = tokio::sync::broadcast::channel::<TaskEvent>(16);
+        let req_id = serde_json::json!(1);
+        let stream = task_frame_json_stream(rx, "t1".to_string(), req_id);
+        futures_util::pin_mut!(stream);
+
+        let submitted = Task::new("t1", Some("ctx1".into()), "win-claude", "mac-claude", "2026-07-03 10:00:00");
+        tx.send(TaskEvent::Status(submitted.clone())).unwrap();
+
+        // 다른 task_id 이벤트 - 필터링되어 무시되어야 함.
+        let other = Task::new("other", None, "win-claude", "mac-claude", "2026-07-03 10:00:01");
+        tx.send(TaskEvent::Status(other)).unwrap();
+
+        let mut working = submitted.clone();
+        working.state = TaskState::Working;
+        working.updated_at = "2026-07-03 10:01:00".into();
+        tx.send(TaskEvent::Status(working.clone())).unwrap();
+
+        let mut completed = working.clone();
+        completed.state = TaskState::Completed;
+        completed.updated_at = "2026-07-03 10:02:00".into();
+        completed.artifacts = vec![Artifact { artifact_id: "a1".into(), name: None, parts: vec![] }];
+        tx.send(TaskEvent::Completed(completed.clone())).unwrap();
+
+        // frame 1: 초기 task 스냅샷(submitted).
+        let f1: serde_json::Value = serde_json::from_str(&stream.next().await.expect("frame1 있어야 함")).unwrap();
+        assert_eq!(f1["id"], 1);
+        assert_eq!(f1["result"]["task"]["id"], "t1");
+        assert_eq!(f1["result"]["task"]["state"], "submitted");
+
+        // frame 2: statusUpdate(working, final=false). "other" task 이벤트는 섞이지 않아야 함.
+        let f2: serde_json::Value = serde_json::from_str(&stream.next().await.expect("frame2 있어야 함")).unwrap();
+        assert_eq!(f2["result"]["statusUpdate"]["status"]["state"], "working");
+        assert_eq!(f2["result"]["statusUpdate"]["final"], false);
+
+        // frame 3: artifactUpdate(lastChunk true).
+        let f3: serde_json::Value = serde_json::from_str(&stream.next().await.expect("frame3 있어야 함")).unwrap();
+        assert_eq!(f3["result"]["artifactUpdate"]["lastChunk"], true);
+        assert_eq!(f3["result"]["artifactUpdate"]["artifact"]["artifactId"], "a1");
+
+        // frame 4: statusUpdate(completed, final=true) - 이후 스트림 종료.
+        let f4: serde_json::Value = serde_json::from_str(&stream.next().await.expect("frame4 있어야 함")).unwrap();
+        assert_eq!(f4["result"]["statusUpdate"]["status"]["state"], "completed");
+        assert_eq!(f4["result"]["statusUpdate"]["final"], true);
+
+        assert!(stream.next().await.is_none(), "final 프레임 이후 스트림이 종료되어야 함");
+    }
+
+    #[tokio::test]
+    async fn send_streaming_message_returns_unsupported_operation_when_bus_inactive() {
+        // with_task_events()를 호출하지 않은 store -> capability 게이트에 걸려야 함(§2.3).
+        let store = Arc::new(Mutex::new(SqliteStore::open_memory().unwrap()));
+        let card = build_agent_card("http://127.0.0.1:0/a2a");
+        let router = build_router(store, card);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, router).await;
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        let client = reqwest::Client::new();
+        let base = format!("http://127.0.0.1:{port}");
+        let body = serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": "SendStreamingMessage",
+            "params": {
+                "message": {"messageId": "m1", "role": "user", "parts": [{"text": "부탁"}]},
+                "fromAgent": "win-claude",
+                "toAgent": "mac-claude",
+            }
+        });
+        let resp = client.post(format!("{base}/a2a")).json(&body).send().await.unwrap();
+        assert_eq!(resp.status(), 200);
+        let content_type = resp.headers().get(axum::http::header::CONTENT_TYPE).unwrap().to_str().unwrap().to_string();
+        assert!(content_type.starts_with("application/json"), "버스 비활성 시 JSON 에러여야 함: {content_type}");
+        let json: serde_json::Value = resp.json().await.unwrap();
+        assert_eq!(json["error"]["code"], CODE_UNSUPPORTED_OPERATION);
+    }
+
+    #[tokio::test]
+    async fn send_streaming_message_returns_event_stream_content_type_when_bus_active() {
+        let store = Arc::new(Mutex::new(SqliteStore::open_memory().unwrap().with_task_events()));
+        let card = build_agent_card("http://127.0.0.1:0/a2a");
+        let router = build_router(store, card);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, router).await;
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+        let client = reqwest::Client::new();
+        let base = format!("http://127.0.0.1:{port}");
+        let body = serde_json::json!({
+            "jsonrpc": "2.0", "id": 1, "method": "SendStreamingMessage",
+            "params": {
+                "message": {"messageId": "m1", "role": "user", "parts": [{"text": "부탁"}]},
+                "fromAgent": "win-claude",
+                "toAgent": "mac-claude",
+            }
+        });
+        let resp = client.post(format!("{base}/a2a")).json(&body).send().await.unwrap();
+        assert_eq!(resp.status(), 200);
+        let content_type = resp.headers().get(axum::http::header::CONTENT_TYPE).unwrap().to_str().unwrap().to_string();
+        assert!(content_type.starts_with("text/event-stream"), "스트리밍 응답 Content-Type이어야 함: {content_type}");
     }
 }

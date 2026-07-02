@@ -992,7 +992,9 @@ fn build_http_mcp_backends(ctx: &str, db_str: &str) -> HttpMcpBackends {
         as std::sync::Arc<dyn tunaround::orchestrator::TranscriptWriter>;
     // A2A JSON-RPC 핸들러(a2a_server)가 create_task/get_task 등 SqliteStore 메서드를 직접 호출한다
     // (다른 백엔드처럼 orchestrator 트레이트로 감싸지 않음. A2A는 orchestrator 개념과 무관한 신규 축).
-    let a2a_store_arc = std::sync::Arc::new(std::sync::Mutex::new(store4));
+    // A2A 이벤트 버스 활성화(SendStreamingMessage SSE 구독용, docs/design/v2-a2a-streaming_2026-07-03.md
+    // §2.1). worker(claim/complete)와 SSE 구독이 같은 store Arc를 공유하므로 여기서 한 번만 켜면 된다.
+    let a2a_store_arc = std::sync::Arc::new(std::sync::Mutex::new(store4.with_task_events()));
     (retriever_arc, reader_arc, writer_arc, a2a_store_arc)
 }
 
