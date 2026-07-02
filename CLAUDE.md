@@ -18,17 +18,19 @@
 - **#6 새 소스 파일 첫 줄 = 역할 한국어 한 줄 주석.** Rust 예: `// 토론 라운드 프롬프트를 조립하는 순수 함수`. config 파일 제외.
 - **#7 비trivial 작업 전 plan + `checklist.md` + `context-notes.md`.** plan만 주고 코딩 요청 시 멈추고 checklist·notes 먼저 만들지 묻는다.
 
-## 현재 상태 (2026-07-01, Windows 세션 4)
+## 현재 상태 (2026-07-02, 세션 5, 맥 왕복 준비)
 
-- **세션 4: Stage 3a-3(front=core) + Stage 3d(원격 쓰기 권위) + 시간성·유효성 로드맵 step 2~8.** 전부 origin/main 푸시(= 3071281).
+- **세션 5: 시간성·유효성 마무리(step 5c·6) + codex pull 활성화(behavioral) + 외래어 병기 색인 + 임베딩 기본 qwen3 + 배포(cargo-dist)·온보딩(clap 서브커맨드·tunaround.toml 프로파일) + AGPL-3.0 + 맥-윈도우 핸드오프.** 전부 origin/main 푸시(= c89da05).
+- **이전 세션 4: Stage 3a-3(front=core) + Stage 3d(원격 쓰기 권위) + 시간성·유효성 로드맵 step 2~8.**
   - **3a-3**: `--core <addr>` 단일 프로세스(REPL+in-process HTTP MCP 코어). **서버=전용 OS 스레드 block_on**(공유 rt spawn은 유휴 중 간헐 신뢰불가). 라이브 e2e.
   - **3d(옵션 B front=core 병합)**: `append_turn`(증분·DB id 권위) + `post_turn`/`get_roster` MCP + REPL core-sync(adopt+append, 클로버 차단). 라이브 e2e: 원격 post_turn→흡수→claude 인용.
   - **로드맵(외부 memory 프레임워크 리뷰 후, SQLite-light·graph DB 비채택)**: step2 model_id 무효화키(실버그) · step3 retrieved 길이·세션 다양성 cap · step4 message_validity 테이블(스키마 v4) · step5 유효성 랭킹+/supersede·/reject · step5b 분기/세션 인지 랭킹 · step7 /explain 디버그 · step8 --reindex.
-- **v1 완료 + v2 Plan 01~20 + 3a-2 + 세션4(3a-3·3d·step2~8) 완성.** 검증: **기본 160 / `--features "semantic morphology mcp serve"` 174 pass, clippy 클린.** 스키마 v4.
+- **v1 + v2 검색/맥락 로드맵(step 2~8) + Stage 3a~3d + codex pull(behavioral) + 실코퍼스 회귀(step6) + 외래어 병기 + 임베딩 qwen3 + 배포/온보딩(clap·cargo-dist·프로파일) 완성.** 검증: **기본 184 lib+6 cli / `--features "semantic morphology mcp serve"` 198 lib+9 cli pass, clippy 클린(no-default 포함).** 스키마 **v5**(created_at).
 - 현행 spec: [docs/design/tunaRound-v1-design_2026-06-29.md](docs/design/tunaRound-v1-design_2026-06-29.md). 진행: [docs/plans/index.md](docs/plans/index.md).
-- **>>> 최신 핸드오프: [docs/prompts/v2-handoff_2026-07-01_session4.md](docs/prompts/v2-handoff_2026-07-01_session4.md) 먼저 읽기 <<<** (3a-3·3d·시간성유효성 + 서버 호스팅 교훈 + 남은 항목). 정본 방향: [A2A](docs/design/v2-A2A-core-backend_2026-06-30.md) + [시간성·유효성](docs/design/v2-temporal-validity-direction_2026-07-01.md). 이전: [session3](docs/prompts/v2-handoff_2026-06-30_session3.md)
-- **⚠ 서버 호스팅 교훈**: `--core`는 메인이 동기 블로킹 REPL이라 서버를 **전용 스레드 block_on**으로 서빙해야 함(공유 rt spawn 신뢰불가). 라이브 e2e 디버깅 시 타이밍 함정(Kiwi ~3초 기동/FIFO 미flush/agent ~35초) 주의 → 준비 폴링 + 파이프 입력 + 넉넉한 타임아웃.
-- **남은 항목**: step 6 실코퍼스 regression(실제 전사 코퍼스 확보 선행, 코드만으론 불가) · step 5c recency(messages에 created_at 컬럼) · abstraction/anchors 생성 파이프라인 · codex bearer-env·codex pull 활성화 · 잠재리뷰(unsafe Send Kiwi·session_bus unbounded).
+- **>>> 최신 핸드오프: [docs/prompts/v2-handoff_2026-07-02_session5.md](docs/prompts/v2-handoff_2026-07-02_session5.md) 먼저 읽기 <<<**. 맥↔윈도우 왕복은 [docs/reference/dev-mac-windows.md](docs/reference/dev-mac-windows.md). 정본 방향: [배포·온보딩](docs/design/v2-deploy-onboarding_2026-07-02.md) + [A2A](docs/design/v2-A2A-core-backend_2026-06-30.md) + [시간성·유효성](docs/design/v2-temporal-validity-direction_2026-07-01.md). 이전: [session4](docs/prompts/v2-handoff_2026-07-01_session4.md)
+- **⚠ 서버 호스팅 교훈**: `--core`(=`core` 서브커맨드)는 메인이 동기 블로킹 REPL이라 서버를 **전용 스레드 block_on**으로 서빙(공유 rt spawn 신뢰불가). 라이브 e2e 타이밍 함정(Kiwi ~3초/FIFO 미flush/agent ~35초) → 준비 폴링 + 파이프 입력 + 넉넉한 타임아웃.
+- **남은 항목**: 공개 릴리스(도그푸딩 후 `git tag v0.1.0` 푸시, 크로스컴파일 리스크 CI 확인) · 맥 실행/Kiwi 자동다운로드 확인 · 온보딩 Stage 4 doctor · abstraction/anchors 생성 파이프라인(보류=YAGNI) · 분산 라이브 맥↔윈도우 스모크(loopback까진 검증) · 홈랩 코어 호스팅(보류) · opencode 검색 배선.
+- **완료된 이전 남은항목**(참고): step 5c·6·codex pull·codex bearer-env·잠재리뷰(bounded bus/snapshot log/Kiwi 주석) 전부 이번 세션에 처리됨.
 - **검증/주의:** 임베딩=원격 Ollama(SSH `-p [사설포트]` 터널, dim 1024). 기본 모델 `qwen3-embedding:0.6b`(bge-m3보다 hybrid MRR 우위 측정), `TUNAROUND_EMBED_MODEL`로 교체. Redis 6379(3d/랭킹엔 불요).
 - **Kiwi(정정 2026-07-02):** kiwi-rs 0.1.4는 **순수 Rust 빌드**(dep=regex만, build.rs·네이티브 링크 없음)라 **macOS/Win/Linux 모두 빌드됨**(kiwi cfg는 linux-aarch64만 제외). libkiwi(.dll/.dylib/.so)+모델은 **런타임에 bab2min/Kiwi 릴리스에서 다운로드**(캐시=OS cache dir 또는 `KIWI_LIBRARY_PATH`/`KIWI_MODEL_PATH`/`KIWI_RS_VERSION` env). 과거 "libkiwi 404"는 빌드가 아니라 런타임 자산 다운로드 실패(버전/자산)로, `scripts/install-kiwi-*.sh`가 캐시를 pre-seed해 우회. 실패해도 **lindera 자동 폴백**이라 빌드·실행 안 죽음. bab2min/Kiwi v0.22.2에 맥 자산 존재(`kiwi_mac_arm64`/`kiwi_mac_x86_64`).
 
@@ -50,6 +52,6 @@
 
 ## 다음 세션 첫 행동
 
-1. **[docs/prompts/v2-handoff_2026-06-30_session2.md](docs/prompts/v2-handoff_2026-06-30_session2.md) 먼저 읽기** + `context-notes.md` + `docs/plans/index.md`. `cargo test`(기본) + `cargo test --features "semantic morphology mcp"`로 상태 확인(**cargo는 Bash 툴로**).
-2. 검색/맥락 북극성은 1차 완결(Plan 09~19). 다음 = 핸드오프 ⑤의 남은 항목(opencode CLI 참가자 / 검색 품질 추가 개선 / ctx-handle 요약 / 리치 프론트 보류) 중 사용자 지정으로 착수. Kiwi는 v0.22.2 수동 설치(`scripts/install-kiwi-windows.sh`), 미설치 시 lindera 폴백. Ollama 터널 11435(SSH -p [사설포트]), Redis 6379.
-3. 작업 추적 `checklist.md`·`context-notes.md`(규율 #7). 위임 Sonnet + Opus 리뷰. 굵직한 결정 재론 금지. 서브에이전트 진행 중 git add -A 레이스 주의.
+1. **[docs/prompts/v2-handoff_2026-07-02_session5.md](docs/prompts/v2-handoff_2026-07-02_session5.md) 먼저 읽기** + `context-notes.md`(하단) + `checklist.md` + `docs/plans/index.md`. 맥↔윈도우 왕복이면 [docs/reference/dev-mac-windows.md](docs/reference/dev-mac-windows.md)도. `cargo test`(기본) + `cargo test --features "semantic morphology mcp serve"`로 상태 확인(**cargo는 Bash 툴로**).
+2. 검색/맥락·배포·온보딩 모두 1차 완결. 다음 = 핸드오프 ④의 남은 항목(공개 릴리스=도그푸딩 후 태그 / 맥 실행·Kiwi 확인 / doctor Stage 4 / abstraction·anchors 보류 / 분산 라이브 스모크) 중 사용자 지정으로 착수. 실행은 `cargo run -- chat`(서브커맨드). Kiwi 런타임 자동다운로드(실패 시 lindera). Ollama 터널 11435, 기본 모델 qwen3-embedding:0.6b, Redis 6379.
+3. 작업 추적 `checklist.md`·`context-notes.md`(규율 #7). 위임 Sonnet + Opus 리뷰. 굵직한 결정 재론 금지. 서브에이전트 진행 중 파일 레이스 주의. 배포 전 도그푸딩.
