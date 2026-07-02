@@ -151,16 +151,24 @@ async fn run_one_pass(
             mode,
             pull: false,
         };
+        // 러너는 sync이고 일부(OpenAiChatRunner)는 내부에서 reqwest::blocking을 쓴다. tokio의
+        // spawn_blocking 스레드는 Handle::current()가 살아 있어 reqwest::blocking이 "런타임 안에서
+        // blocking 불가"로 거부한다. 그래서 런타임 핸들이 전혀 없는 순수 std 스레드에서 러너를 돌린다
+        // (subprocess 러너 claude/codex도 std 스레드에서 정상 동작).
         let runner2 = Arc::clone(runner);
-        let result = match tokio::task::spawn_blocking(move || runner2.run(&input)).await {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(runner2.run(&input));
+        });
+        let result = match rx.await {
             Ok(Ok(out)) => out.content,
             Ok(Err(e)) => {
                 eprintln!("[work] task {} 러너 실패: {e:?}", t.id);
                 format!("[runner 에러] {e:?}")
             }
-            Err(join_err) => {
-                eprintln!("[work] task {} 러너 실행 join 실패: {join_err}", t.id);
-                format!("[runner join 에러] {join_err}")
+            Err(_canceled) => {
+                eprintln!("[work] task {} 러너 스레드 취소(결과 유실)", t.id);
+                "[runner 스레드 취소]".to_string()
             }
         };
 
