@@ -32,7 +32,7 @@
 - **남은 항목**: 공개 릴리스(도그푸딩 후 `git tag v0.1.0` 푸시, 크로스컴파일 리스크 CI 확인) · 맥 실행/Kiwi 자동다운로드 확인 · 온보딩 Stage 4 doctor · abstraction/anchors 생성 파이프라인(보류=YAGNI) · 분산 라이브 맥↔윈도우 스모크(loopback까진 검증) · 홈랩 코어 호스팅(보류) · opencode 검색 배선.
 - **완료된 이전 남은항목**(참고): step 5c·6·codex pull·codex bearer-env·잠재리뷰(bounded bus/snapshot log/Kiwi 주석) 전부 이번 세션에 처리됨.
 - **검증/주의:** 임베딩=원격 Ollama(SSH `-p [사설포트]` 터널, dim 1024). 기본 모델 `qwen3-embedding:0.6b`(bge-m3보다 hybrid MRR 우위 측정), `TUNAROUND_EMBED_MODEL`로 교체. Redis 6379(3d/랭킹엔 불요).
-- **Kiwi(정정 2026-07-02):** kiwi-rs 0.1.4는 **순수 Rust 빌드**(dep=regex만, build.rs·네이티브 링크 없음)라 **macOS/Win/Linux 모두 빌드됨**(kiwi cfg는 linux-aarch64만 제외). libkiwi(.dll/.dylib/.so)+모델은 **런타임에 bab2min/Kiwi 릴리스에서 다운로드**(캐시=OS cache dir 또는 `KIWI_LIBRARY_PATH`/`KIWI_MODEL_PATH`/`KIWI_RS_VERSION` env). 과거 "libkiwi 404"는 빌드가 아니라 런타임 자산 다운로드 실패(버전/자산)로, `scripts/install-kiwi-*.sh`가 캐시를 pre-seed해 우회. 실패해도 **lindera 자동 폴백**이라 빌드·실행 안 죽음. bab2min/Kiwi v0.22.2에 맥 자산 존재(`kiwi_mac_arm64`/`kiwi_mac_x86_64`).
+- **Kiwi(정정 2026-07-02):** kiwi-rs 0.1.4는 **순수 Rust 빌드**(dep=regex만, build.rs·네이티브 링크 없음)라 **macOS/Win/Linux 모두 빌드됨**(kiwi cfg는 linux-aarch64만 제외). libkiwi(.dll/.dylib/.so)+모델은 **런타임에 bab2min/Kiwi 릴리스에서 다운로드**(캐시=OS cache dir 또는 `KIWI_LIBRARY_PATH`/`KIWI_MODEL_PATH`/`KIWI_RS_VERSION` env). 과거 "libkiwi 404"는 빌드가 아니라 런타임 자산 다운로드 실패(버전/자산)로, `scripts/install-kiwi-windows.sh`(Windows 전용)가 캐시를 pre-seed해 우회(맥/리눅스 전용 스크립트는 없음 - 자동다운로드 또는 lindera 폴백). 실패해도 **lindera 자동 폴백**이라 빌드·실행 안 죽음. **맥(aarch64) 실측 2026-07-02: libkiwi 0.23.1 dylib 로드 실패 + kiwi_mac_arm64_v0.23.2.tgz 자산 404 -> lindera 폴백으로 정상 동작.** bab2min/Kiwi v0.22.2에 맥 자산 존재(`kiwi_mac_arm64`/`kiwi_mac_x86_64`).
 
 ## 무엇을 만드나 (요약)
 

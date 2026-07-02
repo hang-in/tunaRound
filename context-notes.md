@@ -558,3 +558,10 @@
 - **검증(dry-run, 릴리스 안 함)**: `dist generate --check` 동기 OK, `dist plan`이 v0.1.0에 6타깃(mac arm64/x86, win arm64/x86 msvc, linux arm64/x86) 바이너리 + shell/powershell/homebrew installer + tunaround.rb formula + 체크섬을 경고 없이 announce. cargo build 클린.
 - **미결/리스크**: (1) **license 미정** = 동구님 결정(dist는 강제 안 하나 정식 릴리스엔 필요, sshc는 MIT). (2) **크로스컴파일 리스크**: sshc(순수 TUI)와 달리 tunaRound는 rusqlite bundled(C 컴파일)·reqwest rustls(ring/aws-lc C)·axum이 있어 특히 aarch64-linux 크로스에서 실패 가능. 첫 릴리스 CI에서 확인, 실패 시 해당 타깃 제외 또는 zigbuild 조정.
 - **방침**: 태그 미푸시 = 릴리스 안 나감. 도그푸딩 후 동구님 승인 시 `git tag v0.1.0` 푸시([[dogfood-before-release]]).
+
+## 맥 왕복 검증 + 릴리스 도그푸딩 (2026-07-02, 맥 aarch64)
+
+- 윈도우 개발분 pull(HEAD 7428fd7→d4526a7). 맥에서 **빌드·테스트·설치 전부 통과**: `cargo build`(기본/풀피처), `cargo test` 195/212, clippy 클린, `cargo install --features "semantic mcp serve"`(release) → `~/.cargo/bin/tunaround v0.1.0`. **크로스플랫폼 컴파일 이슈 없음**(rusqlite bundled·rustls·axum·kiwi-rs·lindera 맥 OK).
+- **E2E 도그푸딩**: tunaround chat로 "v0.1.0 릴리스 준비" 토론 → claude+codex 정상 라운드, 결과문서·DB 생성. graceful 저하 확인: Kiwi→lindera(자산404), semantic→FTS(터널없음), 미설치CLI→`[에러] Spawn`(패닉X). **판정=v0.1.0-rc.1 먼저**(6타깃 CI 미검증).
+- **크로스머신 A2A 스모크(맥→윈도우 코어 192.0.2.10:8770)**: 네트워크 401/200 ✅, **claude가 원격 전사 ALBATROSS 인용 = half-A2A 읽기 실증 ✅**. 단 codex read_transcript 취소(codex pull 취약, 기존 한계). 임시 핸드오프 `docs/prompts/smoke-cross-machine_2026-07-02.md`(완료 후 삭제 예정, codex leg 남아 보류).
+- **릴리스-준비 배치 처리**: README macOS 상태 갱신(확인됨) · CLAUDE.md `install-kiwi-*.sh`→windows 하나 정정 + 맥 Kiwi 실측 · `CHANGELOG.md` 최소본 · `dist plan` 6타깃 유효 · `docs/reference/release-readiness-v0.1.0_2026-07-02.md`(도그푸딩+검증+체크리스트). 남은 릴리스 액션은 동구님(rc.1 태그→CI→tap→최종태그).

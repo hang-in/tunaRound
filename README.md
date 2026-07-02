@@ -153,7 +153,7 @@ v1 본체와 v2 검색·맥락 기능이 대부분 들어왔습니다.
 - 코어의 검색·전사를 네트워크 HTTP MCP로 노출 (`--serve-mcp`, 원격 접속 토대)
 - 로컬/원격 LLM 참가자 (ollama, lmstudio, openai 같은 HTTP 엔진, opencode CLI)
 
-빌드는 macOS·Windows·Linux 모두 순수 Rust로 됩니다. Windows에서 실제 `claude`·`codex` CLI로 동작을 확인했고, macOS 실행은 확인 중입니다.
+빌드는 macOS·Windows·Linux 모두 순수 Rust로 됩니다. Windows와 macOS(aarch64) 모두 실제 `claude`·`codex` CLI로 동작을 확인했습니다(빌드·테스트·`cargo install`·2에이전트 토론 도그푸딩, 크로스머신 A2A 읽기 스모크 포함). macOS에서 Kiwi 네이티브 자동다운로드가 막히면 lindera로 폴백해 그대로 동작합니다.
 
 ## 왜 만들었나
 
