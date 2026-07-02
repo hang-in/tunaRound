@@ -173,7 +173,8 @@ pub fn dispatch(store: &SqliteStore, req: JsonRpcRequest) -> JsonRpcResponse {
     }
 }
 
-/// A2A capabilities 최소 서브셋(Phase 1: 스트리밍·푸시 알림 둘 다 미지원).
+/// A2A capabilities 서브셋. 스트리밍(SendStreamingMessage/SubscribeToTask)은 Phase 2에서 지원한다.
+/// push_notifications(webhook)는 여전히 미지원(개인 2~3머신엔 과함, 후속).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentCapabilities {
@@ -203,7 +204,7 @@ pub fn build_agent_card(a2a_url: &str) -> AgentCard {
         description: "tunaRound A2A 코어: 파트너 에이전트에게 작업을 위임·수신하는 중앙 브로커.".to_string(),
         url: a2a_url.to_string(),
         version: env!("CARGO_PKG_VERSION").to_string(),
-        capabilities: AgentCapabilities { streaming: false, push_notifications: false },
+        capabilities: AgentCapabilities { streaming: true, push_notifications: false },
         default_input_modes: vec!["text/plain".to_string()],
         default_output_modes: vec!["text/plain".to_string()],
         skills: Vec::new(),
@@ -701,7 +702,8 @@ mod tests {
     fn agent_card_has_required_minimal_fields_and_parses_back() {
         let card = build_agent_card("http://127.0.0.1:8770/a2a");
         assert_eq!(card.url, "http://127.0.0.1:8770/a2a");
-        assert!(!card.capabilities.streaming);
+        assert!(card.capabilities.streaming, "Phase 2에서 스트리밍 지원을 광고한다");
+        assert!(!card.capabilities.push_notifications, "push_notifications는 여전히 미지원");
         assert!(card.skills.is_empty());
 
         let v = serde_json::to_value(&card).unwrap();
