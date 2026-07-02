@@ -18,7 +18,9 @@
 - **#6 새 소스 파일 첫 줄 = 역할 한국어 한 줄 주석.** Rust 예: `// 토론 라운드 프롬프트를 조립하는 순수 함수`. config 파일 제외.
 - **#7 비trivial 작업 전 plan + `checklist.md` + `context-notes.md`.** plan만 주고 코딩 요청 시 멈추고 checklist·notes 먼저 만들지 묻는다.
 
-## 현재 상태 (2026-07-02, 세션 5, 맥 왕복 준비)
+## 현재 상태 (2026-07-03, 세션 6, semi-a2a Phase 1 + 도그푸딩)
+
+- **세션 6: rc.1 CI green 확인 + Windows 아티팩트 검증 + 사설 IP 전방 redact(backend-private.md 패턴) + Stage 3e 킬 -> semi-a2a 파트너 위임(A2A 표준) 설계·Phase 1 코드(Task 1~4 = 데이터레이어·`/a2a` 엔드포인트·worker inbox·dispatcher 툴) 완성·푸시 + Task 5 라이브 크로스머신 도그푸딩 진행중(윈도우 코어 + 맥 worker).** origin/main=`ae2fc71`. 검증 기본 209 / 풀피처 262 lib pass. 스키마 **v6**(tasks). 정본 [semi-a2a 파트너 위임](docs/design/v2-a2a-partner-delegation_2026-07-02.md).
 
 - **세션 5: 시간성·유효성 마무리(step 5c·6) + codex pull 활성화(behavioral) + 외래어 병기 색인 + 임베딩 기본 qwen3 + 배포(cargo-dist)·온보딩(clap 서브커맨드·tunaround.toml 프로파일) + AGPL-3.0 + 맥-윈도우 핸드오프.** 전부 origin/main 푸시(= c89da05).
 - **이전 세션 4: Stage 3a-3(front=core) + Stage 3d(원격 쓰기 권위) + 시간성·유효성 로드맵 step 2~8.**
@@ -27,7 +29,7 @@
   - **로드맵(외부 memory 프레임워크 리뷰 후, SQLite-light·graph DB 비채택)**: step2 model_id 무효화키(실버그) · step3 retrieved 길이·세션 다양성 cap · step4 message_validity 테이블(스키마 v4) · step5 유효성 랭킹+/supersede·/reject · step5b 분기/세션 인지 랭킹 · step7 /explain 디버그 · step8 --reindex.
 - **v1 + v2 검색/맥락 로드맵(step 2~8) + Stage 3a~3d + codex pull(behavioral) + 실코퍼스 회귀(step6) + 외래어 병기 + 임베딩 qwen3 + 배포/온보딩(clap·cargo-dist·프로파일) 완성.** 검증: **기본 184 lib+6 cli / `--features "semantic morphology mcp serve"` 198 lib+9 cli pass, clippy 클린(no-default 포함).** 스키마 **v5**(created_at).
 - 현행 spec: [docs/design/tunaRound-v1-design_2026-06-29.md](docs/design/tunaRound-v1-design_2026-06-29.md). 진행: [docs/plans/index.md](docs/plans/index.md).
-- **>>> 최신 핸드오프: [docs/prompts/v2-handoff_2026-07-03_mac-rc1.md](docs/prompts/v2-handoff_2026-07-03_mac-rc1.md) 먼저 읽기 <<<**(맥: v0.1.0-rc.1 발행 + 티키타카). 이전 [session5](docs/prompts/v2-handoff_2026-07-02_session5.md). 맥↔윈도우 왕복은 [docs/reference/dev-mac-windows.md](docs/reference/dev-mac-windows.md).
+- **>>> 최신 핸드오프(둘 다): [session6](docs/prompts/v2-handoff_2026-07-03_session6.md)(윈도우: semi-a2a Phase 1 + **Task 5 도그푸딩 = 다음 세션 진입점**) + [mac-rc1](docs/prompts/v2-handoff_2026-07-03_mac-rc1.md)(맥: v0.1.0-rc.1 발행 + 티키타카) 먼저 읽기 <<<**. 이전 [session5](docs/prompts/v2-handoff_2026-07-02_session5.md). 맥↔윈도우 왕복은 [docs/reference/dev-mac-windows.md](docs/reference/dev-mac-windows.md).
 - **⚠️ Cargo.toml `version="0.1.0-rc.1"`**(rc 발행용). **최종 v0.1.0 태그 전 `0.1.0`으로 되돌릴 것.** 프리릴리스 v0.1.0-rc.1 live(CI green, 4타깃). 릴리스 교훈=[dev-mac-windows §6](docs/reference/dev-mac-windows.md). 정본 방향: [배포·온보딩](docs/design/v2-deploy-onboarding_2026-07-02.md) + [A2A](docs/design/v2-A2A-core-backend_2026-06-30.md) + [시간성·유효성](docs/design/v2-temporal-validity-direction_2026-07-01.md). 이전: [session4](docs/prompts/v2-handoff_2026-07-01_session4.md)
 - **⚠ 서버 호스팅 교훈**: `--core`(=`core` 서브커맨드)는 메인이 동기 블로킹 REPL이라 서버를 **전용 스레드 block_on**으로 서빙(공유 rt spawn 신뢰불가). 라이브 e2e 타이밍 함정(Kiwi ~3초/FIFO 미flush/agent ~35초) → 준비 폴링 + 파이프 입력 + 넉넉한 타임아웃.
 - **남은 항목**: 공개 릴리스=**`v0.1.0-rc.1` 먼저**(맥 도그푸딩 판정: 6타깃 CI 미검증이라 rc로 CI 검증 후 최종 태그. 상세 [release-readiness](docs/reference/release-readiness-v0.1.0_2026-07-02.md)) · 온보딩 Stage 4 doctor · abstraction/anchors 생성 파이프라인(보류=YAGNI) · **분산 크로스머신 스모크=claude leg 통과**(맥.184→윈도우.179 read_transcript 실증 2026-07-02), codex leg는 승인취약(#24135)→app-server(3e) 후속 · 홈랩 코어 호스팅(보류) · opencode 검색 배선.
@@ -54,7 +56,7 @@
 
 ## 다음 세션 첫 행동
 
-1. **[docs/prompts/v2-handoff_2026-07-02_session5.md](docs/prompts/v2-handoff_2026-07-02_session5.md) 먼저 읽기** + `context-notes.md`(하단) + `checklist.md` + `docs/plans/index.md`. 맥↔윈도우 왕복이면 [docs/reference/dev-mac-windows.md](docs/reference/dev-mac-windows.md)도. `cargo test`(기본) + `cargo test --features "semantic morphology mcp serve"`로 상태 확인(**cargo는 Bash 툴로**).
-2. **다음 세션 우선순위(2026-07-02 오후 확정)**: (a) **rc.1 CI green 확인**(맥이 잡는 중 - aarch64 크로스 ring C 실패로 4타깃 축소·버전·profile.dist 수정. **윈도우 미개입**) → green 시 최종 v0.1.0 태그·tap 발행 판단. (b) **codex 먼저 해결**(크로스머신 codex leg가 #24135 승인취약으로 실패 = app-server(3e) 또는 대화형 승인). (c) codex 풀리면 **맥이랑 크로스머신 스모크 이어가기**(codex leg·양방향 post_turn). (d) 선택: 진짜 A2A=AutoLoop(Stage4, 미구현·모더레이터 에이전트). 실행은 `cargo run -- chat`(서브커맨드). Kiwi 자동다운로드(실패 시 lindera). Ollama 11435, 기본 qwen3-embedding:0.6b, Redis 6379.
+1. **[docs/prompts/v2-handoff_2026-07-03_session6.md](docs/prompts/v2-handoff_2026-07-03_session6.md) 먼저 읽기** + `context-notes.md`(상단 세션6) + `checklist.md`("semi-a2a 파트너 위임 Phase 1" 섹션) + 설계 정본 [파트너 위임](docs/design/v2-a2a-partner-delegation_2026-07-02.md). `cargo test`(기본 209) + `cargo test --features "semantic morphology mcp serve"`(262)로 상태 확인(**cargo는 Bash 툴로**).
+2. **다음 세션 우선순위 = Task 5 라이브 도그푸딩 재개**(핸드오프 §3~④): 윈도우 코어 재기동(`target\debug\tunaround.exe serve 0.0.0.0:8770 --token [REDACTED_TOKEN] --db <임의 temp>`, PowerShell background) -> 맥 worker(mac-claude, `docs/prompts/a2a-dogfood-mac-worker_2026-07-03.md`) 붙었나 확인 -> `/a2a` SendMessage로 test task 던지고 -> GetTask로 **state=completed+artifact** 검증 = **왕복 1회 = Task 5 성공.** 이후 Phase 2(이기종 파트너 Codex-on-Ollama·A2A interop 갭·SSE). 릴리스(v0.1.0)·IP 히스토리 filter-repo 퍼지는 **배포 비우선**(핸드오프 §6).
    - **A2A 성숙도(정직)**: 현재=공유맥락(데이터평면)+**사람 오케스트레이션(HITL)** = **semi-a2a**(자율수준이 "semi"=HITL, A2A 통신은 진짜 성립). 스펙트럼: 수동relay < semi-a2a < full-auto(AutoLoop=Stage4 미구현, 의도적 보류). 크로스머신 앱-투-앱 위임 설계=docs/design/v2-a2a-partner-delegation_2026-07-02.md.
 3. 작업 추적 `checklist.md`·`context-notes.md`(규율 #7). 위임 Sonnet + Opus 리뷰. 굵직한 결정 재론 금지. 서브에이전트 진행 중 파일 레이스 주의. 배포 전 도그푸딩.
