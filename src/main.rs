@@ -36,6 +36,9 @@ enum Commands {
     /// 모든 세션의 FTS·벡터 인덱스를 SoR(messages)에서 재생성(sqlite 피처 전용).
     #[cfg(feature = "sqlite")]
     Reindex(ReindexArgs),
+    /// 헤드리스 자율 워커 데몬: 원격 코어를 auto-poll->claim->실행->complete(worker 피처 전용).
+    #[cfg(feature = "worker")]
+    Work(WorkArgs),
 }
 
 /// chat/core가 공유하는 세션 배선 옵션.
@@ -156,6 +159,52 @@ struct ReindexArgs {
     db: Option<String>,
 }
 
+/// `work` 서브커맨드(worker 피처 전용) 옵션: 원격 코어를 auto-poll->claim->실행->complete하는 헤드리스 데몬.
+#[cfg(feature = "worker")]
+#[derive(Args, Debug)]
+struct WorkArgs {
+    /// 코어 `/mcp` 절대 URL(예: http://192.0.2.10:8770/mcp, `/mcp` 경로까지 포함해서 지정).
+    #[arg(long)]
+    core: String,
+    /// bearer 토큰(코어가 --token으로 띄워졌다면 필요).
+    #[arg(long)]
+    token: Option<String>,
+    /// 이 워커의 to_agent id(예: win-worker). poll_tasks가 이 agent 앞 task만 본다.
+    #[arg(long)]
+    agent: String,
+    /// task를 실행할 러너 종류(기본 claude).
+    #[arg(long, value_enum, default_value_t = WorkRunner::Claude)]
+    runner: WorkRunner,
+    /// 러너에 넘길 모델 이름(옵션, 러너별 기본값 사용 가능).
+    #[arg(long)]
+    model: Option<String>,
+    /// 러너가 작업할 로컬 레포 경로(옵션).
+    #[arg(long = "project-path")]
+    project_path: Option<String>,
+    /// --runner http 전용: OpenAI 호환 chat API의 base URL(예: http://localhost:11434).
+    #[arg(long = "http-base-url")]
+    http_base_url: Option<String>,
+    /// poll 간격(초, 기본 15).
+    #[arg(long, default_value_t = 15)]
+    interval: u64,
+    /// 한 패스만 실행하고 종료(테스트·수동 실행용).
+    #[arg(long)]
+    once: bool,
+    /// Write 모드로 실행(기본 ReadOnly=behavioral read-only 유지).
+    #[arg(long)]
+    write: bool,
+}
+
+/// `--runner` 선택지: 기존 Runner trait 구현체 중 어느 것으로 task를 실행할지.
+#[cfg(feature = "worker")]
+#[derive(clap::ValueEnum, Clone, Debug)]
+enum WorkRunner {
+    Claude,
+    Codex,
+    Opencode,
+    Http,
+}
+
 // 일부 feature 조합(예: --no-default-features)에서는 남는 서브커맨드 분기 수가 줄어
 // 아래 지역변수 중 일부를 모든 분기가 채우게 되어 초기값이 그 조합에서만 dead store로 잡힌다.
 // 조합마다 다른 변수 집합이라 개별 분기 재설계보다 함수 단위 allow가 더 안전하다(동작 무변경).
@@ -202,6 +251,9 @@ fn main() {
     let mut search_url: Option<String> = None;
     // --search-token <tok>: HTTP MCP 서버 bearer 토큰(Authorization 헤더).
     let mut search_token: Option<String> = None;
+    // work <...>: 헤드리스 자율 워커 데몬 옵션(worker 피처 전용).
+    #[cfg(feature = "worker")]
+    let mut work_args: Option<WorkArgs> = None;
 
     // 서브커맨드별 옵션을 기존 모드 본문이 쓰던 지역변수로 옮긴다(본문 로직은 아래에서 불변).
     match command {
@@ -268,6 +320,14 @@ fn main() {
         Commands::Reindex(a) => {
             reindex = true;
             db_path = a.db;
+        }
+        #[cfg(feature = "worker")]
+        Commands::Work(a) => {
+            #[cfg(feature = "sqlite")]
+            {
+                db_path = None;
+            }
+            work_args = Some(a);
         }
     }
 
@@ -508,6 +568,63 @@ fn main() {
             addr, retriever_arc, reader_arc, Some(writer_arc), None, serve_token.clone(), a2a_store_arc,
         )) {
             eprintln!("[serve-mcp] 서버 오류: {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
+    // work 모드: 원격 코어를 auto-poll->claim->실행->complete하는 헤드리스 워커 데몬(worker 피처 전용).
+    #[cfg(feature = "worker")]
+    if let Some(a) = work_args {
+        let mode = if a.write {
+            tunaround::runner::RunMode::Write
+        } else {
+            tunaround::runner::RunMode::ReadOnly
+        };
+        let runner: std::sync::Arc<dyn tunaround::runner::Runner + Send + Sync> = match a.runner {
+            WorkRunner::Claude => std::sync::Arc::new(tunaround::runner::claude::ClaudeRunner::new()),
+            WorkRunner::Codex => std::sync::Arc::new(tunaround::runner::codex::CodexRunner::new()),
+            WorkRunner::Opencode => {
+                std::sync::Arc::new(tunaround::runner::opencode::OpencodeRunner::new().with_model(a.model.clone()))
+            }
+            #[cfg(feature = "engines")]
+            WorkRunner::Http => {
+                let base_url = match &a.http_base_url {
+                    Some(u) => u.clone(),
+                    None => {
+                        eprintln!("[work] --runner http 는 --http-base-url <url>이 필요합니다");
+                        std::process::exit(1);
+                    }
+                };
+                std::sync::Arc::new(tunaround::runner::http::OpenAiChatRunner::new(
+                    &base_url,
+                    a.model.as_deref().unwrap_or(""),
+                    a.token.clone(),
+                ))
+            }
+            #[cfg(not(feature = "engines"))]
+            WorkRunner::Http => {
+                eprintln!("[work] --runner http 는 engines 피처가 필요합니다");
+                std::process::exit(1);
+            }
+        };
+
+        let result = rt.block_on(async {
+            let client = tunaround::mcp_client::McpHttpClient::connect(a.core.clone(), a.token.clone()).await?;
+            tunaround::worker::run_worker_loop(
+                &client,
+                runner,
+                &a.agent,
+                a.model.clone(),
+                a.project_path.clone(),
+                mode,
+                a.interval,
+                a.once,
+            )
+            .await
+        });
+        if let Err(e) = result {
+            eprintln!("[work] 오류: {e}");
             std::process::exit(1);
         }
         return;
