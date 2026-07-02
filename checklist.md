@@ -247,7 +247,7 @@
 
 ## 배포·온보딩 (2026-07-02 설계 확정, docs/design/v2-deploy-onboarding_2026-07-02.md)
 > 결정: 배포=cargo-dist(sshc 답습, homebrew+powershell, 풀피처 단일바이너리). scoop/winget 보류. 코어 홈랩호스팅 보류. 온보딩=clap 서브커맨드 + tunaround.toml 프로파일(진입선택). doctor 다음.
-- [ ] **Stage 1 clap 서브커맨드**: chat/core/serve/join/mcp-search/reindex. main.rs 수동파싱 교체(모드 본문 유지, dispatch만). ⚠ 러너 spawn `--mcp-search`→`mcp-search` 동시 갱신(codex/claude). behavior-preserving 테스트. feature cfg 게이트
+- [x] **Stage 1 clap 서브커맨드**(Sonnet5 위임+Opus 리뷰/검증): chat/core/serve/join/mcp-search/reindex. Cli{Option<Commands>}→None=Chat, cfg 게이트 variant, CommonSessionArgs flatten, match로 기존 지역변수 매핑(본문 246+ 불변). 러너 spawn `--mcp-search`→`mcp-search`(codex build_mcp_wiring·claude build_mcp_config 추출) + 테스트 갱신. clap 단위테스트 기본6/features9. 검증: 기본166+6 / features180+9 pass, clippy 클린(no-default 포함). README 예시 서브커맨드화. ⚠ bare `tunaround file.json`→이제 에러(chat file.json 필요, 설계 의도). 미커밋→리뷰 후 커밋
 - [ ] **Stage 2 cargo-dist**: dist-workspace.toml(installers shell/powershell/homebrew, targets mac/win/linux, tap hang-in/homebrew-tap, features semantic/mcp/serve) + release.yml. 태그 첫 릴리스 스모크(맥 brew + Kiwi 자동다운로드 실기)
 - [ ] **Stage 3 tunaround.toml + 프로파일**: [profile.*] 로드·머지(플래그>프로파일>기본), 토큰=*_env 참조, `--profile`+대화형 픽커, 탐색경로. 도메인/토큰 레포 미포함
 - [ ] Stage 4(다음) doctor: claude/codex·Ollama·Kiwi·포트·코어도달 프리플라이트

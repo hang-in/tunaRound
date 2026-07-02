@@ -25,8 +25,10 @@
 `claude`와 `codex` CLI가 설치되어 있고 인증까지 되어 있다면 바로 실행할 수 있습니다.
 
 ```bash
-cargo run
+cargo run            # = cargo run -- chat (인자 없으면 기본 REPL)
 ```
+
+서브커맨드: `chat`(기본 REPL) · `core <addr>`(단일 프로세스 코어) · `serve <addr>`(헤드리스 코어) · `join <url>`(원격 코어 접속) · `reindex`. `tunaround <명령> --help`로 옵션 확인.
 
 예시:
 
@@ -46,13 +48,13 @@ cargo run
 세션을 이어서 쓰려면 상태 파일을 넘깁니다.
 
 ```bash
-cargo run -- session.json
+cargo run -- chat session.json
 ```
 
 여러 역할과 엔진을 직접 정하려면 로스터 파일을 사용합니다.
 
 ```bash
-cargo run -- --roster examples/roster.json
+cargo run -- chat --roster examples/roster.json
 ```
 
 ## 여러 터미널에서 같이 보기
@@ -64,8 +66,8 @@ export TUNAROUND_REDIS_URL=redis://127.0.0.1:6379
 ```
 
 ```bash
-cargo run -- --session <id>   # 기존 세션 이어서 진행
-cargo run -- --observe <id>   # 읽기 전용으로 관찰
+cargo run -- chat --session <id>   # 기존 세션 이어서 진행
+cargo run -- chat --observe <id>   # 읽기 전용으로 관찰
 ```
 
 이 기능은 한 터미널에서는 토론을 진행하고, 다른 터미널에서는 진행 상황만 지켜볼 때 유용합니다.
@@ -75,7 +77,7 @@ cargo run -- --observe <id>   # 읽기 전용으로 관찰
 긴 토론을 매번 전부 다시 넣지 않아도 되도록, 대화와 문서를 색인해두고 필요한 부분만 검색해서 가져옵니다.
 
 ```bash
-cargo run --features "sqlite morphology semantic mcp" -- --db tuna.db
+cargo run --features "semantic mcp" -- chat --db tuna.db   # 기본 빌드에 morphology+sqlite 포함
 ```
 
 사용 가능한 기능:

@@ -2,14 +2,156 @@
 
 use std::io::{self, Write};
 
+use clap::{Args, Parser, Subcommand};
 use tunaround::orchestrator::{ContextMode, MapRegistry, Participant};
 use tunaround::repl::{parse_command, Session, StepOutcome};
 use tunaround::runner::claude::ClaudeRunner;
 use tunaround::runner::codex::CodexRunner;
 
+/// tunaRound CLI. 서브커맨드 없이 실행하면 기본 REPL(chat)로 동작한다(하위호환: 인자 없는 `tunaround` = 지금처럼 REPL).
+#[derive(Parser)]
+#[command(name = "tunaround", version, about = "tunaRound - 2-에이전트 설계 토론 REPL")]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Commands>,
+}
+
+/// 서브커맨드 목록. serve/core/mcp-search/reindex는 해당 피처가 꺼지면 clap enum에서 아예 빠진다
+/// (= 미지원 서브커맨드가 됨. 기존 flag soup의 "피처 없으면 조용히 무시"와 동등한 graceful degrade).
+#[derive(Subcommand, Debug)]
+enum Commands {
+    /// 기본 REPL(사람이 운전하는 2-에이전트 토론).
+    Chat(ChatArgs),
+    /// front=core 단일 프로세스: REPL + in-process HTTP MCP 코어(serve 피처 전용).
+    #[cfg(feature = "serve")]
+    Core(CoreArgs),
+    /// HTTP MCP 서버 상주(헤드리스, REPL 없음. serve 피처 전용).
+    #[cfg(feature = "serve")]
+    Serve(ServeArgs),
+    /// 원격 코어 접속 프리셋(= chat + --search-url/--pull-context 기본 on).
+    Join(JoinArgs),
+    /// stdio MCP 검색 서버(내부용, 러너가 self-exe로 spawn. mcp 피처 전용).
+    #[cfg(feature = "mcp")]
+    McpSearch(McpSearchArgs),
+    /// 모든 세션의 FTS·벡터 인덱스를 SoR(messages)에서 재생성(sqlite 피처 전용).
+    #[cfg(feature = "sqlite")]
+    Reindex(ReindexArgs),
+}
+
+/// chat/core가 공유하는 세션 배선 옵션.
+#[derive(Args, Default, Debug)]
+struct CommonSessionArgs {
+    /// SQLite DB 경로(검색·영속 인덱서). sqlite 피처 없으면 무시된다.
+    #[arg(long)]
+    db: Option<String>,
+    /// 동적 좌석 로스터 JSON 경로(없으면 기본 2자리: claude proposer + codex reviewer).
+    #[arg(long)]
+    roster: Option<String>,
+    /// 프롬프트에 재주입할 최근 턴 수 캡(기본: 캡 없음, 통째 재주입).
+    #[arg(long = "recent-turns")]
+    recent_turns: Option<usize>,
+    /// Pull 컨텍스트 모드(포인터 프롬프트 + 에이전트가 MCP로 전사를 당김). --db 없으면 무의미(경고 후 Push 유지).
+    #[arg(long = "pull-context")]
+    pull_context: bool,
+    /// Redis snapshot에서 세션을 재개(id 지정).
+    #[arg(long)]
+    session: Option<String>,
+    /// 원격 HTTP MCP 서버 URL(stdio spawn 대신 접속).
+    #[arg(long = "search-url")]
+    search_url: Option<String>,
+    /// 원격 HTTP MCP 서버 bearer 토큰(Authorization 헤더).
+    #[arg(long = "search-token")]
+    search_token: Option<String>,
+}
+
+/// `chat` 서브커맨드(기본 REPL) 옵션.
+#[derive(Args, Default, Debug)]
+struct ChatArgs {
+    /// 세션 상태 파일 경로(있으면 이어받고, 종료 시 저장).
+    state_file: Option<String>,
+    /// 관찰 모드: REPL 대신 세션 id를 라이브 구독(read-only).
+    #[arg(long)]
+    observe: Option<String>,
+    #[command(flatten)]
+    common: CommonSessionArgs,
+}
+
+/// `core <addr>` 서브커맨드(serve 피처 전용) 옵션.
+#[cfg(feature = "serve")]
+#[derive(Args, Debug)]
+struct CoreArgs {
+    /// in-process HTTP MCP 코어가 바인드할 주소(예: 127.0.0.1:8770).
+    addr: String,
+    /// 세션 상태 파일 경로(있으면 이어받고, 종료 시 저장).
+    state_file: Option<String>,
+    /// bearer 토큰 인증(HTTP MCP 코어).
+    #[arg(long)]
+    token: Option<String>,
+    #[command(flatten)]
+    common: CommonSessionArgs,
+}
+
+/// `serve <addr>` 서브커맨드(serve 피처 전용) 옵션.
+#[cfg(feature = "serve")]
+#[derive(Args, Debug)]
+struct ServeArgs {
+    /// HTTP MCP 서버가 바인드할 주소.
+    addr: String,
+    /// SQLite DB 경로(필수, 진입 시 검증).
+    #[arg(long)]
+    db: Option<String>,
+    /// bearer 토큰 인증.
+    #[arg(long)]
+    token: Option<String>,
+}
+
+/// `join <url>` 서브커맨드 옵션(= chat + 원격 코어 프리셋).
+#[derive(Args, Debug)]
+struct JoinArgs {
+    /// 원격 HTTP MCP 코어 URL.
+    url: String,
+    /// 세션 상태 파일 경로.
+    state_file: Option<String>,
+    /// bearer 토큰(내부적으로 search-token으로 배선).
+    #[arg(long)]
+    token: Option<String>,
+    /// SQLite DB 경로(로컬 인덱서, 선택).
+    #[arg(long)]
+    db: Option<String>,
+    /// 동적 좌석 로스터 JSON 경로.
+    #[arg(long)]
+    roster: Option<String>,
+}
+
+/// `mcp-search` 서브커맨드(mcp 피처 전용, 러너가 self-exe로 spawn하는 내부 모드) 옵션.
+#[cfg(feature = "mcp")]
+#[derive(Args, Debug)]
+struct McpSearchArgs {
+    /// SQLite DB 경로(필수, 진입 시 검증).
+    #[arg(long)]
+    db: Option<String>,
+    /// 전사 조회 기본 세션 id(없으면 "default").
+    #[arg(long = "session-id")]
+    session_id: Option<String>,
+}
+
+/// `reindex` 서브커맨드(sqlite 피처 전용) 옵션.
+#[cfg(feature = "sqlite")]
+#[derive(Args, Debug)]
+struct ReindexArgs {
+    /// SQLite DB 경로(필수, 진입 시 검증).
+    #[arg(long)]
+    db: Option<String>,
+}
+
+// 일부 feature 조합(예: --no-default-features)에서는 남는 서브커맨드 분기 수가 줄어
+// 아래 지역변수 중 일부를 모든 분기가 채우게 되어 초기값이 그 조합에서만 dead store로 잡힌다.
+// 조합마다 다른 변수 집합이라 개별 분기 재설계보다 함수 단위 allow가 더 안전하다(동작 무변경).
+#[allow(unused_assignments)]
 fn main() {
-    // 인자: [--roster <path>] [--observe <id>] [--session <id>] [--mcp-search] [--db <path>] [--session-id <id>] [--pull-context] [<state.json>]
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let cli = Cli::parse();
+    let command = cli.command.unwrap_or_else(|| Commands::Chat(ChatArgs::default()));
+
     let mut roster_path: Option<String> = None;
     let mut state_path: Option<String> = None;
     let mut observe_id: Option<String> = None;
@@ -20,17 +162,18 @@ fn main() {
     let mut mcp_session_id: Option<String> = None;
     // Pull 컨텍스트 모드 활성화 플래그. --db 없으면 무의미하므로 경고 후 Push 유지.
     let mut pull_context = false;
+    // 모든 서브커맨드 분기가 정확히 1회 채운다(초기값 없이 선언 -> dead store 경고 회피).
     #[cfg(feature = "sqlite")]
-    let mut db_path: Option<String> = None;
-    // --reindex: 모든 세션의 FTS·벡터 인덱스를 SoR(messages)에서 재생성(모델·토크나이저 교체 후 복구).
+    let db_path: Option<String>;
+    // reindex: 모든 세션의 FTS·벡터 인덱스를 SoR(messages)에서 재생성(모델·토크나이저 교체 후 복구).
     #[cfg(feature = "sqlite")]
     let mut reindex = false;
     #[cfg(feature = "mcp")]
     let mut mcp_search = false;
-    // --serve-mcp <addr>: HTTP MCP 서버 상주 모드(헤드리스, REPL 없음. serve 피처 전용).
+    // serve <addr>: HTTP MCP 서버 상주 모드(헤드리스, REPL 없음. serve 피처 전용).
     #[cfg(feature = "serve")]
     let mut serve_mcp_addr: Option<String> = None;
-    // --core <addr>: front=core 단일 프로세스(REPL + in-process HTTP MCP 코어. serve 피처 전용).
+    // core <addr>: front=core 단일 프로세스(REPL + in-process HTTP MCP 코어. serve 피처 전용).
     #[cfg(feature = "serve")]
     let mut core_addr: Option<String> = None;
     // --token <tok>: bearer 토큰 인증(serve 모드 전용).
@@ -40,80 +183,63 @@ fn main() {
     let mut search_url: Option<String> = None;
     // --search-token <tok>: HTTP MCP 서버 bearer 토큰(Authorization 헤더).
     let mut search_token: Option<String> = None;
-    let mut i = 0;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--roster" => {
-                roster_path = args.get(i + 1).cloned();
-                i += 2;
+
+    // 서브커맨드별 옵션을 기존 모드 본문이 쓰던 지역변수로 옮긴다(본문 로직은 아래에서 불변).
+    match command {
+        Commands::Chat(a) => {
+            state_path = a.state_file;
+            observe_id = a.observe;
+            roster_path = a.common.roster;
+            recent_turns = a.common.recent_turns;
+            pull_context = a.common.pull_context;
+            redis_session_id = a.common.session;
+            search_url = a.common.search_url;
+            search_token = a.common.search_token;
+            #[cfg(feature = "sqlite")]
+            {
+                db_path = a.common.db;
             }
-            "--observe" => {
-                observe_id = args.get(i + 1).cloned();
-                i += 2;
+        }
+        Commands::Join(a) => {
+            state_path = a.state_file;
+            roster_path = a.roster;
+            pull_context = true;
+            search_url = Some(a.url);
+            search_token = a.token;
+            #[cfg(feature = "sqlite")]
+            {
+                db_path = a.db;
             }
-            "--session" => {
-                redis_session_id = args.get(i + 1).cloned();
-                i += 2;
-            }
-            "--session-id" => {
-                #[cfg(feature = "mcp")]
-                { mcp_session_id = args.get(i + 1).cloned(); }
-                i += 2;
-            }
-            "--db" => {
-                #[cfg(feature = "sqlite")]
-                { db_path = args.get(i + 1).cloned(); }
-                i += 2;
-            }
-            "--recent-turns" => {
-                if let Some(v) = args.get(i + 1).and_then(|s| s.parse::<usize>().ok()) {
-                    recent_turns = Some(v);
-                }
-                i += 2;
-            }
-            "--mcp-search" => {
-                #[cfg(feature = "mcp")]
-                { mcp_search = true; }
-                i += 1;
-            }
-            "--reindex" => {
-                #[cfg(feature = "sqlite")]
-                { reindex = true; }
-                i += 1;
-            }
-            "--serve-mcp" => {
-                #[cfg(feature = "serve")]
-                { serve_mcp_addr = args.get(i + 1).cloned(); }
-                i += 2;
-            }
-            "--core" => {
-                #[cfg(feature = "serve")]
-                { core_addr = args.get(i + 1).cloned(); }
-                i += 2;
-            }
-            "--token" => {
-                #[cfg(feature = "serve")]
-                { serve_token = args.get(i + 1).cloned(); }
-                i += 2;
-            }
-            "--search-url" => {
-                search_url = args.get(i + 1).cloned();
-                i += 2;
-            }
-            "--search-token" => {
-                search_token = args.get(i + 1).cloned();
-                i += 2;
-            }
-            "--pull-context" => {
-                pull_context = true;
-                i += 1;
-            }
-            other => {
-                if state_path.is_none() {
-                    state_path = Some(other.to_string());
-                }
-                i += 1;
-            }
+        }
+        #[cfg(feature = "serve")]
+        Commands::Core(a) => {
+            state_path = a.state_file;
+            roster_path = a.common.roster;
+            recent_turns = a.common.recent_turns;
+            pull_context = a.common.pull_context;
+            redis_session_id = a.common.session;
+            search_url = a.common.search_url;
+            search_token = a.common.search_token;
+            serve_token = a.token;
+            core_addr = Some(a.addr);
+            db_path = a.common.db;
+        }
+        #[cfg(feature = "serve")]
+        Commands::Serve(a) => {
+            serve_mcp_addr = Some(a.addr);
+            serve_token = a.token;
+            db_path = a.db;
+        }
+        #[cfg(feature = "mcp")]
+        Commands::McpSearch(a) => {
+            mcp_search = true;
+            mcp_session_id = a.session_id;
+            db_path = a.db;
+        }
+        #[cfg(feature = "sqlite")]
+        Commands::Reindex(a) => {
+            reindex = true;
+            db_path = a.db;
         }
     }
 
@@ -774,4 +900,160 @@ fn build_http_mcp_backends(ctx: &str, db_str: &str) -> HttpMcpBackends {
     let writer_arc = std::sync::Arc::new(writer)
         as std::sync::Arc<dyn tunaround::orchestrator::TranscriptWriter>;
     (retriever_arc, reader_arc, writer_arc)
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::*;
+
+    #[test]
+    fn no_args_means_no_subcommand_defaults_to_chat_in_main() {
+        // clap 자체는 command: None만 준다. main()의 unwrap_or_else가 Chat 기본값으로 채운다(하위호환).
+        let cli = Cli::try_parse_from(["tunaround"]).expect("파싱 성공");
+        assert!(cli.command.is_none());
+    }
+
+    #[test]
+    fn chat_parses_positional_and_common_options() {
+        let cli = Cli::try_parse_from([
+            "tunaround",
+            "chat",
+            "state.json",
+            "--db",
+            "x.db",
+            "--roster",
+            "r.json",
+            "--recent-turns",
+            "3",
+            "--pull-context",
+            "--session",
+            "sid1",
+            "--search-url",
+            "http://127.0.0.1:8770/mcp",
+            "--search-token",
+            "tok",
+        ])
+        .expect("파싱 성공");
+        match cli.command {
+            Some(Commands::Chat(a)) => {
+                assert_eq!(a.state_file.as_deref(), Some("state.json"));
+                assert_eq!(a.common.db.as_deref(), Some("x.db"));
+                assert_eq!(a.common.roster.as_deref(), Some("r.json"));
+                assert_eq!(a.common.recent_turns, Some(3));
+                assert!(a.common.pull_context);
+                assert_eq!(a.common.session.as_deref(), Some("sid1"));
+                assert_eq!(a.common.search_url.as_deref(), Some("http://127.0.0.1:8770/mcp"));
+                assert_eq!(a.common.search_token.as_deref(), Some("tok"));
+            }
+            other => panic!("Chat 서브커맨드 기대, 실제: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn chat_observe_option_parses() {
+        let cli = Cli::try_parse_from(["tunaround", "chat", "--observe", "sess-9"]).expect("파싱 성공");
+        match cli.command {
+            Some(Commands::Chat(a)) => assert_eq!(a.observe.as_deref(), Some("sess-9")),
+            other => panic!("Chat 서브커맨드 기대, 실제: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bare_positional_without_subcommand_is_now_an_error() {
+        // 설계 변경점: 기존엔 `tunaround state.json`이 통했으나, 서브커맨드 도입 후엔
+        // `tunaround chat state.json`으로 명시해야 한다(인자 0개=chat만 하위호환 보장).
+        let res = Cli::try_parse_from(["tunaround", "state.json"]);
+        assert!(res.is_err(), "서브커맨드 없는 bare positional은 이제 에러여야 함");
+    }
+
+    #[test]
+    fn join_sets_url_and_optional_fields() {
+        let cli = Cli::try_parse_from([
+            "tunaround",
+            "join",
+            "http://127.0.0.1:8770/mcp",
+            "--token",
+            "tok2",
+            "--db",
+            "local.db",
+            "--roster",
+            "r.json",
+            "state.json",
+        ])
+        .expect("파싱 성공");
+        match cli.command {
+            Some(Commands::Join(a)) => {
+                assert_eq!(a.url, "http://127.0.0.1:8770/mcp");
+                assert_eq!(a.token.as_deref(), Some("tok2"));
+                assert_eq!(a.db.as_deref(), Some("local.db"));
+                assert_eq!(a.roster.as_deref(), Some("r.json"));
+                assert_eq!(a.state_file.as_deref(), Some("state.json"));
+            }
+            other => panic!("Join 서브커맨드 기대, 실제: {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "serve")]
+    #[test]
+    fn serve_parses_addr_db_and_token() {
+        let cli = Cli::try_parse_from(["tunaround", "serve", "127.0.0.1:8770", "--db", "x.db", "--token", "T"])
+            .expect("파싱 성공");
+        match cli.command {
+            Some(Commands::Serve(a)) => {
+                assert_eq!(a.addr, "127.0.0.1:8770");
+                assert_eq!(a.db.as_deref(), Some("x.db"));
+                assert_eq!(a.token.as_deref(), Some("T"));
+            }
+            other => panic!("Serve 서브커맨드 기대, 실제: {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "serve")]
+    #[test]
+    fn core_parses_addr_and_common_options() {
+        let cli = Cli::try_parse_from([
+            "tunaround",
+            "core",
+            "127.0.0.1:8790",
+            "--db",
+            "core.db",
+            "--token",
+            "TOK",
+            "--pull-context",
+        ])
+        .expect("파싱 성공");
+        match cli.command {
+            Some(Commands::Core(a)) => {
+                assert_eq!(a.addr, "127.0.0.1:8790");
+                assert_eq!(a.token.as_deref(), Some("TOK"));
+                assert_eq!(a.common.db.as_deref(), Some("core.db"));
+                assert!(a.common.pull_context);
+            }
+            other => panic!("Core 서브커맨드 기대, 실제: {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "mcp")]
+    #[test]
+    fn mcp_search_parses_db_and_session_id() {
+        let cli = Cli::try_parse_from(["tunaround", "mcp-search", "--db", "x.db", "--session-id", "sid-7"])
+            .expect("파싱 성공");
+        match cli.command {
+            Some(Commands::McpSearch(a)) => {
+                assert_eq!(a.db.as_deref(), Some("x.db"));
+                assert_eq!(a.session_id.as_deref(), Some("sid-7"));
+            }
+            other => panic!("McpSearch 서브커맨드 기대, 실제: {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "sqlite")]
+    #[test]
+    fn reindex_parses_db() {
+        let cli = Cli::try_parse_from(["tunaround", "reindex", "--db", "x.db"]).expect("파싱 성공");
+        match cli.command {
+            Some(Commands::Reindex(a)) => assert_eq!(a.db.as_deref(), Some("x.db")),
+            other => panic!("Reindex 서브커맨드 기대, 실제: {other:?}"),
+        }
+    }
 }

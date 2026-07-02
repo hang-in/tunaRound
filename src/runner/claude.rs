@@ -141,11 +141,12 @@ impl Default for ClaudeRunner {
     }
 }
 
-impl Runner for ClaudeRunner {
-    fn run(&self, input: &RunInput) -> Result<RunOutput, RunError> {
-        // search_url이 Some이면 HTTP MCP config를 생성한다(search_db보다 우선).
-        // search_url이 None이고 search_db가 Some이면 기존 stdio self-exe spawn config를 사용한다.
-        let mcp_json: Option<String> = if let Some(url) = &self.search_url {
+impl ClaudeRunner {
+    /// 검색 MCP 서버 config JSON을 조립한다(search_url 우선, 없으면 search_db 기반 self-exe stdio spawn).
+    /// self-exe spawn args는 `mcp-search` 서브커맨드 형태(레거시 `--mcp-search` 플래그 아님, main.rs와 계약 동기).
+    /// 순수 조립이라 테스트 가능(프로세스 spawn과 분리).
+    fn build_mcp_config(&self) -> Option<String> {
+        if let Some(url) = &self.search_url {
             let server_val = if let Some(tok) = &self.search_token {
                 serde_json::json!({
                     "type": "http",
@@ -164,7 +165,7 @@ impl Runner for ClaudeRunner {
                     .and_then(|p| p.to_str().map(String::from))
                     .unwrap_or_else(|| "tunaround".into());
                 let mut mcp_args = vec![
-                    serde_json::Value::String("--mcp-search".into()),
+                    serde_json::Value::String("mcp-search".into()),
                     serde_json::Value::String("--db".into()),
                     serde_json::Value::String(db.clone()),
                 ];
@@ -182,7 +183,15 @@ impl Runner for ClaudeRunner {
                 });
                 v.to_string()
             })
-        };
+        }
+    }
+}
+
+impl Runner for ClaudeRunner {
+    fn run(&self, input: &RunInput) -> Result<RunOutput, RunError> {
+        // search_url이 Some이면 HTTP MCP config를 생성한다(search_db보다 우선).
+        // search_url이 None이고 search_db가 Some이면 기존 stdio self-exe spawn config를 사용한다.
+        let mcp_json: Option<String> = self.build_mcp_config();
         let spec = ExecSpec {
             bin: self.bin.clone(),
             args: build_claude_args(input, mcp_json.as_deref()),
@@ -259,7 +268,7 @@ mod tests {
     #[test]
     fn args_with_mcp_config_appends_flag() {
         let input = RunInput { prompt: "q".into(), mode: RunMode::ReadOnly, ..Default::default() };
-        let json = r#"{"mcpServers":{"tuna-search":{"command":"/usr/bin/tunaround","args":["--mcp-search","--db","/tmp/t.db"]}}}"#;
+        let json = r#"{"mcpServers":{"tuna-search":{"command":"/usr/bin/tunaround","args":["mcp-search","--db","/tmp/t.db"]}}}"#;
         let args = build_claude_args(&input, Some(json));
         let joined = args.join(" ");
         assert!(joined.contains("--mcp-config"), "mcp-config 플래그 없음: {joined}");
@@ -335,13 +344,23 @@ mod tests {
             "mcpServers": {
                 "tuna-search": {
                     "command": exe,
-                    "args": ["--mcp-search", "--db", db]
+                    "args": ["mcp-search", "--db", db]
                 }
             }
         });
         let json_str = v.to_string();
         assert!(json_str.contains("command"), "stdio config에 command 없음: {json_str}");
         assert!(!json_str.contains("\"type\":\"http\""), "stdio config에 type:http 있으면 안 됨");
+    }
+
+    #[test]
+    fn build_mcp_config_with_search_db_uses_mcp_search_subcommand_form() {
+        // ⚠ 회귀 가드: main.rs가 --mcp-search 플래그에서 `mcp-search` 서브커맨드로 바뀌었으므로,
+        // claude가 self-exe로 spawn하는 MCP config args도 서브커맨드 형태여야 한다(레거시 플래그 잔존 금지).
+        let runner = ClaudeRunner::new().with_search_db(Some("/tmp/x.db".into()));
+        let json = runner.build_mcp_config().expect("search_db 설정 시 Some");
+        assert!(json.contains("\"mcp-search\""), "mcp-search 서브커맨드 형태 없음: {json}");
+        assert!(!json.contains("--mcp-search"), "레거시 --mcp-search 플래그 잔존: {json}");
     }
 
     #[test]
@@ -356,7 +375,7 @@ mod tests {
         let exe = "tunaround".to_string();
         let sid = "my-session-42".to_string();
         let mut mcp_args = vec![
-            serde_json::Value::String("--mcp-search".into()),
+            serde_json::Value::String("mcp-search".into()),
             serde_json::Value::String("--db".into()),
             serde_json::Value::String(db),
         ];

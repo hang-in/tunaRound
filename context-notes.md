@@ -526,3 +526,12 @@
 - **구현**: search/mod.rs LOANWORD_GROUPS(음역 페어 32그룹: refresh↔리프레시, embedding↔임베딩 등, 모호단음절 풀/락/큐 제외) + loanword_aliases(token). tokenizer.rs fts_query(default trait)가 질의 토큰별 alias를 사후 추가(index 무변경=재색인 불요, 모든 백엔드 공유). main.rs 비morphology fallback 2곳도 동일 확장. 번역(검색↔search)은 제외=임베딩 담당(noise 회피).
 - **효과(실측)**: 목표 갭 해소 - "리프레시 토큰 어디 저장" R@5 0.0→1.0(질의 리프레시→refresh 확장이 영어 조밀 발언20과 이어짐). FTS mean R@5 0.878→**0.944**, P@5 0.494→0.508. 하이브리드 R@5 0.933→**0.978**. 대가=MRR 소폭↓(FTS 0.900→0.869, hyb 0.933→0.883): OR 확장이 상위 랭크 흔듦, top-k 주입 용도엔 수용(recall 우선). **합성 코퍼스(search_recall) R@5 0.857 불변**=기존 훼손 없음. 기본 164 pass(loanword 단위 3 추가), clippy 클린.
 - **설계 판단**: 음역만 겨냥(의역은 임베딩이 이미 처리 실측). 질의확장 방식(index 불변). 자동 음역모델(Knight&Graehl/NEWS) 비채택=개인도구 과함. 흔한 공통어(토큰/token) alias는 noise 대가 있으나 소코퍼스 과적합 회피 위해 유지(향후 실사용서 재튜닝 여지). floor R@5>=0.88, P@5>=0.45로 상향.
+
+## 2026-07-02: 온보딩 Stage 1 clap 서브커맨드 (Sonnet5 위임 + Opus 리뷰)
+
+- **위임**: main.rs 787줄 수동 arg 파싱 → clap 서브커맨드 리팩터를 Sonnet5 서브에이전트에 위임(규율: 구현=Sonnet, Opus 리뷰). 정밀 스펙(서브커맨드 매핑·러너 spawn 계약·feature 게이트·검증) 제공.
+- **결과**: `Cli { command: Option<Commands> }`(None→Chat 기본, 하위호환). Commands=Chat/Core/Serve/Join/McpSearch/Reindex, Core/Serve=serve·McpSearch=mcp·Reindex=sqlite로 cfg 게이트. CommonSessionArgs(db/roster/recent-turns/pull-context/session/search-url/search-token) flatten. match가 서브커맨드→기존 지역변수로 매핑하고 **모드 본문(tokio rt 이후)은 원본 불변**=behavior-preserving. join=chat+search_url/pull_context 프리셋. db_path lazy-init(모든 컴파일 분기가 채움, serve→mcp→sqlite 의존이라 unconditional 대입 안전) + fn main #[allow(unused_assignments)](no-default-features dead-store만, 문서화).
+- **러너 계약**: codex build_mcp_wiring·claude build_mcp_config(신규 추출)의 self-exe spawn 첫 인자 `--mcp-search`→`mcp-search`(서브커맨드). 회귀 가드 테스트 추가.
+- **Opus 독립 검증**: 기본 test 166lib+6cli, features 180lib+9cli, clippy 클린(features·no-default), 빌드 3조합 클린. 보고와 일치. main.rs diff 정독=매핑 정확·본문 불변 확인.
+- **의도된 파괴변경**: bare `tunaround file.json`(서브커맨드 없이 positional)은 이제 clap 에러. `chat file.json` 필요(설계문서 명시). README 예시 전부 서브커맨드형으로 갱신.
+- **다음**: Stage 2 cargo-dist(dist-workspace.toml + release.yml, homebrew+powershell, features semantic/mcp/serve) → Stage 3 tunaround.toml 프로파일.

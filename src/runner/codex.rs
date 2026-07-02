@@ -194,7 +194,7 @@ impl CodexRunner {
                     .and_then(|p| p.to_str().map(String::from))
                     .unwrap_or_else(|| "tunaround".into());
                 let mut items = vec![
-                    "--mcp-search".to_string(),
+                    "mcp-search".to_string(),
                     "--db".to_string(),
                     db.clone(),
                 ];
@@ -373,7 +373,7 @@ mod tests {
             "-c".to_string(),
             "mcp_servers.tuna-search.command=\"/usr/bin/tunaround\"".to_string(),
             "-c".to_string(),
-            "mcp_servers.tuna-search.args=[\"--mcp-search\",\"--db\",\"/tmp/t.db\"]".to_string(),
+            "mcp_servers.tuna-search.args=[\"mcp-search\",\"--db\",\"/tmp/t.db\"]".to_string(),
         ];
         let args = build_codex_args(&input, &mcp_args, false);
         let joined = args.join(" ");
@@ -437,12 +437,23 @@ mod tests {
     }
 
     #[test]
+    fn build_mcp_wiring_with_search_db_uses_mcp_search_subcommand_form() {
+        // ⚠ 회귀 가드: main.rs가 --mcp-search 플래그에서 `mcp-search` 서브커맨드로 바뀌었으므로,
+        // codex가 self-exe로 spawn하는 args도 서브커맨드 형태여야 한다(레거시 플래그 잔존 금지).
+        let runner = CodexRunner::new().with_search_db(Some("/tmp/x.db".into()));
+        let (mcp_args, _env) = runner.build_mcp_wiring();
+        let joined = mcp_args.join(" ");
+        assert!(joined.contains("\"mcp-search\""), "mcp-search 서브커맨드 형태 없음: {joined}");
+        assert!(!joined.contains("--mcp-search"), "레거시 --mcp-search 플래그 잔존: {joined}");
+    }
+
+    #[test]
     fn runner_with_search_session_includes_session_id_in_mcp_args() {
         // with_search_session(Some(..)) 설정 시 TOML args에 --session-id가 포함된다.
         let db = "/tmp/test.db".to_string();
         let sid = "debate-session-7".to_string();
         // toml_basic으로 조립한 결과 포맷: double-quote.
-        let items_with = vec!["--mcp-search", "--db", &db, "--session-id", &sid];
+        let items_with = ["mcp-search", "--db", &db, "--session-id", &sid];
         let args_toml_with = format!(
             "mcp_servers.tuna-search.args=[{}]",
             items_with.iter().map(|a| toml_basic(a)).collect::<Vec<_>>().join(",")
@@ -450,7 +461,7 @@ mod tests {
         assert!(args_toml_with.contains("--session-id"), "--session-id 없음: {args_toml_with}");
         assert!(args_toml_with.contains("debate-session-7"), "세션 id 없음: {args_toml_with}");
         // search_session 없을 때.
-        let items_without = vec!["--mcp-search", "--db", &db];
+        let items_without = ["mcp-search", "--db", &db];
         let args_toml_without = format!(
             "mcp_servers.tuna-search.args=[{}]",
             items_without.iter().map(|a| toml_basic(a)).collect::<Vec<_>>().join(",")
