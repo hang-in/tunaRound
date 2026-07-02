@@ -635,3 +635,12 @@
 - 설계 정본 docs/design/v2-a2a-worker-daemon_2026-07-03.md. `tunaround work` 서브커맨드 = 헤드리스 자율 워커: poll_tasks(agent)->claim->RunInput{prompt=task text}->runner.run()->complete. claim/complete가 코어 버스로 dispatcher SSE에 실시간 흐름(스트리밍과 자동 결합) = 사람 트리거 0.
 - 재사용 조각: Runner trait(RunInput/RunOutput), MCP inbox 툴. **W1 관건 = 프로덕션 MCP HTTP 클라이언트**(현재 mcp.rs 테스트 코드에만 있는 handshake+tools/call+SSE파싱을 추출). 태스크 W1~W4(checklist).
 - 스코프: opt-in 데몬, read-only 기본(behavioral), dispatcher-side 사람이 목표 발행(semi-a2a HITL 유지). debate AutoLoop(Stage4)와 다름=위임 task 워커 자율.
+
+## 2026-07-03 세션8: A2A 자율 워커 데몬(W1~W4) 완료 - "복붙 제거" 실증
+
+- **W1**(ad5ca38) 프로덕션 MCP HTTP 클라이언트 McpHttpClient(connect handshake + call_tool SSE파싱 + poll/claim/complete 래퍼), worker feature=dep:reqwest async. serve 하네스로 왕복 테스트.
+- **W2+W3**(60364d8) parse_open_tasks(견고 블록 파싱, msg 개행 허용, 단위테스트 5) + run_worker_loop(poll->submitted만 claim->spawn_blocking runner.run->complete, --once/interval, task별 에러격리) + Work 서브커맨드/러너 factory(claude/codex/opencode/http).
+- **W4 로컬 데모 성공(사람 트리거 0)**: 코어(with_task_events) + dispatcher SendStreamingMessage SSE 개방(win-worker 앞 task submitted) + `tunaround work --once --agent win-worker --runner claude`가 **자율로** poll->발견->claim->**claude 실제 spawn 실행**->complete. dispatcher SSE에 submitted->working->artifactUpdate(**claude 실제 답변** "...다중 소비자 팬아웃 채널입니다.")->completed(final) 실시간(claim 22:56:24->complete 22:56:58 = claude ~34s, 그동안 SSE heartbeat 유지). = 사람이 목표 1회 발행(SSE 개방)만 하고 워커가 발견+실행+완료 자율, dispatcher가 전 과정 실시간 관찰. **"복붙"의 마지막 조각(트리거 릴레이) 제거 실증.**
+- 검증: 기본 218 / 풀피처+worker 286 lib pass, clippy 클린.
+- **(a)=(b) 확인**: 워커 데몬의 --runner가 파트너 종류. (b) 이기종 = `--runner http`(OpenAiChatRunner, engines)를 Ollama OpenAI-compat(/v1/chat/completions)에 붙이면 로컬LLM 워커 = 다음(W4b). Ollama chat endpoint/model 필요(사용자 원격 Ollama 터널).
+- 스코프: opt-in 데몬, read-only 기본, dispatcher-side 사람 목표 발행(semi-a2a HITL). 러너 실패 시 task 'working' 고착(requeue/timeout 후속).
