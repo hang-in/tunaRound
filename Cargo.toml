@@ -2,6 +2,9 @@
 name = "tunaround"
 version = "0.1.0"
 edition = "2024"
+description = "터미널에서 사람이 운전하는 역할 부여 2-에이전트 착수 전 설계 토론 도구"
+repository = "https://github.com/hang-in/tunaRound"
+homepage = "https://github.com/hang-in/tunaRound"
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }

@@ -535,3 +535,11 @@
 - **Opus 독립 검증**: 기본 test 166lib+6cli, features 180lib+9cli, clippy 클린(features·no-default), 빌드 3조합 클린. 보고와 일치. main.rs diff 정독=매핑 정확·본문 불변 확인.
 - **의도된 파괴변경**: bare `tunaround file.json`(서브커맨드 없이 positional)은 이제 clap 에러. `chat file.json` 필요(설계문서 명시). README 예시 전부 서브커맨드형으로 갱신.
 - **다음**: Stage 2 cargo-dist(dist-workspace.toml + release.yml, homebrew+powershell, features semantic/mcp/serve) → Stage 3 tunaround.toml 프로파일.
+
+## 2026-07-02: 배포 Stage 2 cargo-dist 설정 (릴리스 미발행)
+
+- **설치**: cargo-dist(dist) 0.31.0 로컬 설치(sshc와 동일 버전, D:\.cargo\bin). powershell 인스톨러.
+- **설정**: `dist-workspace.toml` 작성(sshc 답습 + `features=["semantic","mcp","serve"]`=풀기능 단일바이너리). Cargo.toml에 description/repository/homepage 추가(dist가 repository 요구, formula용). `dist generate`로 `.github/workflows/release.yml`(14.5KB, 앱-불특정, CI가 런타임에 dist plan/host). 
+- **검증(dry-run, 릴리스 안 함)**: `dist generate --check` 동기 OK, `dist plan`이 v0.1.0에 6타깃(mac arm64/x86, win arm64/x86 msvc, linux arm64/x86) 바이너리 + shell/powershell/homebrew installer + tunaround.rb formula + 체크섬을 경고 없이 announce. cargo build 클린.
+- **미결/리스크**: (1) **license 미정** = 동구님 결정(dist는 강제 안 하나 정식 릴리스엔 필요, sshc는 MIT). (2) **크로스컴파일 리스크**: sshc(순수 TUI)와 달리 tunaRound는 rusqlite bundled(C 컴파일)·reqwest rustls(ring/aws-lc C)·axum이 있어 특히 aarch64-linux 크로스에서 실패 가능. 첫 릴리스 CI에서 확인, 실패 시 해당 타깃 제외 또는 zigbuild 조정.
+- **방침**: 태그 미푸시 = 릴리스 안 나감. 도그푸딩 후 동구님 승인 시 `git tag v0.1.0` 푸시([[dogfood-before-release]]).
