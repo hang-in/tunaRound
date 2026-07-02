@@ -27,7 +27,7 @@
 - **#6 새 소스 파일 첫 줄 = 역할 한국어 한 줄 주석.** Rust 예: `// 토론 라운드 프롬프트를 조립하는 순수 함수`. config 파일 제외.
 - **#7 비trivial 작업 전 plan + `checklist.md` + `context-notes.md`.** plan만 주고 코딩 요청 시 멈추고 checklist·notes 먼저 만들지 묻는다.
 
-## 현재 상태 (2026-07-03, 세션 6~8, semi-a2a Phase 1 완료 + 크로스머신 양방향 왕복 + A2A 스트리밍 Phase 2 완료)
+## 현재 상태 (2026-07-03, 세션 6~8, semi-a2a Phase 1 + 크로스머신 양방향/스트리밍 + A2A 스트리밍 Phase 2 + 자율 워커 데몬(이기종 포함) 완료)
 
 - **세션 6: rc.1 CI green 확인 + Windows 아티팩트 검증 + 사설 IP 전방 redact(backend-private.md 패턴) + Stage 3e 킬 -> semi-a2a 파트너 위임(A2A 표준) 설계·Phase 1 코드(Task 1~4 = 데이터레이어·`/a2a` 엔드포인트·worker inbox·dispatcher 툴) 완성·푸시 + Task 5 라이브 크로스머신 도그푸딩 착수.** 검증 기본 209 / 풀피처 262 lib pass. 스키마 **v6**(tasks). 정본 [semi-a2a 파트너 위임](docs/design/v2-a2a-partner-delegation_2026-07-02.md).
 
@@ -36,6 +36,8 @@
 - **세션 8 (2026-07-03): mac→win 역방향 왕복 성사 = 크로스머신 양방향 다 실증.** 재부팅으로 이전 background 코어(+temp db)가 죽어 옛 task(`907f5c82`) 소멸 -> Windows 코어 재기동(`serve 0.0.0.0:8770`, 안정 db=LOCALAPPDATA) -> 맥이 새 task `76ea0b9c` 재디스패치(같은 주소/토큰, MCP 재등록 불요) -> **win-claude가 raw curl MCP**(claude mcp 등록·세션 재시작 없이 initialize->notifications/initialized->poll_tasks->claim_task->complete_task)로 처리 -> get_task=completed+artifact 자기검증. **교훈 2개**: (a) 워커는 raw HTTP MCP 직접 호출로 "MCP 등록+세션 재시작" 2세션 온보딩 마찰(#1)을 회피 가능(대가=대화형 도구승인 UX 없음). (b) 코어 리셋 시 옛 task_id는 조용히 "task 없음"으로 소멸하고 리셋 신호가 없다 -> dispatcher가 죽은 id를 계속 폴링(discovery/상태변화 통지 채널 공백 = 마찰 #3와 동근). 맥 반영=`e073329`(`_mac-rc1.md ⑦`).
 
 - **세션 8 (2026-07-03, 후반): A2A 스트리밍(SSE) Phase 2 완료 = 표준 A2A 서버로 스트리밍 지원.** "복붙 UX면 A2A 왜?"(복붙=트리거 릴레이, 코어는 이미 poll/get_task로 노출) 논의 -> 정찰은 이미 끝나 있었고(스펙 §9.1·§5.3 인용, `SubscribeToTask` 명명, 카드 streaming 플래그 존재) `§65 "SSE 후속" 유예를 interop·호기심 근거로 재개. 정본 [스트리밍 설계](docs/design/v2-a2a-streaming_2026-07-03.md). T1 이벤트 버스(store 계층 broadcast, /a2a·MCP 두 경로 자동 커버, `785fb25`) / T2 스트리밍 serde 타입+매핑(`25619c4`) / T3 `SendStreamingMessage` SSE(subscribe-before-create, `9ed6380`) / T4 `SubscribeToTask` 재구독(`ea3e855`) / T5 카드 `streaming:true`(`2bc5437`) / T6 **라이브 데모 성공(복붙 0)**: boss SSE 개방 -> 워커 MCP claim/complete -> 같은 버스로 submitted->working->artifact->completed(final) 실시간 스트림 후 종료. 검증 기본 218 / 풀피처 279 lib pass. **스코프 경계**: 워커 방향 push는 미구현(브로커 폴링 유지), push_notifications(webhook)·discovery는 후속(YAGNI).
+
+- **세션 8 (2026-07-03, 후반2): 크로스머신 SSE 스트리밍 스모크 성공 + A2A 자율 워커 데몬(a·b) 완료.** 크로스머신 스모크: 맥=원격 dispatcher가 SendStreamingMessage를 LAN 너머 SSE로 개방 -> Windows worker claim/complete -> 맥 SSE에 4프레임 실시간 도착(SSE-over-LAN 실증). "복붙 아직 맞지?" 논의 = SSE가 데이터/완료통지는 제거, 남은 트리거 릴레이는 **워커 auto-poll로 제거** -> 자율 워커 데몬 착수. 정본 [워커 데몬](docs/design/v2-a2a-worker-daemon_2026-07-03.md). W1 프로덕션 MCP HTTP 클라(`ad5ca38`) / W2+W3 `tunaround work` 서브커맨드+자율 루프(poll->claim->Runner.run->complete, `60364d8`) / W4 **로컬 데모(사람 트리거 0)**: dispatcher SSE + `work --once --runner claude`가 자율 발견·claude 실행·완료, SSE에 claude 실답변 artifact 실시간. **(b) 이기종**: `--runner codex`로 **Codex가 워커**(GetTask=completed+codex 답변) = **(a)=(b), --runner만 교체=파트너 교체**(`a94809b`). Ollama-http(`--runner http`)는 코드완성이나 로컬 GPU OOM으로 라이브 미검증(후속). 검증 기본 218 / 풀피처+worker 286 lib pass. 스코프: opt-in 데몬, read-only 기본, dispatcher 사람 목표발행(semi-a2a HITL).
 
 - **세션 5: 시간성·유효성 마무리(step 5c·6) + codex pull 활성화(behavioral) + 외래어 병기 색인 + 임베딩 기본 qwen3 + 배포(cargo-dist)·온보딩(clap 서브커맨드·tunaround.toml 프로파일) + AGPL-3.0 + 맥-윈도우 핸드오프.** 전부 origin/main 푸시(= c89da05).
 - **이전 세션 4: Stage 3a-3(front=core) + Stage 3d(원격 쓰기 권위) + 시간성·유효성 로드맵 step 2~8.**
