@@ -1,0 +1,4 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+# CodeRabbit 리뷰 언어를 한국어로 지정한다(리뷰 코멘트 + 채팅 응답 전체).
+# 스키마/옵션: https://docs.coderabbit.ai/reference/configuration
+language: ko-KR
