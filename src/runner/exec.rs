@@ -7,6 +7,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
+
 /// 한 자식 프로세스 실행 명세. argv·stdin·작업디렉토리·idle 타임아웃·로그 라벨.
 pub(crate) struct ExecSpec {
     pub bin: String,
@@ -81,6 +84,11 @@ pub(crate) fn run_with_watchdog(spec: &ExecSpec) -> Result<String, RunError> {
         cmd.stdin(Stdio::piped());
     }
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+
+    // Unix에서는 CLI와 그 후손만 묶인 별도 process group을 만든다.
+    // process_group(0)은 spawn된 자식의 PID를 PGID로 사용하므로 watchdog가 그룹 전체를 종료할 수 있다.
+    #[cfg(unix)]
+    cmd.process_group(0);
 
     let mut child = cmd
         .spawn()
@@ -180,18 +188,19 @@ fn poll_interval(idle_timeout: Duration) -> Duration {
     (idle_timeout / 5).clamp(Duration::from_millis(20), Duration::from_secs(30))
 }
 
-/// 자식 PID를 best-effort로 강제 종료한다(Unix kill -9 / Windows taskkill).
+/// 자식 PID를 루트로 하는 프로세스 트리를 best-effort로 강제 종료한다.
 fn kill_pid(pid: u32) {
     #[cfg(unix)]
     {
+        // run_with_watchdog가 자식 PID와 같은 PGID를 만들었으므로 음수 PID는 그룹 전체를 뜻한다.
         let _ = Command::new("kill")
-            .args(["-9", &pid.to_string()])
+            .args(["-9", &format!("-{pid}")])
             .status();
     }
     #[cfg(windows)]
     {
         let _ = Command::new("taskkill")
-            .args(["/F", "/PID", &pid.to_string()])
+            .args(["/F", "/T", "/PID", &pid.to_string()])
             .status();
     }
 }
@@ -204,7 +213,11 @@ mod tests {
     fn spec(args: &[&str], idle_ms: u64) -> ExecSpec {
         ExecSpec {
             bin: "sh".into(),
-            args: ["-c"].iter().chain(args.iter()).map(|s| s.to_string()).collect(),
+            args: ["-c"]
+                .iter()
+                .chain(args.iter())
+                .map(|s| s.to_string())
+                .collect(),
             cwd: None,
             stdin: None,
             idle_timeout: Duration::from_millis(idle_ms),
@@ -215,7 +228,6 @@ mod tests {
 
     #[test]
     fn idle_no_output_triggers_timeout() {
-        // exec로 단일 프로세스(sh가 sleep로 치환) -> 단일 PID kill로 확실히 종료.
         let out = run_with_watchdog(&spec(&["exec sleep 5"], 150));
         match out {
             Err(RunError::Timeout(_)) => {}
@@ -236,6 +248,50 @@ mod tests {
         // 무출력이지만 즉시 비정상 종료 -> Timeout 아님(Spawn).
         let out = run_with_watchdog(&spec(&["exit 3"], 2000));
         assert!(matches!(out, Err(RunError::Spawn(_))));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn timeout_kills_spawned_process_tree() {
+        let pid_file = std::env::temp_dir().join(format!(
+            "tunaround-process-tree-{}-{}.pid",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time after epoch")
+                .as_nanos()
+        ));
+        let command = format!(
+            "sleep 30 & child=$!; printf '%s' \"$child\" > '{}'; wait \"$child\"",
+            pid_file.display()
+        );
+
+        let started = Instant::now();
+        let out = run_with_watchdog(&spec(&[&command], 200));
+        assert!(matches!(out, Err(RunError::Timeout(_))));
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "process tree was not terminated promptly"
+        );
+
+        let child_pid = std::fs::read_to_string(&pid_file)
+            .expect("spawned child pid file")
+            .trim()
+            .to_string();
+        let _ = std::fs::remove_file(&pid_file);
+
+        let mut still_alive = true;
+        for _ in 0..20 {
+            still_alive = Command::new("kill")
+                .args(["-0", &child_pid])
+                .status()
+                .is_ok_and(|status| status.success());
+            if !still_alive {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(!still_alive, "spawned child {child_pid} survived timeout");
     }
 
     #[cfg(windows)]
