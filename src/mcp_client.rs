@@ -1,6 +1,12 @@
 // 원격 tunaRound 코어의 MCP 툴을 HTTP(streamable-http)로 호출하는 워커용 클라이언트.
+//
+// rmcp streamable-http 서버는 initialize에서 발급한 mcp-session-id를 일정 유휴 시간 뒤 만료시킨다.
+// 워커는 러너(codex/claude) 실행에 수 분이 걸릴 수 있어, claim_task 이후 complete_task를 부를 때쯤
+// 세션이 이미 죽어 HTTP 404가 나는 경우가 있다. 이 클라이언트는 404류 응답을 감지하면 핸드셰이크를
+// 다시 수행해 새 세션을 얻고, 원래 요청을 한 번만 재시도한다.
 
 use serde_json::{Value, json};
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// MCP 2025-03-26 protocolVersion(서버측 `src/mcp.rs` 테스트의 INIT_BODY와 동일 값).
@@ -12,17 +18,20 @@ pub struct McpHttpClient {
     http: reqwest::Client,
     mcp_url: String,
     token: Option<String>,
-    session_id: String,
+    /// 세션 만료 시 재연결로 갱신되어야 하므로 Mutex로 감싼다(구조체 자체는 &self로만 쓰임).
+    session_id: Mutex<String>,
     next_id: AtomicU64,
 }
 
 impl McpHttpClient {
     /// initialize(POST) -> 응답 헤더 mcp-session-id 캡처 -> notifications/initialized(POST) 순서로
-    /// 핸드셰이크한다. 세션 확립 후에만 tools/call이 유효하다(MCP streamable-http 관례).
-    pub async fn connect(mcp_url: impl Into<String>, token: Option<String>) -> Result<Self, String> {
-        let mcp_url = mcp_url.into();
-        let http = reqwest::Client::new();
-
+    /// 핸드셰이크해 새 session_id를 발급받는다. 최초 connect와 재연결이 동일한 절차를 공유하도록
+    /// 뽑아낸 헬퍼이며, 이 함수 자체는 Self 상태를 만들지 않고 문자열 session_id만 반환한다.
+    async fn handshake(
+        http: &reqwest::Client,
+        mcp_url: &str,
+        token: &Option<String>,
+    ) -> Result<String, String> {
         let init_body = json!({
             "jsonrpc": "2.0",
             "id": 1,
@@ -35,10 +44,10 @@ impl McpHttpClient {
         });
 
         let mut req = http
-            .post(&mcp_url)
+            .post(mcp_url)
             .header("Content-Type", "application/json")
             .header("Accept", ACCEPT_HEADER);
-        if let Some(tok) = &token {
+        if let Some(tok) = token {
             req = req.header("Authorization", format!("Bearer {tok}"));
         }
         let resp = req
@@ -61,11 +70,11 @@ impl McpHttpClient {
         // notifications/initialized는 알림이라 서버가 바디를 돌려주지 않을 수 있다. 네트워크 자체
         // 에러(연결 끊김 등)만 치명적으로 취급하고, 응답 바디 내용은 검사하지 않는다.
         let mut req = http
-            .post(&mcp_url)
+            .post(mcp_url)
             .header("Content-Type", "application/json")
             .header("Accept", ACCEPT_HEADER)
             .header("mcp-session-id", &session_id);
-        if let Some(tok) = &token {
+        if let Some(tok) = token {
             req = req.header("Authorization", format!("Bearer {tok}"));
         }
         req.body(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#)
@@ -73,11 +82,37 @@ impl McpHttpClient {
             .await
             .map_err(|e| format!("notifications/initialized 요청 실패: {e}"))?;
 
-        Ok(Self { http, mcp_url, token, session_id, next_id: AtomicU64::new(2) })
+        Ok(session_id)
     }
 
-    /// tools/call로 원격 MCP 툴 하나를 호출하고 결과 텍스트를 반환한다.
-    pub async fn call_tool(&self, name: &str, args: Value) -> Result<String, String> {
+    /// 핸드셰이크를 수행해 클라이언트를 구성한다.
+    pub async fn connect(mcp_url: impl Into<String>, token: Option<String>) -> Result<Self, String> {
+        let mcp_url = mcp_url.into();
+        let http = reqwest::Client::new();
+        let session_id = Self::handshake(&http, &mcp_url, &token).await?;
+
+        Ok(Self {
+            http,
+            mcp_url,
+            token,
+            session_id: Mutex::new(session_id),
+            next_id: AtomicU64::new(2),
+        })
+    }
+
+    /// 세션 만료류 응답인지 판단한다. 401(인증 실패)은 토큰 자체 문제라 재연결해도 소용없으므로
+    /// 제외하고, 우선 404를 세션 만료로 취급한다(향후 다른 상태코드가 관찰되면 이 매치에 추가).
+    fn is_session_expired(status: reqwest::StatusCode) -> bool {
+        matches!(status, reqwest::StatusCode::NOT_FOUND)
+    }
+
+    /// tools/call 한 번의 시도를 수행한다(재시도 로직 없이 순수 단발 호출). 현재 session_id 스냅샷을
+    /// 읽어 헤더에 싣고, 실패 시 상태코드를 함께 반환해 호출부가 재연결 여부를 판단하게 한다.
+    async fn try_call_once(
+        &self,
+        name: &str,
+        args: &Value,
+    ) -> Result<String, (reqwest::StatusCode, String)> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let body = json!({
             "jsonrpc": "2.0",
@@ -86,30 +121,63 @@ impl McpHttpClient {
             "params": {"name": name, "arguments": args}
         });
 
+        // 락은 현재 session_id를 복제하는 짧은 구간에서만 잡고, 즉시 드롭한다(await 경계를 넘겨
+        // 들고 있지 않도록 clone 후 바로 스코프를 벗어나게 한다).
+        let session_id = self.session_id.lock().unwrap().clone();
+
         let mut req = self
             .http
             .post(&self.mcp_url)
             .header("Content-Type", "application/json")
             .header("Accept", ACCEPT_HEADER)
-            .header("mcp-session-id", &self.session_id);
+            .header("mcp-session-id", &session_id);
         if let Some(tok) = &self.token {
             req = req.header("Authorization", format!("Bearer {tok}"));
         }
-        let resp = req
-            .body(body.to_string())
-            .send()
-            .await
-            .map_err(|e| format!("tools/call({name}) 요청 실패: {e}"))?;
+        let resp = req.body(body.to_string()).send().await.map_err(|e| {
+            (
+                reqwest::StatusCode::BAD_GATEWAY,
+                format!("tools/call({name}) 요청 실패: {e}"),
+            )
+        })?;
 
-        if !resp.status().is_success() {
-            return Err(format!("tools/call({name}) 응답 실패: HTTP {}", resp.status()));
+        let status = resp.status();
+        if !status.is_success() {
+            return Err((status, format!("tools/call({name}) 응답 실패: HTTP {status}")));
         }
 
         let text = resp
             .text()
             .await
-            .map_err(|e| format!("tools/call({name}) 응답 읽기 실패: {e}"))?;
-        parse_jsonrpc_sse(&text, name)
+            .map_err(|e| (status, format!("tools/call({name}) 응답 읽기 실패: {e}")))?;
+        parse_jsonrpc_sse(&text, name).map_err(|e| (status, e))
+    }
+
+    /// tools/call로 원격 MCP 툴 하나를 호출하고 결과 텍스트를 반환한다. 첫 시도가 세션 만료류(404)로
+    /// 실패하면 핸드셰이크를 다시 수행해 session_id를 갱신한 뒤 같은 요청을 딱 한 번만 재시도한다.
+    /// 재귀 호출이 아니라 순차 코드 흐름(시도 -> 실패 판단 -> 재연결 -> 재시도)이라 자연히 최대
+    /// 2회(원 시도 1 + 재시도 1)로 끝나고 무한 루프가 될 수 없다.
+    pub async fn call_tool(&self, name: &str, args: Value) -> Result<String, String> {
+        match self.try_call_once(name, &args).await {
+            Ok(text) => Ok(text),
+            Err((status, first_err)) => {
+                if !Self::is_session_expired(status) {
+                    return Err(first_err);
+                }
+
+                // 세션 만료로 판단 -> 핸드셰이크 재수행 -> 성공 시 session_id 갱신 후 1회 재시도.
+                match Self::handshake(&self.http, &self.mcp_url, &self.token).await {
+                    Ok(new_session_id) => {
+                        *self.session_id.lock().unwrap() = new_session_id;
+                    }
+                    Err(reconnect_err) => {
+                        return Err(format!("{first_err} (재연결 시도도 실패: {reconnect_err})"));
+                    }
+                }
+
+                self.try_call_once(name, &args).await.map_err(|(_, e)| e)
+            }
+        }
     }
 
     /// poll_tasks(agent) 얇은 래퍼.
@@ -250,6 +318,42 @@ mod tests {
         assert!(
             text.contains("mac-claude 앞 열린 task 없음"),
             "poll_tasks 빈 결과 문구 불일치: {text}"
+        );
+    }
+
+    /// 세션 만료 자동 재연결 검증: connect 후 클라이언트의 session_id를 존재하지 않는 값으로
+    /// 강제 교체해(Mutex라 테스트 코드에서 직접 가능) 다음 call_tool이 서버로부터 404를 받도록
+    /// 유도한다. rmcp StreamableHttpService가 미등록 mcp-session-id 헤더에 실제로 404를 주는지
+    /// 실험한 결과, 실제로 그렇게 동작함을 확인했다(방식 a 채택). call_tool이 404를 감지해
+    /// 핸드셰이크를 재수행하고 요청을 재시도해 결국 성공하며, 이 과정에서 session_id가 최신 값으로
+    /// 갱신되는 것까지 함께 확인한다.
+    #[tokio::test]
+    async fn call_tool_reconnects_after_session_expires() {
+        let url = spawn_test_server(None).await;
+        let client = McpHttpClient::connect(url, None)
+            .await
+            .expect("connect 성공해야 함");
+
+        let stale_session_id = {
+            let mut guard = client.session_id.lock().unwrap();
+            let stale = "expired-session-id-does-not-exist".to_string();
+            *guard = stale.clone();
+            stale
+        };
+
+        let text = client
+            .poll_tasks("nobody")
+            .await
+            .expect("세션 만료 후에도 자동 재연결로 poll_tasks가 성공해야 함");
+        assert!(
+            text.contains("nobody 앞 열린 task 없음"),
+            "재연결 후 poll_tasks 빈 결과 문구 불일치: {text}"
+        );
+
+        let refreshed_session_id = client.session_id.lock().unwrap().clone();
+        assert_ne!(
+            refreshed_session_id, stale_session_id,
+            "재연결 성공 시 session_id가 새 값으로 갱신되어야 함"
         );
     }
 }
