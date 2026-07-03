@@ -44,7 +44,20 @@
 ### 3.3 미배달/미처리 처리
 - **no-consumer TTL**: 브로커가 오래(예: N분) claim 안 된 submitted를 `expired`로 전이하고, poll/카드에 "이 agent 폴러 없음"을 표시한다. 조용한 영구 대기를 없앤다.
 - **워커 NACK**: 못 하는 task는 `fail_task`에 명확한 사유("read-only 레인인데 write 필요", "engines 피처 없음")를 남긴다(이미 fail_task 전이 보유 - 사유 표준화만).
-- **claim 후 사망 requeue**: working이 타임아웃을 넘기면 재큐(submitted 복귀) 또는 dead-letter. visibility timeout 패턴.
+- **claim 후 사망 requeue**: working이 타임아웃을 넘기면 재큐(submitted 복귀) 또는 dead-letter. visibility timeout 패턴. 상세는 §3.4.
+
+### 3.4 워커 생존 감지 + 격리 (claim 후 사망)
+
+증상: 워커가 claim(→working)한 뒤 죽으면(프로세스 사망·세션 만료·self-disruption) task가 영구 `working` 고착, 아무 신호 없음. 2026-07-03 뱃지 task가 이 케이스(`updatedAt`이 claim 시각에 얼어붙음).
+
+**생존 감지 - 층위별(싼 것부터):**
+1. **고착 노출 (가장 쌈, 우선)**: 브로커가 이미 `updatedAt`을 보유하므로, `poll`/`tasks` 출력에 `working`인데 updatedAt이 오래된 task를 "stuck?"으로 표시만 한다. 사람/dispatcher가 취소·재던짐 결정. 워커 변경 0, 자동 개입 0 = semi-a2a에 부합.
+2. **claim TTL requeue (브로커만)**: claim 시 `claimed_at` 기록 → 넉넉한 TTL(예 20~30분) 초과 `working`을 자동 `submitted` 복귀 또는 `expired`. 재큐-루프 방지 위해 max-retry 필요.
+3. **하트비트/lease 갱신 (워커+브로커)**: 워커가 실행 중 주기 ping → 무응답 시 사망 판정·재큐. 정밀하나 워커 배선 필요. **YAGNI**(작업이 늘 길고 사망이 잦을 때만).
+
+레퍼런스: SQS visibility timeout(2), Temporal/Cadence activity heartbeat(3, 긴 작업 표준), K8s node lease. 2·3은 같은 "lease" 가족(정적 TTL vs 갱신형).
+
+**워커 격리 (self-disruption 방지):** 위 생존 감지는 "죽으면 안 썩게"의 일반 안전망일 뿐, self-disruption은 못 고친다. 워커의 project-path가 **node 자신이 도는 살아있는 클론**이면, repo-switch·`reset --hard`·`git clean` 같은 write task가 발밑을 갈아엎어 node·워커를 자살시킨다(2026-07-03 뱃지 task 실증). 재큐하면 **재자살 무한루프**가 된다. → fix: 워커는 **node가 도는 클론과 분리된 별도 클론/워크트리**에서 write(임시 워크트리 `isolation:worktree` 답습). 관계: **생존 감지 = 죽으면 안 썩게(일반), 워커 격리 = 애초에 자살 안 하게(이 케이스)** - 상보적.
 
 ## 4. tunaround 최소 적용 (우리가 이미 반쯤 보유)
 
@@ -53,8 +66,10 @@
 **우선순위(YAGNI, 개인 2~3머신엔 풀 DLQ 과함):**
 1. **네이밍 컨벤션 문서화**(이 문서 §3.1) + a2a-usage에 "to_agent는 워커만" 한 줄. (비용 0)
 2. **Agent Card/poll에 능력 광고**(runner·write·피처). doctor·dispatch가 참고. (소)
-3. **no-consumer TTL 알림**: submitted가 TTL 초과 시 expired + poll 표시. (소-중)
-4. (후속) claim-후-사망 requeue, 능력 기반 자동 라우팅.
+3. **고착 노출**: `poll`/`tasks`에 오래된 `working`(updatedAt 낡음)을 "stuck?"으로 표시(§3.4-1). `updatedAt` 이미 있어 거의 공짜. (소)
+4. **no-consumer TTL 알림**: submitted가 TTL 초과 시 expired + poll 표시. (소-중)
+5. **워커 격리**: write task는 node 실행 클론과 분리된 워크트리에서(§3.4). self-disruption 방지. (소-중)
+6. (후속) claim TTL requeue, 하트비트, 능력 기반 자동 라우팅.
 
 ## 5. 비범위
 
