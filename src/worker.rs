@@ -171,6 +171,26 @@ pub async fn run_worker_loop(
     }
 }
 
+/// poll 텍스트에서 새로 알릴 submitted task만 뽑고, `seen`을 현재 활성(submitted) 집합으로 정리한다.
+/// run_poll_loop의 테스트 가능한 핵심: 디듑(같은 task 재출력 금지) + 장수명 데몬 메모리 상한
+/// (claim/완료로 사라진 id를 seen에서 제거 -> 그 id가 다시 submitted로 나타나면 재알림). I/O는 호출자.
+fn collect_new_submitted(
+    poll_text: &str,
+    seen: &mut std::collections::HashSet<String>,
+) -> Vec<ParsedTask> {
+    let tasks = parse_open_tasks(poll_text);
+    let active: std::collections::HashSet<&str> =
+        tasks.iter().filter(|t| t.state == "submitted").map(|t| t.id.as_str()).collect();
+    seen.retain(|id| active.contains(id.as_str()));
+    let mut fresh = Vec::new();
+    for t in tasks {
+        if t.state == "submitted" && seen.insert(t.id.clone()) {
+            fresh.push(t);
+        }
+    }
+    fresh
+}
+
 /// 감시 전용 루프: agent 앞 새 submitted task만 stdout에 한 줄씩 알리고 claim은 하지 않는다.
 /// Claude Code 세션이 이 커맨드를 Monitor로 감싸면, task 도착이 이벤트로 세션을 깨워 스스로
 /// claim/처리하게 할 수 있다(감독 레인을 유휴 0토큰으로 운용). 이미 알린 id는 HashSet으로 디듑한다
@@ -186,14 +206,12 @@ pub async fn run_poll_loop(
     loop {
         match client.poll_tasks(agent).await {
             Ok(text) => {
-                for t in parse_open_tasks(&text).into_iter().filter(|t| t.state == "submitted") {
-                    if seen.insert(t.id.clone()) {
-                        // Monitor 이벤트 = stdout 한 줄. 파이프는 블록 버퍼라 flush로 즉시 전달한다.
-                        let preview: String =
-                            t.msg.chars().take(80).collect::<String>().replace('\n', " ");
-                        println!("TASK {} :: {preview}", t.id);
-                        let _ = std::io::stdout().flush();
-                    }
+                for t in collect_new_submitted(&text, &mut seen) {
+                    // Monitor 이벤트 = stdout 한 줄. 파이프는 블록 버퍼라 flush로 즉시 전달한다.
+                    let preview: String =
+                        t.msg.chars().take(80).collect::<String>().replace('\n', " ");
+                    println!("TASK {} :: {preview}", t.id);
+                    let _ = std::io::stdout().flush();
                 }
             }
             // 폴 실패는 이벤트가 아니라 stderr로(Monitor 이벤트 오염 방지). 루프는 죽지 않는다.
@@ -374,6 +392,44 @@ mod tests {
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].context_id, None);
         assert_eq!(tasks[0].msg, "구포맷");
+    }
+
+    #[test]
+    fn collect_new_submitted_dedups_across_polls() {
+        // 같은 submitted task가 두 폴에 걸쳐 나와도 처음 1회만 반환된다(재출력 금지).
+        let id = "a".repeat(32);
+        let text = format!("[{id}] from=disp state=submitted msg=한 번만 알림");
+        let mut seen = std::collections::HashSet::new();
+        let first = collect_new_submitted(&text, &mut seen);
+        assert_eq!(first.len(), 1, "첫 폴은 새 task 반환");
+        assert_eq!(first[0].id, id);
+        let second = collect_new_submitted(&text, &mut seen);
+        assert!(second.is_empty(), "여전히 submitted면 재알림 안 함");
+    }
+
+    #[test]
+    fn collect_new_submitted_prunes_disappeared_ids_and_realerts_on_return() {
+        // claim/완료로 사라진 id는 seen에서 정리되고(메모리 상한), 다시 submitted로 나타나면 재알림된다.
+        let id = "b".repeat(32);
+        let present = format!("[{id}] from=disp state=submitted msg=작업");
+        let empty = "someone 앞 열린 task 없음".to_string();
+        let mut seen = std::collections::HashSet::new();
+        assert_eq!(collect_new_submitted(&present, &mut seen).len(), 1);
+        // task가 사라진 폴 -> seen이 비워진다(무한 증가 방지).
+        assert!(collect_new_submitted(&empty, &mut seen).is_empty());
+        assert!(seen.is_empty(), "사라진 id는 seen에서 제거되어야 함");
+        // 같은 id가 다시 submitted -> 재알림.
+        assert_eq!(collect_new_submitted(&present, &mut seen).len(), 1, "재등장 시 다시 알림");
+    }
+
+    #[test]
+    fn collect_new_submitted_ignores_non_submitted() {
+        // working 등 non-submitted는 알림 대상 아님(seen에도 안 들어감).
+        let id = "c".repeat(32);
+        let text = format!("[{id}] from=disp state=working msg=진행중");
+        let mut seen = std::collections::HashSet::new();
+        assert!(collect_new_submitted(&text, &mut seen).is_empty());
+        assert!(seen.is_empty());
     }
 
     #[test]
