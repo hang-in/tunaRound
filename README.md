@@ -1,5 +1,9 @@
 # tunaRound
 
+![CI](https://github.com/hang-in/tunaRound/actions/workflows/ci.yml/badge.svg)
+![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)
+![Rust](https://img.shields.io/badge/rust-edition%202024-orange.svg)
+
 구현 전에 Claude Code, Codex, OpenCode 같은 코딩 에이전트와 **설계를 먼저 토론하는** 터미널 도구입니다.
 
 하나의 에이전트에게 바로 코드를 맡기기 전에, 여러 에이전트에게 서로 다른 역할을 줍니다. 한 에이전트는 설계를 제안하고, 다른 에이전트는 반박하거나 검토합니다. 사용자는 진행자이자 최종 결정자로 남습니다.
