@@ -94,3 +94,13 @@ tunaround join http://127.0.0.1:8770/mcp --token [REDACTED_TOKEN]
 - 사람 역할 = "열었다/받았다" 신호 릴레이뿐. 작업 데이터(생명주기 프레임)는 SSE가 자체 전달.
 
 **다음(성공 시)**: 이기종 파트너(Codex-on-Ollama worker) = Phase 2 파트너 확장. Agent Card skills 광고 → best-fit 선택(별도 세션).
+
+## ⑨ 워커 데몬 도그푸딩: R5 성공 + 발견 리팩토링 항목 (2026-07-03)
+
+**성공(R5)**: mac-worker(`work --once --runner claude --write`)가 `refactor/reviews-2026-07-03`에서 R5(task `611c86de`)를 claim → claude 편집(`src/store/sqlite.rs` orphan 정리) → complete 전 구간 성공, **404 없이 완료**. 커밋 `d4b6815` 푸시. 검증: 컴파일 클린 + 새 테스트 `save_session_shrink_cleans_orphan…` ok. → 3자(Opus 통합 + Codex R6 + Mac R5) + 네트워크 레그 완성.
+
+**finding 1 — complete_task 404는 간헐적.** R5에선 안 남(짧은 편집). 긴 러너 실행 시에만 MCP 세션 만료로 404(윈도우 R10). 즉 R10(complete 전 세션 재연결)은 유효하되 상시는 아님.
+
+**finding 2 (신규) — 워커 데몬이 코어 다운에 무방비.** `work --interval 20` 연속 데몬 실행 중 코어(Windows serve)가 죽자: task `b565f68f`를 claim한 뒤 (1) complete가 transport 에러(`error sending request for url`)로 실패 (2) claim한 task가 **working 고아**로 남음(로컬 편집 결과물도 없음) (3) 이후 poll이 무한 에러 스팸. 진단: ping은 되는데 8770만 미서빙 = 머신 정상, 코어 프로세스만 다운. **→ 윈도우 R-리스트로 격상 요청. 제안 리팩토링**: 워커에 (a) 연결 실패 시 지수 backoff + 에러 로그 억제, (b) 코어 재연결 시 MCP 세션 재수립, (c) claim했으나 미완인 task 재개 또는 자동 release(working 고아 방지). R10(세션 재연결)의 상위 집합.
+
+**현 상태(2026-07-03)**: 코어 다운으로 맥 데몬 중단 권고(Ctrl-C) → 코어 재기동 후 재실행. `b565f68f`는 재기동 후 리셋/재큐 필요(윈도우 조치).
