@@ -73,6 +73,15 @@ pub struct CompleteTaskParams {
     pub result: String,
 }
 
+/// fail_task 툴 파라미터.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct FailTaskParams {
+    /// 실패 처리할 task id.
+    pub task_id: String,
+    /// 실패 사유(상태 메시지로 저장해 dispatcher가 읽는다).
+    pub reason: String,
+}
+
 /// send_task 툴 파라미터(dispatcher가 새 A2A task를 위임할 때 사용).
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SendTaskParams {
@@ -202,6 +211,24 @@ fn complete_task_text(store: &SqliteStore, task_id: &str, result: &str) -> Resul
         vec![Artifact { artifact_id, name: None, parts: vec![Part { text: Some(result.to_string()), ..Default::default() }] }];
     store.complete_task(task_id, &artifacts)?;
     Ok(format!("완료됨: task_id={task_id} state=completed"))
+}
+
+/// fail_task 순수 로직: task를 failed로 전이하고 사유를 상태 메시지로 남긴다. 대상 task가 없으면 Err.
+/// 러너 실행이 실패했을 때 completed로 위장하지 않고 failed로 구분해 dispatcher가 성패를 알 수 있게 한다.
+fn fail_task_text(store: &SqliteStore, task_id: &str, reason: &str) -> Result<String, String> {
+    if store.get_task(task_id)?.is_none() {
+        return Err(format!("task 없음: task_id={task_id}"));
+    }
+    let message_id = store.new_task_id()?;
+    let message = Message {
+        message_id,
+        role: "agent".to_string(),
+        parts: vec![Part { text: Some(reason.to_string()), ..Default::default() }],
+        task_id: None,
+        context_id: None,
+    };
+    store.update_task_state(task_id, TaskState::Failed, Some(&message))?;
+    Ok(format!("실패 처리됨: task_id={task_id} state=failed"))
 }
 
 /// send_task 순수 로직: text 하나를 A2A Message로 감싸 store::create_task_from_message에 위임한다.
@@ -418,6 +445,31 @@ impl TunaSearchServer {
         let text = match outcome {
             Ok(t) => t,
             Err(e) => format!("완료 처리 실패: {e}"),
+        };
+        Ok(CallToolResult::success(vec![Content::text(text)]))
+    }
+
+    #[tool(description = "task 실행이 실패했음을 보고한다(-> failed, 사유는 상태 메시지로 저장). completed와 구분되어 dispatcher가 실패를 인지한다.")]
+    async fn fail_task(
+        &self,
+        Parameters(p): Parameters<FailTaskParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let Some(store) = self.a2a_store.clone() else {
+            return Ok(CallToolResult::success(vec![Content::text(
+                "A2A task 저장소 미구성(fail_task 비활성)".to_string(),
+            )]));
+        };
+        let task_id = p.task_id;
+        let reason = p.reason;
+        let outcome = tokio::task::spawn_blocking(move || {
+            let store = store.lock().unwrap_or_else(|e| e.into_inner());
+            fail_task_text(&store, &task_id, &reason)
+        })
+        .await
+        .unwrap_or_else(|e| Err(format!("작업 실패: {e}")));
+        let text = match outcome {
+            Ok(t) => t,
+            Err(e) => format!("실패 처리 실패: {e}"),
         };
         Ok(CallToolResult::success(vec![Content::text(text)]))
     }
@@ -1288,6 +1340,28 @@ mod tests {
     fn complete_task_text_missing_task_is_err() {
         let store = SqliteStore::open_memory().unwrap();
         let err = complete_task_text(&store, "nope", "결과").unwrap_err();
+        assert!(err.contains("nope"), "에러 메시지에 task_id 없음: {err}");
+    }
+
+    #[test]
+    fn fail_task_text_sets_failed_with_reason() {
+        let store = SqliteStore::open_memory().unwrap();
+        seed_task(&store, "t1", "win", "mac", "2026-07-02 09:00:00");
+        let text = fail_task_text(&store, "t1", "러너 타임아웃").unwrap();
+        assert!(text.contains("state=failed"), "응답 불일치: {text}");
+        let reloaded = store.get_task("t1").unwrap().unwrap();
+        assert_eq!(reloaded.state, TaskState::Failed);
+        // 사유는 상태 메시지로 남아 dispatcher가 읽을 수 있다.
+        assert_eq!(
+            reloaded.status_message.and_then(|m| m.parts[0].text.clone()).as_deref(),
+            Some("러너 타임아웃")
+        );
+    }
+
+    #[test]
+    fn fail_task_text_missing_task_is_err() {
+        let store = SqliteStore::open_memory().unwrap();
+        let err = fail_task_text(&store, "nope", "사유").unwrap_err();
         assert!(err.contains("nope"), "에러 메시지에 task_id 없음: {err}");
     }
 

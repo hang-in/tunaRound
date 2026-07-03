@@ -127,6 +127,12 @@ impl McpHttpClient {
         self.call_tool("complete_task", json!({ "task_id": task_id, "result": result }))
             .await
     }
+
+    /// fail_task(task_id, reason) 얇은 래퍼(러너 실패 시 completed 대신 failed로 전이).
+    pub async fn fail_task(&self, task_id: &str, reason: &str) -> Result<String, String> {
+        self.call_tool("fail_task", json!({ "task_id": task_id, "reason": reason }))
+            .await
+    }
 }
 
 /// SSE 프레이밍(`data: ...` 라인들) 안에서 JSON-RPC 응답 페이로드를 찾아 파싱한다. 서버(rmcp

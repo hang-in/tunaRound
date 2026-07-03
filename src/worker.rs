@@ -160,21 +160,26 @@ async fn run_one_pass(
         std::thread::spawn(move || {
             let _ = tx.send(runner2.run(&input));
         });
-        let result = match rx.await {
-            Ok(Ok(out)) => out.content,
+        // 성공 -> complete_task(결과 artifact, state=completed). 실패 -> fail_task(사유, state=failed).
+        // 실패를 completed로 위장하지 않아 dispatcher가 성패를 구분하고 재시도를 판단할 수 있다.
+        match rx.await {
+            Ok(Ok(out)) => match client.complete_task(&t.id, &out.content).await {
+                Ok(_) => eprintln!("[work] task {} complete 완료", t.id),
+                Err(e) => eprintln!("[work] task {} complete 실패: {e}", t.id),
+            },
             Ok(Err(e)) => {
                 eprintln!("[work] task {} 러너 실패: {e:?}", t.id);
-                format!("[runner 에러] {e:?}")
+                let reason = format!("러너 실행 실패: {e:?}");
+                if let Err(fe) = client.fail_task(&t.id, &reason).await {
+                    eprintln!("[work] task {} fail 처리 실패: {fe}", t.id);
+                }
             }
             Err(_canceled) => {
                 eprintln!("[work] task {} 러너 스레드 취소(결과 유실)", t.id);
-                "[runner 스레드 취소]".to_string()
+                if let Err(fe) = client.fail_task(&t.id, "러너 스레드 취소(결과 유실)").await {
+                    eprintln!("[work] task {} fail 처리 실패: {fe}", t.id);
+                }
             }
-        };
-
-        match client.complete_task(&t.id, &result).await {
-            Ok(_) => eprintln!("[work] task {} complete 완료", t.id),
-            Err(e) => eprintln!("[work] task {} complete 실패: {e}", t.id),
         }
     }
 }
