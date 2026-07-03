@@ -469,8 +469,14 @@ fn run_doctor(cfg_path: Option<&str>) -> i32 {
             // 포트가 이미 쓰이면, 그게 우리 브로커(node가 이미 구동 중)인지 확인한다.
             // agent-card가 응답하면 OK로 본다(진단 목적이면 정상 상태이므로 오진단 방지, gemini 지적).
             Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
-                let port = listen.rsplit(':').next().unwrap_or("8770");
-                let url = format!("http://127.0.0.1:{port}/.well-known/agent-card.json");
+                // 와일드카드(0.0.0.0/[::]) 바인드만 루프백으로 조회한다. 특정 IP로 바인드했다면
+                // 127.0.0.1로는 못 닿아 false FAIL이 나므로 그 주소 그대로 쓴다(gemini 지적).
+                let target = if listen.starts_with("0.0.0.0") || listen.starts_with("[::]") {
+                    format!("127.0.0.1:{}", listen.rsplit(':').next().unwrap_or("8770"))
+                } else {
+                    listen.to_string()
+                };
+                let url = format!("http://{target}/.well-known/agent-card.json");
                 let mut req =
                     reqwest::blocking::Client::new().get(&url).timeout(std::time::Duration::from_secs(3));
                 if let Some(t) = &token {
@@ -480,8 +486,15 @@ fn run_doctor(cfg_path: Option<&str>) -> i32 {
                     Ok(r) if r.status().is_success() => {
                         println!("OK   core=self: {listen} 사용 중이나 브로커가 응답(node가 이미 구동 중)")
                     }
-                    _ => {
-                        println!("FAIL core=self: {listen} 사용 중이고 브로커 응답 없음(다른 프로세스 점유?)");
+                    // HTTP로 응답은 하나 2xx가 아니면(예: 401/403 토큰 문제) 대개 우리 브로커다.
+                    // "다른 프로세스"로 단정하지 않고 WARN으로 구분한다(coderabbit 지적).
+                    Ok(r) => println!(
+                        "WARN core=self: {listen} 사용 중, 브로커가 {} 응답(아마 우리 브로커 - 토큰/기동 상태 확인)",
+                        r.status()
+                    ),
+                    // 전송 자체 실패 = HTTP 응답 없음. 우리 브로커가 아닌 다른 프로세스 점유일 수 있다.
+                    Err(_) => {
+                        println!("FAIL core=self: {listen} 사용 중이고 HTTP 응답 없음(다른 프로세스 점유?)");
                         fails += 1;
                     }
                 }
@@ -539,20 +552,38 @@ fn run_doctor(cfg_path: Option<&str>) -> i32 {
                 }
             }
             // http/a2a는 바이너리 대신 필수 설정을 검증한다(누락 시 node가 build_lane_runner에서 실패, gemini 지적).
-            "http" => match &l.http_base_url {
-                Some(u) => println!("OK   lane {}[{kind}] runner=http: base_url {u}", l.agent),
-                None => {
-                    println!("FAIL lane {}[{kind}] runner=http: http_base_url 누락", l.agent);
+            // http/a2a는 필수 설정 + 그 러너를 지원하는 피처가 이 바이너리에 컴파일됐는지도 본다
+            // (피처 없이 빌드되면 node가 build_lane_runner에서 실패하므로, doctor가 미리 잡는다).
+            "http" => {
+                #[cfg(not(feature = "engines"))]
+                {
+                    println!("FAIL lane {}[{kind}] runner=http: 이 바이너리는 engines 피처 없이 빌드됨", l.agent);
                     fails += 1;
                 }
-            },
-            "a2a" => match &l.a2a_card {
-                Some(c) => println!("OK   lane {}[{kind}] runner=a2a: card {c}", l.agent),
-                None => {
-                    println!("FAIL lane {}[{kind}] runner=a2a: a2a_card 누락", l.agent);
+                #[cfg(feature = "engines")]
+                match &l.http_base_url {
+                    Some(u) => println!("OK   lane {}[{kind}] runner=http: base_url {u}", l.agent),
+                    None => {
+                        println!("FAIL lane {}[{kind}] runner=http: http_base_url 누락", l.agent);
+                        fails += 1;
+                    }
+                }
+            }
+            "a2a" => {
+                #[cfg(not(feature = "a2a-out"))]
+                {
+                    println!("FAIL lane {}[{kind}] runner=a2a: 이 바이너리는 a2a-out 피처 없이 빌드됨", l.agent);
                     fails += 1;
                 }
-            },
+                #[cfg(feature = "a2a-out")]
+                match &l.a2a_card {
+                    Some(c) => println!("OK   lane {}[{kind}] runner=a2a: card {c}", l.agent),
+                    None => {
+                        println!("FAIL lane {}[{kind}] runner=a2a: a2a_card 누락", l.agent);
+                        fails += 1;
+                    }
+                }
+            }
             other => {
                 println!("FAIL lane {}[{kind}] runner={other}: 알 수 없는 runner", l.agent);
                 fails += 1;
