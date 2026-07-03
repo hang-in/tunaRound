@@ -300,6 +300,5 @@
 
 > inbound(A+B) 폐기. outbound=우리가 외부 표준 A2A 에이전트에 표준으로 던지는 기반(a2a-client 채택). 미착수.
 
-- [ ] WA1: A2ARunner(a2a-client 통합, sync-over-async block_on, from_card_url->send_message->poll->RunOutput) + a2a-out feature + Task/Artifact->RunOutput 순수 매핑 단위테스트.
-- [ ] WA2: --runner a2a + --a2a-card/--a2a-token WorkArgs + main.rs factory 배선.
-- [ ] WA3: outbound 표준 interop 스모크(a2a-rs 예제 서버 상대) + 로컬 데모.
+- [x] WA1+WA2: A2ARunner(a2a-client 0.2, sync-over-async block_on, from_card_url->send_message->(Task면)GetTask 폴링->artifact/agent메시지 매핑) + a2a-out feature + --runner a2a/--a2a-card/--a2a-token 배선. (6399443; 매핑 7테스트, 304/218 pass, Opus 리뷰·독립검증)
+- [x] WA3 outbound 표준 interop 스모크 성공: 진짜 독립 표준 A2A 서버(radkit 0.0.5, 별도 프로세스, FakeLlm으로 negotiator 스텁)를 띄우고, 우리 코어 경유 `work --once --runner a2a --a2a-card http://127.0.0.1:9911/`가 외부 에이전트에 표준 위임 -> GetTask=completed + artifact에 외부 에이전트 응답("ECHO from external standard A2A target..."). = **우리가 표준 A2A로 나갈 수 있음 실증.** 덤: 1차 실패(radkit LLM 401) 때 A2ARunner 에러매핑+fail-전이 정확 동작(=(2) 재검증). ⚠단서: radkit=a2a-client와 같은 상류(microagents->a2aproject/a2a-rs) 계열이라 "같은 레퍼런스 구현군 내 표준 왕복" 검증(완전 이종 a2a-rs/turul-a2a 대상은 미시도, timebox). 프로토콜 왕복(카드발견->SendMessage->task완료->artifact) 자체는 유효 실증.

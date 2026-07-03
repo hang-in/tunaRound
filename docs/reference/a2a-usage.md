@@ -70,6 +70,14 @@ tunaround work --core http://<코어-IP>:8770/mcp --token <TOKEN> \
 - Ollama는 bearer 인증을 무시하므로 지금은 `--token`이 LLM 키로도 쓰인다. 인증이 필요한 LLM 엔드포인트를 붙일 때는 키 분리가 필요하다(후속 `--http-api-key`).
 - 로컬 모델이 콜드 상태면 첫 응답이 수십 초 걸릴 수 있다(모델 로드).
 
+```bash
+# 외부 표준 A2A 에이전트를 워커로 (outbound: 우리가 표준 A2A로 그 에이전트에 위임)
+tunaround work --core http://<코어-IP>:8770/mcp --token <TOKEN> \
+  --agent bridge-worker --runner a2a \
+  --a2a-card http://some-agent.example/ --a2a-token <외부 에이전트 토큰>
+```
+- `--runner a2a`는 `a2a-out` 피처가 필요하다(`cargo build --features "serve worker a2a-out"`). a2a-client로 `--a2a-card` URL의 agent-card를 발견해 **표준 A2A `SendMessage`로 위임**하고, 완료까지 `GetTask`를 폴링해 결과 artifact를 받아온다. 외부 표준 A2A 에이전트가 그대로 워커가 된다(독립 표준 서버 상대 왕복 실증). 반대 방향(제3자가 우리한테 던지기)은 비목표(§0 호환 범위 참조).
+
 ## 4. 작업 던지기 (dispatcher)
 
 ### 4a. 단발: SendMessage + GetTask

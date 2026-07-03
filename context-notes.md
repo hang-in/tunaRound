@@ -671,3 +671,11 @@
 - 동구님 결정: (1) **inbound(제3자가 우리한테 표준으로 던지기) 폐기** - 오픈소스라 필요하면 레포 가져가면 됨, 브로커→per-agent 재편(A+B)은 소비자 없는 가설. README 문구 "표준"->"A2A 기반"으로 정직화(e922534). (2) **outbound(우리가 외부 표준 A2A 에이전트에 던지기) = 기반 구축** - 이래야 semi라도 정당하게 "A2A"(우리끼리만 말하는 게 아님). 우리 브로커 불변.
 - **결정: a2a-client 크레이트 채택**(손구현 아님) - 표준성을 검증된 크레이트에 위임. `A2ARunner`(Runner impl)로 --runner a2a = 외부 표준 A2A 에이전트가 4번째 파트너 타입(Claude/Codex/로컬LLM/A2A-원격). sync-over-async(std 스레드 block_on). 정본 docs/design/v2-a2a-outbound-runner_2026-07-03.md. WA1~WA3.
 - 검증=대칭: inbound 스모크(외부 클라->우리, 갭 3개)의 짝으로, outbound는 a2a-rs 예제 서버(독립 표준 에이전트) 상대로 우리가 던져서 실증.
+
+## 2026-07-03 세션8: A2A outbound 러너(A2ARunner) WA1~WA3 완료 - outbound 표준 위임 실증
+
+- **WA1+WA2**(6399443): `A2ARunner`(Runner impl) = a2a-client 0.2로 외부 표준 A2A 에이전트에 위임. from_card_url 발견 -> send_message -> (Task면)GetTask 폴링 -> artifact(우선)/agent history(폴백) 텍스트를 RunOutput으로. sync-over-async(std 스레드에서 current-thread 런타임 block_on). `--runner a2a --a2a-card --a2a-token`. a2a-out feature(기본빌드 불변). 매핑 순수함수 7테스트. 크레이트 실측: a2a-types는 protobuf 스타일(role/state=i32, .state() 접근자, Part.content=part::Content, Data variant는 pbjson_types::Value).
+- **WA3 outbound interop 스모크 성공**: 진짜 독립 표준 A2A 서버(`radkit 0.0.5`, 별도 프로세스/크레이트, echo 스킬, negotiator LLM은 FakeLlm 스텁)를 9911에 띄우고, 우리 코어 경유 `work --once --runner a2a --a2a-card http://127.0.0.1:9911/`가 외부 에이전트에 표준 위임 -> 우리 코어 GetTask=completed + artifact="ECHO from external standard A2A target...". = **우리가 표준 A2A 클라로 나갈 수 있음 외부검증**(inbound 스모크의 대칭).
+- **덤 재검증**: 1차 시도서 radkit이 negotiator에 Anthropic LLM(더미키) 호출->401 실패. 이때 A2ARunner 에러매핑(RunError::Agent)+worker fail-전이(task=failed)가 정확 동작 = (2) fail-전이 라이브 재검증.
+- **정직한 단서**: radkit(TARGET)과 a2a-client(우리 클라)는 같은 상류(microagents->a2aproject/a2a-rs 계승) 계열이라 "같은 레퍼런스 구현군 내 표준 왕복" 검증. 완전 이종(a2a-rs vs turul-a2a 등) 파편화는 미시도(timebox, 1차 성공). 프로토콜 왕복(카드발견->SendMessage->task완료->artifact 추출) 자체는 유효 실증.
+- **최종 A2A 포지션**: outbound(우리가 표준으로 던짐)=지원·실증. inbound(제3자가 우리한테)=비목표(브로커라). README 호환범위 문구를 방향별로 정직화.

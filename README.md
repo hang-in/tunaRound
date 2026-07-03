@@ -289,30 +289,14 @@ tunaRound는 제한된 범위의 A2A 작업 브로커로도 동작합니다.
 
 호환 범위
 
-tunaRound의 A2A 기능은 tunaRound 인스턴스끼리 작업을 위임하기 위한 내부 A2A-lite 구조입니다.
+tunaRound의 A2A 기능은 tunaRound 인스턴스끼리 작업을 위임하기 위한 내부 A2A-lite 구조입니다. A2A의 개념(Task lifecycle, Message, Artifact, Agent Card, JSON-RPC, SSE streaming)을 차용합니다.
 
-A2A의 다음 개념을 차용합니다.
+호환은 방향으로 나눠 봐야 합니다.
 
-- Task lifecycle
-- Message
-- Artifact
-- Agent Card
-- JSON-RPC
-- SSE streaming
+- Outbound(우리가 나감): "--runner a2a"로 외부 표준 A2A 에이전트에게 표준으로 위임하는 것은 지원·실증됐습니다(a2a-client 사용, 독립 표준 서버 상대 왕복 확인).
+- Inbound(남이 우리한테 던짐): 중앙 브로커 라우팅("fromAgent"/"toAgent")과 인증 게이트 카드가 있어, 임의의 제3자 표준 A2A 클라이언트가 우리한테 작업을 만드는 것은 비목표입니다(JSON-RPC envelope·"GetTask"는 호환, 카드 발견·"SendMessage"는 브로커 확장이라 미호환).
 
-다만 중앙 브로커 라우팅과 인증 게이트가 들어가 있어, 임의의 제3자 표준 A2A 클라이언트와의 완전 호환을 목표로 하지 않습니다.
-
-현재 호환 범위는 다음과 같습니다.
-
-항목| 상태
-JSON-RPC envelope| 호환 확인
-"GetTask"| 호환 확인
-Agent Card| tunaRound 용도 중심
-"SendMessage"| 브로커 확장 포함
-카드 발견| 표준 완전 호환 비목표
-제3자 A2A 클라이언트| 비목표
-
-진짜 표준 게이트웨이가 필요해지면 별도 어댑터로 분리합니다.
+오픈소스라 우리 기능이 필요하면 레포를 쓰면 되고, 진짜 inbound 표준 게이트웨이가 필요해지면 별도 어댑터로 분리합니다.
 
 동작 방식
 
@@ -323,7 +307,7 @@ Agent Card| tunaRound 용도 중심
   "tunaround work"는 자기 앞으로 온 작업을 poll하고, claim하고, 지정한 runner로 실행한 뒤 complete 또는 failed로 전이합니다.
 
 - runner = 실제 실행 주체
-  같은 워커 데몬을 Claude, Codex, 로컬 LLM, OpenAI 호환 HTTP 모델로 실행할 수 있습니다.
+  같은 워커 데몬을 Claude, Codex, 로컬 LLM, OpenAI 호환 HTTP 모델, 외부 표준 A2A 에이전트("--runner a2a")로 실행할 수 있습니다.
 
 - SSE = 진행 상태 스트리밍
   dispatcher는 "SendStreamingMessage"와 "SubscribeToTask"로 작업 상태 변화를 실시간으로 볼 수 있습니다.
@@ -401,6 +385,9 @@ A2A 작업 위임
 - "SubscribeToTask"
 - 자율 워커 데몬
 - Claude, Codex, 로컬 LLM runner
+- 외부 표준 A2A 에이전트 위임 ("--runner a2a", outbound)
+- 워커 실패 시 "failed" 전이
+- "context_id" 기반 프로젝트별 라우팅
 - 워커 실패 시 task "failed" 전이
 - "context_id" 기반 프로젝트별 작업 라우팅
 - "--context-map"
@@ -491,6 +478,7 @@ TUI나 웹 UI는 이후 단계에서 붙일 예정입니다.
 - [x] 이기종 runner
 - [x] 워커 실패 시 task "failed" 전이
 - [x] "context_id" 기반 프로젝트별 작업 라우팅
+- [x] outbound 표준 A2A 위임 ("--runner a2a", 외부 표준 A2A 에이전트에 위임)
 
 다음
 
