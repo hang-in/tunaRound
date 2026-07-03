@@ -22,6 +22,8 @@ reqwest = { version = "0.12", default-features = false, features = ["blocking", 
 rmcp = { version = "1.8.0", features = ["server", "macros", "schemars", "transport-io"], optional = true }
 schemars = { version = "1.0", optional = true }
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio"], optional = true }
+a2a-client = { version = "0.2", optional = true }
+a2a-types = { version = "0.2", optional = true }
 
 [dev-dependencies]
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
@@ -39,6 +41,8 @@ mcp = ["sqlite", "dep:rmcp", "dep:schemars"]
 serve = ["mcp", "dep:axum", "rmcp?/transport-streamable-http-server"]
 # worker: 원격 코어의 MCP HTTP 엔드포인트를 호출하는 A2A 워커 클라이언트(reqwest만 필요, 서버쪽 dep 불요).
 worker = ["dep:reqwest"]
+# a2a-out: 외부 표준 A2A 에이전트에게 task를 표준 위임하는 outbound 러너(A2ARunner). 기본 꺼짐.
+a2a-out = ["dep:a2a-client", "dep:a2a-types"]
 
 # cargo-dist가 릴리스 아티팩트를 빌드할 때 쓰는 프로파일(release CI의 `cargo build --profile dist`).
 [profile.dist]

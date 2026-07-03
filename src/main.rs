@@ -188,6 +188,12 @@ struct WorkArgs {
     /// --runner http 전용: OpenAI 호환 chat API의 base URL(예: http://localhost:11434).
     #[arg(long = "http-base-url")]
     http_base_url: Option<String>,
+    /// --runner a2a 전용: 외부 표준 A2A 에이전트 카드 발견 URL(예: http://some-agent.example/).
+    #[arg(long = "a2a-card")]
+    a2a_card: Option<String>,
+    /// --runner a2a 전용: 그 외부 에이전트 인증 토큰(코어 --token과 별개).
+    #[arg(long = "a2a-token")]
+    a2a_token: Option<String>,
     /// poll 간격(초, 기본 15).
     #[arg(long, default_value_t = 15)]
     interval: u64,
@@ -207,6 +213,7 @@ enum WorkRunner {
     Codex,
     Opencode,
     Http,
+    A2a,
 }
 
 // 일부 feature 조합(예: --no-default-features)에서는 남는 서브커맨드 분기 수가 줄어
@@ -609,6 +616,22 @@ fn main() {
             #[cfg(not(feature = "engines"))]
             WorkRunner::Http => {
                 eprintln!("[work] --runner http 는 engines 피처가 필요합니다");
+                std::process::exit(1);
+            }
+            #[cfg(feature = "a2a-out")]
+            WorkRunner::A2a => {
+                let card = match &a.a2a_card {
+                    Some(c) => c.clone(),
+                    None => {
+                        eprintln!("[work] --runner a2a 는 --a2a-card <url>이 필요합니다");
+                        std::process::exit(1);
+                    }
+                };
+                std::sync::Arc::new(tunaround::runner::a2a::A2ARunner::new(card, a.a2a_token.clone()))
+            }
+            #[cfg(not(feature = "a2a-out"))]
+            WorkRunner::A2a => {
+                eprintln!("[work] --runner a2a 는 a2a-out 피처가 필요합니다");
                 std::process::exit(1);
             }
         };

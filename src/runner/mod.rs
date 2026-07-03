@@ -1,4 +1,6 @@
 // 에이전트 CLI를 한 턴 구동하고 결과를 돌려주는 러너 레이어의 경계.
+#[cfg(feature = "a2a-out")]
+pub mod a2a;
 pub mod claude;
 pub mod codex;
 pub(crate) mod exec;
