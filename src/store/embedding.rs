@@ -69,6 +69,7 @@ pub struct OllamaEmbedder {
     endpoint: String,
     model: String,
     client: reqwest::blocking::Client,
+    dim: std::sync::OnceLock<usize>,
 }
 
 #[cfg(feature = "semantic")]
@@ -78,6 +79,18 @@ impl OllamaEmbedder {
             endpoint: endpoint.to_string(),
             model: model.to_string(),
             client: reqwest::blocking::Client::new(),
+            dim: std::sync::OnceLock::new(),
+        }
+    }
+
+    fn cache_dim(&self, dim: usize) -> Result<(), String> {
+        match self.dim.set(dim) {
+            Ok(()) => Ok(()),
+            Err(_) if self.dim.get() == Some(&dim) => Ok(()),
+            Err(_) => Err(format!(
+                "ollama embed: dimension changed from {} to {dim}",
+                self.dim.get().copied().unwrap_or_default()
+            )),
         }
     }
 
@@ -117,14 +130,17 @@ impl Embedder for OllamaEmbedder {
         }
 
         let data: Resp = resp.json().map_err(|e| format!("ollama embed: {e}"))?;
-        data.embeddings
+        let embedding = data
+            .embeddings
             .into_iter()
             .next()
-            .ok_or_else(|| "ollama embed: empty embeddings".to_string())
+            .ok_or_else(|| "ollama embed: empty embeddings".to_string())?;
+        self.cache_dim(embedding.len())?;
+        Ok(embedding)
     }
 
     fn dim(&self) -> usize {
-        1024
+        self.dim.get().copied().unwrap_or_default()
     }
 
     fn model_id(&self) -> String {
@@ -154,10 +170,22 @@ mod tests {
 
     #[cfg(feature = "semantic")]
     #[test]
+    fn ollama_dim_is_cached_from_first_embedding_length() {
+        let e = OllamaEmbedder::new("http://unused", "test-model");
+        assert_eq!(e.dim(), 0);
+
+        e.cache_dim(768).unwrap();
+        assert_eq!(e.dim(), 768);
+        assert!(e.cache_dim(1024).is_err());
+        assert_eq!(e.dim(), 768);
+    }
+
+    #[cfg(feature = "semantic")]
+    #[test]
     #[ignore] // 수동: SSH -p [사설포트] 터널 + http://127.0.0.1:11435 떠 있어야 함.
-    fn ollama_embed_live_dim_1024() {
+    fn ollama_embed_live_dim_matches_response() {
         let e = OllamaEmbedder::new("http://127.0.0.1:11435", "bge-m3");
         let v = e.embed("검색 테스트").unwrap();
-        assert_eq!(v.len(), 1024);
+        assert_eq!(e.dim(), v.len());
     }
 }
