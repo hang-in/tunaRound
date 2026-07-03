@@ -685,3 +685,10 @@
 - 동구님이 작업 중 제미나이·코덱스에 리팩토링 리뷰를 돌림(docs/reviews/ 2개). Opus 자체검증(코덱스가 더 정밀·실행가능, 제미나이 일부 심각도 과장). HIGH 4건(R1·R2·R3·R4) 코드로 실버그 확정 - 특히 R1·R4는 우리 최근 코드 결함(외부 리뷰 값 실증).
 - **계획 정본 docs/plans/v2-refactor-from-reviews_2026-07-03.md** (R1~R9 + 미루기). 아이디어: **리팩토링 자체를 A2A 파트너 위임 도그푸딩으로** - 다음 세션 3자(Windows-Opus 통합자 + 맥-claude worker + 로컬 Codex worker `--runner codex --write`)가 각 R을 A2A task로 dispatch->처리->리뷰->커밋. 워밍업=R4(작고순수), top=R1+R2(묶음, 얽힘).
 - 진짜 실버그 핵심: R1(MCP 실패가 success로 반환->워커가 실패 못 감지, fail-전이 무력화) + R2(무조건 UPDATE->이중claim/terminal덮어쓰기). 둘 다 저장소 상태머신+MCP 에러계약 통합으로 함께 고쳐야.
+
+## 2026-07-03 세션8(후반4): A2A 3자 리팩토링 도그푸딩 (브랜치 refactor/reviews-2026-07-03)
+
+- 제미나이+코덱스 리뷰(docs/reviews/) 삼분류 → 계획(docs/plans/v2-refactor-from-reviews_2026-07-03.md) → **리팩토링을 A2A 파트너 위임으로 3자 수행**. Opus 통합자(R4·R1R2·R10=Sonnet서브) / Codex 워커 A2A(R6·R3) / Mac 워커 A2A LAN(R5) / tunaLlama→직접(R8). **8/9 완료**(R7=Mac 다음, R9 옵션). 브랜치 head 98b6298, 310 pass.
+- **실버그 4개**: R1(MCP 실패를 success로 위장→claim/complete 실패 못 감지), R2(무조건 UPDATE→이중claim/terminal덮어쓰기, 조건부 전이로 수정), R3(watchdog 부모PID만 kill→트리 종료 /T·process_group), R5(save_session orphan 벡터/유효성).
+- **findings**: R10=워커 세션만료 404(도그푸딩 발견, 자동재연결 수정) / 동시워커 워크트리 오염(격리 필요) / 워커=헤드리스 데몬(fresh spawn)이 handoff·/clear 불요(live 세션은 축적됨) / tunaLlama config 필요 / 통합자가 브랜치 push를 git-watch auto-poll=사람릴레이0 / 방법론=GitHub Flow+PR CI가 semi-a2a에 적합(A2A큐=이슈트래커, git PR=코드통합).
+- **남음**: R7(retriever/reader Result 계약, 큼, Mac에 헤드리스 데몬으로) · 브랜치→main 머지(겹침0 clean) · PR CI + 태스크당 브랜치 도입 · usecase 문서. 진입점 docs/prompts/v2-handoff_2026-07-03_session8-refactor.md.
