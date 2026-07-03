@@ -679,3 +679,9 @@
 - **덤 재검증**: 1차 시도서 radkit이 negotiator에 Anthropic LLM(더미키) 호출->401 실패. 이때 A2ARunner 에러매핑(RunError::Agent)+worker fail-전이(task=failed)가 정확 동작 = (2) fail-전이 라이브 재검증.
 - **정직한 단서**: radkit(TARGET)과 a2a-client(우리 클라)는 같은 상류(microagents->a2aproject/a2a-rs 계승) 계열이라 "같은 레퍼런스 구현군 내 표준 왕복" 검증. 완전 이종(a2a-rs vs turul-a2a 등) 파편화는 미시도(timebox, 1차 성공). 프로토콜 왕복(카드발견->SendMessage->task완료->artifact 추출) 자체는 유효 실증.
 - **최종 A2A 포지션**: outbound(우리가 표준으로 던짐)=지원·실증. inbound(제3자가 우리한테)=비목표(브로커라). README 호환범위 문구를 방향별로 정직화.
+
+## 2026-07-03 세션8: 1차 리팩토링 계획(제미나이+코덱스 리뷰) - 다음 세션 3자 A2A 도그푸딩
+
+- 동구님이 작업 중 제미나이·코덱스에 리팩토링 리뷰를 돌림(docs/reviews/ 2개). Opus 자체검증(코덱스가 더 정밀·실행가능, 제미나이 일부 심각도 과장). HIGH 4건(R1·R2·R3·R4) 코드로 실버그 확정 - 특히 R1·R4는 우리 최근 코드 결함(외부 리뷰 값 실증).
+- **계획 정본 docs/plans/v2-refactor-from-reviews_2026-07-03.md** (R1~R9 + 미루기). 아이디어: **리팩토링 자체를 A2A 파트너 위임 도그푸딩으로** - 다음 세션 3자(Windows-Opus 통합자 + 맥-claude worker + 로컬 Codex worker `--runner codex --write`)가 각 R을 A2A task로 dispatch->처리->리뷰->커밋. 워밍업=R4(작고순수), top=R1+R2(묶음, 얽힘).
+- 진짜 실버그 핵심: R1(MCP 실패가 success로 반환->워커가 실패 못 감지, fail-전이 무력화) + R2(무조건 UPDATE->이중claim/terminal덮어쓰기). 둘 다 저장소 상태머신+MCP 에러계약 통합으로 함께 고쳐야.

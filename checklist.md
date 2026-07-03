@@ -302,3 +302,18 @@
 
 - [x] WA1+WA2: A2ARunner(a2a-client 0.2, sync-over-async block_on, from_card_url->send_message->(Task면)GetTask 폴링->artifact/agent메시지 매핑) + a2a-out feature + --runner a2a/--a2a-card/--a2a-token 배선. (6399443; 매핑 7테스트, 304/218 pass, Opus 리뷰·독립검증)
 - [x] WA3 outbound 표준 interop 스모크 성공: 진짜 독립 표준 A2A 서버(radkit 0.0.5, 별도 프로세스, FakeLlm으로 negotiator 스텁)를 띄우고, 우리 코어 경유 `work --once --runner a2a --a2a-card http://127.0.0.1:9911/`가 외부 에이전트에 표준 위임 -> GetTask=completed + artifact에 외부 에이전트 응답("ECHO from external standard A2A target..."). = **우리가 표준 A2A로 나갈 수 있음 실증.** 덤: 1차 실패(radkit LLM 401) 때 A2ARunner 에러매핑+fail-전이 정확 동작(=(2) 재검증). ⚠단서: radkit=a2a-client와 같은 상류(microagents->a2aproject/a2a-rs) 계열이라 "같은 레퍼런스 구현군 내 표준 왕복" 검증(완전 이종 a2a-rs/turul-a2a 대상은 미시도, timebox). 프로토콜 왕복(카드발견->SendMessage->task완료->artifact) 자체는 유효 실증.
+
+## 1차 리팩토링 (제미나이+코덱스 리뷰 기반) (docs/plans/v2-refactor-from-reviews_2026-07-03.md)
+
+> Opus 자체검증·삼분류. 다음 세션 3자(Opus 통합 + 맥 worker + 로컬 Codex worker) A2A 도그푸딩 겸 처리. 미착수.
+
+- [ ] R1 [높음] MCP 에러 계약 정직화(claim/complete/fail 실패를 isError로, 클라·워커가 감지). 코덱스 #1.
+- [ ] R2 [높음] A2A 상태머신 조건부 전이(이중 claim/terminal 덮어쓰기 차단, rows_affected 체크). 코덱스 #2. R1과 묶음.
+- [ ] R3 [높음] watchdog 프로세스 트리 종료(Win /T, Unix process group). 코덱스 #6/제미나이 #2.
+- [ ] R4 [높음/소] --context-map parse->Result(오타 거부, 기본레포 오폴백 차단). 코덱스 #5. 도그푸딩 워밍업 1순위.
+- [ ] R5 [중] save_session orphan vectors/validity 정리. 코덱스 #8.
+- [ ] R6 [중/소] Embedder dim 동적화(비기본 모델 벡터유실). 제미나이 #5. 위임 이상적.
+- [ ] R7 [중] retriever/reader Result 계약(장애를 빈결과로 은폐 방지). 코덱스 #9.
+- [ ] R8 [중] 검색 폴백 통일(tokenizer builder 1회). 코덱스 #7.
+- [ ] R9 [낮/옵션] A2A poll 견고화(현 구현 견고성 감안 후순위). 제미나이 #1.
+- 미루기: Runner async trait(YAGNI), main/mcp 분해(여유시), session-id pull·CoreSync(검증 먼저), 모델 결합(안정적).
