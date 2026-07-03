@@ -1,111 +1,211 @@
-# tunaRound
+tunaRound
 
-터미널에서 Claude Code, Codex 같은 코딩 에이전트와 함께 **설계를 먼저 토론하는 도구**입니다.
+구현 전에 Claude Code, Codex, OpenCode 같은 코딩 에이전트와 설계를 먼저 토론하는 터미널 도구입니다.
 
-기능을 바로 구현하기 전에, 여러 에이전트에게 서로 다른 역할을 맡기고 같은 레포를 보게 합니다. 한 에이전트는 제안하고, 다른 에이전트는 검토합니다. 사용자는 진행자이자 최종 결정자로 남습니다.
+하나의 에이전트에게 바로 코드를 맡기기 전에, 여러 에이전트에게 서로 다른 역할을 줍니다. 한 에이전트는 설계를 제안하고, 다른 에이전트는 반박하거나 검토합니다. 사용자는 진행자이자 최종 결정자로 남습니다.
 
-토론이 끝나면 결론을 문서로 저장하고, 그 내용을 바탕으로 바로 구현을 시작할 수 있습니다.
+토론이 끝나면 결론을 "design.md" 같은 문서로 저장하고, 필요하면 그 자리에서 구현이나 작업 위임으로 이어갈 수 있습니다.
 
-## 무엇인가
+언제 쓰나
 
-- **사용자가 진행합니다.**  
-  사용자가 질문하거나 방향을 잡으면 에이전트들이 응답합니다. 에이전트끼리 끝없이 자동으로 대화하지 않습니다. 필요할 때만 `/debate`로 제한된 자동 토론을 돌릴 수 있습니다.
+- 기능을 바로 구현하기 전에 설계를 먼저 검토하고 싶을 때
+- Claude와 Codex의 의견을 같은 레포 기준으로 비교하고 싶을 때
+- 한 에이전트의 제안을 다른 에이전트에게 리뷰시키고 싶을 때
+- 긴 토론 결과를 문서로 남기고 구현 기준으로 삼고 싶을 때
+- 여러 머신의 에이전트에게 작업을 나눠 맡기고 싶을 때
 
-- **에이전트마다 역할을 나눕니다.**  
-  예를 들어 Claude는 제안자, Codex는 리뷰어처럼 둘 수 있습니다. 같은 레포를 보더라도 역할이 다르면 다른 관점이 나옵니다.
+기본 흐름
 
-- **같은 레포를 직접 읽습니다.**  
-  긴 컨텍스트를 복붙하지 않습니다. 각 에이전트가 자기 CLI로 현재 작업 디렉터리를 직접 읽고 판단합니다.
+사용자가 주제를 던진다
+→ Claude가 설계를 제안한다
+→ Codex가 검토하거나 반박한다
+→ 사용자가 방향을 정한다
+→ 결론을 문서로 저장한다
+→ 필요하면 에이전트에게 구현을 맡긴다
 
-- **토론 결과를 문서로 남깁니다.**  
-  대화 중 나온 결론을 `design.md` 같은 문서로 저장합니다. 토론 따로, 구현 따로 흩어지는 일을 줄입니다.
+tunaRound는 에이전트들이 사람 없이 무한히 대화하는 도구가 아닙니다.
+기본값은 항상 사용자 주도 토론입니다.
 
-## 써보기
+설치
 
-`claude`와 `codex` CLI가 설치되어 있고 인증까지 되어 있다면 바로 실행할 수 있습니다.
+Homebrew
 
-```bash
-cargo run            # = cargo run -- chat (인자 없으면 기본 REPL)
-```
+brew install hang-in/tap/tunaround
 
-서브커맨드: `chat`(기본 REPL) · `core <addr>`(단일 프로세스 코어) · `serve <addr>`(헤드리스 코어) · `join <url>`(원격 코어 접속) · `work`(A2A 위임 워커 데몬) · `reindex`. `tunaround <명령> --help`로 옵션 확인.
+PowerShell
+
+# 릴리스 후 설치 스크립트 URL 확정
+irm <install-script-url> | iex
+
+Cargo
+
+cargo install tunaround
+
+«소스에서 직접 빌드하거나 개발 모드로 실행하려면 "docs/development/source-run.md" (docs/development/source-run.md)를 참고하세요.»
+
+빠른 시작
+
+"claude"와 "codex" CLI가 설치되어 있고 인증까지 되어 있다면 바로 시작할 수 있습니다.
+
+tunaround chat
 
 예시:
 
-```text
+> 결제 모듈을 어떻게 설계할까?
+> @codex 이 설계에서 위험한 부분만 봐줘
+> /debate 3 이 방향 괜찮나
+> /conclude
+> /save design.md
+
+주요 명령
+
+명령| 설명
+"tunaround chat"| 기본 REPL을 실행합니다.
+"tunaround core <addr>"| 단일 프로세스 코어를 실행합니다.
+"tunaround serve <addr>"| 헤드리스 코어를 실행합니다.
+"tunaround join <url>"| 원격 코어에 접속합니다.
+"tunaround work"| A2A 작업 위임 워커 데몬을 실행합니다.
+"tunaround reindex"| 검색 색인을 다시 만듭니다.
+
+옵션은 다음 명령으로 확인합니다.
+
+tunaround <명령> --help
+
+REPL 사용 예시
+
 > 결제 모듈을 어떻게 설계할까?      # claude(제안자) + codex(리뷰어)가 응답
 > @codex 이 부분만 봐줘            # codex에게만 질문
 > @codex! 이 함수 고쳐줘            # codex가 실제 파일을 수정
-> /debate 3 이 설계 괜찮나          # 에이전트끼리 최대 3턴 토론
+> /debate 3 이 설계 괜찮나          # 최대 3턴 제한 자동 토론
 > /branches                        # 대화 분기 보기
 > /checkout 2                      # 특정 분기로 이동
 > /conclude                        # 지금까지 토론 정리
 > /search 인증 설계                 # 과거 대화와 문서 검색
 > /save design.md                  # 토론 결과 저장
 > /quit
-```
 
 세션을 이어서 쓰려면 상태 파일을 넘깁니다.
 
-```bash
-cargo run -- chat session.json
-```
+tunaround chat session.json
 
 여러 역할과 엔진을 직접 정하려면 로스터 파일을 사용합니다.
 
-```bash
-cargo run -- chat --roster examples/roster.json
-```
+tunaround chat --roster examples/roster.json
 
-## 여러 터미널에서 같이 보기
+핵심 기능
 
-Redis를 연결하면 여러 터미널에서 같은 세션을 공유할 수 있습니다.
+사용자 주도 설계 토론
 
-```bash
-export TUNAROUND_REDIS_URL=redis://127.0.0.1:6379
-```
+사용자가 질문하거나 방향을 잡으면 에이전트들이 응답합니다.
+에이전트끼리 끝없이 자동 대화하지 않습니다.
 
-```bash
-cargo run -- chat --session <id>   # 기존 세션 이어서 진행
-cargo run -- chat --observe <id>   # 읽기 전용으로 관찰
-```
+필요할 때만 "/debate"로 제한된 자동 토론을 실행할 수 있습니다.
 
-이 기능은 한 터미널에서는 토론을 진행하고, 다른 터미널에서는 진행 상황만 지켜볼 때 유용합니다.
+> /debate 3 이 구조가 과한지 검토해줘
 
-## 검색과 기억
+역할 기반 에이전트
 
-긴 토론을 매번 전부 다시 넣지 않아도 되도록, 대화와 문서를 색인해두고 필요한 부분만 검색해서 가져옵니다.
+Claude는 제안자, Codex는 리뷰어처럼 역할을 나눌 수 있습니다.
+같은 레포를 보더라도 역할이 다르면 다른 관점이 나옵니다.
 
-```bash
-cargo run --features "semantic mcp" -- chat --db tuna.db   # 기본 빌드에 morphology+sqlite 포함
-```
+예시:
 
-사용 가능한 기능:
+Claude: 설계 제안자
+Codex: 코드 리뷰어
+OpenCode: 대안 구현 검토자
+Local LLM: 빠른 초안 생성자
 
-- `sqlite`  
-  대화와 문서를 SQLite에 저장하고 FTS5로 검색합니다. `/search` 명령도 사용할 수 있습니다.
+같은 레포 직접 읽기
 
-- `morphology`  
-  한국어 검색을 위해 형태소 분석을 사용합니다. 예를 들어 “검색을” 같은 표현도 “검색”으로 잘 잡도록 돕습니다. 더 정확한 Kiwi를 우선 쓰고, 없으면 lindera로 자동 폴백합니다. 빌드는 순수 Rust라 macOS·Windows·Linux 모두 그대로 됩니다. Kiwi 네이티브 라이브러리(libkiwi)+모델은 첫 실행 때 OS 캐시에 자동으로 내려받습니다(실패해도 lindera로 동작). 자동 다운로드가 막히면 `KIWI_RS_VERSION`/`KIWI_LIBRARY_PATH` 환경변수로 지정하거나 캐시를 수동 설치합니다.
+긴 컨텍스트를 복사해서 붙여넣지 않습니다.
+각 에이전트가 자기 CLI로 현재 작업 디렉터리를 직접 읽고 판단합니다.
 
-- `semantic`  
-  Ollama 임베딩으로 의미 검색을 추가합니다. 기본 임베딩 서버는 `http://127.0.0.1:11435`, 기본 모델은 `qwen3-embedding:0.6b`입니다(실코퍼스에서 bge-m3보다 랭킹 우위).  
-  서버는 `TUNAROUND_OLLAMA_URL`, 모델은 `TUNAROUND_EMBED_MODEL`(예: `bge-m3`)로 바꿀 수 있습니다. 모델을 바꾸면 다음 색인 때 자동 재임베딩됩니다.
+사용자
+→ tunaRound
+→ Claude Code / Codex / OpenCode
+→ 현재 레포 직접 확인
+→ 응답 또는 수정
 
-- `mcp`  
-  에이전트가 토론 중 직접 과거 맥락을 검색(`search_context`)하고, 지금까지의 전사를 읽어올(`read_transcript`) 수 있도록 도구를 붙입니다.
+문서 저장
 
-검색 결과는 단순 관련도만이 아니라 **유효성과 최신성**도 반영해 정렬합니다. `/reject`로 무효화한 발언은 제외하고, `/supersede`로 대체된 발언은 뒤로 내립니다. 서로 다른 세션에서 온 결과 중 오래된 것은 약하게 낮춥니다. 다만 관련성이 높은 오래된 결정은 함부로 밀지 않습니다.
+토론 결과를 "design.md" 같은 문서로 저장할 수 있습니다.
 
-기본 실행은 가볍게 유지하고, 검색·임베딩·MCP 같은 무거운 기능은 필요할 때만 켜는 구조입니다.
+> /conclude
+> /save design.md
 
-## 설정 프로파일
+토론 따로, 구현 기준 따로 흩어지는 일을 줄입니다.
 
-`--db`, `--roster`, `--search-url` 같이 반복되는 옵션을 매번 입력하지 않도록 `tunaround.toml`에 프로파일로 저장하고, 실행할 때 프로파일만 골라 쓸 수 있습니다.
+검색과 기억
 
-레포 루트의 `tunaround.toml.example`을 참고해 `tunaround.toml`로 복사한 뒤 값을 채웁니다(이 파일은 gitignore 대상이라 사설 도메인·토큰을 넣어도 커밋되지 않습니다).
+긴 토론을 매번 전부 다시 넣지 않도록, 대화와 문서를 색인해두고 필요한 부분만 검색해서 가져옵니다.
 
-```toml
+tunaround chat --db tuna.db
+
+검색 관련 기능은 필요할 때만 켤 수 있습니다.
+
+tunaround chat --db tuna.db --features semantic
+
+또는 소스 빌드 환경에서는 다음 feature 조합을 사용할 수 있습니다.
+
+cargo run --features "semantic mcp" -- chat --db tuna.db
+
+SQLite + FTS5
+
+대화와 문서를 SQLite에 저장하고 FTS5로 검색합니다. "/search" 명령도 사용할 수 있습니다.
+
+> /search 인증 설계
+
+한국어 형태소 검색
+
+한국어 검색을 위해 형태소 분석을 사용합니다.
+
+예를 들어 “검색을” 같은 표현도 “검색”으로 잘 잡도록 돕습니다. Kiwi를 우선 사용하고, 실패하면 lindera로 자동 폴백합니다.
+
+Kiwi 네이티브 라이브러리와 모델은 첫 실행 때 OS 캐시에 자동으로 내려받습니다. 자동 다운로드가 실패해도 lindera로 동작합니다.
+
+다운로드가 막힌 환경에서는 다음 환경변수로 직접 지정할 수 있습니다.
+
+export KIWI_RS_VERSION=<version>
+export KIWI_LIBRARY_PATH=<path>
+
+의미 검색
+
+Ollama 임베딩으로 의미 검색을 추가합니다.
+
+기본값은 다음과 같습니다.
+
+TUNAROUND_OLLAMA_URL=http://127.0.0.1:11435
+TUNAROUND_EMBED_MODEL=qwen3-embedding:0.6b
+
+환경변수로 바꿀 수 있습니다.
+
+export TUNAROUND_OLLAMA_URL=http://127.0.0.1:11435
+export TUNAROUND_EMBED_MODEL=bge-m3
+
+모델을 바꾸면 다음 색인 때 자동으로 재임베딩됩니다.
+
+MCP 기반 맥락 검색
+
+MCP 기능을 켜면 에이전트가 토론 중 직접 과거 맥락을 검색하고, 지금까지의 전사를 읽을 수 있습니다.
+
+제공 도구:
+
+- "search_context"
+- "read_transcript"
+
+검색 결과는 단순 관련도만 보지 않습니다. 유효성과 최신성도 함께 반영합니다.
+
+- "/reject"로 무효화한 발언은 제외합니다.
+- "/supersede"로 대체된 발언은 뒤로 내립니다.
+- 서로 다른 세션에서 온 오래된 결과는 약하게 낮춥니다.
+- 관련성이 높은 오래된 결정은 함부로 밀어내지 않습니다.
+
+설정 프로파일
+
+"--db", "--roster", "--search-url"처럼 반복되는 옵션은 "tunaround.toml"에 프로파일로 저장할 수 있습니다.
+
+레포 루트의 "tunaround.toml.example"을 참고해 "tunaround.toml"로 복사한 뒤 값을 채웁니다. 이 파일은 gitignore 대상이라 사설 도메인이나 토큰을 넣어도 커밋되지 않습니다.
+
 default_profile = "local"
 
 [profile.local]
@@ -117,188 +217,299 @@ db = "~/.tunaround/homelab.db"
 search_url = "https://your-core-host.example/mcp"
 search_token_env = "TUNA_TOKEN"
 pull_context = true
-```
 
-```bash
+실행할 때 프로파일을 지정합니다.
+
 tunaround chat --profile homelab
-```
 
-설정 파일은 `--config <경로>`로 직접 지정하거나, 지정하지 않으면 `./tunaround.toml` -> `~/.config/tunaround/config.toml` 순서로 찾습니다. 프로파일이 여러 개인데 `default_profile`도 `--profile`도 없으면 번호를 골라 선택하는 대화형 프롬프트가 뜹니다.
+설정 파일은 다음 순서로 찾습니다.
 
-값 우선순위는 **CLI 플래그 > 선택된 프로파일 > 기본값**입니다. 토큰은 설정 파일에 평문으로 적을 수도 있지만, `search_token_env`로 환경변수 이름만 적어두는 쪽을 권장합니다. 이 옵션들은 `chat`·`core`·`join`에서만 적용되고, `serve`·`mcp-search`·`reindex`는 쓰지 않습니다.
+1. "--config <경로>"
+2. "./tunaround.toml"
+3. "~/.config/tunaround/config.toml"
 
-## 여러 머신에서 함께 토론하기 (원리)
+프로파일이 여러 개인데 "default_profile"도 "--profile"도 없으면 번호를 골라 선택하는 대화형 프롬프트가 뜹니다.
 
-두 사람이 각자 다른 컴퓨터(예: 맥과 윈도우)에서 **같은 설계 토론**에 참여할 수 있습니다. 원리는 "공유 화이트보드 + 각자의 비서"로 생각하면 쉽습니다.
+값 우선순위는 다음과 같습니다.
 
-- **하나의 코어 = 공유 화이트보드.** 한 컴퓨터가 코어를 띄웁니다(`serve <주소>` 또는 `core <주소>`). 코어는 **토론 전사와 검색 색인을 담은 유일한 원본**입니다.
-- **각 컴퓨터 = 각자의 비서.** 다른 컴퓨터는 그 코어에 붙습니다(`join <url>`). claude·codex 에이전트는 **각 컴퓨터에서 로컬로** 돕니다.
-- **읽고 쓰기.** 에이전트는 발언하기 전에 화이트보드를 **읽고**(전사·과거 맥락을 네트워크 너머로 당겨옴), 자기 발언을 화이트보드에 **적습니다**(코어 전사에 기록). 그래서 한쪽에서 한 말을 다른 쪽 에이전트가 이어받습니다.
+CLI 플래그 > 선택된 프로파일 > 기본값
 
-핵심은 **복사가 아니라 공유**라는 점입니다.
+토큰은 설정 파일에 평문으로 적을 수도 있지만, "search_token_env"로 환경변수 이름만 적어두는 쪽을 권장합니다.
 
-- 전사는 **코어 한 곳에만** 있습니다. 각 머신이 사본을 만들어 동기화하는 게 아니라(DB 복제가 아님), 필요할 때 코어에 원격으로 물어봅니다. 코어가 발언 순번의 유일한 권위라 여러 머신이 동시에 써도 충돌하지 않습니다.
-- 에이전트는 전체를 다 받지 않고 **필요한 조각만 당겨옵니다**(pull). 그래서 토론이 길어져도 프롬프트가 가볍습니다.
+프로파일 옵션은 "chat", "core", "join"에서만 적용됩니다. "serve", "mcp-search", "reindex"에는 적용되지 않습니다.
 
-연결에 필요한 것은 코어 주소 + 토큰(bearer 인증) + 서로 닿는 네트워크(같은 공유기면 사설 IP, 아니면 Tailscale/SSH 터널)뿐입니다.
+여러 터미널에서 같이 보기
 
-```bash
-# 코어를 띄우는 컴퓨터
+Redis를 연결하면 여러 터미널에서 같은 세션을 공유할 수 있습니다.
+
+export TUNAROUND_REDIS_URL=redis://127.0.0.1:6379
+
+tunaround chat --session <id>   # 기존 세션 이어서 진행
+tunaround chat --observe <id>   # 읽기 전용 관찰
+
+이 기능은 한 터미널에서는 토론을 진행하고, 다른 터미널에서는 진행 상황만 볼 때 사용합니다.
+
+여러 머신에서 함께 토론하기
+
+두 사람이 각자 다른 컴퓨터에서 같은 설계 토론에 참여할 수 있습니다.
+예를 들어 맥과 윈도우가 하나의 코어에 붙어 같은 전사를 공유할 수 있습니다.
+
+원리는 “공유 화이트보드 + 각자의 비서”에 가깝습니다.
+
+- 코어 = 공유 화이트보드
+  한 컴퓨터가 코어를 띄웁니다. 코어는 토론 전사와 검색 색인을 담은 유일한 원본입니다.
+
+- 각 컴퓨터 = 각자의 비서
+  다른 컴퓨터는 코어에 접속합니다. Claude, Codex 같은 에이전트는 각 컴퓨터에서 로컬로 실행됩니다.
+
+- 전사는 복제하지 않고 공유합니다.
+  각 머신이 DB 사본을 만들어 동기화하는 방식이 아닙니다. 필요할 때 코어에 원격으로 물어보고, 발언은 코어 전사에 기록합니다.
+
+- 필요한 맥락만 당겨옵니다.
+  에이전트는 전체 전사를 매번 받지 않고 필요한 조각만 가져옵니다. 토론이 길어져도 프롬프트가 가볍게 유지됩니다.
+
+코어를 띄우는 컴퓨터:
+
 tunaround serve 0.0.0.0:8770 --db shared.db --token <토큰>
 
-# 붙는 컴퓨터
+접속하는 컴퓨터:
+
 tunaround join http://<코어-IP>:8770/mcp --token <토큰>
-```
 
-(참고: 위의 "여러 터미널에서 같이 보기"의 Redis 미러링은 이것과 별개인 관찰 전용 기능입니다. 머신 간 토론 공유는 여기 코어 방식을 씁니다.)
+필요한 것은 코어 주소, bearer 토큰, 서로 닿는 네트워크입니다. 같은 공유기 안에서는 사설 IP를 쓰면 되고, 외부에서는 Tailscale이나 SSH 터널을 사용할 수 있습니다.
 
-## 파트너 에이전트에게 작업 위임하기 (A2A)
+Redis 기반 관찰 기능은 이 구조와 별개입니다. Redis는 여러 터미널에서 같은 세션을 보는 용도이고, 머신 간 토론 공유는 코어 방식을 사용합니다.
 
-토론과 별개로, 코어는 **A2A(Agent2Agent) 프로토콜을 기반으로 한** 작업 브로커로도 동작합니다. 한 쪽(dispatcher)이 다른 머신·다른 종류의 에이전트(worker)에게 작업을 맡기고, 그 진행과 결과를 받아볼 수 있습니다.
+고급 기능: A2A 작업 위임
 
-> **호환 범위(정직하게):** A2A의 구조(Task 생명주기·Message/Artifact·Agent Card·JSON-RPC·SSE)를 차용해 **tunaRound 인스턴스끼리** 위임하는 것이 목적입니다. 중앙-브로커 라우팅(`fromAgent`/`toAgent`)과 인증-게이트 카드 등 확장이 있어, **임의의 제3자 표준 A2A 클라이언트와의 완전 호환은 목표가 아닙니다**(JSON-RPC envelope·`GetTask` 레벨은 호환 확인, 카드 발견·`SendMessage`는 브로커 확장이라 미호환). 진짜 표준 게이트웨이가 필요해지면 별도 어댑터로 다룹니다.
+tunaRound는 제한된 범위의 A2A 작업 브로커로도 동작합니다.
 
-- **코어 = 작업 큐 + A2A 서버.** `serve`로 띄운 코어가 `/a2a`(JSON-RPC: `SendMessage`/`GetTask`/`CancelTask` + 스트리밍 `SendStreamingMessage`/`SubscribeToTask`)와 Agent Card(`/.well-known/agent-card.json`)를 노출합니다.
-- **자율 워커 데몬.** `tunaround work`는 자기 앞으로 온 작업을 스스로 발견(poll)하고, 착수(claim)하고, 지정한 러너로 실행한 뒤, 결과를 되돌립니다(complete). 사람이 "이제 처리해"라고 신호할 필요가 없습니다.
-- **이기종 파트너.** 워커가 무엇으로 작업을 실행할지 `--runner`로 정합니다. 같은 데몬을 Claude로도, Codex로도, 로컬 LLM(Ollama 등 OpenAI 호환 HTTP)으로도 띄울 수 있습니다.
-- **실시간 스트리밍.** dispatcher가 `SendStreamingMessage`로 던지면 작업의 상태 변화(submitted -> working -> 결과 artifact -> completed)를 SSE로 실시간 구독합니다. 폴링 없이 진행을 지켜봅니다.
+여기서 A2A는 “에이전트들이 사용자 없이 무한히 협업하는 swarm”이 아닙니다.
+사용자가 목표를 정하고, 코어가 작업을 큐에 올리며, 워커 에이전트가 자기 앞으로 온 작업을 발견하고 처리하는 구조입니다.
 
-```bash
-# 코어(작업 브로커) 한 대
+호환 범위
+
+tunaRound의 A2A 기능은 tunaRound 인스턴스끼리 작업을 위임하기 위한 내부 A2A-lite 구조입니다.
+
+A2A의 다음 개념을 차용합니다.
+
+- Task lifecycle
+- Message
+- Artifact
+- Agent Card
+- JSON-RPC
+- SSE streaming
+
+다만 중앙 브로커 라우팅과 인증 게이트가 들어가 있어, 임의의 제3자 표준 A2A 클라이언트와의 완전 호환을 목표로 하지 않습니다.
+
+현재 호환 범위는 다음과 같습니다.
+
+항목| 상태
+JSON-RPC envelope| 호환 확인
+"GetTask"| 호환 확인
+Agent Card| tunaRound 용도 중심
+"SendMessage"| 브로커 확장 포함
+카드 발견| 표준 완전 호환 비목표
+제3자 A2A 클라이언트| 비목표
+
+진짜 표준 게이트웨이가 필요해지면 별도 어댑터로 분리합니다.
+
+동작 방식
+
+- 코어 = 작업 큐 + A2A 서버
+  "serve"로 띄운 코어가 "/a2a"와 Agent Card를 노출합니다.
+
+- 워커 = 자율 처리 데몬
+  "tunaround work"는 자기 앞으로 온 작업을 poll하고, claim하고, 지정한 runner로 실행한 뒤 complete 또는 failed로 전이합니다.
+
+- runner = 실제 실행 주체
+  같은 워커 데몬을 Claude, Codex, 로컬 LLM, OpenAI 호환 HTTP 모델로 실행할 수 있습니다.
+
+- SSE = 진행 상태 스트리밍
+  dispatcher는 "SendStreamingMessage"와 "SubscribeToTask"로 작업 상태 변화를 실시간으로 볼 수 있습니다.
+
+코어 실행:
+
 tunaround serve 0.0.0.0:8770 --db shared.db --token <토큰>
 
-# 워커 데몬 - win-worker 앞 작업을 Claude로 자율 처리
+Claude 워커 실행:
+
 tunaround work --core http://<코어-IP>:8770/mcp --token <토큰> \
   --agent win-worker --runner claude
 
-# 로컬 LLM(Ollama)을 워커로 (이기종 파트너)
+로컬 LLM 워커 실행:
+
 tunaround work --core http://<코어-IP>:8770/mcp --token <토큰> \
-  --agent llm-worker --runner http --http-base-url http://127.0.0.1:11434 --model qwen3.5:4b
-```
+  --agent llm-worker --runner http \
+  --http-base-url http://127.0.0.1:11434 \
+  --model qwen3.5:4b
 
-사람은 목표를 한 번 발행할 뿐, 발견·실행·완료·통지는 기계끼리 처리합니다. 자율 수준은 **semi-a2a**(사람이 목표를 정하는 HITL)이며, 사람 없이 무한히 도는 자동 토론 루프는 의도적으로 두지 않았습니다. 작업을 던지는 dispatcher 쪽 요청·워커 실행·프로젝트별 라우팅 등 **구체적인 사용법은 [docs/reference/a2a-usage.md](docs/reference/a2a-usage.md)**를 참고하세요.
+자율 수준은 semi-A2A입니다.
+사람이 목표를 정하고, 시스템은 발견·실행·완료·통지를 기계끼리 처리합니다. 사람 없이 무한히 도는 자동 토론 루프는 의도적으로 두지 않습니다.
 
-## 현재 상태
+자세한 사용법은 아래 문서를 참고합니다.
+
+- "docs/reference/a2a-usage.md" (docs/reference/a2a-usage.md)
+
+현재 상태
 
 v1 본체와 v2 검색·맥락 기능이 대부분 들어왔습니다.
 
-현재 가능한 것:
+토론과 실행
 
 - 역할을 나눈 다중 에이전트 토론
 - Claude Code, Codex 기반 응답
 - 특정 에이전트 지목
 - 특정 에이전트에게 파일 수정 맡기기
-- `/debate`를 통한 제한된 자동 토론
+- "/debate"를 통한 제한된 자동 토론
 - 대화 분기와 체크아웃
 - 세션 저장과 재개
-- Redis 기반 멀티세션 관찰
-- SQLite + FTS5 검색
-- 한국어 형태소 검색 (외래어 병기: 리프레시 ↔ refresh)
-- 의미 검색 (Ollama 임베딩, 기본 `qwen3-embedding:0.6b`)
-- BM25 + 의미 검색을 합친 하이브리드 검색
-- 유효성과 최신성을 반영한 검색 랭킹 (`/reject`·`/supersede`·`/explain`)
-- MCP 기반 에이전트 직접 검색과 전사 읽기 (Claude·Codex 둘 다 pull)
-- `tunaround.toml` 프로파일로 반복 옵션 저장·진입 선택
 - 긴 토론에서 오래된 발언을 요약해 다음 라운드로 넘기는 요약 이월
-- 통째 주입 대신 에이전트가 맥락을 직접 당겨오는 방식 (push → pull, `--pull-context`)
-- 코어의 검색·전사를 네트워크 HTTP MCP로 노출 (`--serve-mcp`, 원격 접속 토대)
-- 로컬/원격 LLM 참가자 (ollama, lmstudio, openai 같은 HTTP 엔진, opencode CLI)
-- A2A 기반 작업 위임: 파트너 에이전트에게 작업을 맡기고 결과를 받는 브로커 코어 (`/a2a`, Agent Card. tunaRound끼리 위임용, 제3자 표준 완전호환은 비목표)
-- 자율 워커 데몬 (`tunaround work`: poll -> claim -> 러너 실행 -> complete, 사람 트리거 없이)
-- 이기종 워커 러너 (Claude / Codex / 로컬 LLM을 `--runner`로 교체)
-- A2A 작업 진행 실시간 SSE 스트리밍 (`SendStreamingMessage`/`SubscribeToTask`)
 
-빌드는 macOS·Windows·Linux 모두 순수 Rust로 됩니다. Windows와 macOS(aarch64) 모두 실제 `claude`·`codex` CLI로 동작을 확인했습니다(빌드·테스트·`cargo install`·2에이전트 토론 도그푸딩, 크로스머신 A2A 읽기 스모크 포함). macOS에서 Kiwi 네이티브 자동다운로드가 막히면 lindera로 폴백해 그대로 동작합니다.
+검색과 맥락
 
-## 왜 만들었나
+- SQLite + FTS5 검색
+- 한국어 형태소 검색
+- 외래어 병기 검색
+- 의미 검색
+- BM25 + 의미 검색 하이브리드
+- 유효성과 최신성을 반영한 검색 랭킹
+- "/reject", "/supersede", "/explain"
+- MCP 기반 에이전트 직접 검색
+- 에이전트 전사 읽기
+- push 방식 대신 pull 방식 컨텍스트
+- "--pull-context"
+- "--recent-turns"
 
-tunaRound는 새 에이전트 프레임워크를 만들려는 도구가 아닙니다.
+분산 실행
 
-이미 잘 동작하는 CLI 에이전트들을 터미널 안에서 함께 쓰기 쉽게 묶는 얇은 도구입니다.
+- Redis 기반 멀티세션 관찰
+- 코어의 검색·전사를 HTTP MCP로 노출
+- 원격 참가자 쓰기
+- 로컬/원격 LLM 참가자
+- Ollama, LM Studio, OpenAI 호환 HTTP 엔진
+- OpenCode CLI 참가자
 
-코드를 바로 짜기 전에 설계를 먼저 검토하고 싶을 때가 있습니다.  
-혼자 생각하면 놓치는 부분이 있고, 한 에이전트에게만 물어보면 답이 한 방향으로 굳기 쉽습니다.
+A2A 작업 위임
+
+- "/a2a" 기반 작업 위임 브로커
+- Agent Card
+- "SendMessage"
+- "GetTask"
+- "CancelTask"
+- "SendStreamingMessage"
+- "SubscribeToTask"
+- 자율 워커 데몬
+- Claude, Codex, 로컬 LLM runner
+- 워커 실패 시 task "failed" 전이
+- "context_id" 기반 프로젝트별 작업 라우팅
+- "--context-map"
+- 크로스머신 A2A 왕복과 SSE 스트리밍 스모크 확인
+
+빌드는 macOS, Windows, Linux에서 순수 Rust로 됩니다.
+
+Windows와 macOS aarch64에서 실제 "claude", "codex" CLI로 동작을 확인했습니다. 빌드, 테스트, "cargo install", 2에이전트 토론 도그푸딩, 크로스머신 A2A 읽기 스모크까지 확인했습니다.
+
+macOS에서 Kiwi 네이티브 자동 다운로드가 막히면 lindera로 폴백해 그대로 동작합니다.
+
+왜 만들었나
+
+코드를 바로 짜기 전에 설계를 먼저 검토하고 싶을 때가 있습니다.
+
+혼자 생각하면 놓치는 부분이 있고, 한 에이전트에게만 물어보면 답이 한 방향으로 굳기 쉽습니다. 그렇다고 여러 에이전트를 따로 켜고 복붙으로 조율하면 토론, 결정, 구현 지시가 쉽게 흩어집니다.
 
 tunaRound는 이 과정을 터미널 안에서 반복 가능하게 만듭니다.
 
-- 한 에이전트는 제안합니다.
-- 다른 에이전트는 반박하거나 검토합니다.
-- 사용자는 중간에서 방향을 잡습니다.
-- 결론은 문서로 남깁니다.
-- 필요하면 그 자리에서 바로 구현으로 넘어갑니다.
+사용자가 방향을 잡는다.
+→ 한 에이전트가 제안한다.
+→ 다른 에이전트가 검토하거나 반박한다.
+→ 결론을 문서로 남긴다.
+→ 필요하면 작업으로 위임한다.
+→ 결과를 다시 확인한다.
 
-## 어디서 가져왔나
+목표는 에이전트가 사람을 대체하는 것이 아니라, 사용자가 여러 에이전트를 더 안정적으로 부리는 것입니다.
 
-tunaRound는 기존 프로젝트에서 검증한 기능들을 가져와 작게 묶은 도구입니다.
+어디서 가져왔나
 
-- 토론 흐름은 `tunapi`의 roundtable 구조에서 가져왔습니다.
-- CLI 실행과 스트림 처리는 `tunaFlow`의 러너 경험을 바탕으로 했습니다.
-- Redis 기반 세션 공유와 관찰 기능은 `tunaSalon`에서 가져왔습니다.
-- 한국어 검색과 하이브리드 검색은 `seCall`의 경험을 옮겨왔습니다.
+tunaRound는 기존 프로젝트에서 검증한 기능들을 작게 묶은 도구입니다.
 
-## 기술 스택
+- 토론 흐름은 "tunapi"의 roundtable 구조에서 가져왔습니다.
+- CLI 실행과 스트림 처리는 "tunaFlow"의 runner 경험을 바탕으로 했습니다.
+- Redis 기반 세션 공유와 관찰 기능은 "tunaSalon"에서 가져왔습니다.
+- 한국어 검색과 하이브리드 검색은 "seCall"의 경험을 옮겨왔습니다.
+
+기술 스택
 
 - Rust
 - tokio
 - JSON 세션 파일
 - SQLite + FTS5
-- Ollama 임베딩 (기본 `qwen3-embedding:0.6b`)
+- Ollama 임베딩
 - Redis
 - MCP
-- clap CLI / cargo-dist 배포
+- clap CLI
+- cargo-dist
 
-기본 UI는 가벼운 REPL입니다.  
+기본 UI는 가벼운 REPL입니다.
 TUI나 웹 UI는 이후 단계에서 붙일 예정입니다.
 
-## 로드맵
+로드맵
 
-완료:
+완료
 
 - [x] 여러 에이전트와 역할 설정
 - [x] Redis 기반 세션 공유와 관찰
 - [x] 에이전트에게 코드 수정 맡기기
-- [x] `/debate` 자동 토론
-- [x] 한국어 형태소 검색 (Kiwi / lindera)
+- [x] "/debate" 자동 토론
+- [x] 한국어 형태소 검색
+- [x] Kiwi / lindera 폴백
 - [x] SQLite + FTS5 검색
 - [x] 과거 맥락 검색 주입
 - [x] bge-m3 의미 검색
 - [x] BM25 + 의미 검색 하이브리드
-- [x] MCP `search_context` 도구
-- [x] 가벼운 컨텍스트 주입 (최근 N턴 + 검색 결과, `--recent-turns`)
-- [x] 로컬 LLM 참가자 (ollama, lmstudio, openai 같은 HTTP 엔진)
-- [x] opencode CLI 참가자
-- [x] 요약 이월 (긴 토론의 오래된 발언을 요약해 다음 라운드로)
-- [x] 에이전트 전사 읽기 도구 (`read_transcript`)
-- [x] push → pull 컨텍스트 (에이전트가 전사를 직접 당겨와 프롬프트 경량화, `--pull-context`)
-- [x] 코어를 네트워크 HTTP MCP로 노출 (`--serve-mcp`, 원격 접속 토대)
-- [x] 원격 참가자 쓰기 (원격에서 코어 전사에 자기 턴 기록, `post_turn`/`--core`)
-- [x] 유효성 인지 검색 랭킹 (`/reject` 제외, `/supersede` 강등, `/explain` 디버그)
-- [x] 최신성 인지 검색 랭킹 (세션 간 오래된 결과 약한 강등)
-- [x] 외래어 병기 검색 (한글 외래어 ↔ 영어 원어)
-- [x] Codex 전사 pull (behavioral read-only)
-- [x] 서브커맨드 CLI (`chat`/`core`/`serve`/`join`/`work`/`reindex`) + `tunaround.toml` 프로파일
-- [x] 배포 파이프라인 준비 (cargo-dist, Homebrew/powershell)
-- [x] 원격/분산 참가자 라이브 (맥 ↔ 윈도우 크로스머신 A2A, 양방향 왕복 + SSE 스트리밍 스모크)
-- [x] A2A 기반 작업 위임 브로커 (`/a2a` SendMessage/GetTask/CancelTask + Agent Card, tunaRound끼리)
-- [x] A2A SSE 스트리밍 (`SendStreamingMessage`/`SubscribeToTask`)
-- [x] 자율 워커 데몬 (`tunaround work`) + 이기종 러너 (Claude/Codex/로컬 LLM)
-- [x] 워커 실패 시 task `failed` 전이 (`fail_task`, completed와 구분)
-- [x] context_id 기반 프로젝트별 작업 라우팅 (`--context-map`, 데몬 하나가 여러 프로젝트 배분)
+- [x] MCP "search_context" 도구
+- [x] 가벼운 컨텍스트 주입
+- [x] 로컬 LLM 참가자
+- [x] OpenCode CLI 참가자
+- [x] 요약 이월
+- [x] 에이전트 전사 읽기 도구
+- [x] push → pull 컨텍스트
+- [x] 코어를 네트워크 HTTP MCP로 노출
+- [x] 원격 참가자 쓰기
+- [x] 유효성 인지 검색 랭킹
+- [x] 최신성 인지 검색 랭킹
+- [x] 외래어 병기 검색
+- [x] Codex 전사 pull
+- [x] 서브커맨드 CLI
+- [x] "tunaround.toml" 프로파일
+- [x] 배포 파이프라인 준비
+- [x] 원격/분산 참가자 라이브
+- [x] 맥 ↔ 윈도우 크로스머신 A2A 스모크
+- [x] A2A 기반 작업 위임 브로커
+- [x] A2A SSE 스트리밍
+- [x] 자율 워커 데몬
+- [x] 이기종 runner
+- [x] 워커 실패 시 task "failed" 전이
+- [x] "context_id" 기반 프로젝트별 작업 라우팅
 
-다음:
+다음
 
-- [ ] 공개 릴리스 (도그푸딩 후 태그)
-- [ ] 워커 고착(claim 후 죽음) 방지 (타임아웃/재큐)
+- [ ] 공개 릴리스
+- [ ] 워커 고착 방지
+- [ ] claim 후 워커 사망 시 timeout / requeue
 - [ ] 세션을 넘나드는 프로젝트 기억
-- [ ] 리치 TUI / 웹 UI
+- [ ] 리치 TUI
+- [ ] 웹 UI
 
-## 설계 문서
+설계 문서
 
 전체 설계는 아래 문서를 참고하세요.
 
-- [docs/design/tunaRound-v1-design_2026-06-29.md](docs/design/tunaRound-v1-design_2026-06-29.md)
-- [docs/plans/index.md](docs/plans/index.md)
+- "docs/design/tunaRound-v1-design_2026-06-29.md" (docs/design/tunaRound-v1-design_2026-06-29.md)
+- "docs/plans/index.md" (docs/plans/index.md)
+- "docs/development/source-run.md" (docs/development/source-run.md)
 
-## 라이선스
+라이선스
 
-[AGPL-3.0](LICENSE) (GNU Affero General Public License v3.0).
+"AGPL-3.0" (LICENSE)
+GNU Affero General Public License v3.0.
