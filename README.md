@@ -154,7 +154,9 @@ tunaround join http://<코어-IP>:8770/mcp --token <토큰>
 
 ## 파트너 에이전트에게 작업 위임하기 (A2A)
 
-토론과 별개로, 코어는 **표준 A2A(Agent2Agent) 프로토콜**의 작업 브로커로도 동작합니다. 한 쪽(dispatcher)이 다른 머신·다른 종류의 에이전트(worker)에게 작업을 맡기고, 그 진행과 결과를 받아볼 수 있습니다.
+토론과 별개로, 코어는 **A2A(Agent2Agent) 프로토콜을 기반으로 한** 작업 브로커로도 동작합니다. 한 쪽(dispatcher)이 다른 머신·다른 종류의 에이전트(worker)에게 작업을 맡기고, 그 진행과 결과를 받아볼 수 있습니다.
+
+> **호환 범위(정직하게):** A2A의 구조(Task 생명주기·Message/Artifact·Agent Card·JSON-RPC·SSE)를 차용해 **tunaRound 인스턴스끼리** 위임하는 것이 목적입니다. 중앙-브로커 라우팅(`fromAgent`/`toAgent`)과 인증-게이트 카드 등 확장이 있어, **임의의 제3자 표준 A2A 클라이언트와의 완전 호환은 목표가 아닙니다**(JSON-RPC envelope·`GetTask` 레벨은 호환 확인, 카드 발견·`SendMessage`는 브로커 확장이라 미호환). 진짜 표준 게이트웨이가 필요해지면 별도 어댑터로 다룹니다.
 
 - **코어 = 작업 큐 + A2A 서버.** `serve`로 띄운 코어가 `/a2a`(JSON-RPC: `SendMessage`/`GetTask`/`CancelTask` + 스트리밍 `SendStreamingMessage`/`SubscribeToTask`)와 Agent Card(`/.well-known/agent-card.json`)를 노출합니다.
 - **자율 워커 데몬.** `tunaround work`는 자기 앞으로 온 작업을 스스로 발견(poll)하고, 착수(claim)하고, 지정한 러너로 실행한 뒤, 결과를 되돌립니다(complete). 사람이 "이제 처리해"라고 신호할 필요가 없습니다.
@@ -201,7 +203,7 @@ v1 본체와 v2 검색·맥락 기능이 대부분 들어왔습니다.
 - 통째 주입 대신 에이전트가 맥락을 직접 당겨오는 방식 (push → pull, `--pull-context`)
 - 코어의 검색·전사를 네트워크 HTTP MCP로 노출 (`--serve-mcp`, 원격 접속 토대)
 - 로컬/원격 LLM 참가자 (ollama, lmstudio, openai 같은 HTTP 엔진, opencode CLI)
-- 표준 A2A 작업 위임: 파트너 에이전트에게 작업을 맡기고 결과를 받는 브로커 코어 (`/a2a`, Agent Card)
+- A2A 기반 작업 위임: 파트너 에이전트에게 작업을 맡기고 결과를 받는 브로커 코어 (`/a2a`, Agent Card. tunaRound끼리 위임용, 제3자 표준 완전호환은 비목표)
 - 자율 워커 데몬 (`tunaround work`: poll -> claim -> 러너 실행 -> complete, 사람 트리거 없이)
 - 이기종 워커 러너 (Claude / Codex / 로컬 LLM을 `--runner`로 교체)
 - A2A 작업 진행 실시간 SSE 스트리밍 (`SendStreamingMessage`/`SubscribeToTask`)
@@ -277,7 +279,7 @@ TUI나 웹 UI는 이후 단계에서 붙일 예정입니다.
 - [x] 서브커맨드 CLI (`chat`/`core`/`serve`/`join`/`work`/`reindex`) + `tunaround.toml` 프로파일
 - [x] 배포 파이프라인 준비 (cargo-dist, Homebrew/powershell)
 - [x] 원격/분산 참가자 라이브 (맥 ↔ 윈도우 크로스머신 A2A, 양방향 왕복 + SSE 스트리밍 스모크)
-- [x] 표준 A2A 작업 위임 브로커 (`/a2a` SendMessage/GetTask/CancelTask + Agent Card)
+- [x] A2A 기반 작업 위임 브로커 (`/a2a` SendMessage/GetTask/CancelTask + Agent Card, tunaRound끼리)
 - [x] A2A SSE 스트리밍 (`SendStreamingMessage`/`SubscribeToTask`)
 - [x] 자율 워커 데몬 (`tunaround work`) + 이기종 러너 (Claude/Codex/로컬 LLM)
 - [x] 워커 실패 시 task `failed` 전이 (`fail_task`, completed와 구분)

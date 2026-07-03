@@ -10,6 +10,8 @@
 
 코어 하나에 dispatcher·worker가 여럿 붙을 수 있고, 작업은 `to_agent`(받는 워커 id)로 라우팅된다.
 
+> **표준 호환 범위(정직하게):** 이 A2A는 A2A 프로토콜의 **구조를 차용**해 tunaRound 인스턴스끼리 위임하는 것이 목적이다. JSON-RPC envelope·`GetTask`는 독립 A2A 클라이언트와 호환됨을 확인했으나(interop 스모크, context-notes 참조), (1) Agent Card가 인증 게이트 + 구식 단일-url 스키마라 표준 클라의 발견이 안 되고, (2) `SendMessage`가 브로커 라우팅 필드(`fromAgent`/`toAgent`)를 요구해 표준 클라가 task를 못 만든다. **임의의 제3자 표준 A2A 클라이언트와의 완전 호환은 비목표**이며, 필요해지면 표준↔브로커 번역 어댑터를 별도로 둔다.
+
 ## 1. 코어 띄우기
 
 ```bash
