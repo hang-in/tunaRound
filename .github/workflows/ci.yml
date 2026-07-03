@@ -6,10 +6,13 @@
 name: CI
 
 on:
+  # 문서만 바뀐 push/PR은 3-OS 매트릭스(macOS 10배 분)를 돌리지 않는다(비용 절약).
   pull_request:
     branches: [main]
+    paths-ignore: ['**.md', 'docs/**', 'LICENSE']
   push:
     branches: [main]
+    paths-ignore: ['**.md', 'docs/**', 'LICENSE']
 
 concurrency:
   group: ci-${{ github.ref }}

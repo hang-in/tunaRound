@@ -305,15 +305,17 @@
 
 ## 1차 리팩토링 (제미나이+코덱스 리뷰 기반) (docs/plans/v2-refactor-from-reviews_2026-07-03.md)
 
-> Opus 자체검증·삼분류. 다음 세션 3자(Opus 통합 + 맥 worker + 로컬 Codex worker) A2A 도그푸딩 겸 처리. 미착수.
+> Opus 자체검증·삼분류. 세션9에서 3자(Opus 통합 + 맥 worker + 로컬 Codex worker) A2A 도그푸딩으로 처리. **완료: PR #1로 main 머지(merge afdecea, 8/9 + R10 + CI).** 검증 3-OS CI green(ubuntu/macOS/windows) + 로컬 313 pass.
 
-- [ ] R1 [높음] MCP 에러 계약 정직화(claim/complete/fail 실패를 isError로, 클라·워커가 감지). 코덱스 #1.
-- [ ] R2 [높음] A2A 상태머신 조건부 전이(이중 claim/terminal 덮어쓰기 차단, rows_affected 체크). 코덱스 #2. R1과 묶음.
-- [ ] R3 [높음] watchdog 프로세스 트리 종료(Win /T, Unix process group). 코덱스 #6/제미나이 #2.
-- [ ] R4 [높음/소] --context-map parse->Result(오타 거부, 기본레포 오폴백 차단). 코덱스 #5. 도그푸딩 워밍업 1순위.
-- [ ] R5 [중] save_session orphan vectors/validity 정리. 코덱스 #8.
-- [ ] R6 [중/소] Embedder dim 동적화(비기본 모델 벡터유실). 제미나이 #5. 위임 이상적.
-- [ ] R7 [중] retriever/reader Result 계약(장애를 빈결과로 은폐 방지). 코덱스 #9.
-- [ ] R8 [중] 검색 폴백 통일(tokenizer builder 1회). 코덱스 #7.
-- [ ] R9 [낮/옵션] A2A poll 견고화(현 구현 견고성 감안 후순위). 제미나이 #1.
+- [x] R1 [높음] MCP 에러 계약 정직화(claim/complete/fail 실패를 isError로, 클라·워커가 감지). 코덱스 #1. (b78df01, Opus+Sonnet)
+- [x] R2 [높음] A2A 상태머신 조건부 전이(이중 claim/terminal 덮어쓰기 차단, rows_affected 체크). 코덱스 #2. R1과 묶음. (b78df01)
+- [x] R3 [높음] watchdog 프로세스 트리 종료(Win /T, Unix process group). 코덱스 #6/제미나이 #2. (98b6298, Codex worker) **+ CI가 잡은 이식성 버그 수정(c9905e8): 외부 `kill -9 -PID`가 util-linux에서 no-op -> `libc::kill(-pid, SIGKILL)`. #[cfg(unix)]라 Windows 로컬 미실행 -> Linux CI가 첫 포착, macOS 실기 검증도 통과.**
+- [x] R4 [높음/소] --context-map parse->Result(오타 거부, 기본레포 오폴백 차단). 코덱스 #5. 도그푸딩 워밍업 1순위. (a8b894e, Opus)
+- [x] R5 [중] save_session orphan vectors/validity 정리. 코덱스 #8. (d4b6815, Mac worker A2A/LAN)
+- [x] R6 [중/소] Embedder dim 동적화(비기본 모델 벡터유실). 제미나이 #5. 위임 이상적. (ced09e6, Codex worker A2A)
+- [x] R7 [중] retriever/reader Result 계약(장애를 빈결과로 은폐 방지). 코덱스 #9. (b15172c, Mac worker A2A 헤드리스 데몬)
+- [x] R8 [중] 검색 폴백 통일(tokenizer builder 1회). 코덱스 #7. (4c27ab2)
+- [x] R10 [도그푸딩 finding] 워커 MCP 세션 만료 시 자동 재연결(404->handshake 재수행+재시도). (c58df41, Opus+Sonnet)
+- [ ] R9 [낮/옵션] A2A poll 견고화(현 구현 견고성 감안 후순위). 제미나이 #1. **미착수(옵션 유지).**
+- [x] 방법론: PR CI(.github/workflows/ci.yml, build+test+clippy 3-OS 매트릭스, 32cd48c+18371fa) + GitHub Flow(PR #1) 도입.
 - 미루기: Runner async trait(YAGNI), main/mcp 분해(여유시), session-id pull·CoreSync(검증 먼저), 모델 결합(안정적).
