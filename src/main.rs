@@ -636,17 +636,18 @@ fn main() {
             }
         };
 
-        // --context-map "k=v,k=v" -> HashMap. 형식이 어긋난 항목(= 없음)은 건너뛴다.
-        let context_map: std::collections::HashMap<String, String> = a
-            .context_map
-            .as_deref()
-            .map(|s| {
-                s.split(',')
-                    .filter_map(|kv| kv.split_once('='))
-                    .map(|(k, v)| (k.trim().to_string(), v.trim().to_string()))
-                    .collect()
-            })
-            .unwrap_or_default();
+        // --context-map "k=v,k=v" -> HashMap. 오타·빈 항목·중복은 조용히 버리지 않고 진입 시 거부한다
+        // (worker::parse_context_map). 오폴백으로 엉뚱한 레포를 --write하는 사고를 막는다.
+        let context_map = match a.context_map.as_deref() {
+            Some(spec) => match tunaround::worker::parse_context_map(spec) {
+                Ok(m) => m,
+                Err(e) => {
+                    eprintln!("[work] --context-map 파싱 실패: {e}");
+                    std::process::exit(1);
+                }
+            },
+            None => std::collections::HashMap::new(),
+        };
 
         let result = rt.block_on(async {
             let client = tunaround::mcp_client::McpHttpClient::connect(a.core.clone(), a.token.clone()).await?;

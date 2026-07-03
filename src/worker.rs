@@ -119,6 +119,31 @@ pub fn resolve_project_path(
         .or_else(|| default_path.map(|s| s.to_string()))
 }
 
+/// `--context-map` 문자열("k=v,k=v")을 context_id->project-path 맵으로 파싱한다(순수 함수).
+/// 형식 오류(= 없음)·빈 key·빈 value·중복 key는 조용히 버리지 않고 Err로 거부한다. 오타 항목이
+/// 조용히 사라져 기본 project-path로 폴백되면 --write 시 엉뚱한 레포를 고칠 수 있어서다. 완전히 빈
+/// 항목(후행 콤마 등)만 무해하게 건너뛴다.
+pub fn parse_context_map(spec: &str) -> Result<std::collections::HashMap<String, String>, String> {
+    let mut map = std::collections::HashMap::new();
+    for entry in spec.split(',') {
+        let entry = entry.trim();
+        if entry.is_empty() {
+            continue;
+        }
+        let (k, v) = entry
+            .split_once('=')
+            .ok_or_else(|| format!("--context-map 항목이 'key=value' 형식이 아닙니다: {entry:?}"))?;
+        let (k, v) = (k.trim(), v.trim());
+        if k.is_empty() || v.is_empty() {
+            return Err(format!("--context-map 항목의 key 또는 value가 비어있습니다: {entry:?}"));
+        }
+        if let Some(prev) = map.insert(k.to_string(), v.to_string()) {
+            return Err(format!("--context-map에 중복 key '{k}'가 있습니다(이전 값 {prev:?})"));
+        }
+    }
+    Ok(map)
+}
+
 /// 워커 한 패스: poll -> (submitted만) claim -> runner.run -> complete.
 /// `once=true`면 한 패스 후 반환, 아니면 `interval_secs` 간격으로 무한 루프한다.
 /// poll/claim/complete 실패는 eprintln 로그 후 그 task만 건너뛰고 루프는 죽지 않는다.
@@ -328,5 +353,37 @@ mod tests {
         assert_eq!(resolve_project_path(None, &map, Some("/default")), Some("/default".to_string()));
         // 매핑도 기본값도 없으면 None.
         assert_eq!(resolve_project_path(Some("projX"), &map, None), None);
+    }
+
+    #[test]
+    fn parse_context_map_valid_entries() {
+        let m = parse_context_map("projA=/repos/A, projB=/repos/B").unwrap();
+        assert_eq!(m.get("projA").map(String::as_str), Some("/repos/A"));
+        assert_eq!(m.get("projB").map(String::as_str), Some("/repos/B"));
+        assert_eq!(m.len(), 2);
+    }
+
+    #[test]
+    fn parse_context_map_trailing_comma_ok() {
+        // 완전히 빈 항목(후행 콤마)만 무해하게 스킵한다.
+        let m = parse_context_map("projA=/repos/A,").unwrap();
+        assert_eq!(m.len(), 1);
+    }
+
+    #[test]
+    fn parse_context_map_rejects_malformed_entry() {
+        // '=' 없는 오타 항목은 조용히 버리지 않고 거부한다(기본 레포 오폴백 방지).
+        assert!(parse_context_map("projA=/repos/A,badentry").is_err());
+    }
+
+    #[test]
+    fn parse_context_map_rejects_empty_key_or_value() {
+        assert!(parse_context_map("=/repos/A").is_err());
+        assert!(parse_context_map("projA=").is_err());
+    }
+
+    #[test]
+    fn parse_context_map_rejects_duplicate_key() {
+        assert!(parse_context_map("projA=/x,projA=/y").is_err());
     }
 }
