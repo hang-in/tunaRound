@@ -35,13 +35,8 @@ pub trait Tokenizer: Send + Sync {
     fn fts_query(&self, text: &str) -> String {
         let mut toks = self.tokenize(text);
         toks.extend(self.raw_tokens(text));
-        // 음역 alias는 원 토큰들 기준으로 모아서 추가(확장 토큰이 다시 확장되지 않도록 사후 추가).
-        let aliases: Vec<String> =
-            toks.iter().flat_map(|t| super::loanword_aliases(t)).collect();
-        toks.extend(aliases);
-        toks.sort();
-        toks.dedup();
-        toks.into_iter().map(|t| format!("{t}*")).collect::<Vec<_>>().join(" OR ")
+        // 조립 규칙(alias 사후 확장·sort·dedup·prefix·OR)은 폴백 경로와 공유되는 단일 출처에 위임한다.
+        super::assemble_fts_query(toks)
     }
 }
 

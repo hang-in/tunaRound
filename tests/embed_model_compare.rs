@@ -112,7 +112,7 @@ fn embed_model_compare() {
         for (q, gold) in QUERIES {
             let qv = embedder.embed(q).expect("embed query");
             let vec_ids: Vec<u64> = store_r.vector_search(&qv, K).unwrap_or_default().iter().map(|(_, mid, _)| *mid).collect();
-            let hyb_ids: Vec<u64> = retriever.retrieve(q, K).iter().filter_map(|u| id_of(&u.content)).collect();
+            let hyb_ids: Vec<u64> = retriever.retrieve(q, K).unwrap().iter().filter_map(|u| id_of(&u.content)).collect();
             let (a, b) = (recall_at_k(&vec_ids, gold, K), mrr(&vec_ids, gold));
             let (c, d) = (recall_at_k(&hyb_ids, gold, K), mrr(&hyb_ids, gold));
             vr += a; vm += b; hr += c; hm += d;

@@ -25,6 +25,10 @@ axum = { version = "0.8", default-features = false, features = ["http1", "tokio"
 a2a-client = { version = "0.2", optional = true }
 a2a-types = { version = "0.2", optional = true }
 
+# watchdog가 프로세스 그룹 전체에 SIGKILL을 보내는 killpg 용(외부 kill의 음수 PID 인자 이식성 회피).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 

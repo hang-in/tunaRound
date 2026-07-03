@@ -119,22 +119,25 @@ mod sqlite_retriever {
 
     impl SqliteRetriever {
         /// retrieve/retrieve_ctx 공용 구현. current_session=Some이면 분기 인지 디프리오리티.
-        fn retrieve_impl(&self, query: &str, limit: usize, current_session: Option<&str>) -> Vec<Utterance> {
+        /// Ok(빈 벡터)=질의 빈 문자열·매칭 0건. Err=1차 FTS 경로의 DB 장애(R7, 코덱스 #9).
+        /// embed/vector/get_message 실패는 FTS 결과로 정당하게 degrade하는 폴백이라 흡수 유지.
+        fn retrieve_impl(
+            &self,
+            query: &str,
+            limit: usize,
+            current_session: Option<&str>,
+        ) -> Result<Vec<Utterance>, String> {
             if query.trim().is_empty() {
-                return Vec::new();
+                return Ok(Vec::new());
             }
 
             let q = (self.tok)(query);
             let store = self.store.lock().unwrap_or_else(|e| e.into_inner());
 
-            // FTS 검색(세션 다양성 cap을 위해 over-fetch).
-            let lex_hits = match store.search(&q, limit * OVERFETCH) {
-                Ok(hits) => hits,
-                Err(e) => {
-                    eprintln!("[tunaRound] FTS 검색 실패: {e}");
-                    Vec::new()
-                }
-            };
+            // 1차 FTS 검색(세션 다양성 cap을 위해 over-fetch). 실패=진짜 DB 장애 -> 전파(빈 결과로 은폐 금지).
+            let lex_hits = store
+                .search(&q, limit * OVERFETCH)
+                .map_err(|e| format!("FTS 검색 실패: {e}"))?;
 
             // embedder 없으면 FTS 단독. 유효성 재랭크 + 세션 다양성 cap(단일 세션은 동작 불변).
             let Some(emb) = &self.embedder else {
@@ -142,7 +145,7 @@ mod sqlite_retriever {
                     .into_iter()
                     .map(|h| (h.session_id, h.msg_id, Utterance { speaker: h.speaker, content: h.content }))
                     .collect();
-                return finish(&store, cands, limit, current_session);
+                return Ok(finish(&store, cands, limit, current_session));
             };
 
             // FTS 결과 키 리스트 + content_map 구축.
@@ -160,21 +163,21 @@ mod sqlite_retriever {
                     .collect()
             };
 
-            // 쿼리 임베딩 시도(실패 시 FTS 단독 폴백).
+            // 쿼리 임베딩 시도(실패 시 FTS 단독 폴백 = 정당한 degrade, Err로 승격 안 함).
             let qvec = match emb.embed(query) {
                 Ok(v) => v,
                 Err(e) => {
                     eprintln!("[tunaRound] 쿼리 임베딩 실패(FTS 단독 폴백): {e}");
-                    return finish(&store, cands_from_map(content_map), limit, current_session);
+                    return Ok(finish(&store, cands_from_map(content_map), limit, current_session));
                 }
             };
 
-            // 벡터 검색(세션 다양성 cap을 위해 over-fetch).
+            // 벡터 검색(세션 다양성 cap을 위해 over-fetch). 실패=FTS 단독 폴백(Err로 승격 안 함).
             let vec_hits = match store.vector_search(&qvec, limit * OVERFETCH) {
                 Ok(hits) => hits,
                 Err(e) => {
                     eprintln!("[tunaRound] 벡터 검색 실패(FTS 단독 폴백): {e}");
-                    return finish(&store, cands_from_map(content_map), limit, current_session);
+                    return Ok(finish(&store, cands_from_map(content_map), limit, current_session));
                 }
             };
 
@@ -201,15 +204,20 @@ mod sqlite_retriever {
                     cands.push((key.0, key.1, u));
                 }
             }
-            finish(&store, cands, limit, current_session)
+            Ok(finish(&store, cands, limit, current_session))
         }
     }
 
     impl crate::orchestrator::ContextRetriever for SqliteRetriever {
-        fn retrieve(&self, query: &str, limit: usize) -> Vec<Utterance> {
+        fn retrieve(&self, query: &str, limit: usize) -> Result<Vec<Utterance>, String> {
             self.retrieve_impl(query, limit, None)
         }
-        fn retrieve_ctx(&self, query: &str, limit: usize, current_session: &str) -> Vec<Utterance> {
+        fn retrieve_ctx(
+            &self,
+            query: &str,
+            limit: usize,
+            current_session: &str,
+        ) -> Result<Vec<Utterance>, String> {
             self.retrieve_impl(query, limit, Some(current_session))
         }
 
@@ -286,16 +294,23 @@ mod sqlite_transcript {
     }
 
     impl crate::orchestrator::TranscriptReader for SqliteTranscriptReader {
-        fn read_transcript(&self, session_id: &str, max_turns: Option<usize>) -> Vec<Utterance> {
+        fn read_transcript(
+            &self,
+            session_id: &str,
+            max_turns: Option<usize>,
+        ) -> Result<Vec<Utterance>, String> {
             let store = self.store.lock().unwrap_or_else(|e| e.into_inner());
-            let Ok(Some(ss)) = store.load_session(session_id) else {
-                return Vec::new();
+            // 세션 없음(Ok(None))=정상 빈 결과. load_session Err=진짜 DB 장애 -> 전파(R7).
+            let ss = match store.load_session(session_id) {
+                Ok(Some(ss)) => ss,
+                Ok(None) => return Ok(Vec::new()),
+                Err(e) => return Err(format!("세션 로드 실패: {e}")),
             };
             let path = crate::store::path_to_root(&ss.messages, ss.head);
-            match max_turns {
+            Ok(match max_turns {
                 Some(n) if path.len() > n => path[path.len() - n..].to_vec(),
                 _ => path,
-            }
+            })
         }
     }
 
@@ -403,7 +418,7 @@ mod tests {
         let retriever = SqliteRetriever::new(store_r, Box::new(|t: &str| t.to_string()), None);
 
         // "session-a"의 발언을 다른 연결에서 retrieve할 수 있어야 한다.
-        let hits = retriever.retrieve("검색", 10);
+        let hits = retriever.retrieve("검색", 10).unwrap();
         assert!(!hits.is_empty(), "cross-session 검색이 결과를 반환해야 함");
         assert!(
             hits.iter().any(|u| u.content.contains("검색") || u.speaker.contains("claude")),
@@ -437,7 +452,7 @@ mod tests {
 
         let store_r = SqliteStore::open(p).unwrap();
         let retriever = SqliteRetriever::new(store_r, Box::new(|t: &str| t.to_string()), None);
-        let hits = retriever.retrieve("검색", 10);
+        let hits = retriever.retrieve("검색", 10).unwrap();
         let contents: Vec<&str> = hits.iter().map(|u| u.content.as_str()).collect();
         assert!(!contents.iter().any(|c| c.contains("기각")), "rejected는 제외: {contents:?}");
         let pos_active = contents.iter().position(|c| c.contains("활성"));
@@ -483,7 +498,7 @@ mod tests {
 
         let store_r = SqliteStore::open(p).unwrap();
         let retriever = SqliteRetriever::new(store_r, Box::new(|t: &str| t.to_string()), None);
-        let hits = retriever.retrieve("검색", 10);
+        let hits = retriever.retrieve("검색", 10).unwrap();
         let contents: Vec<&str> = hits.iter().map(|u| u.content.as_str()).collect();
         let pos_new = contents.iter().position(|c| c.contains("최신"));
         let pos_old = contents.iter().position(|c| c.contains("오래된"));
@@ -590,7 +605,7 @@ mod tests {
         let retriever = SqliteRetriever::new(store_r, Box::new(|t: &str| t.to_string()), None);
 
         // 현재 세션="cur" → cur의 off-branch 히트가 타 세션(oth)보다 뒤로 강등.
-        let hits = retriever.retrieve_ctx("검색", 10, "cur");
+        let hits = retriever.retrieve_ctx("검색", 10, "cur").unwrap();
         let contents: Vec<&str> = hits.iter().map(|u| u.content.as_str()).collect();
         let pos_other = contents.iter().position(|c| c.contains("다른세션"));
         let pos_cur = contents.iter().position(|c| c.contains("현재세션"));
@@ -598,7 +613,7 @@ mod tests {
         assert!(pos_other < pos_cur, "다른 세션이 현재세션 off-branch보다 앞: {contents:?}");
 
         // 컨텍스트 없는 retrieve는 분기 페널티 없음(둘 다 반환).
-        assert_eq!(retriever.retrieve("검색", 10).len(), 2);
+        assert_eq!(retriever.retrieve("검색", 10).unwrap().len(), 2);
 
         let _ = std::fs::remove_file(&path);
     }
@@ -646,8 +661,115 @@ mod tests {
         );
 
         // RRF 경로 실행: 결과가 반환되어야 한다.
-        let hits = retriever.retrieve("검색", 10);
+        let hits = retriever.retrieve("검색", 10).unwrap();
         assert!(!hits.is_empty(), "하이브리드 검색이 결과를 반환해야 함: {:?}", hits);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// (R7) 1차 FTS(store.search) 실패는 빈 벡터로 은폐하지 않고 Err로 전파해야 한다.
+    /// 토크나이저가 FTS5 문법 오류(닫히지 않은 따옴표)를 내보내 store.search를 실제로 실패시킨다.
+    #[test]
+    fn retrieve_propagates_fts_error() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("tuna_retriever_fts_err.db");
+        let _ = std::fs::remove_file(&path);
+        let p = path.to_str().unwrap();
+        let store_w = SqliteStore::open(p).unwrap();
+        store_w
+            .save_session(
+                "s",
+                &StoredSession {
+                    messages: vec![StoredMessage { id: 1, parent_id: None, speaker: "a".into(), content: "검색 내용".into() }],
+                    head: Some(1),
+                },
+                |t| t.to_string(),
+            )
+            .unwrap();
+        drop(store_w);
+
+        // 토크나이저가 항상 닫히지 않은 따옴표(FTS5 문법 오류)를 반환 -> store.search가 Err.
+        let store_r = SqliteStore::open(p).unwrap();
+        let retriever = SqliteRetriever::new(store_r, Box::new(|_: &str| "\"".to_string()), None);
+        let res = retriever.retrieve("검색", 10);
+        assert!(res.is_err(), "FTS 검색 실패는 Err로 전파돼야 함(빈 벡터 은폐 금지): {res:?}");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// (R7) "매칭 0건"(정상, Ok(빈 벡터))과 "DB 오류"(Err)를 명확히 구분한다.
+    #[test]
+    fn retrieve_distinguishes_empty_from_error() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("tuna_retriever_empty_vs_err.db");
+        let _ = std::fs::remove_file(&path);
+        let p = path.to_str().unwrap();
+        let store_w = SqliteStore::open(p).unwrap();
+        store_w
+            .save_session(
+                "s",
+                &StoredSession {
+                    messages: vec![StoredMessage { id: 1, parent_id: None, speaker: "a".into(), content: "검색 내용".into() }],
+                    head: Some(1),
+                },
+                |t| t.to_string(),
+            )
+            .unwrap();
+        drop(store_w);
+
+        // 정상 토크나이저: 매칭 없는 질의 -> Ok(빈 벡터). 빈 질의도 Ok(빈 벡터).
+        let store_ok = SqliteStore::open(p).unwrap();
+        let ok = SqliteRetriever::new(store_ok, Box::new(|t: &str| t.to_string()), None);
+        let no_match = ok.retrieve("존재하지않는질의어zzzqqq", 10);
+        assert!(matches!(no_match, Ok(ref v) if v.is_empty()), "매칭 0건은 Ok(빈 벡터): {no_match:?}");
+        let blank = ok.retrieve("   ", 10);
+        assert!(matches!(blank, Ok(ref v) if v.is_empty()), "빈 질의는 Ok(빈 벡터): {blank:?}");
+
+        // 오류 토크나이저: 같은 DB라도 store.search 실패 -> Err(빈 결과와 구분됨).
+        let store_err = SqliteStore::open(p).unwrap();
+        let err = SqliteRetriever::new(store_err, Box::new(|_: &str| "\"".to_string()), None);
+        assert!(err.retrieve("검색", 10).is_err(), "DB 오류는 Err(매칭 0건과 구분)");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// (R7) read_transcript: 세션 없음 -> Ok(빈 벡터), load_session DB 오류 -> Err.
+    #[test]
+    fn read_transcript_distinguishes_missing_session_from_error() {
+        use super::SqliteTranscriptReader;
+        use crate::orchestrator::TranscriptReader;
+
+        let dir = std::env::temp_dir();
+        let path = dir.join("tuna_transcript_missing_vs_err.db");
+        let _ = std::fs::remove_file(&path);
+        let p = path.to_str().unwrap();
+        let store_w = SqliteStore::open(p).unwrap();
+        store_w
+            .save_session(
+                "s",
+                &StoredSession {
+                    messages: vec![StoredMessage { id: 1, parent_id: None, speaker: "a".into(), content: "전사 발언".into() }],
+                    head: Some(1),
+                },
+                |t| t.to_string(),
+            )
+            .unwrap();
+        drop(store_w);
+
+        // 세션 없음 -> Ok(빈 벡터)(정상), 존재 세션 -> Ok(발언).
+        let store_r = SqliteStore::open(p).unwrap();
+        let reader = SqliteTranscriptReader::new(store_r);
+        let missing = reader.read_transcript("nonexistent-session", None);
+        assert!(matches!(missing, Ok(ref v) if v.is_empty()), "세션 없음은 Ok(빈 벡터): {missing:?}");
+        let present = reader.read_transcript("s", None).unwrap();
+        assert_eq!(present.len(), 1, "존재 세션은 발언 반환: {present:?}");
+
+        // DB 오류 유도: 별도 연결로 messages 테이블 드롭 -> load_session의 messages 조회 실패 -> Err.
+        let raw = rusqlite::Connection::open(p).unwrap();
+        raw.execute_batch("PRAGMA foreign_keys=OFF; DROP TABLE messages;").unwrap();
+        drop(raw);
+        let err = reader.read_transcript("s", None);
+        assert!(err.is_err(), "load_session DB 오류는 Err로 전파(세션 없음과 구분): {err:?}");
 
         let _ = std::fs::remove_file(&path);
     }

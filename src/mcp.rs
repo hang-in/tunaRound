@@ -193,17 +193,21 @@ fn format_open_tasks(agent: &str, tasks: &[crate::store::a2a::Task]) -> String {
         .join("\n\n")
 }
 
-/// claim_task 순수 로직: task를 working으로 전이하고 확인 텍스트를 만든다. 대상 task가 없으면 Err.
+/// claim_task 순수 로직: task를 working으로 전이하고 확인 텍스트를 만든다. 대상 task가 없거나 이미
+/// working 이상으로 전이돼 있으면(다른 워커가 먼저 claim) try_claim이 Err를 반환하고 그대로 위로
+/// 전파한다(레이스 컨디션 방지, R2).
 fn claim_task_text(store: &SqliteStore, task_id: &str) -> Result<String, String> {
     if store.get_task(task_id)?.is_none() {
         return Err(format!("task 없음: task_id={task_id}"));
     }
-    store.update_task_state(task_id, TaskState::Working, None)?;
+    store.try_claim(task_id)?;
     Ok(format!("착수됨: task_id={task_id} state=working"))
 }
 
 /// complete_task 순수 로직: result 텍스트를 단일 Artifact로 감싸 completed로 마감한다. 대상 task가
 /// 없으면 Err. artifact_id는 store.new_task_id()로 발급받아 신규 crate 의존 없이 고유성을 확보한다.
+/// working 상태가 아니면(예: 아직 claim 안 됨, 또는 이미 completed/canceled로 종료) try_complete가
+/// Err를 반환하고 그대로 위로 전파한다(레이스 컨디션 방지, R2).
 fn complete_task_text(store: &SqliteStore, task_id: &str, result: &str) -> Result<String, String> {
     if store.get_task(task_id)?.is_none() {
         return Err(format!("task 없음: task_id={task_id}"));
@@ -211,12 +215,14 @@ fn complete_task_text(store: &SqliteStore, task_id: &str, result: &str) -> Resul
     let artifact_id = store.new_task_id()?;
     let artifacts =
         vec![Artifact { artifact_id, name: None, parts: vec![Part { text: Some(result.to_string()), ..Default::default() }] }];
-    store.complete_task(task_id, &artifacts)?;
+    store.try_complete(task_id, &artifacts)?;
     Ok(format!("완료됨: task_id={task_id} state=completed"))
 }
 
 /// fail_task 순수 로직: task를 failed로 전이하고 사유를 상태 메시지로 남긴다. 대상 task가 없으면 Err.
 /// 러너 실행이 실패했을 때 completed로 위장하지 않고 failed로 구분해 dispatcher가 성패를 알 수 있게 한다.
+/// 이미 completed/canceled로 종료된 task면 try_fail이 Err를 반환하고 그대로 위로 전파한다(레이스
+/// 컨디션 방지, R2 - 종료 상태를 failed로 덮어쓰지 못함).
 fn fail_task_text(store: &SqliteStore, task_id: &str, reason: &str) -> Result<String, String> {
     if store.get_task(task_id)?.is_none() {
         return Err(format!("task 없음: task_id={task_id}"));
@@ -229,7 +235,7 @@ fn fail_task_text(store: &SqliteStore, task_id: &str, reason: &str) -> Result<St
         task_id: None,
         context_id: None,
     };
-    store.update_task_state(task_id, TaskState::Failed, Some(&message))?;
+    store.try_fail(task_id, Some(&message))?;
     Ok(format!("실패 처리됨: task_id={task_id} state=failed"))
 }
 
@@ -293,14 +299,16 @@ impl TunaSearchServer {
         let retriever = Arc::clone(&self.retriever);
         let query = p.query;
         let limit = p.limit.unwrap_or(10).min(50);
-        let hits: Vec<Utterance> =
-            match tokio::task::spawn_blocking(move || retriever.retrieve(&query, limit)).await {
-                Ok(h) => h,
-                Err(e) => {
-                    eprintln!("[tunaRound] search_context blocking 태스크 실패(빈 결과 폴백): {e}");
-                    Vec::new()
-                }
-            };
+        // retrieve Err(1차 검색 경로 DB 장애, R7) = success로 위장하지 않는다. R1 계약(isError=true)으로 반환해
+        // 클라(McpHttpClient::parse_jsonrpc_sse)가 "결과 없음"과 "검색 실패"를 구분하게 한다.
+        let outcome: Result<Vec<Utterance>, String> =
+            tokio::task::spawn_blocking(move || retriever.retrieve(&query, limit))
+                .await
+                .unwrap_or_else(|e| Err(format!("검색 태스크 실패: {e}")));
+        let hits = match outcome {
+            Ok(h) => h,
+            Err(e) => return Ok(CallToolResult::error(vec![Content::text(format!("검색 실패: {e}"))])),
+        };
         let text = if hits.is_empty() {
             "검색 결과 없음".to_string()
         } else {
@@ -323,7 +331,13 @@ impl TunaSearchServer {
             )]));
         };
         let sid = p.session_id.unwrap_or_else(|| self.default_session.clone());
-        let utts = reader.read_transcript(&sid, p.max_turns);
+        // read_transcript Err(세션 로드 DB 장애, R7) = "전사 없음"으로 위장하지 않고 R1 계약으로 반환.
+        let utts = match reader.read_transcript(&sid, p.max_turns) {
+            Ok(u) => u,
+            Err(e) => {
+                return Ok(CallToolResult::error(vec![Content::text(format!("전사 읽기 실패: {e}"))]));
+            }
+        };
         let text = if utts.is_empty() {
             "전사 없음".to_string()
         } else {
@@ -419,11 +433,12 @@ impl TunaSearchServer {
         })
         .await
         .unwrap_or_else(|e| Err(format!("작업 실패: {e}")));
-        let text = match outcome {
-            Ok(t) => t,
-            Err(e) => format!("착수 실패: {e}"),
-        };
-        Ok(CallToolResult::success(vec![Content::text(text)]))
+        // R1: 내부 실패(전이충돌 포함)를 success로 위장하지 않는다. isError=true라야 클라(McpHttpClient::
+        // parse_jsonrpc_sse)가 Err로 인식하고, 워커(run_one_pass)가 claim 실패로 보고 러너를 안 돌린다.
+        match outcome {
+            Ok(t) => Ok(CallToolResult::success(vec![Content::text(t)])),
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!("착수 실패: {e}"))])),
+        }
     }
 
     #[tool(description = "task 결과를 보고하고 완료 처리한다(-> completed, 결과는 텍스트 Artifact로 저장).")]
@@ -444,11 +459,11 @@ impl TunaSearchServer {
         })
         .await
         .unwrap_or_else(|e| Err(format!("작업 실패: {e}")));
-        let text = match outcome {
-            Ok(t) => t,
-            Err(e) => format!("완료 처리 실패: {e}"),
-        };
-        Ok(CallToolResult::success(vec![Content::text(text)]))
+        // R1: 내부 실패(전이충돌 포함)를 success로 위장하지 않는다(claim_task와 동일 사유).
+        match outcome {
+            Ok(t) => Ok(CallToolResult::success(vec![Content::text(t)])),
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!("완료 처리 실패: {e}"))])),
+        }
     }
 
     #[tool(description = "task 실행이 실패했음을 보고한다(-> failed, 사유는 상태 메시지로 저장). completed와 구분되어 dispatcher가 실패를 인지한다.")]
@@ -469,11 +484,11 @@ impl TunaSearchServer {
         })
         .await
         .unwrap_or_else(|e| Err(format!("작업 실패: {e}")));
-        let text = match outcome {
-            Ok(t) => t,
-            Err(e) => format!("실패 처리 실패: {e}"),
-        };
-        Ok(CallToolResult::success(vec![Content::text(text)]))
+        // R1: 내부 실패(전이충돌 포함)를 success로 위장하지 않는다(claim_task와 동일 사유).
+        match outcome {
+            Ok(t) => Ok(CallToolResult::success(vec![Content::text(t)])),
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!("실패 처리 실패: {e}"))])),
+        }
     }
 
     #[tool(description = "다른 에이전트에게 새 A2A task를 위임한다(생성 즉시 submitted 상태, dispatcher용).")]
@@ -700,8 +715,12 @@ mod tests {
 
         struct NullRetriever;
         impl crate::orchestrator::ContextRetriever for NullRetriever {
-            fn retrieve(&self, _q: &str, _limit: usize) -> Vec<crate::orchestrator::Utterance> {
-                vec![]
+            fn retrieve(
+                &self,
+                _q: &str,
+                _limit: usize,
+            ) -> Result<Vec<crate::orchestrator::Utterance>, String> {
+                Ok(vec![])
             }
         }
 
@@ -719,13 +738,18 @@ mod tests {
             }
         }
         impl crate::orchestrator::TranscriptReader for SharedLog {
-            fn read_transcript(&self, _sid: &str, _max: Option<usize>) -> Vec<crate::orchestrator::Utterance> {
-                self.0
+            fn read_transcript(
+                &self,
+                _sid: &str,
+                _max: Option<usize>,
+            ) -> Result<Vec<crate::orchestrator::Utterance>, String> {
+                Ok(self
+                    .0
                     .lock()
                     .unwrap()
                     .iter()
                     .map(|(s, c)| crate::orchestrator::Utterance { speaker: s.clone(), content: c.clone() })
-                    .collect()
+                    .collect())
             }
         }
 
@@ -1048,8 +1072,8 @@ mod tests {
     struct FakeRetriever(Vec<Utterance>);
 
     impl crate::orchestrator::ContextRetriever for FakeRetriever {
-        fn retrieve(&self, _query: &str, _limit: usize) -> Vec<Utterance> {
-            self.0.clone()
+        fn retrieve(&self, _query: &str, _limit: usize) -> Result<Vec<Utterance>, String> {
+            Ok(self.0.clone())
         }
     }
 
@@ -1085,8 +1109,12 @@ mod tests {
     struct FakeTranscriptReader(Vec<Utterance>);
 
     impl crate::orchestrator::TranscriptReader for FakeTranscriptReader {
-        fn read_transcript(&self, _session_id: &str, _max_turns: Option<usize>) -> Vec<Utterance> {
-            self.0.clone()
+        fn read_transcript(
+            &self,
+            _session_id: &str,
+            _max_turns: Option<usize>,
+        ) -> Result<Vec<Utterance>, String> {
+            Ok(self.0.clone())
         }
     }
 
@@ -1142,9 +1170,13 @@ mod tests {
     }
 
     impl crate::orchestrator::TranscriptReader for CapturingTranscriptReader {
-        fn read_transcript(&self, session_id: &str, _max_turns: Option<usize>) -> Vec<Utterance> {
+        fn read_transcript(
+            &self,
+            session_id: &str,
+            _max_turns: Option<usize>,
+        ) -> Result<Vec<Utterance>, String> {
             *self.captured.lock().unwrap() = Some(session_id.to_string());
-            self.utts.clone()
+            Ok(self.utts.clone())
         }
     }
 
@@ -1330,6 +1362,8 @@ mod tests {
     fn complete_task_text_sets_completed_with_artifact() {
         let store = SqliteStore::open_memory().unwrap();
         seed_task(&store, "t1", "win", "mac", "2026-07-02 09:00:00");
+        // R2: try_complete는 working 상태에서만 성공하므로, 먼저 claim해 착수 상태로 만든다.
+        claim_task_text(&store, "t1").unwrap();
         let text = complete_task_text(&store, "t1", "작업 결과").unwrap();
         assert!(text.contains("state=completed"), "응답 불일치: {text}");
         let reloaded = store.get_task("t1").unwrap().unwrap();
@@ -1434,6 +1468,8 @@ mod tests {
         seed_task(&store, "t1", "win", "mac", "2026-07-02 09:00:00");
         let a2a = Arc::new(Mutex::new(store));
         let server = TunaSearchServer::new(Arc::new(FakeRetriever(vec![]))).with_a2a_store(a2a.clone());
+        // R2: try_complete는 working 상태에서만 성공하므로, 먼저 claim해 착수 상태로 만든다.
+        server.claim_task(Parameters(ClaimTaskParams { task_id: "t1".into() })).await.unwrap();
         let result = server
             .complete_task(Parameters(CompleteTaskParams { task_id: "t1".into(), result: "완료 보고".into() }))
             .await;
@@ -1451,7 +1487,10 @@ mod tests {
         let server = server_with_a2a_store(store);
         let result = server.claim_task(Parameters(ClaimTaskParams { task_id: "nope".into() })).await;
         assert!(result.is_ok());
-        let text = format!("{:?}", result.unwrap().content);
+        let call_result = result.unwrap();
+        // R1: 내부 실패는 isError=true라야 클라이언트가 성공으로 오인하지 않는다.
+        assert_eq!(call_result.is_error, Some(true), "isError=true여야 함");
+        let text = format!("{:?}", call_result.content);
         assert!(text.contains("착수 실패"), "에러 안내 불일치: {text}");
     }
 
@@ -1463,8 +1502,38 @@ mod tests {
             .complete_task(Parameters(CompleteTaskParams { task_id: "nope".into(), result: "결과".into() }))
             .await;
         assert!(result.is_ok());
-        let text = format!("{:?}", result.unwrap().content);
+        let call_result = result.unwrap();
+        assert_eq!(call_result.is_error, Some(true), "isError=true여야 함");
+        let text = format!("{:?}", call_result.content);
         assert!(text.contains("완료 처리 실패"), "에러 안내 불일치: {text}");
+    }
+
+    #[tokio::test]
+    async fn claim_task_tool_already_working_returns_is_error_true() {
+        // R2 전이충돌(이미 claim된 task를 다시 claim)이 R1 에러계약(isError=true)으로 정직하게 드러나는지
+        // 확인한다(두 리팩토링이 맞물리는 지점). 클라이언트(McpHttpClient::parse_jsonrpc_sse)는 이
+        // isError를 보고 Err로 매핑하고, 워커(run_one_pass)는 claim 실패로 보고 러너를 안 돌린다.
+        let store = SqliteStore::open_memory().unwrap();
+        seed_task(&store, "t1", "win", "mac", "2026-07-02 09:00:00");
+        let a2a = Arc::new(Mutex::new(store));
+        let server = TunaSearchServer::new(Arc::new(FakeRetriever(vec![]))).with_a2a_store(a2a.clone());
+
+        // 첫 claim은 성공(submitted -> working).
+        let first = server.claim_task(Parameters(ClaimTaskParams { task_id: "t1".into() })).await;
+        assert!(first.is_ok());
+        assert_eq!(first.unwrap().is_error, Some(false), "첫 claim은 성공이어야 함");
+
+        // 둘째 claim(동시 착수 경쟁 시뮬레이션): 이미 working이라 전이충돌 -> isError=true.
+        let second = server.claim_task(Parameters(ClaimTaskParams { task_id: "t1".into() })).await;
+        assert!(second.is_ok(), "MCP 레벨에서는 항상 Ok(CallToolResult)를 반환해야 함");
+        let call_result = second.unwrap();
+        assert_eq!(call_result.is_error, Some(true), "전이충돌인데 isError=true가 아님");
+        let text = format!("{:?}", call_result.content);
+        assert!(text.contains("착수 실패"), "에러 안내 불일치: {text}");
+
+        // 상태는 여전히 working으로 유지돼야 한다(둘째 호출이 조용히 성공한 것처럼 보이면 안 됨).
+        let reloaded = a2a.lock().unwrap().get_task("t1").unwrap().unwrap();
+        assert_eq!(reloaded.state, TaskState::Working);
     }
 
     // --- A2A dispatcher 툴(send_task/get_task): 순수 함수 단위테스트 ---
@@ -1508,6 +1577,8 @@ mod tests {
     fn get_task_text_completed_task_appends_artifact_text() {
         let store = SqliteStore::open_memory().unwrap();
         seed_task(&store, "t1", "win", "mac", "2026-07-02 09:00:00");
+        // R2: try_complete는 working 상태에서만 성공하므로, 먼저 claim해 착수 상태로 만든다.
+        claim_task_text(&store, "t1").unwrap();
         complete_task_text(&store, "t1", "작업 결과 요약").unwrap();
         let text = get_task_text(&store, "t1").unwrap();
         assert!(text.contains("state=completed"), "state 누락: {text}");

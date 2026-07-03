@@ -444,13 +444,13 @@ fn main() {
                 Ok(t) => Box::new(move |s: &str| t.fts_index(s)),
                 Err(e) => {
                     eprintln!("[reindex] 토크나이저 실패, 폴백: {e}");
-                    Box::new(|s: &str| tunaround::search::tokenize_fallback(s).join(" "))
+                    Box::new(|s: &str| tunaround::search::fallback_fts_index(s))
                 }
             }
         };
         #[cfg(not(feature = "morphology"))]
         let tok: Box<dyn Fn(&str) -> String + Send + Sync> =
-            Box::new(|s: &str| tunaround::search::tokenize_fallback(s).join(" "));
+            Box::new(|s: &str| tunaround::search::fallback_fts_index(s));
         // 벡터 임베더(semantic이면 재임베딩; model_id 키로 모델 교체 시 갱신).
         #[cfg(feature = "semantic")]
         let emb: Option<Box<dyn tunaround::store::embedding::Embedder>> = {
@@ -512,26 +512,13 @@ fn main() {
                 Ok(t) => Box::new(move |s: &str| t.fts_query(s)),
                 Err(e) => {
                     eprintln!("[mcp-search] 토크나이저 실패, 폴백: {e}");
-                    Box::new(|s: &str| {
-                        let mut toks = tunaround::search::tokenize_fallback(s);
-                        let al: Vec<String> = toks.iter().flat_map(|t| tunaround::search::loanword_aliases(t)).collect();
-                        toks.extend(al);
-                        toks.sort();
-                        toks.dedup();
-                        toks.into_iter().map(|t| format!("{t}*")).collect::<Vec<_>>().join(" ")
-                    })
+                    Box::new(|s: &str| tunaround::search::fallback_fts_query(s))
                 }
             }
         };
         #[cfg(not(feature = "morphology"))]
-        let tok: Box<dyn Fn(&str) -> String + Send + Sync> = Box::new(|s: &str| {
-            let mut toks = tunaround::search::tokenize_fallback(s);
-            let al: Vec<String> = toks.iter().flat_map(|t| tunaround::search::loanword_aliases(t)).collect();
-            toks.extend(al);
-            toks.sort();
-            toks.dedup();
-            toks.into_iter().map(|t| format!("{t}*")).collect::<Vec<_>>().join(" ")
-        });
+        let tok: Box<dyn Fn(&str) -> String + Send + Sync> =
+            Box::new(|s: &str| tunaround::search::fallback_fts_query(s));
         #[cfg(feature = "semantic")]
         let emb: Option<Box<dyn tunaround::store::embedding::Embedder>> = {
             Some(Box::new(tunaround::store::embedding::OllamaEmbedder::from_env()))
@@ -636,17 +623,18 @@ fn main() {
             }
         };
 
-        // --context-map "k=v,k=v" -> HashMap. 형식이 어긋난 항목(= 없음)은 건너뛴다.
-        let context_map: std::collections::HashMap<String, String> = a
-            .context_map
-            .as_deref()
-            .map(|s| {
-                s.split(',')
-                    .filter_map(|kv| kv.split_once('='))
-                    .map(|(k, v)| (k.trim().to_string(), v.trim().to_string()))
-                    .collect()
-            })
-            .unwrap_or_default();
+        // --context-map "k=v,k=v" -> HashMap. 오타·빈 항목·중복은 조용히 버리지 않고 진입 시 거부한다
+        // (worker::parse_context_map). 오폴백으로 엉뚱한 레포를 --write하는 사고를 막는다.
+        let context_map = match a.context_map.as_deref() {
+            Some(spec) => match tunaround::worker::parse_context_map(spec) {
+                Ok(m) => m,
+                Err(e) => {
+                    eprintln!("[work] --context-map 파싱 실패: {e}");
+                    std::process::exit(1);
+                }
+            },
+            None => std::collections::HashMap::new(),
+        };
 
         let result = rt.block_on(async {
             let client = tunaround::mcp_client::McpHttpClient::connect(a.core.clone(), a.token.clone()).await?;
@@ -778,13 +766,13 @@ fn main() {
                         Ok(t) => Box::new(move |s: &str| t.fts_index(s)),
                         Err(e) => {
                             eprintln!("[tunaRound] 토크나이저 실패, 폴백: {e}");
-                            Box::new(|s: &str| tunaround::search::tokenize_fallback(s).join(" "))
+                            Box::new(|s: &str| tunaround::search::fallback_fts_index(s))
                         }
                     }
                 };
                 #[cfg(not(feature = "morphology"))]
                 let tok: Box<dyn Fn(&str) -> String + Send + Sync> =
-                    Box::new(|s: &str| tunaround::search::tokenize_fallback(s).join(" "));
+                    Box::new(|s: &str| tunaround::search::fallback_fts_index(s));
                 // semantic 피처: OllamaEmbedder 인스턴스(indexer용). 연결 실패는 best-effort.
                 #[cfg(feature = "semantic")]
                 let emb_idx: Option<Box<dyn tunaround::store::embedding::Embedder>> = {
@@ -816,22 +804,13 @@ fn main() {
                         Ok(t) => Box::new(move |s: &str| t.fts_query(s)),
                         Err(e) => {
                             eprintln!("[tunaRound] retriever 토크나이저 실패, 폴백: {e}");
-                            Box::new(|s: &str| {
-                                let mut toks = tunaround::search::tokenize_fallback(s);
-                                toks.sort();
-                                toks.dedup();
-                                toks.into_iter().map(|t| format!("{t}*")).collect::<Vec<_>>().join(" ")
-                            })
+                            Box::new(|s: &str| tunaround::search::fallback_fts_query(s))
                         }
                     }
                 };
                 #[cfg(not(feature = "morphology"))]
-                let tok2: Box<dyn Fn(&str) -> String + Send + Sync> = Box::new(|s: &str| {
-                    let mut toks = tunaround::search::tokenize_fallback(s);
-                    toks.sort();
-                    toks.dedup();
-                    toks.into_iter().map(|t| format!("{t}*")).collect::<Vec<_>>().join(" ")
-                });
+                let tok2: Box<dyn Fn(&str) -> String + Send + Sync> =
+                    Box::new(|s: &str| tunaround::search::fallback_fts_query(s));
                 // semantic 피처: OllamaEmbedder 인스턴스(retriever용). 연결 실패는 best-effort.
                 #[cfg(feature = "semantic")]
                 let emb_ret: Option<Box<dyn tunaround::store::embedding::Embedder>> = {
@@ -1057,14 +1036,14 @@ fn build_index_tokenizer(ctx: &str) -> Box<dyn Fn(&str) -> String + Send + Sync>
             Ok(t) => Box::new(move |s: &str| t.fts_index(s)),
             Err(e) => {
                 eprintln!("[{ctx}] 색인 토크나이저 실패, 폴백: {e}");
-                Box::new(|s: &str| tunaround::search::tokenize_fallback(s).join(" "))
+                Box::new(|s: &str| tunaround::search::fallback_fts_index(s))
             }
         }
     }
     #[cfg(not(feature = "morphology"))]
     {
         let _ = ctx;
-        Box::new(|s: &str| tunaround::search::tokenize_fallback(s).join(" "))
+        Box::new(|s: &str| tunaround::search::fallback_fts_index(s))
     }
 }
 
@@ -1095,22 +1074,13 @@ fn build_http_mcp_backends(ctx: &str, db_str: &str) -> HttpMcpBackends {
             Ok(t) => Box::new(move |s: &str| t.fts_query(s)),
             Err(e) => {
                 eprintln!("[{ctx}] 토크나이저 실패, 폴백: {e}");
-                Box::new(|s: &str| {
-                    let mut toks = tunaround::search::tokenize_fallback(s);
-                    toks.sort();
-                    toks.dedup();
-                    toks.into_iter().map(|t| format!("{t}*")).collect::<Vec<_>>().join(" ")
-                })
+                Box::new(|s: &str| tunaround::search::fallback_fts_query(s))
             }
         }
     };
     #[cfg(not(feature = "morphology"))]
-    let tok: Box<dyn Fn(&str) -> String + Send + Sync> = Box::new(|s: &str| {
-        let mut toks = tunaround::search::tokenize_fallback(s);
-        toks.sort();
-        toks.dedup();
-        toks.into_iter().map(|t| format!("{t}*")).collect::<Vec<_>>().join(" ")
-    });
+    let tok: Box<dyn Fn(&str) -> String + Send + Sync> =
+        Box::new(|s: &str| tunaround::search::fallback_fts_query(s));
     #[cfg(feature = "semantic")]
     let emb: Option<Box<dyn tunaround::store::embedding::Embedder>> = {
         Some(Box::new(tunaround::store::embedding::OllamaEmbedder::from_env()))

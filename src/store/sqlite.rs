@@ -317,6 +317,24 @@ impl SqliteStore {
                     .map_err(|e| format!("sqlite: {e}"))?;
             }
 
+            // (4) orphan 정리. 전량 교체로 messages가 새 집합이 됐으니, 그 세션에서 새 messages에
+            // 없는 msg_id의 부속 행(message_vectors·message_validity)도 같은 트랜잭션에서 삭제한다
+            // (messages/FTS만 지우면 축소 저장 시 벡터·유효성 행이 orphan으로 남음).
+            self.conn
+                .execute(
+                    "DELETE FROM message_vectors WHERE session_id=?1 \
+                     AND msg_id NOT IN (SELECT msg_id FROM messages WHERE session_id=?1)",
+                    [session_id],
+                )
+                .map_err(|e| format!("sqlite: {e}"))?;
+            self.conn
+                .execute(
+                    "DELETE FROM message_validity WHERE session_id=?1 \
+                     AND msg_id NOT IN (SELECT msg_id FROM messages WHERE session_id=?1)",
+                    [session_id],
+                )
+                .map_err(|e| format!("sqlite: {e}"))?;
+
             Ok(())
         })();
 
@@ -914,6 +932,99 @@ impl SqliteStore {
         Ok(())
     }
 
+    /// task를 조건부로 working 전이한다(claim). WHERE 절의 현재상태 가드가 상태머신을 저장소 계층에서
+    /// 강제한다: submitted/input_required일 때만 성공하므로, 두 워커가 같은 task를 동시에 claim해도
+    /// UPDATE 하나만 1행을 갱신하고 나머지는 0행(rows_affected!=1)으로 걸러진다(레이스 방지).
+    /// status_message는 update_task_state의 관례를 따라 항상 비운다(착수 시점엔 새 상태 메시지 없음).
+    /// 전이 성공 시에만 update_task_state와 동일하게 Status 이벤트를 emit한다.
+    pub fn try_claim(&self, task_id: &str) -> Result<(), String> {
+        let affected = self
+            .conn
+            .execute(
+                "UPDATE tasks SET state=?2, message_json=NULL, updated_at=datetime('now') \
+                 WHERE task_id=?1 AND state IN ('submitted','input_required')",
+                rusqlite::params![task_id, TaskState::Working.as_str()],
+            )
+            .map_err(|e| format!("sqlite: {e}"))?;
+        if affected != 1 {
+            return Err(format!("전이 불가: task_id={task_id} (현재 상태가 대상 아님)"));
+        }
+        if let Some(task) = self.get_task(task_id)? {
+            self.emit_task_event(TaskEvent::Status(task));
+        }
+        Ok(())
+    }
+
+    /// task를 조건부로 completed 전이한다(complete). working 상태일 때만 성공한다(레이스 방지: 이미
+    /// completed/canceled/failed로 종료된 task를 덮어쓰지 못함). 전이 성공 시에만 complete_task와
+    /// 동일하게 Completed 이벤트를 emit한다.
+    pub fn try_complete(&self, task_id: &str, artifacts: &[Artifact]) -> Result<(), String> {
+        let artifacts_json =
+            serde_json::to_string(artifacts).map_err(|e| format!("json: {e}"))?;
+        let affected = self
+            .conn
+            .execute(
+                "UPDATE tasks SET state=?2, artifacts_json=?3, updated_at=datetime('now') \
+                 WHERE task_id=?1 AND state='working'",
+                rusqlite::params![task_id, TaskState::Completed.as_str(), artifacts_json],
+            )
+            .map_err(|e| format!("sqlite: {e}"))?;
+        if affected != 1 {
+            return Err(format!("전이 불가: task_id={task_id} (현재 상태가 대상 아님)"));
+        }
+        if let Some(task) = self.get_task(task_id)? {
+            self.emit_task_event(TaskEvent::Completed(task));
+        }
+        Ok(())
+    }
+
+    /// task를 조건부로 failed 전이한다(fail). submitted/working/input_required(=열린 상태)일 때만
+    /// 성공한다(레이스 방지: completed/canceled로 이미 종료된 task를 덮어쓰지 못함). status_message는
+    /// update_task_state의 관례를 그대로 따른다(None이면 message_json 비움). 전이 성공 시에만
+    /// update_task_state와 동일하게 Status 이벤트를 emit한다.
+    pub fn try_fail(&self, task_id: &str, status_message: Option<&Message>) -> Result<(), String> {
+        let message_json = match status_message {
+            Some(m) => Some(serde_json::to_string(m).map_err(|e| format!("json: {e}"))?),
+            None => None,
+        };
+        let affected = self
+            .conn
+            .execute(
+                "UPDATE tasks SET state=?2, message_json=?3, updated_at=datetime('now') \
+                 WHERE task_id=?1 AND state IN ('submitted','working','input_required')",
+                rusqlite::params![task_id, TaskState::Failed.as_str(), message_json],
+            )
+            .map_err(|e| format!("sqlite: {e}"))?;
+        if affected != 1 {
+            return Err(format!("전이 불가: task_id={task_id} (현재 상태가 대상 아님)"));
+        }
+        if let Some(task) = self.get_task(task_id)? {
+            self.emit_task_event(TaskEvent::Status(task));
+        }
+        Ok(())
+    }
+
+    /// task를 조건부로 canceled 전이한다(cancel). submitted/working/input_required(=열린 상태)일 때만
+    /// 성공한다(레이스 방지: completed로 이미 끝난 task를 canceled로 덮어쓰지 못함). 전이 성공 시에만
+    /// update_task_state와 동일하게 Status 이벤트를 emit한다.
+    pub fn try_cancel(&self, task_id: &str) -> Result<(), String> {
+        let affected = self
+            .conn
+            .execute(
+                "UPDATE tasks SET state=?2, message_json=NULL, updated_at=datetime('now') \
+                 WHERE task_id=?1 AND state IN ('submitted','working','input_required')",
+                rusqlite::params![task_id, TaskState::Canceled.as_str()],
+            )
+            .map_err(|e| format!("sqlite: {e}"))?;
+        if affected != 1 {
+            return Err(format!("전이 불가: task_id={task_id} (현재 상태가 대상 아님)"));
+        }
+        if let Some(task) = self.get_task(task_id)? {
+            self.emit_task_event(TaskEvent::Status(task));
+        }
+        Ok(())
+    }
+
     /// history에 메시지를 append한다(기존 history_json을 읽어 병합 후 저장). 대상 task가 없으면 에러.
     pub fn append_history(&self, task_id: &str, msg: &Message) -> Result<(), String> {
         let existing: Option<String> = self
@@ -1024,6 +1135,61 @@ mod tests {
         db.save_session("s1", &ss(), |t| t.to_string()).unwrap();
         let back = db.load_session("s1").unwrap().unwrap();
         assert_eq!(back.messages.len(), 2);
+    }
+
+    #[test]
+    fn save_session_shrink_cleans_orphan_vectors_and_validity() {
+        // 전량 교체로 메시지가 줄면(id 2 제거), 그 세션의 부속 행(message_vectors·
+        // message_validity)도 같은 트랜잭션에서 정리돼 orphan이 남지 않아야 한다.
+        let db = SqliteStore::open_memory().unwrap();
+        db.save_session("s1", &ss(), |t| t.to_string()).unwrap(); // 메시지 2건(id 1, 2).
+
+        // 부속 행을 두 메시지 모두에 채운다.
+        let emb = CountingEmbedder { dim: 8, model: "model-A".into(), calls: 0.into() };
+        db.index_vectors("s1", &ss(), &emb).unwrap(); // message_vectors 2건.
+        db.set_validity("s1", 1, "active", None).unwrap();
+        db.set_validity("s1", 2, "active", None).unwrap(); // message_validity 2건.
+
+        // 축소 저장: id 1만 남긴다.
+        let shrunk = StoredSession {
+            messages: vec![StoredMessage {
+                id: 1,
+                parent_id: None,
+                speaker: "claude/proposer".into(),
+                content: "검색 시스템 설계".into(),
+            }],
+            head: Some(1),
+        };
+        db.save_session("s1", &shrunk, |t| t.to_string()).unwrap();
+
+        // 제거된 id 2의 부속 행이 orphan으로 남지 않아야 한다.
+        let orphan_count = |table: &str| -> i64 {
+            db.conn
+                .query_row(
+                    &format!(
+                        "SELECT COUNT(*) FROM {table} WHERE session_id='s1' \
+                         AND msg_id NOT IN (SELECT msg_id FROM messages WHERE session_id='s1')"
+                    ),
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap()
+        };
+        assert_eq!(orphan_count("message_vectors"), 0, "축소 후 orphan 벡터 0");
+        assert_eq!(orphan_count("message_validity"), 0, "축소 후 orphan 유효성 0");
+
+        // 남은 id 1의 부속 행은 보존돼야 한다(과잉 삭제 아님).
+        let kept = |table: &str| -> i64 {
+            db.conn
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM {table} WHERE session_id='s1'"),
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap()
+        };
+        assert_eq!(kept("message_vectors"), 1, "id 1 벡터 보존");
+        assert_eq!(kept("message_validity"), 1, "id 1 유효성 보존");
     }
 
     /// embed 호출 횟수를 세는 임베더. model_id를 주입 가능(무효화 키 테스트용).
@@ -1684,6 +1850,117 @@ mod tests {
             let msg = sample_message("m1");
             let task = db.create_task_from_message("win-claude", "mac-claude", msg).unwrap();
             assert_eq!(task.state, TaskState::Submitted);
+        }
+
+        // --- R2: 조건부 전이(try_claim/try_complete/try_fail/try_cancel) 단위테스트 ---
+
+        #[test]
+        fn try_claim_twice_second_call_is_transition_conflict() {
+            let db = SqliteStore::open_memory().unwrap();
+            let task = Task::new("t1", None, "win", "mac", "2026-07-02 09:00:00");
+            db.create_task(&task).unwrap();
+
+            // 첫 claim: submitted -> working 성공.
+            db.try_claim("t1").unwrap();
+            assert_eq!(db.get_task("t1").unwrap().unwrap().state, TaskState::Working);
+
+            // 둘째 claim(동시 착수 경쟁 시뮬레이션): 이미 working이라 전이 대상 아님 -> Err.
+            let err = db.try_claim("t1").unwrap_err();
+            assert!(err.contains("t1"), "에러 메시지에 task_id 없음: {err}");
+            // 실패한 전이가 상태를 건드리지 않았는지 확인(여전히 working, 다른 상태로 안 튐).
+            assert_eq!(db.get_task("t1").unwrap().unwrap().state, TaskState::Working);
+        }
+
+        #[test]
+        fn try_complete_on_non_working_task_is_transition_conflict() {
+            let db = SqliteStore::open_memory().unwrap();
+            let task = Task::new("t1", None, "win", "mac", "2026-07-02 09:00:00");
+            db.create_task(&task).unwrap(); // submitted 상태(아직 claim 안 됨).
+
+            let artifacts = vec![Artifact {
+                artifact_id: "a1".into(),
+                name: None,
+                parts: vec![Part { text: Some("결과".into()), ..Default::default() }],
+            }];
+            let err = db.try_complete("t1", &artifacts).unwrap_err();
+            assert!(err.contains("t1"), "에러 메시지에 task_id 없음: {err}");
+            // submitted로 남아있어야 함(완료로 잘못 전이되지 않음).
+            assert_eq!(db.get_task("t1").unwrap().unwrap().state, TaskState::Submitted);
+        }
+
+        #[test]
+        fn try_cancel_on_completed_task_is_blocked_and_state_preserved() {
+            let db = SqliteStore::open_memory().unwrap();
+            let task = Task::new("t1", None, "win", "mac", "2026-07-02 09:00:00");
+            db.create_task(&task).unwrap();
+            db.try_claim("t1").unwrap();
+            let artifacts = vec![Artifact {
+                artifact_id: "a1".into(),
+                name: None,
+                parts: vec![Part { text: Some("결과".into()), ..Default::default() }],
+            }];
+            db.try_complete("t1", &artifacts).unwrap();
+            assert_eq!(db.get_task("t1").unwrap().unwrap().state, TaskState::Completed);
+
+            // 이미 completed(종료 상태)인 task를 canceled로 덮어쓰려 하면 차단돼야 한다(R2 핵심 회귀).
+            let err = db.try_cancel("t1").unwrap_err();
+            assert!(err.contains("t1"), "에러 메시지에 task_id 없음: {err}");
+            let after = db.get_task("t1").unwrap().unwrap();
+            assert_eq!(after.state, TaskState::Completed, "completed가 canceled로 덮어써짐(R2 회귀)");
+            assert_eq!(after.artifacts, artifacts, "완료 산출물이 유지돼야 함");
+        }
+
+        #[test]
+        fn try_claim_then_try_complete_emit_status_then_completed() {
+            // 기존 update_task_state/complete_task 경로를 검증하던
+            // task_events_emit_status_then_status_then_completed_in_order와 동일한 이벤트버스 계약을
+            // try_* 조건부 전이 경로에서도 유지하는지 확인한다(R2: emit 보존이 핵심 요구사항).
+            let db = SqliteStore::open_memory().unwrap().with_task_events();
+            let mut rx = db.task_event_sender().expect("with_task_events 후엔 버스 활성화").subscribe();
+
+            let msg = sample_message("m1");
+            let task = db.create_task_from_message("win-claude", "mac-claude", msg).unwrap();
+
+            db.try_claim(&task.id).unwrap();
+
+            let artifacts = vec![Artifact {
+                artifact_id: "a1".into(),
+                name: Some("결과물".into()),
+                parts: vec![Part { text: Some("완료 보고".into()), ..Default::default() }],
+            }];
+            db.try_complete(&task.id, &artifacts).unwrap();
+
+            // 1) create_task_from_message -> Status(submitted).
+            match rx.try_recv().expect("첫 이벤트 없음") {
+                TaskEvent::Status(t) => assert_eq!(t.state, TaskState::Submitted),
+                other => panic!("Status(submitted) 기대, 실제: {other:?}"),
+            }
+            // 2) try_claim -> Status(working).
+            match rx.try_recv().expect("둘째 이벤트 없음") {
+                TaskEvent::Status(t) => assert_eq!(t.state, TaskState::Working),
+                other => panic!("Status(working) 기대, 실제: {other:?}"),
+            }
+            // 3) try_complete -> Completed(completed, artifacts 포함).
+            match rx.try_recv().expect("셋째 이벤트 없음") {
+                TaskEvent::Completed(t) => {
+                    assert_eq!(t.state, TaskState::Completed);
+                    assert_eq!(t.artifacts, artifacts);
+                }
+                other => panic!("Completed 기대, 실제: {other:?}"),
+            }
+            assert!(rx.try_recv().is_err(), "이벤트가 3건보다 많음");
+        }
+
+        #[test]
+        fn try_transition_on_missing_task_is_err_and_emits_nothing() {
+            // 대상 task 자체가 없으면 rows_affected=0으로 같은 에러 경로를 타야 한다(스펙 요구사항).
+            // 전이가 없었으니 이벤트도 없어야 한다.
+            let db = SqliteStore::open_memory().unwrap().with_task_events();
+            let mut rx = db.task_event_sender().expect("with_task_events 후엔 버스 활성화").subscribe();
+            assert!(db.try_claim("nope").is_err());
+            assert!(db.try_fail("nope", None).is_err());
+            assert!(db.try_cancel("nope").is_err());
+            assert!(rx.try_recv().is_err(), "존재하지 않는 task에 대해 이벤트가 emit됨");
         }
 
         #[test]

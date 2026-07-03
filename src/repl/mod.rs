@@ -355,9 +355,16 @@ impl Session {
     /// retrieve_for의 path 파라미터 버전. active_path 재호출 없이 호출 가능.
     fn retrieve_for_from_path(&self, topic: &str, active: &[Utterance]) -> Vec<Utterance> {
         let Some(r) = &self.retriever else { return Vec::new(); };
-        // 활성 경로에 이미 있는 내용은 중복이므로 제외. retrieve_ctx로 분기 인지(현재 세션 off-branch 디프리오리티).
-        let deduped = r
-            .retrieve_ctx(topic, RETRIEVE_K, &self.session_id)
+        // retrieve_ctx Err(1차 검색 경로 DB 장애, R7)는 "조용히 무시"가 아니라 "보이게 무시": stderr로 알리고
+        // 빈 컨텍스트로 degrade한다(REPL은 계속 진행). 활성 경로 중복은 제외(분기 인지 디프리오리티).
+        let hits = match r.retrieve_ctx(topic, RETRIEVE_K, &self.session_id) {
+            Ok(h) => h,
+            Err(e) => {
+                eprintln!("[tunaRound] 맥락 검색 실패(빈 컨텍스트로 진행): {e}");
+                return Vec::new();
+            }
+        };
+        let deduped = hits
             .into_iter()
             .filter(|u| !active.iter().any(|a| a.content == u.content));
         // 누적 글자수가 MAX_RETRIEVED_CHARS를 넘으면 이후 발언 드롭(최소 1건은 보장, UTF-8 안전).
@@ -594,14 +601,14 @@ impl Session {
                 const SEARCH_K: usize = 10;
                 match &self.retriever {
                     None => StepOutcome::Print("검색이 비활성화돼 있습니다. --db <경로>로 실행하면 인덱스를 검색할 수 있습니다.".into()),
-                    Some(r) => {
-                        let hits = r.retrieve(&q, SEARCH_K);
-                        if hits.is_empty() {
-                            StepOutcome::Print(format!("검색 결과 없음: {q}"))
-                        } else {
+                    Some(r) => match r.retrieve(&q, SEARCH_K) {
+                        // R7: 검색 실패(DB 장애)는 "결과 없음"으로 위장하지 않고 사용자에게 표시(REPL 계속).
+                        Err(e) => StepOutcome::Print(format!("검색 실패: {e}")),
+                        Ok(hits) if hits.is_empty() => StepOutcome::Print(format!("검색 결과 없음: {q}")),
+                        Ok(hits) => {
                             StepOutcome::Print(format!("검색 결과({}건):\n\n{}", hits.len(), render(&hits)))
                         }
-                    }
+                    },
                 }
             }
             Command::Explain(q) => {
@@ -781,10 +788,10 @@ mod tests {
     /// 긴 발언 여러 개를 반환하는 가짜 retriever(길이 cap 테스트용).
     struct LongRetriever;
     impl crate::orchestrator::ContextRetriever for LongRetriever {
-        fn retrieve(&self, _q: &str, _limit: usize) -> Vec<Utterance> {
-            (0..3)
+        fn retrieve(&self, _q: &str, _limit: usize) -> Result<Vec<Utterance>, String> {
+            Ok((0..3)
                 .map(|i| Utterance { speaker: format!("s{i}"), content: "가".repeat(1200) })
-                .collect()
+                .collect())
         }
     }
 
@@ -1054,8 +1061,8 @@ mod tests {
 
     struct FakeRetriever { results: Vec<Utterance> }
     impl crate::orchestrator::ContextRetriever for FakeRetriever {
-        fn retrieve(&self, _query: &str, _limit: usize) -> Vec<Utterance> {
-            self.results.clone()
+        fn retrieve(&self, _query: &str, _limit: usize) -> Result<Vec<Utterance>, String> {
+            Ok(self.results.clone())
         }
     }
 
@@ -1175,7 +1182,7 @@ mod tests {
         // FakeRetriever(고정 Utterance 반환)로 검색 결과 렌더 확인.
         struct FakeRetriever(Vec<Utterance>);
         impl crate::orchestrator::ContextRetriever for FakeRetriever {
-            fn retrieve(&self, _q: &str, _l: usize) -> Vec<Utterance> { self.0.clone() }
+            fn retrieve(&self, _q: &str, _l: usize) -> Result<Vec<Utterance>, String> { Ok(self.0.clone()) }
         }
         let hits = vec![Utterance { speaker: "claude/proposer".into(), content: "검색 시스템 설계".into() }];
         let mut s = session_with_two_seats().with_retriever(Some(Box::new(FakeRetriever(hits))));

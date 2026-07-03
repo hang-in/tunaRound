@@ -79,7 +79,7 @@ fn measure_search_quality() {
         }).collect();
         println!("  [벡터]    {}", if vec_str.is_empty() { "(없음)".into() } else { vec_str.join(" | ") });
 
-        let hyb = retriever.retrieve(q, 3);
+        let hyb = retriever.retrieve(q, 3).unwrap();
         println!("  [하이브리드] {}", if hyb.is_empty() { "(없음)".into() } else {
             hyb.iter().map(|u| snip(&u.content)).collect::<Vec<_>>().join(" | ")
         });

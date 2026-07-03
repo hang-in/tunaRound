@@ -55,18 +55,28 @@ pub trait RunnerRegistry {
 
 /// topic으로 관련 과거 맥락 슬라이스를 끌어오는 경계(RunnerRegistry와 동형, 비게이트).
 pub trait ContextRetriever: Send + Sync {
-    fn retrieve(&self, query: &str, limit: usize) -> Vec<Utterance>;
+    /// Ok(빈 벡터)=질의 빈 문자열·매칭 0건(정상). Err=1차 검색 경로의 DB 장애(호출자가 가시화, R7).
+    fn retrieve(&self, query: &str, limit: usize) -> Result<Vec<Utterance>, String>;
 
     /// 현재 세션 컨텍스트로 분기 인지 검색(현재 세션 off-branch=버려진 분기를 디프리오리티, step 5b).
     /// 기본 구현은 retrieve에 위임한다(컨텍스트 미지원 impl은 동작 불변).
-    fn retrieve_ctx(&self, query: &str, limit: usize, _current_session: &str) -> Vec<Utterance> {
+    fn retrieve_ctx(
+        &self,
+        query: &str,
+        limit: usize,
+        _current_session: &str,
+    ) -> Result<Vec<Utterance>, String> {
         self.retrieve(query, limit)
     }
 
     /// 검색 디버그 출력(질의→토큰화→히트 score/유효성). /explain·search_context explain용(step 7).
     /// 기본 구현은 점수/토큰화 없이 결과 목록만(리치 버전은 SqliteRetriever가 제공).
+    /// 사람이 읽는 디버그 문자열이라 오류도 텍스트에 녹인다(시그니처는 String 유지, R7).
     fn debug_retrieve(&self, query: &str, limit: usize, current_session: &str) -> String {
-        let hits = self.retrieve_ctx(query, limit, current_session);
+        let hits = match self.retrieve_ctx(query, limit, current_session) {
+            Ok(h) => h,
+            Err(e) => return format!("질의: {query}\n검색 오류: {e}"),
+        };
         let mut out = format!("질의: {query}\n결과({}건):\n", hits.len());
         for u in &hits {
             let snippet: String = u.content.chars().take(60).collect();
@@ -79,7 +89,12 @@ pub trait ContextRetriever: Send + Sync {
 /// 세션 전사를 읽어 오는 추상(코어를 백엔드로 노출하는 오케스트레이션 primitive).
 pub trait TranscriptReader: Send + Sync {
     /// session_id의 활성 경로(root->head) 발언. max_turns=Some(n)이면 마지막 n턴만.
-    fn read_transcript(&self, session_id: &str, max_turns: Option<usize>) -> Vec<Utterance>;
+    /// Ok(빈 벡터)=세션 없음(정상). Err=세션 로드 중 DB 장애(호출자가 가시화, R7).
+    fn read_transcript(
+        &self,
+        session_id: &str,
+        max_turns: Option<usize>,
+    ) -> Result<Vec<Utterance>, String>;
 }
 
 /// 세션 전사 끝(head 자식)에 발언을 추가하는 경계(원격 post_turn·front=core 병합용, Plan 27).
