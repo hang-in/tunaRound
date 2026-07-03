@@ -171,6 +171,41 @@ pub async fn run_worker_loop(
     }
 }
 
+/// 감시 전용 루프: agent 앞 새 submitted task만 stdout에 한 줄씩 알리고 claim은 하지 않는다.
+/// Claude Code 세션이 이 커맨드를 Monitor로 감싸면, task 도착이 이벤트로 세션을 깨워 스스로
+/// claim/처리하게 할 수 있다(감독 레인을 유휴 0토큰으로 운용). 이미 알린 id는 HashSet으로 디듑한다
+/// (task는 claim 전까지 submitted로 남아 매 폴마다 재등장하므로 중복 알림을 막는다).
+pub async fn run_poll_loop(
+    client: &McpHttpClient,
+    agent: &str,
+    interval_secs: u64,
+    once: bool,
+) -> Result<(), String> {
+    use std::io::Write;
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    loop {
+        match client.poll_tasks(agent).await {
+            Ok(text) => {
+                for t in parse_open_tasks(&text).into_iter().filter(|t| t.state == "submitted") {
+                    if seen.insert(t.id.clone()) {
+                        // Monitor 이벤트 = stdout 한 줄. 파이프는 블록 버퍼라 flush로 즉시 전달한다.
+                        let preview: String =
+                            t.msg.chars().take(80).collect::<String>().replace('\n', " ");
+                        println!("TASK {} :: {preview}", t.id);
+                        let _ = std::io::stdout().flush();
+                    }
+                }
+            }
+            // 폴 실패는 이벤트가 아니라 stderr로(Monitor 이벤트 오염 방지). 루프는 죽지 않는다.
+            Err(e) => eprintln!("[poll] poll_tasks 실패: {e}"),
+        }
+        if once {
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_secs(interval_secs)).await;
+    }
+}
+
 /// 한 패스(poll -> submitted task들 순회 claim/run/complete)를 수행한다. 항상 정상 반환(에러는 로그만).
 #[allow(clippy::too_many_arguments)]
 async fn run_one_pass(

@@ -39,6 +39,9 @@ enum Commands {
     /// 헤드리스 자율 워커 데몬: 원격 코어를 auto-poll->claim->실행->complete(worker 피처 전용).
     #[cfg(feature = "worker")]
     Work(WorkArgs),
+    /// 감시 전용: agent 앞 새 task를 stdout으로 알림만(claim/실행 없음). Monitor로 감싸 감독 레인 wake용(worker 피처).
+    #[cfg(feature = "worker")]
+    Poll(PollArgs),
 }
 
 /// chat/core가 공유하는 세션 배선 옵션.
@@ -205,6 +208,27 @@ struct WorkArgs {
     write: bool,
 }
 
+/// poll 서브커맨드: 감시 전용(claim/실행 없음). Claude Code 세션이 Monitor로 감싸 감독 레인을 유휴 0토큰으로 운용.
+#[cfg(feature = "worker")]
+#[derive(Args, Debug)]
+struct PollArgs {
+    /// 코어 `/mcp` 절대 URL(예: http://192.0.2.10:8770/mcp).
+    #[arg(long)]
+    core: String,
+    /// bearer 토큰(코어가 --token으로 띄워졌다면 필요).
+    #[arg(long)]
+    token: Option<String>,
+    /// 감시할 to_agent id(이 agent 앞 새 submitted task만 알린다).
+    #[arg(long)]
+    agent: String,
+    /// poll 간격(초, 기본 15).
+    #[arg(long, default_value_t = 15)]
+    interval: u64,
+    /// 한 패스만 실행하고 종료(테스트·수동 실행용).
+    #[arg(long)]
+    once: bool,
+}
+
 /// `--runner` 선택지: 기존 Runner trait 구현체 중 어느 것으로 task를 실행할지.
 #[cfg(feature = "worker")]
 #[derive(clap::ValueEnum, Clone, Debug)]
@@ -265,6 +289,9 @@ fn main() {
     // work <...>: 헤드리스 자율 워커 데몬 옵션(worker 피처 전용).
     #[cfg(feature = "worker")]
     let mut work_args: Option<WorkArgs> = None;
+    // poll <...>: 감시 전용 옵션(worker 피처 전용).
+    #[cfg(feature = "worker")]
+    let mut poll_args: Option<PollArgs> = None;
 
     // 서브커맨드별 옵션을 기존 모드 본문이 쓰던 지역변수로 옮긴다(본문 로직은 아래에서 불변).
     match command {
@@ -339,6 +366,14 @@ fn main() {
                 db_path = None;
             }
             work_args = Some(a);
+        }
+        #[cfg(feature = "worker")]
+        Commands::Poll(a) => {
+            #[cfg(feature = "sqlite")]
+            {
+                db_path = None;
+            }
+            poll_args = Some(a);
         }
     }
 
@@ -653,6 +688,20 @@ fn main() {
         });
         if let Err(e) = result {
             eprintln!("[work] 오류: {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
+    // poll <...>: 감시 전용(claim/실행 없음). 코어에 연결해 새 task를 stdout으로 알린다.
+    #[cfg(feature = "worker")]
+    if let Some(a) = poll_args {
+        let result = rt.block_on(async {
+            let client = tunaround::mcp_client::McpHttpClient::connect(a.core.clone(), a.token.clone()).await?;
+            tunaround::worker::run_poll_loop(&client, &a.agent, a.interval, a.once).await
+        });
+        if let Err(e) = result {
+            eprintln!("[poll] 오류: {e}");
             std::process::exit(1);
         }
         return;
