@@ -298,9 +298,29 @@ pub fn resolve_node_token(token: Option<&str>) -> Option<String> {
     }
 }
 
-/// TOML 문자열을 NodeConfig로 파싱한다.
+/// NodeConfig 의미 검증. 특히 `kind` 오타를 거부한다: 알 수 없는 값이 조용히 자동 레인으로
+/// 강등되면(mode="write"와 겹칠 때) 사람 승인 게이트를 우회하므로, 모호하면 실행 대신 거부한다(fail-safe).
+fn validate_node_config(cfg: &NodeConfig) -> Result<(), String> {
+    for l in &cfg.lane {
+        if let Some(k) = &l.kind
+            && k != "supervised"
+            && k != "auto"
+        {
+            return Err(format!(
+                "lane '{}'의 kind '{}'가 유효하지 않습니다(auto|supervised만 허용). \
+                 오타가 감독 레인을 자동 실행으로 강등시키는 사고를 막기 위해 거부합니다.",
+                l.agent, k
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// TOML 문자열을 NodeConfig로 파싱하고 의미 검증한다.
 pub fn parse_node_config(text: &str) -> Result<NodeConfig, String> {
-    toml::from_str(text).map_err(|e| format!("node 설정 파싱 실패: {e}"))
+    let cfg: NodeConfig = toml::from_str(text).map_err(|e| format!("node 설정 파싱 실패: {e}"))?;
+    validate_node_config(&cfg)?;
+    Ok(cfg)
 }
 
 /// node.toml 탐색. 우선순위: 명시(`--config`) > `./tunaround.node.toml` > `~/.tunaround/node.toml`.
@@ -710,6 +730,16 @@ kind = "supervised"
     fn parse_node_config_missing_agent_errors() {
         // lane에 agent 없으면 파싱 에러(필수 필드).
         assert!(parse_node_config("[[lane]]\nrunner = \"claude\"\n").is_err());
+    }
+
+    #[test]
+    fn parse_node_config_rejects_unknown_kind() {
+        // 오타 kind는 거부(감독 레인이 조용히 자동 실행으로 강등되는 사고 방지, coderabbit 보안 지적).
+        let err = parse_node_config("[[lane]]\nagent = \"w\"\nkind = \"supervized\"\n").unwrap_err();
+        assert!(err.contains("kind"), "에러 메시지: {err}");
+        // 정상 값은 통과.
+        assert!(parse_node_config("[[lane]]\nagent = \"w\"\nkind = \"auto\"\n").is_ok());
+        assert!(parse_node_config("[[lane]]\nagent = \"w\"\nkind = \"supervised\"\n").is_ok());
     }
 
     #[test]

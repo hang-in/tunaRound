@@ -466,8 +466,28 @@ fn run_doctor(cfg_path: Option<&str>) -> i32 {
                 drop(l);
                 println!("OK   core=self: {listen} 바인드 가능");
             }
+            // 포트가 이미 쓰이면, 그게 우리 브로커(node가 이미 구동 중)인지 확인한다.
+            // agent-card가 응답하면 OK로 본다(진단 목적이면 정상 상태이므로 오진단 방지, gemini 지적).
+            Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+                let port = listen.rsplit(':').next().unwrap_or("8770");
+                let url = format!("http://127.0.0.1:{port}/.well-known/agent-card.json");
+                let mut req =
+                    reqwest::blocking::Client::new().get(&url).timeout(std::time::Duration::from_secs(3));
+                if let Some(t) = &token {
+                    req = req.bearer_auth(t);
+                }
+                match req.send() {
+                    Ok(r) if r.status().is_success() => {
+                        println!("OK   core=self: {listen} 사용 중이나 브로커가 응답(node가 이미 구동 중)")
+                    }
+                    _ => {
+                        println!("FAIL core=self: {listen} 사용 중이고 브로커 응답 없음(다른 프로세스 점유?)");
+                        fails += 1;
+                    }
+                }
+            }
             Err(e) => {
-                println!("FAIL core=self: {listen} 바인드 불가({e}) - 이미 떠 있거나 권한 문제");
+                println!("FAIL core=self: {listen} 바인드 불가({e})");
                 fails += 1;
             }
         }
@@ -509,21 +529,34 @@ fn run_doctor(cfg_path: Option<&str>) -> i32 {
 
     for l in &cfg.lane {
         let kind = if l.is_supervised() { "감독" } else { "자동" };
-        let bin = match l.runner.as_str() {
-            "claude" => Some("claude"),
-            "codex" => Some("codex"),
-            "opencode" => Some("opencode"),
-            _ => None,
-        };
-        match bin {
-            Some(b) if binary_on_path(b) => {
-                println!("OK   lane {}[{kind}] runner={}: {b} PATH에 있음", l.agent, l.runner)
+        match l.runner.as_str() {
+            b @ ("claude" | "codex" | "opencode") => {
+                if binary_on_path(b) {
+                    println!("OK   lane {}[{kind}] runner={b}: PATH에 있음", l.agent);
+                } else {
+                    println!("FAIL lane {}[{kind}] runner={b}: PATH에 없음(설치/로그인 필요)", l.agent);
+                    fails += 1;
+                }
             }
-            Some(b) => {
-                println!("FAIL lane {}[{kind}] runner={}: {b} PATH에 없음(설치/로그인 필요)", l.agent, l.runner);
+            // http/a2a는 바이너리 대신 필수 설정을 검증한다(누락 시 node가 build_lane_runner에서 실패, gemini 지적).
+            "http" => match &l.http_base_url {
+                Some(u) => println!("OK   lane {}[{kind}] runner=http: base_url {u}", l.agent),
+                None => {
+                    println!("FAIL lane {}[{kind}] runner=http: http_base_url 누락", l.agent);
+                    fails += 1;
+                }
+            },
+            "a2a" => match &l.a2a_card {
+                Some(c) => println!("OK   lane {}[{kind}] runner=a2a: card {c}", l.agent),
+                None => {
+                    println!("FAIL lane {}[{kind}] runner=a2a: a2a_card 누락", l.agent);
+                    fails += 1;
+                }
+            },
+            other => {
+                println!("FAIL lane {}[{kind}] runner={other}: 알 수 없는 runner", l.agent);
                 fails += 1;
             }
-            None => println!("·    lane {}[{kind}] runner={}: 외부 엔드포인트(바이너리 체크 생략)", l.agent, l.runner),
         }
         if let Some(p) = &l.project {
             let pe = tunaround::config::expand_home(p);
@@ -1129,31 +1162,39 @@ fn main() {
             for l in auto {
                 let core_url = core_url.clone();
                 let token = token.clone();
+                // 각 레인은 자기 에러를 즉시 로그하고 () 로 끝낸다. run_worker_loop는 무한 루프라
+                // join_all에 Result를 넘겨 사후 처리하면, 정상 레인이 영원히 안 끝나 실패 레인 에러가
+                // 영영 출력되지 않는다(gemini 지적). 그래서 실패를 레인 안에서 바로 가시화한다.
                 handles.push(async move {
-                    let runner = build_lane_runner(&l, &token)?;
-                    let mode = if l.is_write() {
-                        tunaround::runner::RunMode::Write
-                    } else {
-                        tunaround::runner::RunMode::ReadOnly
+                    let run = async {
+                        let runner = build_lane_runner(&l, &token)?;
+                        let mode = if l.is_write() {
+                            tunaround::runner::RunMode::Write
+                        } else {
+                            tunaround::runner::RunMode::ReadOnly
+                        };
+                        let context_map = match l.context_map.as_deref() {
+                            Some(spec) => tunaround::worker::parse_context_map(spec)?,
+                            None => std::collections::HashMap::new(),
+                        };
+                        let client = connect_with_retry(&core_url, &token, 20).await?;
+                        eprintln!("[node] 레인 '{}' 연결 OK, 폴링 시작(interval {}s)", l.agent, l.interval);
+                        tunaround::worker::run_worker_loop(
+                            &client,
+                            runner,
+                            &l.agent,
+                            l.model.clone(),
+                            l.project.as_deref().map(tunaround::config::expand_home),
+                            context_map,
+                            mode,
+                            l.interval,
+                            false,
+                        )
+                        .await
                     };
-                    let context_map = match l.context_map.as_deref() {
-                        Some(spec) => tunaround::worker::parse_context_map(spec)?,
-                        None => std::collections::HashMap::new(),
-                    };
-                    let client = connect_with_retry(&core_url, &token, 20).await?;
-                    eprintln!("[node] 레인 '{}' 연결 OK, 폴링 시작(interval {}s)", l.agent, l.interval);
-                    tunaround::worker::run_worker_loop(
-                        &client,
-                        runner,
-                        &l.agent,
-                        l.model.clone(),
-                        l.project.as_deref().map(tunaround::config::expand_home),
-                        context_map,
-                        mode,
-                        l.interval,
-                        false,
-                    )
-                    .await
+                    if let Err(e) = run.await {
+                        eprintln!("[node] 레인 '{}' 종료(다른 레인은 계속): {e}", l.agent);
+                    }
                 });
             }
             if handles.is_empty() {
@@ -1163,12 +1204,8 @@ fn main() {
                     tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
                 }
             }
-            let results: Vec<Result<(), String>> = futures_util::future::join_all(handles).await;
-            for r in results {
-                if let Err(e) = r {
-                    eprintln!("[node] 레인 오류: {e}");
-                }
-            }
+            // 정상 레인들은 무한히 돈다. 실패 레인은 위에서 이미 로그하고 빠졌다.
+            futures_util::future::join_all(handles).await;
         });
         return;
     }
