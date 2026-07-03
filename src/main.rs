@@ -471,8 +471,13 @@ fn run_doctor(cfg_path: Option<&str>) -> i32 {
             Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
                 // 와일드카드(0.0.0.0/[::]) 바인드만 루프백으로 조회한다. 특정 IP로 바인드했다면
                 // 127.0.0.1로는 못 닿아 false FAIL이 나므로 그 주소 그대로 쓴다(gemini 지적).
-                let target = if listen.starts_with("0.0.0.0") || listen.starts_with("[::]") {
-                    format!("127.0.0.1:{}", listen.rsplit(':').next().unwrap_or("8770"))
+                // 와일드카드만 루프백으로 조회하되, IPv6 와일드카드([::])는 [::1]로(IPv6-only에서
+                // 127.0.0.1이 안 닿을 수 있음). 특정 IP 바인드는 그 주소 그대로.
+                let port = listen.rsplit(':').next().unwrap_or("8770");
+                let target = if listen.starts_with("0.0.0.0") {
+                    format!("127.0.0.1:{port}")
+                } else if listen.starts_with("[::]") {
+                    format!("[::1]:{port}")
                 } else {
                     listen.to_string()
                 };
@@ -486,13 +491,18 @@ fn run_doctor(cfg_path: Option<&str>) -> i32 {
                     Ok(r) if r.status().is_success() => {
                         println!("OK   core=self: {listen} 사용 중이나 브로커가 응답(node가 이미 구동 중)")
                     }
-                    // HTTP로 응답은 하나 2xx가 아니면(예: 401/403 토큰 문제) 대개 우리 브로커다.
-                    // "다른 프로세스"로 단정하지 않고 WARN으로 구분한다(coderabbit 지적).
-                    Ok(r) => println!(
-                        "WARN core=self: {listen} 사용 중, 브로커가 {} 응답(아마 우리 브로커 - 토큰/기동 상태 확인)",
-                        r.status()
-                    ),
-                    // 전송 자체 실패 = HTTP 응답 없음. 우리 브로커가 아닌 다른 프로세스 점유일 수 있다.
+                    // 401/403만 "우리 브로커인데 인증 문제"로 보고 WARN. 404 등 다른 non-2xx는
+                    // 무관한 프로세스(일반 웹서버)일 가능성이 커서 FAIL(node 기동 시 포트 충돌 예방).
+                    Ok(r) if r.status() == reqwest::StatusCode::UNAUTHORIZED
+                        || r.status() == reqwest::StatusCode::FORBIDDEN =>
+                    {
+                        println!("WARN core=self: {listen} 사용 중, 브로커가 {} (우리 브로커로 보이나 토큰 확인 필요)", r.status())
+                    }
+                    Ok(r) => {
+                        println!("FAIL core=self: {listen} 점유한 프로세스가 {} 응답(우리 브로커 아님, 포트 충돌)", r.status());
+                        fails += 1;
+                    }
+                    // 전송 자체 실패 = HTTP 응답 없음. 다른 프로세스가 비-HTTP로 점유 중일 수 있다.
                     Err(_) => {
                         println!("FAIL core=self: {listen} 사용 중이고 HTTP 응답 없음(다른 프로세스 점유?)");
                         fails += 1;
