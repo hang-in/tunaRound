@@ -131,7 +131,14 @@ tunaround work --core ... --token ... --agent projA-worker --project-path /repos
 # 프로젝트 B 워커
 tunaround work --core ... --token ... --agent projB-worker --project-path /repos/B --runner codex
 ```
-dispatcher는 `to_agent`를 `projA-worker` 또는 `projB-worker`로 지정해 라우팅한다. (작업의 `context_id`로 한 데몬이 여러 프로젝트를 자동 배분하는 방식은 후속.)
+dispatcher는 `to_agent`를 `projA-worker` 또는 `projB-worker`로 지정해 라우팅한다.
+
+**데몬 하나로 여러 프로젝트 배분(`--context-map`)**: 작업의 `context_id`를 프로젝트 키로 삼아, 워커 하나가 각 작업을 맞는 디렉터리에서 실행한다.
+```bash
+tunaround work --core ... --token ... --agent shared-worker \
+  --context-map "projA=/repos/A,projB=/repos/B" --project-path /repos/default --runner claude
+```
+dispatcher는 작업을 던질 때 `context_id`를 넣는다(`SendMessage` params의 `message.contextId`, 또는 MCP `send_task`의 `context_id`). 워커는 그 값을 `--context-map`에서 찾아 project-path를 정하고, 매핑에 없으면 `--project-path`로 폴백한다. 코어의 `poll_tasks` 출력에 `ctx=<context_id>`가 포함되어 워커가 라우팅에 쓴다.
 
 ## 6. 자율 수준 · 안전
 

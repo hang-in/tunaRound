@@ -14,6 +14,8 @@ const ID_LEN: usize = 32;
 pub struct ParsedTask {
     pub id: String,
     pub state: String,
+    /// A2A context_id(프로젝트별 라우팅 키). poll에 `ctx=-`이거나 없으면 None.
+    pub context_id: Option<String>,
     pub msg: String,
 }
 
@@ -72,25 +74,49 @@ pub fn parse_open_tasks(poll_text: &str) -> Vec<ParsedTask> {
             None => continue,
         };
         let state_marker = " state=";
+        let ctx_marker = " ctx=";
         let msg_marker = " msg=";
         let state_pos = match after_bracket.find(state_marker) {
             Some(p) => p,
             None => continue,
         };
         let after_state = &after_bracket[state_pos + state_marker.len()..];
+        // msg를 앵커로 삼는다(항상 있음). state와 msg 사이의 " ctx=<id>"는 선택적으로 처리해
+        // 구 포맷(ctx 없음)과도 호환한다.
         let msg_pos = match after_state.find(msg_marker) {
             Some(p) => p,
             None => continue,
         };
+        let between = &after_state[..msg_pos]; // "submitted ctx=projA" 또는 "submitted"
+        let msg = after_state[msg_pos + msg_marker.len()..].to_string();
+        let (state, context_id) = match between.find(ctx_marker) {
+            Some(cp) => {
+                let state = between[..cp].to_string();
+                let ctx_raw = &between[cp + ctx_marker.len()..];
+                let context_id = if ctx_raw == "-" { None } else { Some(ctx_raw.to_string()) };
+                (state, context_id)
+            }
+            None => (between.to_string(), None),
+        };
 
         let id = block[1..1 + ID_LEN].to_string();
-        let state = after_state[..msg_pos].to_string();
-        let msg = after_state[msg_pos + msg_marker.len()..].to_string();
-
-        tasks.push(ParsedTask { id, state, msg });
+        tasks.push(ParsedTask { id, state, context_id, msg });
     }
 
     tasks
+}
+
+/// task의 context_id를 `--context-map`에서 찾아 실행할 project-path를 정한다(순수 함수).
+/// 매핑에 있으면 그 경로, 없거나 context_id가 없으면 기본 project-path로 폴백한다.
+pub fn resolve_project_path(
+    context_id: Option<&str>,
+    context_map: &std::collections::HashMap<String, String>,
+    default_path: Option<&str>,
+) -> Option<String> {
+    context_id
+        .and_then(|c| context_map.get(c))
+        .cloned()
+        .or_else(|| default_path.map(|s| s.to_string()))
 }
 
 /// 워커 한 패스: poll -> (submitted만) claim -> runner.run -> complete.
@@ -105,12 +131,13 @@ pub async fn run_worker_loop(
     agent: &str,
     model: Option<String>,
     project_path: Option<String>,
+    context_map: std::collections::HashMap<String, String>,
     mode: crate::runner::RunMode,
     interval_secs: u64,
     once: bool,
 ) -> Result<(), String> {
     loop {
-        run_one_pass(client, &runner, agent, &model, &project_path, mode).await;
+        run_one_pass(client, &runner, agent, &model, &project_path, &context_map, mode).await;
 
         if once {
             return Ok(());
@@ -120,12 +147,14 @@ pub async fn run_worker_loop(
 }
 
 /// 한 패스(poll -> submitted task들 순회 claim/run/complete)를 수행한다. 항상 정상 반환(에러는 로그만).
+#[allow(clippy::too_many_arguments)]
 async fn run_one_pass(
     client: &McpHttpClient,
     runner: &Arc<dyn Runner + Send + Sync>,
     agent: &str,
     model: &Option<String>,
     project_path: &Option<String>,
+    context_map: &std::collections::HashMap<String, String>,
     mode: crate::runner::RunMode,
 ) {
     let poll_text = match client.poll_tasks(agent).await {
@@ -144,10 +173,19 @@ async fn run_one_pass(
             continue;
         }
 
+        // 프로젝트 라우팅: task의 context_id가 --context-map에 있으면 그 project-path로 실행하고,
+        // 없으면 기본 --project-path로 폴백한다. 데몬 하나가 여러 프로젝트를 배분할 수 있다.
+        let resolved_project =
+            resolve_project_path(t.context_id.as_deref(), context_map, project_path.as_deref());
+        if let Some(cid) = t.context_id.as_deref()
+            && let Some(p) = context_map.get(cid)
+        {
+            eprintln!("[work] task {} context={cid} -> project-path {p}", t.id);
+        }
         let input = RunInput {
             prompt: t.msg.clone(),
             model: model.clone(),
-            project_path: project_path.clone(),
+            project_path: resolved_project,
             mode,
             pull: false,
         };
@@ -244,5 +282,51 @@ mod tests {
         assert_eq!(submitted.len(), 2);
         assert_eq!(submitted[0].id, id1);
         assert_eq!(submitted[1].id, id3);
+    }
+
+    #[test]
+    fn parse_open_tasks_extracts_context_id() {
+        let id = "7".repeat(32);
+        let text = format!("[{id}] from=disp state=submitted ctx=projA msg=작업 지시");
+        let tasks = parse_open_tasks(&text);
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].context_id.as_deref(), Some("projA"));
+        assert_eq!(tasks[0].state, "submitted");
+        assert_eq!(tasks[0].msg, "작업 지시");
+    }
+
+    #[test]
+    fn parse_open_tasks_ctx_dash_is_none() {
+        let id = "8".repeat(32);
+        let text = format!("[{id}] from=disp state=submitted ctx=- msg=작업");
+        let tasks = parse_open_tasks(&text);
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].context_id, None);
+        assert_eq!(tasks[0].msg, "작업");
+    }
+
+    #[test]
+    fn parse_open_tasks_no_ctx_marker_is_backward_compatible() {
+        // 구 포맷(ctx= 없음)도 context_id=None으로 그대로 파싱된다.
+        let id = "9".repeat(32);
+        let text = format!("[{id}] from=disp state=submitted msg=구포맷");
+        let tasks = parse_open_tasks(&text);
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].context_id, None);
+        assert_eq!(tasks[0].msg, "구포맷");
+    }
+
+    #[test]
+    fn resolve_project_path_uses_map_then_falls_back() {
+        let mut map = std::collections::HashMap::new();
+        map.insert("projA".to_string(), "/repos/A".to_string());
+        // 매핑에 있으면 그 경로.
+        assert_eq!(resolve_project_path(Some("projA"), &map, Some("/default")), Some("/repos/A".to_string()));
+        // context_id가 매핑에 없으면 기본값.
+        assert_eq!(resolve_project_path(Some("projX"), &map, Some("/default")), Some("/default".to_string()));
+        // context_id 자체가 없으면 기본값.
+        assert_eq!(resolve_project_path(None, &map, Some("/default")), Some("/default".to_string()));
+        // 매핑도 기본값도 없으면 None.
+        assert_eq!(resolve_project_path(Some("projX"), &map, None), None);
     }
 }

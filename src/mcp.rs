@@ -185,7 +185,9 @@ fn format_open_tasks(agent: &str, tasks: &[crate::store::a2a::Task]) -> String {
                 .and_then(|m| m.parts.first())
                 .and_then(|p| p.text.as_deref())
                 .unwrap_or("(본문 없음)");
-            format!("[{}] from={} state={} msg={}", t.id, t.from_agent, t.state.as_str(), msg)
+            // ctx=<context_id>는 워커가 프로젝트별 라우팅(--context-map)에 쓴다. 없으면 "-".
+            let ctx = t.context_id.as_deref().unwrap_or("-");
+            format!("[{}] from={} state={} ctx={} msg={}", t.id, t.from_agent, t.state.as_str(), ctx, msg)
         })
         .collect::<Vec<_>>()
         .join("\n\n")

@@ -178,9 +178,13 @@ struct WorkArgs {
     /// 러너에 넘길 모델 이름(옵션, 러너별 기본값 사용 가능).
     #[arg(long)]
     model: Option<String>,
-    /// 러너가 작업할 로컬 레포 경로(옵션).
+    /// 러너가 작업할 로컬 레포 경로(옵션). task의 context_id가 --context-map에 없을 때의 기본값.
     #[arg(long = "project-path")]
     project_path: Option<String>,
+    /// context_id -> project-path 매핑(프로젝트별 라우팅). 형식: "projA=/repos/A,projB=/repos/B".
+    /// 데몬 하나가 여러 프로젝트를 배분한다(매핑에 없으면 --project-path로 폴백).
+    #[arg(long = "context-map")]
+    context_map: Option<String>,
     /// --runner http 전용: OpenAI 호환 chat API의 base URL(예: http://localhost:11434).
     #[arg(long = "http-base-url")]
     http_base_url: Option<String>,
@@ -609,6 +613,18 @@ fn main() {
             }
         };
 
+        // --context-map "k=v,k=v" -> HashMap. 형식이 어긋난 항목(= 없음)은 건너뛴다.
+        let context_map: std::collections::HashMap<String, String> = a
+            .context_map
+            .as_deref()
+            .map(|s| {
+                s.split(',')
+                    .filter_map(|kv| kv.split_once('='))
+                    .map(|(k, v)| (k.trim().to_string(), v.trim().to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+
         let result = rt.block_on(async {
             let client = tunaround::mcp_client::McpHttpClient::connect(a.core.clone(), a.token.clone()).await?;
             tunaround::worker::run_worker_loop(
@@ -617,6 +633,7 @@ fn main() {
                 &a.agent,
                 a.model.clone(),
                 a.project_path.clone(),
+                context_map,
                 mode,
                 a.interval,
                 a.once,

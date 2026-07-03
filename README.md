@@ -281,12 +281,12 @@ TUI나 웹 UI는 이후 단계에서 붙일 예정입니다.
 - [x] A2A SSE 스트리밍 (`SendStreamingMessage`/`SubscribeToTask`)
 - [x] 자율 워커 데몬 (`tunaround work`) + 이기종 러너 (Claude/Codex/로컬 LLM)
 - [x] 워커 실패 시 task `failed` 전이 (`fail_task`, completed와 구분)
+- [x] context_id 기반 프로젝트별 작업 라우팅 (`--context-map`, 데몬 하나가 여러 프로젝트 배분)
 
 다음:
 
 - [ ] 공개 릴리스 (도그푸딩 후 태그)
 - [ ] 워커 고착(claim 후 죽음) 방지 (타임아웃/재큐)
-- [ ] context_id 기반 프로젝트별 작업 라우팅
 - [ ] 세션을 넘나드는 프로젝트 기억
 - [ ] 리치 TUI / 웹 UI
 
