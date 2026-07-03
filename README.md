@@ -28,7 +28,7 @@
 cargo run            # = cargo run -- chat (인자 없으면 기본 REPL)
 ```
 
-서브커맨드: `chat`(기본 REPL) · `core <addr>`(단일 프로세스 코어) · `serve <addr>`(헤드리스 코어) · `join <url>`(원격 코어 접속) · `reindex`. `tunaround <명령> --help`로 옵션 확인.
+서브커맨드: `chat`(기본 REPL) · `core <addr>`(단일 프로세스 코어) · `serve <addr>`(헤드리스 코어) · `join <url>`(원격 코어 접속) · `work`(A2A 위임 워커 데몬) · `reindex`. `tunaround <명령> --help`로 옵션 확인.
 
 예시:
 
@@ -152,6 +152,30 @@ tunaround join http://<코어-IP>:8770/mcp --token <토큰>
 
 (참고: 위의 "여러 터미널에서 같이 보기"의 Redis 미러링은 이것과 별개인 관찰 전용 기능입니다. 머신 간 토론 공유는 여기 코어 방식을 씁니다.)
 
+## 파트너 에이전트에게 작업 위임하기 (A2A)
+
+토론과 별개로, 코어는 **표준 A2A(Agent2Agent) 프로토콜**의 작업 브로커로도 동작합니다. 한 쪽(dispatcher)이 다른 머신·다른 종류의 에이전트(worker)에게 작업을 맡기고, 그 진행과 결과를 받아볼 수 있습니다.
+
+- **코어 = 작업 큐 + A2A 서버.** `serve`로 띄운 코어가 `/a2a`(JSON-RPC: `SendMessage`/`GetTask`/`CancelTask` + 스트리밍 `SendStreamingMessage`/`SubscribeToTask`)와 Agent Card(`/.well-known/agent-card.json`)를 노출합니다.
+- **자율 워커 데몬.** `tunaround work`는 자기 앞으로 온 작업을 스스로 발견(poll)하고, 착수(claim)하고, 지정한 러너로 실행한 뒤, 결과를 되돌립니다(complete). 사람이 "이제 처리해"라고 신호할 필요가 없습니다.
+- **이기종 파트너.** 워커가 무엇으로 작업을 실행할지 `--runner`로 정합니다. 같은 데몬을 Claude로도, Codex로도, 로컬 LLM(Ollama 등 OpenAI 호환 HTTP)으로도 띄울 수 있습니다.
+- **실시간 스트리밍.** dispatcher가 `SendStreamingMessage`로 던지면 작업의 상태 변화(submitted -> working -> 결과 artifact -> completed)를 SSE로 실시간 구독합니다. 폴링 없이 진행을 지켜봅니다.
+
+```bash
+# 코어(작업 브로커) 한 대
+tunaround serve 0.0.0.0:8770 --db shared.db --token <토큰>
+
+# 워커 데몬 - win-worker 앞 작업을 Claude로 자율 처리
+tunaround work --core http://<코어-IP>:8770/mcp --token <토큰> \
+  --agent win-worker --runner claude
+
+# 로컬 LLM(Ollama)을 워커로 (이기종 파트너)
+tunaround work --core http://<코어-IP>:8770/mcp --token <토큰> \
+  --agent llm-worker --runner http --http-base-url http://127.0.0.1:11434 --model qwen3.5:4b
+```
+
+사람은 목표를 한 번 발행할 뿐, 발견·실행·완료·통지는 기계끼리 처리합니다. 자율 수준은 **semi-a2a**(사람이 목표를 정하는 HITL)이며, 사람 없이 무한히 도는 자동 토론 루프는 의도적으로 두지 않았습니다. 작업을 던지는 dispatcher 쪽 요청·워커 실행·프로젝트별 라우팅 등 **구체적인 사용법은 [docs/reference/a2a-usage.md](docs/reference/a2a-usage.md)**를 참고하세요.
+
 ## 현재 상태
 
 v1 본체와 v2 검색·맥락 기능이 대부분 들어왔습니다.
@@ -177,6 +201,10 @@ v1 본체와 v2 검색·맥락 기능이 대부분 들어왔습니다.
 - 통째 주입 대신 에이전트가 맥락을 직접 당겨오는 방식 (push → pull, `--pull-context`)
 - 코어의 검색·전사를 네트워크 HTTP MCP로 노출 (`--serve-mcp`, 원격 접속 토대)
 - 로컬/원격 LLM 참가자 (ollama, lmstudio, openai 같은 HTTP 엔진, opencode CLI)
+- 표준 A2A 작업 위임: 파트너 에이전트에게 작업을 맡기고 결과를 받는 브로커 코어 (`/a2a`, Agent Card)
+- 자율 워커 데몬 (`tunaround work`: poll -> claim -> 러너 실행 -> complete, 사람 트리거 없이)
+- 이기종 워커 러너 (Claude / Codex / 로컬 LLM을 `--runner`로 교체)
+- A2A 작업 진행 실시간 SSE 스트리밍 (`SendStreamingMessage`/`SubscribeToTask`)
 
 빌드는 macOS·Windows·Linux 모두 순수 Rust로 됩니다. Windows와 macOS(aarch64) 모두 실제 `claude`·`codex` CLI로 동작을 확인했습니다(빌드·테스트·`cargo install`·2에이전트 토론 도그푸딩, 크로스머신 A2A 읽기 스모크 포함). macOS에서 Kiwi 네이티브 자동다운로드가 막히면 lindera로 폴백해 그대로 동작합니다.
 
@@ -246,13 +274,18 @@ TUI나 웹 UI는 이후 단계에서 붙일 예정입니다.
 - [x] 최신성 인지 검색 랭킹 (세션 간 오래된 결과 약한 강등)
 - [x] 외래어 병기 검색 (한글 외래어 ↔ 영어 원어)
 - [x] Codex 전사 pull (behavioral read-only)
-- [x] 서브커맨드 CLI (`chat`/`core`/`serve`/`join`/`reindex`) + `tunaround.toml` 프로파일
+- [x] 서브커맨드 CLI (`chat`/`core`/`serve`/`join`/`work`/`reindex`) + `tunaround.toml` 프로파일
 - [x] 배포 파이프라인 준비 (cargo-dist, Homebrew/powershell)
+- [x] 원격/분산 참가자 라이브 (맥 ↔ 윈도우 크로스머신 A2A, 양방향 왕복 + SSE 스트리밍 스모크)
+- [x] 표준 A2A 작업 위임 브로커 (`/a2a` SendMessage/GetTask/CancelTask + Agent Card)
+- [x] A2A SSE 스트리밍 (`SendStreamingMessage`/`SubscribeToTask`)
+- [x] 자율 워커 데몬 (`tunaround work`) + 이기종 러너 (Claude/Codex/로컬 LLM)
 
 다음:
 
 - [ ] 공개 릴리스 (도그푸딩 후 태그)
-- [ ] 원격/분산 참가자 라이브 (맥 ↔ 윈도우 크로스머신)
+- [ ] 워커 실패 시 task `failed` 전이 + 고착 방지
+- [ ] context_id 기반 프로젝트별 작업 라우팅
 - [ ] 세션을 넘나드는 프로젝트 기억
 - [ ] 리치 TUI / 웹 UI
 
