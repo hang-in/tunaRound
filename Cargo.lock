@@ -3091,6 +3091,7 @@ dependencies = [
  "clap",
  "futures-util",
  "kiwi-rs",
+ "libc",
  "lindera",
  "redis",
  "reqwest 0.12.28",

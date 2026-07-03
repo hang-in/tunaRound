@@ -192,10 +192,12 @@ fn poll_interval(idle_timeout: Duration) -> Duration {
 fn kill_pid(pid: u32) {
     #[cfg(unix)]
     {
-        // run_with_watchdog가 자식 PID와 같은 PGID를 만들었으므로 음수 PID는 그룹 전체를 뜻한다.
-        let _ = Command::new("kill")
-            .args(["-9", &format!("-{pid}")])
-            .status();
+        // run_with_watchdog가 process_group(0)으로 자식 PID를 PGID로 만들었으므로,
+        // 음수 PID(그룹 전체)에 SIGKILL을 syscall로 직접 보낸다. 외부 `kill -9 -PID`는
+        // util-linux 등에서 음수 인자가 옵션으로 파싱돼 그룹을 못 죽이는 이식성 함정이 있다.
+        unsafe {
+            libc::kill(-(pid as i32), libc::SIGKILL);
+        }
     }
     #[cfg(windows)]
     {
