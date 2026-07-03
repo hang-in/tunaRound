@@ -27,7 +27,9 @@
 - **#6 새 소스 파일 첫 줄 = 역할 한국어 한 줄 주석.** Rust 예: `// 토론 라운드 프롬프트를 조립하는 순수 함수`. config 파일 제외.
 - **#7 비trivial 작업 전 plan + `checklist.md` + `context-notes.md`.** plan만 주고 코딩 요청 시 멈추고 checklist·notes 먼저 만들지 묻는다.
 
-## 현재 상태 (2026-07-03, 세션 6~8, semi-a2a Phase 1 + 크로스머신/스트리밍 + A2A 스트리밍 Phase 2 + 자율 워커 데몬(이기종) + fail전이·프로젝트라우팅 + outbound 표준 A2A 위임 완료)
+## 현재 상태 (2026-07-03, 세션 6~9. 세션9 = R1-R10 리팩토링·PR CI·poll·node 고도화 + **공개 마이그레이션(레포 PUBLIC 전환)** + 브로커 거버넌스 설계)
+
+- **세션 9 (2026-07-03): R1-R10(PR #1, CI가 R3 Unix버그 포착)·poll 감시자(PR #2·3)·node 고도화 init/node/doctor(PR #3·4·5, 리뷰 8건) + 크로스머신 node 양방향 실증 → 공개 준비.** **filter-repo로 히스토리 272커밋 시크릿 퍼지(사설호스트·SSH·LAN IP·토큰 placeholder화) → 새 PUBLIC `hang-in/tunaRound`(히스토리 보존, 시크릿 0), 옛 것 `-private` rename**(공개 못했던 이슈 해소). README 뱃지·명령 갱신. 발견 2건(win-opus=dispatcher는 폴러 아님 / 워커가 자기 node 클론 write=self-disruption 자살)을 거버넌스로 정리. **다음 세션 = 거버넌스 구현.** 정본 [브로커 거버넌스](docs/design/v2-broker-governance_2026-07-03.md) · [node 온보딩](docs/design/v2-node-onboarding_2026-07-03.md) · [usecase](docs/reference/agent-dev-team.md). ⚠ 레포 PUBLIC이니 문서/코드에 LAN IP·토큰·사설호스트 평문 금지.
 
 - **세션 6: rc.1 CI green 확인 + Windows 아티팩트 검증 + 사설 IP 전방 redact(backend-private.md 패턴) + Stage 3e 킬 -> semi-a2a 파트너 위임(A2A 표준) 설계·Phase 1 코드(Task 1~4 = 데이터레이어·`/a2a` 엔드포인트·worker inbox·dispatcher 툴) 완성·푸시 + Task 5 라이브 크로스머신 도그푸딩 착수.** 검증 기본 209 / 풀피처 262 lib pass. 스키마 **v6**(tasks). 정본 [semi-a2a 파트너 위임](docs/design/v2-a2a-partner-delegation_2026-07-02.md).
 
@@ -51,7 +53,7 @@
 - **v1 + v2 검색/맥락 로드맵(step 2~8) + Stage 3a~3d + codex pull(behavioral) + 실코퍼스 회귀(step6) + 외래어 병기 + 임베딩 qwen3 + 배포/온보딩(clap·cargo-dist·프로파일) 완성.** 검증: **기본 184 lib+6 cli / `--features "semantic morphology mcp serve"` 198 lib+9 cli pass, clippy 클린(no-default 포함).** 스키마 **v5**(created_at).
 - 현행 spec: [docs/design/tunaRound-v1-design_2026-06-29.md](docs/design/tunaRound-v1-design_2026-06-29.md). 진행: [docs/plans/index.md](docs/plans/index.md).
 - **>>> 진입점 먼저 읽기 (각 줄은 해당 머신만 편집) <<<**
-  - **WIN 최신**: [session8-refactor](docs/prompts/v2-handoff_2026-07-03_session8-refactor.md) - A2A 3자 리팩토링 도그푸딩(브랜치 refactor/reviews-2026-07-03, 8/9). 다음: R7·머지·PR CI·usecase. (이전 [session6](docs/prompts/v2-handoff_2026-07-03_session6.md).)
+  - **WIN 최신**: [session9](docs/prompts/v2-handoff_2026-07-03_session9.md) - 공개 마이그레이션(레포 PUBLIC 전환, 시크릿 퍼지) + node 고도화 + 브로커 거버넌스 설계. **다음 세션 = 거버넌스 구현**([정본](docs/design/v2-broker-governance_2026-07-03.md)). (이전 [session8-refactor](docs/prompts/v2-handoff_2026-07-03_session8-refactor.md).)
   - **MAC 최신**: [mac-rc1](docs/prompts/v2-handoff_2026-07-03_mac-rc1.md) - 맥: v0.1.0-rc.1 발행 + 티키타카.
 - 이전 [session5](docs/prompts/v2-handoff_2026-07-02_session5.md). 맥↔윈도우 왕복은 [docs/reference/dev-mac-windows.md](docs/reference/dev-mac-windows.md). 협업 규약은 위 "맥↔윈도우 협업 규약" 섹션.
 - **⚠️ Cargo.toml `version="0.1.0-rc.1"`**(rc 발행용). **최종 v0.1.0 태그 전 `0.1.0`으로 되돌릴 것.** 프리릴리스 v0.1.0-rc.1 live(CI green, 4타깃). 릴리스 교훈=[dev-mac-windows §6](docs/reference/dev-mac-windows.md). 정본 방향: [배포·온보딩](docs/design/v2-deploy-onboarding_2026-07-02.md) + [A2A](docs/design/v2-A2A-core-backend_2026-06-30.md) + [시간성·유효성](docs/design/v2-temporal-validity-direction_2026-07-01.md). 이전: [session4](docs/prompts/v2-handoff_2026-07-01_session4.md)
