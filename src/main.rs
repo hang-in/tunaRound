@@ -469,8 +469,19 @@ fn run_doctor(cfg_path: Option<&str>) -> i32 {
             // 포트가 이미 쓰이면, 그게 우리 브로커(node가 이미 구동 중)인지 확인한다.
             // agent-card가 응답하면 OK로 본다(진단 목적이면 정상 상태이므로 오진단 방지, gemini 지적).
             Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+                // 와일드카드(0.0.0.0/[::]) 바인드만 루프백으로 조회한다. 특정 IP로 바인드했다면
+                // 127.0.0.1로는 못 닿아 false FAIL이 나므로 그 주소 그대로 쓴다(gemini 지적).
+                // 와일드카드만 루프백으로 조회하되, IPv6 와일드카드([::])는 [::1]로(IPv6-only에서
+                // 127.0.0.1이 안 닿을 수 있음). 특정 IP 바인드는 그 주소 그대로.
                 let port = listen.rsplit(':').next().unwrap_or("8770");
-                let url = format!("http://127.0.0.1:{port}/.well-known/agent-card.json");
+                let target = if listen.starts_with("0.0.0.0") {
+                    format!("127.0.0.1:{port}")
+                } else if listen.starts_with("[::]") {
+                    format!("[::1]:{port}")
+                } else {
+                    listen.to_string()
+                };
+                let url = format!("http://{target}/.well-known/agent-card.json");
                 let mut req =
                     reqwest::blocking::Client::new().get(&url).timeout(std::time::Duration::from_secs(3));
                 if let Some(t) = &token {
@@ -480,8 +491,20 @@ fn run_doctor(cfg_path: Option<&str>) -> i32 {
                     Ok(r) if r.status().is_success() => {
                         println!("OK   core=self: {listen} 사용 중이나 브로커가 응답(node가 이미 구동 중)")
                     }
-                    _ => {
-                        println!("FAIL core=self: {listen} 사용 중이고 브로커 응답 없음(다른 프로세스 점유?)");
+                    // 401/403만 "우리 브로커인데 인증 문제"로 보고 WARN. 404 등 다른 non-2xx는
+                    // 무관한 프로세스(일반 웹서버)일 가능성이 커서 FAIL(node 기동 시 포트 충돌 예방).
+                    Ok(r) if r.status() == reqwest::StatusCode::UNAUTHORIZED
+                        || r.status() == reqwest::StatusCode::FORBIDDEN =>
+                    {
+                        println!("WARN core=self: {listen} 사용 중, 브로커가 {} (우리 브로커로 보이나 토큰 확인 필요)", r.status())
+                    }
+                    Ok(r) => {
+                        println!("FAIL core=self: {listen} 점유한 프로세스가 {} 응답(우리 브로커 아님, 포트 충돌)", r.status());
+                        fails += 1;
+                    }
+                    // 전송 자체 실패 = HTTP 응답 없음. 다른 프로세스가 비-HTTP로 점유 중일 수 있다.
+                    Err(_) => {
+                        println!("FAIL core=self: {listen} 사용 중이고 HTTP 응답 없음(다른 프로세스 점유?)");
                         fails += 1;
                     }
                 }
@@ -539,20 +562,38 @@ fn run_doctor(cfg_path: Option<&str>) -> i32 {
                 }
             }
             // http/a2a는 바이너리 대신 필수 설정을 검증한다(누락 시 node가 build_lane_runner에서 실패, gemini 지적).
-            "http" => match &l.http_base_url {
-                Some(u) => println!("OK   lane {}[{kind}] runner=http: base_url {u}", l.agent),
-                None => {
-                    println!("FAIL lane {}[{kind}] runner=http: http_base_url 누락", l.agent);
+            // http/a2a는 필수 설정 + 그 러너를 지원하는 피처가 이 바이너리에 컴파일됐는지도 본다
+            // (피처 없이 빌드되면 node가 build_lane_runner에서 실패하므로, doctor가 미리 잡는다).
+            "http" => {
+                #[cfg(not(feature = "engines"))]
+                {
+                    println!("FAIL lane {}[{kind}] runner=http: 이 바이너리는 engines 피처 없이 빌드됨", l.agent);
                     fails += 1;
                 }
-            },
-            "a2a" => match &l.a2a_card {
-                Some(c) => println!("OK   lane {}[{kind}] runner=a2a: card {c}", l.agent),
-                None => {
-                    println!("FAIL lane {}[{kind}] runner=a2a: a2a_card 누락", l.agent);
+                #[cfg(feature = "engines")]
+                match &l.http_base_url {
+                    Some(u) => println!("OK   lane {}[{kind}] runner=http: base_url {u}", l.agent),
+                    None => {
+                        println!("FAIL lane {}[{kind}] runner=http: http_base_url 누락", l.agent);
+                        fails += 1;
+                    }
+                }
+            }
+            "a2a" => {
+                #[cfg(not(feature = "a2a-out"))]
+                {
+                    println!("FAIL lane {}[{kind}] runner=a2a: 이 바이너리는 a2a-out 피처 없이 빌드됨", l.agent);
                     fails += 1;
                 }
-            },
+                #[cfg(feature = "a2a-out")]
+                match &l.a2a_card {
+                    Some(c) => println!("OK   lane {}[{kind}] runner=a2a: card {c}", l.agent),
+                    None => {
+                        println!("FAIL lane {}[{kind}] runner=a2a: a2a_card 누락", l.agent);
+                        fails += 1;
+                    }
+                }
+            }
             other => {
                 println!("FAIL lane {}[{kind}] runner={other}: 알 수 없는 runner", l.agent);
                 fails += 1;
