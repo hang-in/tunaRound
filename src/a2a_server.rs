@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
 
-use crate::store::a2a::{task_event_to_frames, Message, StreamResponse, Task, TaskEvent, TaskState};
+use crate::store::a2a::{task_event_to_frames, Message, StreamResponse, Task, TaskEvent};
 use crate::store::sqlite::SqliteStore;
 
 // JSON-RPC 2.0 표준 에러 코드(A2A 스펙 §9.5 "Standard JSON-RPC Error Codes").
@@ -118,12 +118,14 @@ pub fn handle_get(store: &SqliteStore, params: TaskIdParams) -> Result<Option<Ta
     store.get_task(&params.id)
 }
 
-/// CancelTask 순수 로직: 존재할 때만 canceled로 전이하고 갱신된 Task를 반환한다.
+/// CancelTask 순수 로직: 존재할 때만 canceled로 전이하고 갱신된 Task를 반환한다. 대상 task가 이미
+/// completed 등 종료 상태면 try_cancel이 Err를 반환하고 그대로 위로 전파한다(레이스 컨디션 방지, R2 -
+/// 종료 상태를 canceled로 덮어쓰지 못함. dispatch()에서 Internal error로 응답된다).
 pub fn handle_cancel(store: &SqliteStore, params: TaskIdParams) -> Result<Option<Task>, String> {
     if store.get_task(&params.id)?.is_none() {
         return Ok(None);
     }
-    store.update_task_state(&params.id, TaskState::Canceled, None)?;
+    store.try_cancel(&params.id)?;
     store.get_task(&params.id)
 }
 
@@ -522,7 +524,7 @@ fn json_response<T: Serialize>(value: &T) -> axum::response::Response {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::a2a::{Artifact, Part};
+    use crate::store::a2a::{Artifact, Part, TaskState};
 
     fn sample_message(context_id: Option<&str>) -> Message {
         Message {
