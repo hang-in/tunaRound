@@ -83,7 +83,11 @@ tunaround chat
 | `tunaround core <addr>` | 단일 프로세스 코어를 실행합니다. |
 | `tunaround serve <addr>` | 헤드리스 코어를 실행합니다. |
 | `tunaround join <url>` | 원격 코어에 접속합니다. |
+| `tunaround init` | 워커 노드 설정(`node.toml`)을 만듭니다. |
+| `tunaround node` | 설정대로 브로커와 워커를 한 프로세스로 상주시킵니다. |
+| `tunaround doctor` | 워커 노드 설정을 진단합니다. |
 | `tunaround work` | A2A 작업 위임 워커 데몬을 실행합니다. |
+| `tunaround poll` | 새 작업이 오면 알리는 감시 전용 모드입니다. |
 | `tunaround reindex` | 검색 색인을 다시 만듭니다. |
 
 옵션은 다음 명령으로 확인합니다.
@@ -118,6 +122,22 @@ tunaround chat session.json
 ```bash
 tunaround chat --roster examples/roster.json
 ```
+
+---
+
+## 여러 머신에 작업 맡기기 (A2A 워커 노드)
+
+토론을 넘어, 여러 대의 컴퓨터를 "작업을 받아 처리하는 워커"로 묶을 수 있습니다. 한 대에 설정 하나를 만들고 백그라운드에 데몬 하나만 띄우면, 그 기계가 대기하다가 던져진 작업을 스스로 처리하고 결과를 돌려줍니다.
+
+```bash
+tunaround init      # node.toml 생성 (설치된 러너 자동 탐지)
+tunaround doctor    # 설정 진단 (코어 도달, 러너, 경로 점검)
+tunaround node      # 브로커와 워커를 한 프로세스로 상주
+```
+
+목표는 사람이 쥡니다. 무엇을 할지는 사람이 정하고, 발견·실행·완료 통지는 에이전트들끼리 처리합니다(semi-a2a). 러너를 바꾸면 Claude, Codex, 로컬 LLM 등 서로 다른 파트너를 붙일 수 있습니다.
+
+작업을 던지고 받는 전체 흐름과 설정은 [`docs/reference/a2a-usage.md`](docs/reference/a2a-usage.md), "에이전트 개발팀"으로 굴리는 방법은 [`docs/reference/agent-dev-team.md`](docs/reference/agent-dev-team.md)를 참고하세요.
 
 ---
 
