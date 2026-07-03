@@ -317,6 +317,24 @@ impl SqliteStore {
                     .map_err(|e| format!("sqlite: {e}"))?;
             }
 
+            // (4) orphan 정리. 전량 교체로 messages가 새 집합이 됐으니, 그 세션에서 새 messages에
+            // 없는 msg_id의 부속 행(message_vectors·message_validity)도 같은 트랜잭션에서 삭제한다
+            // (messages/FTS만 지우면 축소 저장 시 벡터·유효성 행이 orphan으로 남음).
+            self.conn
+                .execute(
+                    "DELETE FROM message_vectors WHERE session_id=?1 \
+                     AND msg_id NOT IN (SELECT msg_id FROM messages WHERE session_id=?1)",
+                    [session_id],
+                )
+                .map_err(|e| format!("sqlite: {e}"))?;
+            self.conn
+                .execute(
+                    "DELETE FROM message_validity WHERE session_id=?1 \
+                     AND msg_id NOT IN (SELECT msg_id FROM messages WHERE session_id=?1)",
+                    [session_id],
+                )
+                .map_err(|e| format!("sqlite: {e}"))?;
+
             Ok(())
         })();
 
@@ -1117,6 +1135,61 @@ mod tests {
         db.save_session("s1", &ss(), |t| t.to_string()).unwrap();
         let back = db.load_session("s1").unwrap().unwrap();
         assert_eq!(back.messages.len(), 2);
+    }
+
+    #[test]
+    fn save_session_shrink_cleans_orphan_vectors_and_validity() {
+        // 전량 교체로 메시지가 줄면(id 2 제거), 그 세션의 부속 행(message_vectors·
+        // message_validity)도 같은 트랜잭션에서 정리돼 orphan이 남지 않아야 한다.
+        let db = SqliteStore::open_memory().unwrap();
+        db.save_session("s1", &ss(), |t| t.to_string()).unwrap(); // 메시지 2건(id 1, 2).
+
+        // 부속 행을 두 메시지 모두에 채운다.
+        let emb = CountingEmbedder { dim: 8, model: "model-A".into(), calls: 0.into() };
+        db.index_vectors("s1", &ss(), &emb).unwrap(); // message_vectors 2건.
+        db.set_validity("s1", 1, "active", None).unwrap();
+        db.set_validity("s1", 2, "active", None).unwrap(); // message_validity 2건.
+
+        // 축소 저장: id 1만 남긴다.
+        let shrunk = StoredSession {
+            messages: vec![StoredMessage {
+                id: 1,
+                parent_id: None,
+                speaker: "claude/proposer".into(),
+                content: "검색 시스템 설계".into(),
+            }],
+            head: Some(1),
+        };
+        db.save_session("s1", &shrunk, |t| t.to_string()).unwrap();
+
+        // 제거된 id 2의 부속 행이 orphan으로 남지 않아야 한다.
+        let orphan_count = |table: &str| -> i64 {
+            db.conn
+                .query_row(
+                    &format!(
+                        "SELECT COUNT(*) FROM {table} WHERE session_id='s1' \
+                         AND msg_id NOT IN (SELECT msg_id FROM messages WHERE session_id='s1')"
+                    ),
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap()
+        };
+        assert_eq!(orphan_count("message_vectors"), 0, "축소 후 orphan 벡터 0");
+        assert_eq!(orphan_count("message_validity"), 0, "축소 후 orphan 유효성 0");
+
+        // 남은 id 1의 부속 행은 보존돼야 한다(과잉 삭제 아님).
+        let kept = |table: &str| -> i64 {
+            db.conn
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM {table} WHERE session_id='s1'"),
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap()
+        };
+        assert_eq!(kept("message_vectors"), 1, "id 1 벡터 보존");
+        assert_eq!(kept("message_validity"), 1, "id 1 유효성 보존");
     }
 
     /// embed 호출 횟수를 세는 임베더. model_id를 주입 가능(무효화 키 테스트용).
