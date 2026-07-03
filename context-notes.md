@@ -651,3 +651,9 @@
 - SSE 꼬리 유실: codex가 curl --max-time(150s) 넘겨 completed 프레임은 SSE 대신 GetTask로 확인(codex 느림, ~2분). working까지는 SSE 실시간, 완료는 GetTask. 실전엔 dispatcher가 SSE를 넉넉/무한 유지하거나 재구독(SubscribeToTask)하면 됨.
 - **Ollama-http 경로**: `--runner http`(OpenAiChatRunner, engines) **코드 완성**. 로컬 Ollama(11434) chat 모델(qwen3.5:4b/gemma4:e4b) 있으나 **GPU OOM**으로 라이브 실패(qwen3.5:4b가 5.4GB 점유, gemma4=CUDA OOM+CLIP 로드실패). 인프라 이슈, GPU 정리하면 됨. **minor 코드**: main.rs http factory가 `--token`(코어 bearer)을 러너 api_key로 넘김 - Ollama는 무시라 무해하나, 별도 --http-api-key로 분리하는 게 정직(후속).
 - 정리: 셸 taskkill이 간헐 행(tasklist 지연) -> PowerShell Stop-Process로 코어 종료 확인.
+
+## 2026-07-03 세션8: Ollama-http 워커 라이브 성공 + reqwest::blocking 버그픽스
+
+- **(b) 3번째 파트너 실증**: `--runner http --http-base-url http://127.0.0.1:11434 --model qwen3.5:4b`로 **로컬 Ollama LLM이 워커**. GetTask=completed + qwen3.5:4b 생성 답변. Claude/Codex/로컬LLM 셋 다 같은 데몬 --runner 교체로 실증(a=b 완결).
+- **버그(수정됨, 8c9f6d6)**: http 러너(OpenAiChatRunner)의 reqwest::blocking이 tokio spawn_blocking 스레드에서 "error sending request"로 즉시 실패. 원인 = spawn_blocking 스레드는 Handle::current()가 살아 있어 reqwest::blocking이 "런타임 내 blocking 불가"로 거부. **수정 = 러너를 순수 std::thread + oneshot에서 실행**(런타임 핸들 없음). subprocess 러너(claude/codex)는 원래 무관했음. 교훈: sync 러너를 async에서 돌릴 때 spawn_blocking은 reqwest::blocking과 안 맞음, std::thread 필요.
+- **초기 Ollama 실패는 인프라**(GPU 좀비): gemma4 CUDA OOM 크래시가 llama-server를 좀비로 만들어 qwen3.5:4b 요청이 행. `curl /api/generate -d '{"model":..,"keep_alive":0}'`로 언로드 후 재호출하니 정상(33s 콜드로드). 동구님 "가벼운거 하나 호출" 제안이 정확했음.
