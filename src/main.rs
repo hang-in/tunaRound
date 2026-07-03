@@ -42,6 +42,15 @@ enum Commands {
     /// 감시 전용: agent 앞 새 task를 stdout으로 알림만(claim/실행 없음). Monitor로 감싸 감독 레인 wake용(worker 피처).
     #[cfg(feature = "worker")]
     Poll(PollArgs),
+    /// 워커 노드 상주: node.toml대로 브로커(self)+자동 워커 레인들을 한 프로세스로(serve+worker 피처).
+    #[cfg(all(feature = "serve", feature = "worker"))]
+    Node(NodeArgs),
+    /// node 설정 진단: config/코어 도달/토큰/러너 바이너리/project 경로 체크(serve+worker 피처).
+    #[cfg(all(feature = "serve", feature = "worker"))]
+    Doctor(DoctorArgs),
+    /// 온보딩: node.toml 생성(러너 자동 탐지 + 다음 단계 안내, serve+worker 피처).
+    #[cfg(all(feature = "serve", feature = "worker"))]
+    Init(InitArgs),
 }
 
 /// chat/core가 공유하는 세션 배선 옵션.
@@ -240,6 +249,302 @@ enum WorkRunner {
     A2a,
 }
 
+/// node 서브커맨드 인자. 나머지 설정(코어·토큰·레인)은 node.toml에서 읽는다.
+#[cfg(all(feature = "serve", feature = "worker"))]
+#[derive(Args, Debug)]
+struct NodeArgs {
+    /// node 설정 파일 경로(생략 시 ./tunaround.node.toml, ~/.tunaround/node.toml 순 탐색).
+    #[arg(long)]
+    config: Option<String>,
+}
+
+/// lane.runner(문자열)로부터 Runner를 만든다. 알 수 없는 이름·미충족 피처는 Err.
+// token은 runner=http(engines) 경로에서만 쓰여, engines 미포함 빌드에선 미사용이 정상이다.
+#[cfg(feature = "worker")]
+#[cfg_attr(not(feature = "engines"), allow(unused_variables))]
+fn build_lane_runner(
+    lane: &tunaround::config::Lane,
+    token: &Option<String>,
+) -> Result<std::sync::Arc<dyn tunaround::runner::Runner + Send + Sync>, String> {
+    use std::sync::Arc;
+    let runner: Arc<dyn tunaround::runner::Runner + Send + Sync> = match lane.runner.as_str() {
+        "claude" => Arc::new(tunaround::runner::claude::ClaudeRunner::new()),
+        "codex" => Arc::new(tunaround::runner::codex::CodexRunner::new()),
+        "opencode" => {
+            Arc::new(tunaround::runner::opencode::OpencodeRunner::new().with_model(lane.model.clone()))
+        }
+        #[cfg(feature = "engines")]
+        "http" => {
+            let base =
+                lane.http_base_url.as_deref().ok_or("lane runner=http는 http_base_url이 필요합니다")?;
+            Arc::new(tunaround::runner::http::OpenAiChatRunner::new(
+                base,
+                lane.model.as_deref().unwrap_or(""),
+                token.clone(),
+            ))
+        }
+        #[cfg(not(feature = "engines"))]
+        "http" => return Err("lane runner=http는 engines 피처가 필요합니다".to_string()),
+        #[cfg(feature = "a2a-out")]
+        "a2a" => {
+            let card = lane.a2a_card.as_deref().ok_or("lane runner=a2a는 a2a_card가 필요합니다")?;
+            Arc::new(tunaround::runner::a2a::A2ARunner::new(card.to_string(), lane.a2a_token.clone()))
+        }
+        #[cfg(not(feature = "a2a-out"))]
+        "a2a" => return Err("lane runner=a2a는 a2a-out 피처가 필요합니다".to_string()),
+        other => return Err(format!("알 수 없는 runner: {other}")),
+    };
+    Ok(runner)
+}
+
+/// 브로커가 뜰 때까지 MCP 연결을 재시도한다(node self 모드: 브로커 기동과 워커 연결이 경합).
+#[cfg(feature = "worker")]
+async fn connect_with_retry(
+    core_url: &str,
+    token: &Option<String>,
+    tries: u32,
+) -> Result<tunaround::mcp_client::McpHttpClient, String> {
+    let mut last = String::new();
+    for _ in 0..tries {
+        match tunaround::mcp_client::McpHttpClient::connect(core_url.to_string(), token.clone()).await {
+            Ok(c) => return Ok(c),
+            Err(e) => {
+                last = e;
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
+        }
+    }
+    Err(format!("코어 연결 실패({tries}회 재시도): {last}"))
+}
+
+/// doctor 서브커맨드 인자.
+#[cfg(all(feature = "serve", feature = "worker"))]
+#[derive(Args, Debug)]
+struct DoctorArgs {
+    /// node 설정 파일 경로(생략 시 자동 탐색).
+    #[arg(long)]
+    config: Option<String>,
+}
+
+/// init 서브커맨드 인자. 플래그 주도로 node.toml을 생성한다(대화형 위저드는 후속).
+#[cfg(all(feature = "serve", feature = "worker"))]
+#[derive(Args, Debug)]
+struct InitArgs {
+    /// "self"(이 머신이 브로커) 또는 코어 /mcp URL(기본 self).
+    #[arg(long)]
+    core: Option<String>,
+    /// core=self일 때 브로커 바인드 주소(기본 0.0.0.0:8770).
+    #[arg(long)]
+    listen: Option<String>,
+    /// 이 워커의 agent id(기본 "worker").
+    #[arg(long)]
+    agent: Option<String>,
+    /// 자동 레인 러너(기본: 탐지된 것, 없으면 claude).
+    #[arg(long)]
+    runner: Option<String>,
+    /// 러너 작업 디렉터리(기본: 현재 디렉터리).
+    #[arg(long)]
+    project: Option<String>,
+    /// 토큰을 읽을 환경변수 이름(기본 TUNAROUND_TOKEN).
+    #[arg(long = "token-env")]
+    token_env: Option<String>,
+    /// 출력 경로(기본 ~/.tunaround/node.toml).
+    #[arg(long)]
+    out: Option<String>,
+    /// 기존 파일 덮어쓰기.
+    #[arg(long)]
+    force: bool,
+}
+
+/// node.toml을 생성한다(플래그 주도). 러너 자동 탐지 + 다음 단계 안내. 성공 0, 실패 non-zero.
+#[cfg(all(feature = "serve", feature = "worker"))]
+fn run_init(args: &InitArgs) -> i32 {
+    let out =
+        args.out.clone().unwrap_or_else(|| tunaround::config::expand_home("~/.tunaround/node.toml"));
+    if std::path::Path::new(&out).exists() && !args.force {
+        eprintln!("[init] 이미 존재합니다: {out} (덮어쓰려면 --force)");
+        return 1;
+    }
+    let core = args.core.clone().unwrap_or_else(|| "self".to_string());
+    let agent = args.agent.clone().unwrap_or_else(|| "worker".to_string());
+    let runner = args.runner.clone().unwrap_or_else(|| {
+        ["claude", "codex", "opencode"]
+            .iter()
+            .find(|b| binary_on_path(b))
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "claude".to_string())
+    });
+    let project = args
+        .project
+        .clone()
+        .unwrap_or_else(|| {
+            std::env::current_dir()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_else(|_| ".".to_string())
+        })
+        .replace('\\', "/"); // TOML 이중따옴표 이스케이프 회피(Windows 백슬래시 -> 슬래시).
+    let token_env = args.token_env.clone().unwrap_or_else(|| "TUNAROUND_TOKEN".to_string());
+
+    let mut toml = format!("core = \"{core}\"\n");
+    if core == "self" {
+        let listen = args.listen.clone().unwrap_or_else(|| "0.0.0.0:8770".to_string());
+        toml.push_str(&format!("listen = \"{listen}\"\n"));
+        toml.push_str("db = \"~/.tunaround/broker.db\"\n");
+    }
+    toml.push_str(&format!("token = \"@env:{token_env}\"\n\n"));
+    toml.push_str("[[lane]]\n");
+    toml.push_str(&format!("agent = \"{agent}\"\n"));
+    toml.push_str(&format!("runner = \"{runner}\"\n"));
+    toml.push_str("mode = \"read-only\"   # 파일 수정 맡기려면 \"write\"\n");
+    toml.push_str(&format!("project = \"{project}\"\n"));
+    toml.push_str("interval = 20\n");
+
+    if let Some(parent) = std::path::Path::new(&out).parent()
+        && !parent.as_os_str().is_empty()
+        && let Err(e) = std::fs::create_dir_all(parent)
+    {
+        eprintln!("[init] 디렉터리 생성 실패 {}: {e}", parent.display());
+        return 1;
+    }
+    if let Err(e) = std::fs::write(&out, &toml) {
+        eprintln!("[init] 쓰기 실패 {out}: {e}");
+        return 1;
+    }
+
+    println!("작성됨: {out}\n");
+    print!("{toml}");
+    println!("\n다음 단계:");
+    println!("  1) 토큰: export {token_env}=<비밀토큰>  (Windows PowerShell: $env:{token_env}=\"...\")");
+    println!("  2) 진단: tunaround doctor");
+    println!("  3) 상주: tunaround node   (백그라운드로 띄우면 set-and-forget)");
+    0
+}
+
+/// 실행 파일이 PATH에 있는지 확인한다(Windows는 .exe/.cmd/.bat 확장자도 시도).
+#[cfg(all(feature = "serve", feature = "worker"))]
+fn binary_on_path(name: &str) -> bool {
+    let exts: &[&str] = if cfg!(windows) { &["", ".exe", ".cmd", ".bat"] } else { &[""] };
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    for dir in std::env::split_paths(&path) {
+        for ext in exts {
+            if dir.join(format!("{name}{ext}")).is_file() {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// node 설정을 진단한다. 각 항목을 OK/WARN/FAIL로 출력하고, FAIL이 있으면 non-zero exit code를 돌려준다.
+#[cfg(all(feature = "serve", feature = "worker"))]
+fn run_doctor(cfg_path: Option<&str>) -> i32 {
+    let mut fails = 0;
+
+    let cfg = match tunaround::config::load_node_config(cfg_path) {
+        Ok(c) => {
+            println!("OK   config: 로드/파싱 성공");
+            c
+        }
+        Err(e) => {
+            println!("FAIL config: {e}");
+            return 1; // 설정 없으면 더 볼 게 없다.
+        }
+    };
+
+    let token = tunaround::config::resolve_node_token(cfg.token.as_deref());
+    match &token {
+        Some(_) => println!("OK   token: 설정됨"),
+        None => println!("WARN token: 없음(코어가 토큰을 요구하면 실패)"),
+    }
+
+    if cfg.core == "self" {
+        let listen = cfg.listen.as_deref().unwrap_or("0.0.0.0:8770");
+        match std::net::TcpListener::bind(listen) {
+            Ok(l) => {
+                drop(l);
+                println!("OK   core=self: {listen} 바인드 가능");
+            }
+            Err(e) => {
+                println!("FAIL core=self: {listen} 바인드 불가({e}) - 이미 떠 있거나 권한 문제");
+                fails += 1;
+            }
+        }
+        if let Some(db) = &cfg.db {
+            let db_e = tunaround::config::expand_home(db);
+            let parent = std::path::Path::new(&db_e).parent();
+            match parent {
+                Some(p) if p.as_os_str().is_empty() || p.is_dir() => {
+                    println!("OK   db: {db_e} (상위 디렉터리 존재)");
+                }
+                Some(p) => {
+                    println!("WARN db: 상위 디렉터리 없음 {} (node가 만들거나 실패할 수 있음)", p.display());
+                }
+                None => println!("OK   db: {db_e}"),
+            }
+        }
+    } else {
+        let base = cfg.core.strip_suffix("/mcp").unwrap_or(&cfg.core);
+        let url = format!("{base}/.well-known/agent-card.json");
+        let client = reqwest::blocking::Client::new();
+        let mut req = client.get(&url).timeout(std::time::Duration::from_secs(5));
+        if let Some(t) = &token {
+            req = req.bearer_auth(t);
+        }
+        match req.send() {
+            Ok(r) if r.status().is_success() => {
+                println!("OK   core: {} 도달(agent-card {})", cfg.core, r.status())
+            }
+            Ok(r) => {
+                println!("FAIL core: agent-card 상태 {} @ {url}", r.status());
+                fails += 1;
+            }
+            Err(e) => {
+                println!("FAIL core: {} 도달 불가({e})", cfg.core);
+                fails += 1;
+            }
+        }
+    }
+
+    for l in &cfg.lane {
+        let kind = if l.is_supervised() { "감독" } else { "자동" };
+        let bin = match l.runner.as_str() {
+            "claude" => Some("claude"),
+            "codex" => Some("codex"),
+            "opencode" => Some("opencode"),
+            _ => None,
+        };
+        match bin {
+            Some(b) if binary_on_path(b) => {
+                println!("OK   lane {}[{kind}] runner={}: {b} PATH에 있음", l.agent, l.runner)
+            }
+            Some(b) => {
+                println!("FAIL lane {}[{kind}] runner={}: {b} PATH에 없음(설치/로그인 필요)", l.agent, l.runner);
+                fails += 1;
+            }
+            None => println!("·    lane {}[{kind}] runner={}: 외부 엔드포인트(바이너리 체크 생략)", l.agent, l.runner),
+        }
+        if let Some(p) = &l.project {
+            let pe = tunaround::config::expand_home(p);
+            if std::path::Path::new(&pe).is_dir() {
+                println!("OK   lane {} project: {pe}", l.agent);
+            } else {
+                println!("FAIL lane {} project 디렉터리 없음: {pe}", l.agent);
+                fails += 1;
+            }
+        }
+    }
+
+    if fails == 0 {
+        println!("\n진단 통과. `tunaround node`로 상주하세요.");
+        0
+    } else {
+        println!("\n{fails}개 항목 FAIL. 위를 고친 뒤 다시 진단하세요.");
+        1
+    }
+}
+
 // 일부 feature 조합(예: --no-default-features)에서는 남는 서브커맨드 분기 수가 줄어
 // 아래 지역변수 중 일부를 모든 분기가 채우게 되어 초기값이 그 조합에서만 dead store로 잡힌다.
 // 조합마다 다른 변수 집합이라 개별 분기 재설계보다 함수 단위 allow가 더 안전하다(동작 무변경).
@@ -292,6 +597,15 @@ fn main() {
     // poll <...>: 감시 전용 옵션(worker 피처 전용).
     #[cfg(feature = "worker")]
     let mut poll_args: Option<PollArgs> = None;
+    // node <...>: 워커 노드 상주 옵션(serve+worker 피처 전용).
+    #[cfg(all(feature = "serve", feature = "worker"))]
+    let mut node_args: Option<NodeArgs> = None;
+    // doctor <...>: node 설정 진단 옵션(serve+worker 피처 전용).
+    #[cfg(all(feature = "serve", feature = "worker"))]
+    let mut doctor_args: Option<DoctorArgs> = None;
+    // init <...>: 온보딩(node.toml 생성) 옵션(serve+worker 피처 전용).
+    #[cfg(all(feature = "serve", feature = "worker"))]
+    let mut init_args: Option<InitArgs> = None;
 
     // 서브커맨드별 옵션을 기존 모드 본문이 쓰던 지역변수로 옮긴다(본문 로직은 아래에서 불변).
     match command {
@@ -374,6 +688,30 @@ fn main() {
                 db_path = None;
             }
             poll_args = Some(a);
+        }
+        #[cfg(all(feature = "serve", feature = "worker"))]
+        Commands::Node(a) => {
+            #[cfg(feature = "sqlite")]
+            {
+                db_path = None;
+            }
+            node_args = Some(a);
+        }
+        #[cfg(all(feature = "serve", feature = "worker"))]
+        Commands::Doctor(a) => {
+            #[cfg(feature = "sqlite")]
+            {
+                db_path = None;
+            }
+            doctor_args = Some(a);
+        }
+        #[cfg(all(feature = "serve", feature = "worker"))]
+        Commands::Init(a) => {
+            #[cfg(feature = "sqlite")]
+            {
+                db_path = None;
+            }
+            init_args = Some(a);
         }
     }
 
@@ -704,6 +1042,134 @@ fn main() {
             eprintln!("[poll] 오류: {e}");
             std::process::exit(1);
         }
+        return;
+    }
+
+    // init <...>: node.toml 생성 후 exit.
+    #[cfg(all(feature = "serve", feature = "worker"))]
+    if let Some(a) = init_args {
+        std::process::exit(run_init(&a));
+    }
+
+    // doctor <...>: node 설정 진단 후 exit code로 결과 보고.
+    #[cfg(all(feature = "serve", feature = "worker"))]
+    if let Some(a) = doctor_args {
+        std::process::exit(run_doctor(a.config.as_deref()));
+    }
+
+    // node <...>: node.toml대로 브로커(self)+자동 워커 레인들을 한 프로세스로 상주.
+    #[cfg(all(feature = "serve", feature = "worker"))]
+    if let Some(a) = node_args {
+        let cfg = match tunaround::config::load_node_config(a.config.as_deref()) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("[node] {e}");
+                std::process::exit(1);
+            }
+        };
+        let token = tunaround::config::resolve_node_token(cfg.token.as_deref());
+
+        // 코어 URL 결정. core="self"면 이 프로세스가 브로커를 전용 스레드로 기동한다.
+        let core_url = if cfg.core == "self" {
+            let listen = cfg.listen.clone().unwrap_or_else(|| "0.0.0.0:8770".to_string());
+            let db_str =
+                tunaround::config::expand_home(cfg.db.as_deref().unwrap_or("~/.tunaround/broker.db"));
+            // set-and-forget: 브로커 db 상위 디렉터리를 자동 생성(첫 실행 시 ~/.tunaround 없을 수 있음).
+            if let Some(parent) = std::path::Path::new(&db_str).parent()
+                && !parent.as_os_str().is_empty()
+                && let Err(e) = std::fs::create_dir_all(parent)
+            {
+                eprintln!("[node] db 디렉터리 생성 실패 {}: {e}", parent.display());
+            }
+            let (retriever_arc, reader_arc, writer_arc, a2a_store_arc) =
+                build_http_mcp_backends("node", &db_str);
+            let tok2 = token.clone();
+            let addr2 = listen.clone();
+            // 메인 rt는 아래 워커 루프를 돌리므로, 브로커는 전용 OS 스레드의 자체 런타임 block_on으로
+            // 계속 구동한다(Stage 3a 교훈: 공유 rt spawn은 유휴 중 신뢰불가).
+            std::thread::spawn(move || {
+                let srt = match tokio::runtime::Runtime::new() {
+                    Ok(r) => r,
+                    Err(e) => {
+                        eprintln!("[node] 브로커 런타임 생성 실패: {e}");
+                        return;
+                    }
+                };
+                srt.block_on(async move {
+                    if let Err(e) = tunaround::mcp::start_http_mcp_server(
+                        &addr2, retriever_arc, reader_arc, Some(writer_arc), None, tok2, a2a_store_arc,
+                    )
+                    .await
+                    {
+                        eprintln!("[node] 브로커 종료: {e}");
+                    }
+                });
+            });
+            eprintln!("[node] 브로커 기동(self) listen={listen} db={db_str}");
+            tunaround::mcp::core_local_url(&listen)
+        } else {
+            cfg.core.clone()
+        };
+
+        // 감독 레인: 데몬화할 수 없으니(세션 부착 본질) watcher 실행 명령만 안내한다.
+        for l in cfg.lane.iter().filter(|l| l.is_supervised()) {
+            eprintln!(
+                "[node] 감독 레인 '{}': 클로드코드 세션에서 아래를 Monitor로 실행하세요\n  tunaround poll --core {} --token <TOKEN> --agent {}",
+                l.agent, core_url, l.agent
+            );
+        }
+
+        // 자동 레인: 각 워커 루프를 동시에 상주 실행한다.
+        let auto: Vec<tunaround::config::Lane> =
+            cfg.lane.iter().filter(|l| !l.is_supervised()).cloned().collect();
+        eprintln!("[node] 자동 레인 {}개, core={core_url}", auto.len());
+
+        rt.block_on(async {
+            let mut handles = Vec::new();
+            for l in auto {
+                let core_url = core_url.clone();
+                let token = token.clone();
+                handles.push(async move {
+                    let runner = build_lane_runner(&l, &token)?;
+                    let mode = if l.is_write() {
+                        tunaround::runner::RunMode::Write
+                    } else {
+                        tunaround::runner::RunMode::ReadOnly
+                    };
+                    let context_map = match l.context_map.as_deref() {
+                        Some(spec) => tunaround::worker::parse_context_map(spec)?,
+                        None => std::collections::HashMap::new(),
+                    };
+                    let client = connect_with_retry(&core_url, &token, 20).await?;
+                    eprintln!("[node] 레인 '{}' 연결 OK, 폴링 시작(interval {}s)", l.agent, l.interval);
+                    tunaround::worker::run_worker_loop(
+                        &client,
+                        runner,
+                        &l.agent,
+                        l.model.clone(),
+                        l.project.as_deref().map(tunaround::config::expand_home),
+                        context_map,
+                        mode,
+                        l.interval,
+                        false,
+                    )
+                    .await
+                });
+            }
+            if handles.is_empty() {
+                // 자동 레인 없이 브로커만 상주하는 경우에도 프로세스가 안 죽게 대기한다.
+                eprintln!("[node] 자동 레인 없음(브로커만 상주).");
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+                }
+            }
+            let results: Vec<Result<(), String>> = futures_util::future::join_all(handles).await;
+            for r in results {
+                if let Err(e) = r {
+                    eprintln!("[node] 레인 오류: {e}");
+                }
+            }
+        });
         return;
     }
 
