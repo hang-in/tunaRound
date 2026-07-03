@@ -249,6 +249,7 @@ fn vector_hybrid_recall() {
             .collect();
         let hyb_ids: Vec<u64> = retriever
             .retrieve(q, K)
+            .unwrap()
             .iter()
             .filter_map(|u| id_of(&u.content))
             .collect();

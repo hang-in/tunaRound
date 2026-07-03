@@ -299,14 +299,16 @@ impl TunaSearchServer {
         let retriever = Arc::clone(&self.retriever);
         let query = p.query;
         let limit = p.limit.unwrap_or(10).min(50);
-        let hits: Vec<Utterance> =
-            match tokio::task::spawn_blocking(move || retriever.retrieve(&query, limit)).await {
-                Ok(h) => h,
-                Err(e) => {
-                    eprintln!("[tunaRound] search_context blocking 태스크 실패(빈 결과 폴백): {e}");
-                    Vec::new()
-                }
-            };
+        // retrieve Err(1차 검색 경로 DB 장애, R7) = success로 위장하지 않는다. R1 계약(isError=true)으로 반환해
+        // 클라(McpHttpClient::parse_jsonrpc_sse)가 "결과 없음"과 "검색 실패"를 구분하게 한다.
+        let outcome: Result<Vec<Utterance>, String> =
+            tokio::task::spawn_blocking(move || retriever.retrieve(&query, limit))
+                .await
+                .unwrap_or_else(|e| Err(format!("검색 태스크 실패: {e}")));
+        let hits = match outcome {
+            Ok(h) => h,
+            Err(e) => return Ok(CallToolResult::error(vec![Content::text(format!("검색 실패: {e}"))])),
+        };
         let text = if hits.is_empty() {
             "검색 결과 없음".to_string()
         } else {
@@ -329,7 +331,13 @@ impl TunaSearchServer {
             )]));
         };
         let sid = p.session_id.unwrap_or_else(|| self.default_session.clone());
-        let utts = reader.read_transcript(&sid, p.max_turns);
+        // read_transcript Err(세션 로드 DB 장애, R7) = "전사 없음"으로 위장하지 않고 R1 계약으로 반환.
+        let utts = match reader.read_transcript(&sid, p.max_turns) {
+            Ok(u) => u,
+            Err(e) => {
+                return Ok(CallToolResult::error(vec![Content::text(format!("전사 읽기 실패: {e}"))]));
+            }
+        };
         let text = if utts.is_empty() {
             "전사 없음".to_string()
         } else {
@@ -707,8 +715,12 @@ mod tests {
 
         struct NullRetriever;
         impl crate::orchestrator::ContextRetriever for NullRetriever {
-            fn retrieve(&self, _q: &str, _limit: usize) -> Vec<crate::orchestrator::Utterance> {
-                vec![]
+            fn retrieve(
+                &self,
+                _q: &str,
+                _limit: usize,
+            ) -> Result<Vec<crate::orchestrator::Utterance>, String> {
+                Ok(vec![])
             }
         }
 
@@ -726,13 +738,18 @@ mod tests {
             }
         }
         impl crate::orchestrator::TranscriptReader for SharedLog {
-            fn read_transcript(&self, _sid: &str, _max: Option<usize>) -> Vec<crate::orchestrator::Utterance> {
-                self.0
+            fn read_transcript(
+                &self,
+                _sid: &str,
+                _max: Option<usize>,
+            ) -> Result<Vec<crate::orchestrator::Utterance>, String> {
+                Ok(self
+                    .0
                     .lock()
                     .unwrap()
                     .iter()
                     .map(|(s, c)| crate::orchestrator::Utterance { speaker: s.clone(), content: c.clone() })
-                    .collect()
+                    .collect())
             }
         }
 
@@ -1055,8 +1072,8 @@ mod tests {
     struct FakeRetriever(Vec<Utterance>);
 
     impl crate::orchestrator::ContextRetriever for FakeRetriever {
-        fn retrieve(&self, _query: &str, _limit: usize) -> Vec<Utterance> {
-            self.0.clone()
+        fn retrieve(&self, _query: &str, _limit: usize) -> Result<Vec<Utterance>, String> {
+            Ok(self.0.clone())
         }
     }
 
@@ -1092,8 +1109,12 @@ mod tests {
     struct FakeTranscriptReader(Vec<Utterance>);
 
     impl crate::orchestrator::TranscriptReader for FakeTranscriptReader {
-        fn read_transcript(&self, _session_id: &str, _max_turns: Option<usize>) -> Vec<Utterance> {
-            self.0.clone()
+        fn read_transcript(
+            &self,
+            _session_id: &str,
+            _max_turns: Option<usize>,
+        ) -> Result<Vec<Utterance>, String> {
+            Ok(self.0.clone())
         }
     }
 
@@ -1149,9 +1170,13 @@ mod tests {
     }
 
     impl crate::orchestrator::TranscriptReader for CapturingTranscriptReader {
-        fn read_transcript(&self, session_id: &str, _max_turns: Option<usize>) -> Vec<Utterance> {
+        fn read_transcript(
+            &self,
+            session_id: &str,
+            _max_turns: Option<usize>,
+        ) -> Result<Vec<Utterance>, String> {
             *self.captured.lock().unwrap() = Some(session_id.to_string());
-            self.utts.clone()
+            Ok(self.utts.clone())
         }
     }
 

@@ -177,7 +177,7 @@ fn real_corpus_hybrid_recall() {
     println!("{:-<80}", "");
     for (q, gold, kind) in QUERIES {
         let fts_ids: Vec<u64> = store_fts.search(&tok.fts_query(q), K).unwrap_or_default().iter().map(|h| h.msg_id).collect();
-        let hyb_ids: Vec<u64> = hybrid.retrieve(q, K).iter().filter_map(|u| id_of(&u.content)).collect();
+        let hyb_ids: Vec<u64> = hybrid.retrieve(q, K).unwrap().iter().filter_map(|u| id_of(&u.content)).collect();
         let (a, b) = (recall_at_k(&fts_ids, gold, K), mrr(&fts_ids, gold));
         let (c, d) = (recall_at_k(&hyb_ids, gold, K), mrr(&hyb_ids, gold));
         fr += a; fm += b; hr += c; hm += d;

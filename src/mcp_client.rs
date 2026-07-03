@@ -251,8 +251,12 @@ mod tests {
     /// 테스트 전용 빈 retriever(mcp.rs의 NullRetriever와 동등, 이 모듈 자체에는 검색 로직 불요).
     struct NullRetriever;
     impl crate::orchestrator::ContextRetriever for NullRetriever {
-        fn retrieve(&self, _q: &str, _limit: usize) -> Vec<crate::orchestrator::Utterance> {
-            vec![]
+        fn retrieve(
+            &self,
+            _q: &str,
+            _limit: usize,
+        ) -> Result<Vec<crate::orchestrator::Utterance>, String> {
+            Ok(vec![])
         }
     }
 
