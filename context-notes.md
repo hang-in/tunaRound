@@ -657,3 +657,11 @@
 - **(b) 3번째 파트너 실증**: `--runner http --http-base-url http://127.0.0.1:11434 --model qwen3.5:4b`로 **로컬 Ollama LLM이 워커**. GetTask=completed + qwen3.5:4b 생성 답변. Claude/Codex/로컬LLM 셋 다 같은 데몬 --runner 교체로 실증(a=b 완결).
 - **버그(수정됨, 8c9f6d6)**: http 러너(OpenAiChatRunner)의 reqwest::blocking이 tokio spawn_blocking 스레드에서 "error sending request"로 즉시 실패. 원인 = spawn_blocking 스레드는 Handle::current()가 살아 있어 reqwest::blocking이 "런타임 내 blocking 불가"로 거부. **수정 = 러너를 순수 std::thread + oneshot에서 실행**(런타임 핸들 없음). subprocess 러너(claude/codex)는 원래 무관했음. 교훈: sync 러너를 async에서 돌릴 때 spawn_blocking은 reqwest::blocking과 안 맞음, std::thread 필요.
 - **초기 Ollama 실패는 인프라**(GPU 좀비): gemma4 CUDA OOM 크래시가 llama-server를 좀비로 만들어 qwen3.5:4b 요청이 행. `curl /api/generate -d '{"model":..,"keep_alive":0}'`로 언로드 후 재호출하니 정상(33s 콜드로드). 동구님 "가벼운거 하나 호출" 제안이 정확했음.
+
+## 2026-07-03 세션8: A2A interop 스모크 (독립 a2a-client로 외부검증) - 갭 3개 발견
+
+- 독립 크레이트 `a2a-client 0.2` + `a2a-types 0.2`(throwaway)를 우리 코어(/a2a, /.well-known)에 붙여 외부검증. **자기검증(우리 curl)으론 안 보이던 실제 표준 interop 갭 3개 발견**(스모크의 값).
+- **(c) GetTask = 완전 호환 ✅**: a2a-client가 보낸 method `GetTask`, params `id`, JSON-RPC envelope 우리 서버와 일치. 없는 id로 `-32001 Task not found`(역직렬화 에러 아닌 정상 앱 에러) = envelope/method 레벨 interop 실증. **method 명명 PascalCase는 a2a-client와 우연히 일치**(단 둘 다 공식 스펙의 slash `message/send`/`tasks/get`과는 다름 - 명명 컨벤션은 여전히 미해결 여지).
+- **(a) Agent Card 발견 = 실패 ✗ (2원인)**: (1) 우리 `/.well-known/agent-card.json`이 bearer 게이트(무인증 401). A2A는 카드=신뢰수립 전 공개발견 원칙인데 우리는 /a2a와 같은 auth에 묶임. (2) 스키마 구식: a2a-types는 단일 `url` 아닌 `supported_interfaces: Vec<AgentInterface>`(멀티전송 url+protocol_binding+protocol_version) 요구 + protocolVersion/preferredTransport 부재 -> serde deny_unknown_fields로 `url` 파싱 실패. build_agent_card(a2a_server.rs:187) 구버전 스타일.
+- **(b) SendMessage = 구조적 실패 ✗**: 우리 SendParams가 tunaRound 브로커 확장 `fromAgent`/`toAgent`를 **필수**로 요구(a2a_server.rs:87). 표준 a2a-types SendMessageRequter엔 그 개념 자체가 없어 표준 클라가 채울 방법이 없음 -> `-32602 missing field fromAgent`. 우리 중앙-브로커 라우팅의 구조적 대가.
+- **정직한 결론**: "표준 A2A 서버" 주장은 **envelope/GetTask 레벨만 참**이고, **Agent Card(공개성+스키마)와 SendMessage(브로커 필드)는 표준 클라와 interop 안 됨**. 우리끼리(tunaRound↔tunaRound)는 되지만 제3자 표준 클라는 못 붙음. 고칠 지점: (1) 카드 무인증 공개 + supported_interfaces 스키마로 재구성, (2) toAgent를 URL 경로/헤더로 옮기거나 optional+default로 - fromAgent는 인증주체에서 유도. README의 "표준 A2A" 문구는 이 한계를 반영하는 게 정직.
