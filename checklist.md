@@ -295,3 +295,11 @@
 - [x] W4 로컬 데모(사람 트리거 0) 성공: dispatcher가 SendStreamingMessage SSE 개방 -> `tunaround work --once --agent win-worker --runner claude`가 자율 발견->claim->**claude 실제 실행**->complete -> SSE에 submitted->working->artifactUpdate(claude 실답변)->completed(final) 실시간. = "복붙 제거" 실증.
 - [x] W4b (b) 이기종 파트너 실증: **`--runner codex`로 Codex가 워커** = Claude 아닌 다른 파트너가 자율 처리. dispatcher SendStreamingMessage(to=codex-worker) -> `tunaround work --once --runner codex`가 발견->claim(SSE working)->**codex exec 실행**->complete. GetTask=completed + **codex 생성 답변** artifact("A2A 프로토콜의 목적은 서로 다른 AI 에이전트가...협업하도록..."). = (a)=(b) 실증(같은 데몬, --runner만 교체). ⚠SSE는 codex가 curl --max-time(150s) 초과해 완료프레임은 SSE 대신 GetTask로 확인(codex 느림). 
   - **Ollama-http 경로도 라이브 성공(8c9f6d6)**: `--runner http --http-base-url http://127.0.0.1:11434 --model qwen3.5:4b`로 **로컬 LLM이 워커**. GetTask=completed + qwen3.5:4b 답변("A tokio broadcast channel is an asynchronous communication primitive..."). = 3번째 이기종 파트너(Claude/Codex/로컬LLM 전부 --runner만 교체). **버그픽스**: 러너를 tokio spawn_blocking 대신 순수 std::thread에서 실행(reqwest::blocking이 spawn_blocking의 Handle::current() 때문에 거부하던 것 해소). (초기 실패는 GPU 좀비상태였고 ollama unload 후 정상.) minor: http factory가 --token(코어 토큰)을 러너 api_key로 전달(Ollama 무시라 무해, --http-api-key 분리 후속).
+
+## A2A outbound 러너 (표준 에이전트 위임) (docs/design/v2-a2a-outbound-runner_2026-07-03.md)
+
+> inbound(A+B) 폐기. outbound=우리가 외부 표준 A2A 에이전트에 표준으로 던지는 기반(a2a-client 채택). 미착수.
+
+- [ ] WA1: A2ARunner(a2a-client 통합, sync-over-async block_on, from_card_url->send_message->poll->RunOutput) + a2a-out feature + Task/Artifact->RunOutput 순수 매핑 단위테스트.
+- [ ] WA2: --runner a2a + --a2a-card/--a2a-token WorkArgs + main.rs factory 배선.
+- [ ] WA3: outbound 표준 interop 스모크(a2a-rs 예제 서버 상대) + 로컬 데모.

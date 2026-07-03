@@ -665,3 +665,9 @@
 - **(a) Agent Card 발견 = 실패 ✗ (2원인)**: (1) 우리 `/.well-known/agent-card.json`이 bearer 게이트(무인증 401). A2A는 카드=신뢰수립 전 공개발견 원칙인데 우리는 /a2a와 같은 auth에 묶임. (2) 스키마 구식: a2a-types는 단일 `url` 아닌 `supported_interfaces: Vec<AgentInterface>`(멀티전송 url+protocol_binding+protocol_version) 요구 + protocolVersion/preferredTransport 부재 -> serde deny_unknown_fields로 `url` 파싱 실패. build_agent_card(a2a_server.rs:187) 구버전 스타일.
 - **(b) SendMessage = 구조적 실패 ✗**: 우리 SendParams가 tunaRound 브로커 확장 `fromAgent`/`toAgent`를 **필수**로 요구(a2a_server.rs:87). 표준 a2a-types SendMessageRequter엔 그 개념 자체가 없어 표준 클라가 채울 방법이 없음 -> `-32602 missing field fromAgent`. 우리 중앙-브로커 라우팅의 구조적 대가.
 - **정직한 결론**: "표준 A2A 서버" 주장은 **envelope/GetTask 레벨만 참**이고, **Agent Card(공개성+스키마)와 SendMessage(브로커 필드)는 표준 클라와 interop 안 됨**. 우리끼리(tunaRound↔tunaRound)는 되지만 제3자 표준 클라는 못 붙음. 고칠 지점: (1) 카드 무인증 공개 + supported_interfaces 스키마로 재구성, (2) toAgent를 URL 경로/헤더로 옮기거나 optional+default로 - fromAgent는 인증주체에서 유도. README의 "표준 A2A" 문구는 이 한계를 반영하는 게 정직.
+
+## 2026-07-03 세션8: A2A 방향 확정 - inbound 폐기, outbound 러너 착수
+
+- 동구님 결정: (1) **inbound(제3자가 우리한테 표준으로 던지기) 폐기** - 오픈소스라 필요하면 레포 가져가면 됨, 브로커→per-agent 재편(A+B)은 소비자 없는 가설. README 문구 "표준"->"A2A 기반"으로 정직화(e922534). (2) **outbound(우리가 외부 표준 A2A 에이전트에 던지기) = 기반 구축** - 이래야 semi라도 정당하게 "A2A"(우리끼리만 말하는 게 아님). 우리 브로커 불변.
+- **결정: a2a-client 크레이트 채택**(손구현 아님) - 표준성을 검증된 크레이트에 위임. `A2ARunner`(Runner impl)로 --runner a2a = 외부 표준 A2A 에이전트가 4번째 파트너 타입(Claude/Codex/로컬LLM/A2A-원격). sync-over-async(std 스레드 block_on). 정본 docs/design/v2-a2a-outbound-runner_2026-07-03.md. WA1~WA3.
+- 검증=대칭: inbound 스모크(외부 클라->우리, 갭 3개)의 짝으로, outbound는 a2a-rs 예제 서버(독립 표준 에이전트) 상대로 우리가 던져서 실증.
