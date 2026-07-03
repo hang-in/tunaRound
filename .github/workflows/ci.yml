@@ -1,5 +1,8 @@
-# PR CI: refactor/reviews 도그푸딩에서 도입. build + test + clippy를 리눅스에서 검증한다.
-# 커버 피처 = "morphology mcp serve worker"(브랜치 검증 표준, 313 pass). semantic(Ollama 필요)·a2a-out(외부 크레이트)은 비커버.
+# PR CI: refactor/reviews 도그푸딩에서 도입. build + test + clippy를 linux·macOS·windows 매트릭스로 검증한다.
+# 매트릭스 근거: cargo-dist가 mac/win/linux를 배포하고 플랫폼별 코드(watchdog kill 등 #[cfg(unix)]/#[cfg(windows)])가 있어,
+# R3(kill -9 -PID 이식성 버그)처럼 한 OS에서만 터지는 결함을 게이트로 막는다.
+# 커버 피처 = "morphology mcp serve worker"(브랜치 검증 표준). semantic(Ollama 필요)·a2a-out(외부 크레이트)은 비커버.
+# 비용: macOS runner는 분 10배라 PR/push-to-main에만 트리거. 분이 빠듯하면 macOS를 조건부로 분리.
 name: CI
 
 on:
@@ -19,8 +22,12 @@ env:
 
 jobs:
   build-test-clippy:
-    name: build · test · clippy (linux)
-    runs-on: ubuntu-latest
+    name: build · test · clippy
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
