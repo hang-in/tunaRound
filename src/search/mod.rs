@@ -59,6 +59,30 @@ pub fn loanword_aliases(token: &str) -> Vec<String> {
     Vec::new()
 }
 
+/// 토큰 리스트를 FTS5 질의 문자열로 조립하는 단일 규칙(정상·폴백 경로 공용 출처).
+/// 규칙: 원 토큰 기준 음역 alias를 사후 추가(확장 토큰 재확장 방지) → sort → dedup →
+/// 각 토큰에 prefix `*` → ` OR ` 결합. 빈 입력은 빈 문자열.
+/// `Tokenizer::fts_query`와 폴백 경로(`fallback_fts_query`)가 모두 이 함수에 위임한다.
+pub fn assemble_fts_query(tokens: Vec<String>) -> String {
+    let mut toks = tokens;
+    let aliases: Vec<String> = toks.iter().flat_map(|t| loanword_aliases(t)).collect();
+    toks.extend(aliases);
+    toks.sort();
+    toks.dedup();
+    toks.into_iter().map(|t| format!("{t}*")).collect::<Vec<_>>().join(" OR ")
+}
+
+/// 폴백 질의용 FTS5 표현: raw 토큰(`tokenize_fallback`) 기반으로 `assemble_fts_query`에 위임.
+/// morphology 토크나이저 실패/미탑재 시 정상 질의 경로와 동일한 alias·OR 규칙을 낸다.
+pub fn fallback_fts_query(text: &str) -> String {
+    assemble_fts_query(tokenize_fallback(text))
+}
+
+/// 폴백 색인용 FTS 텍스트: raw 토큰(`tokenize_fallback`) 공백 join.
+pub fn fallback_fts_index(text: &str) -> String {
+    tokenize_fallback(text).join(" ")
+}
+
 #[cfg(feature = "morphology")]
 pub mod tokenizer;
 
@@ -83,5 +107,50 @@ mod tests {
     fn unknown_token_has_no_alias() {
         assert!(loanword_aliases("데이터베이스").is_empty());
         assert!(loanword_aliases("검색").is_empty()); // 번역은 제외(임베딩 담당)
+    }
+
+    #[test]
+    fn assemble_expands_alias_and_joins_with_or() {
+        let q = super::assemble_fts_query(vec!["임베딩".to_string()]);
+        assert!(q.contains("임베딩*"), "원 토큰 prefix 누락: {q}");
+        assert!(q.contains("embedding*"), "alias 확장 누락: {q}");
+        assert!(q.contains(" OR "), "OR 결합 아님: {q}");
+    }
+
+    #[test]
+    fn assemble_empty_is_empty_string() {
+        assert_eq!(super::assemble_fts_query(vec![]), "");
+    }
+
+    #[test]
+    fn fallback_query_uses_alias_and_or_rule() {
+        // 폴백 질의 경로가 alias 확장 + OR 결합을 정상 경로와 동일하게 낸다.
+        let q = super::fallback_fts_query("임베딩");
+        assert!(q.contains("임베딩*") && q.contains("embedding*"), "폴백 alias 확장 실패: {q}");
+        assert!(q.contains(" OR "), "폴백 OR 결합 실패: {q}");
+        // 공백 join(AND) 회귀 방지: 순수 공백 구분 토큰이 남으면 안 된다(전부 OR로 연결).
+        assert!(!q.split(" OR ").any(|seg| seg.contains(' ')), "OR 밖 공백 잔존: {q}");
+    }
+
+    #[test]
+    fn fallback_index_is_space_joined() {
+        assert_eq!(super::fallback_fts_index("hello world"), "hello world");
+    }
+
+    // morphology 트레이트 질의 경로와 폴백 자유 함수가 같은 질의 규칙을 내는지 동치 검증.
+    // (색인 경로는 트레이트 fts_index가 형태소+raw 이중 join이라 단일-copy 폴백과 의도적으로 다르며,
+    //  질의 경로는 sort+dedup이 이중 토큰을 접어 동일해진다.)
+    #[cfg(feature = "morphology")]
+    #[test]
+    fn simple_tokenizer_matches_fallback_query() {
+        use super::tokenizer::{SimpleTokenizer, Tokenizer};
+        let tok = SimpleTokenizer;
+        for input in ["임베딩", "refresh 토큰", "hello world ab"] {
+            assert_eq!(
+                tok.fts_query(input),
+                super::fallback_fts_query(input),
+                "트레이트↔폴백 질의 규칙 불일치: {input}"
+            );
+        }
     }
 }
