@@ -2,6 +2,15 @@
 
 > 작업 중 결정과 근거. 계속 append. (규율 #7) 다음 세션이 결정을 재유도하지 않게.
 
+## 2026-07-03 세션9: R7 A2A 도그푸딩 완료 + PR CI 도입 + 2레인 + poll 감시자
+
+- **R7(retriever/reader Result 계약)** = Mac 워커 A2A로 완료(b15172c). 스펙은 **커밋 아니라 A2A task 본문**으로 전달(헤드리스 워커가 message.text를 러너 프롬프트로 받음 = 정정). 통합자 독립검증 313 pass.
+- **PR CI 도입(GitHub Flow 도그푸딩)**: PR #1로 R1-R10 main 머지(merge afdecea). CI가 **R3 이식성 버그 포착** = `kill -9 -PID`가 util-linux에서 no-op → `libc::kill(-pid,SIGKILL)`(c9905e8). R3 테스트는 `#[cfg(unix)]`라 Windows에서 미실행 → Linux CI 첫 포착. **3-OS 매트릭스**(ubuntu/macos/windows) + `paths-ignore`(docs-only 스킵, macOS 10배 분 절약). usecase 문서 = docs/reference/agent-dev-team.md.
+- **서버-데몬 vs 서버-서버 결론**: 내부 플릿은 **브로커+폴링 유지**(대화형은 서버 못 됨 = 감독레인 죽음, NAT 친화, 개인규모). 서버-서버는 outbound interop(이미 `--runner a2a`)에 제자리. 브로커 연합은 다중사이트 YAGNI. **브로커≠메인**: 방향은 to_agent가 정함, 역할 스왑 불요(mac→win 실증, win-worker read-only).
+- **2레인**: 한 머신 = 자동레인(데몬 `*-worker`) + 감독레인(대화형 `*-claude`). id 분리(경합 claim 방지, R2가 이중실행 차단). 방향과 직교.
+- **토큰 비용 정리**: 폴링이 비싼 게 아니라 **LLM 폴링(/loop)이 비쌈**. 스크립트 폴링=공짜. **하네스 Monitor가 그 스크립트-폴러**(bash 폴 루프 백그라운드 → stdout 줄 → task-notification 주입 = 라이브 세션 이벤트 wake, 유휴 0토큰). 이게 내가 맥 결과를 즉시 보던 메커니즘.
+- **poll 감시자 결정(구현 중)**: 감독레인을 유휴 0토큰으로 굴리려면 Claude Code 세션이 Monitor로 "내 task 있나"를 봐야 하는데, agent별 열린 task 조회가 MCP `poll_tasks`뿐(핸드셰이크 무거워 셸 부적합), /a2a엔 없음. → **`tunaround poll` 서브커맨드**(McpHttpClient+parse_open_tasks 재사용, 새 submitted만 stdout, claim 안 함, HashSet 디듑, flush). Monitor가 감싸 세션을 wake. `await_task` 블로킹 MCP 툴은 비-Claude-Code 워커용 대안(후속).
+
 ## 2026-07-02 세션6(후반): semi-a2a 파트너 위임 설계 확정 (A2A 표준 채택)
 
 - **경위**: Stage 3e(codex app-server, #24135) 논의가 동구님 질문들로 값이 해체 → **3e 킬**. 대신 진짜 값 = **크로스머신 앱-투-앱 semi-autonomous 위임**. 설계: docs/design/v2-a2a-partner-delegation_2026-07-02.md.
