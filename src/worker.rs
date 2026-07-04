@@ -126,6 +126,32 @@ pub fn resolve_project_path(
         .or_else(|| default_path.map(|s| s.to_string()))
 }
 
+/// 두 경로가 겹치는지(같거나 한쪽이 다른 쪽의 조상) 판정한다(순수 함수, 파일시스템 접근 없음).
+/// Path::starts_with는 컴포넌트 단위라 "/repo"와 "/repo2"를 오검출하지 않는다. write 워커의 작업
+/// 디렉터리가 node 실행 클론과 겹치면 reset --hard 같은 write가 발밑을 갈아엎으므로, 그 판정의 핵심.
+fn paths_overlap(a: &std::path::Path, b: &std::path::Path) -> bool {
+    a == b || a.starts_with(b) || b.starts_with(a)
+}
+
+/// write 모드 워커가 node 자신이 도는 클론을 갈아엎을(self-disruption) 위험이 있는지 판정한다.
+/// project=None이면 러너가 node 실행 디렉터리(cwd)에서 돌아 위험(true). Some(p)이면 canonical 경로가
+/// node_cwd와 겹치면(같거나 한쪽이 조상) 위험. project 경로가 존재하지 않아 canonical 실패하면 cwd와
+/// 같을 수 없으므로 self-disruption 아님(false, 잘못된 경로 에러는 러너가 따로 surface). read-only
+/// 워커엔 호출하지 않는다(쓰기가 없어 무해). 2026-07-03 뱃지 task self-disruption을 구조적으로 막는다.
+pub fn write_lane_disrupts_node(
+    project: Option<&std::path::Path>,
+    node_cwd: &std::path::Path,
+) -> bool {
+    let Some(p) = project else {
+        return true; // 작업 디렉터리 미지정 = node cwd에서 write = 위험.
+    };
+    let cwd = std::fs::canonicalize(node_cwd).unwrap_or_else(|_| node_cwd.to_path_buf());
+    match std::fs::canonicalize(p) {
+        Ok(pc) => paths_overlap(&pc, &cwd),
+        Err(_) => false, // 존재하지 않는 경로는 cwd와 겹칠 수 없다(러너가 별도로 실패 처리).
+    }
+}
+
 /// `--context-map` 문자열("k=v,k=v")을 context_id->project-path 맵으로 파싱한다(순수 함수).
 /// 형식 오류(= 없음)·빈 key·빈 value·중복 key는 조용히 버리지 않고 Err로 거부한다. 오타 항목이
 /// 조용히 사라져 기본 project-path로 폴백되면 --write 시 엉뚱한 레포를 고칠 수 있어서다. 완전히 빈
@@ -502,5 +528,54 @@ mod tests {
     #[test]
     fn parse_context_map_rejects_duplicate_key() {
         assert!(parse_context_map("projA=/x,projA=/y").is_err());
+    }
+
+    #[test]
+    fn paths_overlap_detects_equal_and_ancestry_not_siblings() {
+        use std::path::Path;
+        // 같은 경로.
+        assert!(paths_overlap(Path::new("/repo"), Path::new("/repo")));
+        // 조상-자손 양방향.
+        assert!(paths_overlap(Path::new("/repo/sub"), Path::new("/repo")));
+        assert!(paths_overlap(Path::new("/repo"), Path::new("/repo/sub")));
+        // 완전 분리.
+        assert!(!paths_overlap(Path::new("/repo"), Path::new("/other")));
+        // 컴포넌트 단위라 문자열 접두(/repo vs /repo2)는 겹침 아님.
+        assert!(!paths_overlap(Path::new("/repo"), Path::new("/repo2")));
+    }
+
+    #[test]
+    fn write_lane_disrupts_node_none_project_is_dangerous() {
+        // 작업 디렉터리 미지정 = node cwd에서 write = self-disruption 위험.
+        let cwd = std::env::current_dir().unwrap();
+        assert!(write_lane_disrupts_node(None, &cwd));
+    }
+
+    #[test]
+    fn write_lane_disrupts_node_same_as_cwd_is_dangerous() {
+        let cwd = std::env::current_dir().unwrap();
+        assert!(write_lane_disrupts_node(Some(&cwd), &cwd));
+    }
+
+    #[test]
+    fn write_lane_disrupts_node_nonexistent_project_is_not_disruption() {
+        // 존재하지 않는 경로는 cwd와 겹칠 수 없다(러너가 별도로 실패 처리).
+        let cwd = std::env::current_dir().unwrap();
+        let missing = cwd.join("이_경로는_존재하지_않음_zzz");
+        assert!(!write_lane_disrupts_node(Some(&missing), &cwd));
+    }
+
+    #[test]
+    fn write_lane_disrupts_node_disjoint_existing_dir_is_safe() {
+        // temp_dir는 보통 cwd(레포)와 분리된 실재 디렉터리라 안전.
+        let cwd = std::env::current_dir().unwrap();
+        let tmp = std::env::temp_dir();
+        // 방어: 극히 드문 환경에서 temp가 cwd 하위/상위면 이 단정은 건너뛴다(오탐 아님을 보장 못 함).
+        if !paths_overlap(
+            &std::fs::canonicalize(&tmp).unwrap_or(tmp.clone()),
+            &std::fs::canonicalize(&cwd).unwrap_or(cwd.clone()),
+        ) {
+            assert!(!write_lane_disrupts_node(Some(&tmp), &cwd));
+        }
     }
 }
