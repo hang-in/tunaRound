@@ -21,5 +21,5 @@ sign-tag = false
 #     (Gemini 리뷰 반영. 안 하면 하단 링크가 낡은 버전을 가리킴).
 pre-release-replacements = [
   { file = "CHANGELOG.md", search = "## \\[Unreleased\\]", replace = "## [Unreleased]\n\n## [{{version}}] - {{date}}", exactly = 1 },
-  { file = "CHANGELOG.md", search = "\\[Unreleased\\]: (.*)/compare/.*\\.\\.\\.HEAD", replace = "[Unreleased]: ${1}/compare/v{{version}}...HEAD\n[{{version}}]: ${1}/compare/{{prev_tag_name}}...v{{version}}", exactly = 1 },
+  { file = "CHANGELOG.md", search = "\\[Unreleased\\]: (.*)/compare/.*\\.\\.\\.HEAD", replace = "[Unreleased]: ${1}/compare/v{{version}}...HEAD\n[{{version}}]: ${1}/releases/tag/v{{version}}", exactly = 1 },
 ]
