@@ -222,11 +222,13 @@ impl Runner for CodexRunner {
         // pull+ReadOnly+MCP배선 좌석만 샌드박스를 풀어 MCP 승인 통과. 그 외는 기존 샌드박스 유지.
         let mcp_wired = self.search_url.is_some() || self.search_db.is_some();
         let bypass = matches!(input.mode, RunMode::ReadOnly) && input.pull && mcp_wired;
-        // 샌드박스를 푼 경우 read-only를 지시로 보완(프롬프트 접두).
+        // 샌드박스를 푼 경우 read-only를 지시로 보완(프롬프트 접두). 그 외에는 Write 모드일 때만
+        // write_guard_prefix가 민감 path 수정금지 지시를 붙인다(B2, ReadOnly면 빈 문자열이라 기존
+        // 동작 불변). READONLY_DIRECTIVE와 WRITE_GUARD_DIRECTIVE는 배타적(bypass는 ReadOnly 전용).
         let prompt = if bypass {
             format!("{READONLY_DIRECTIVE}\n\n{}", input.prompt)
         } else {
-            input.prompt.clone()
+            format!("{}{}", super::write_guard_prefix(input.mode), input.prompt)
         };
         let spec = ExecSpec {
             bin: self.bin.clone(),
