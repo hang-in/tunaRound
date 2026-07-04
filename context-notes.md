@@ -2,6 +2,17 @@
 
 > 작업 중 결정과 근거. 계속 append. (규율 #7) 다음 세션이 결정을 재유도하지 않게.
 
+## 2026-07-04 세션11: 에이전트 레지스트리(UUID+태그) 착수 (Plan v2-34)
+
+- **목적**: 어드레싱을 자유 문자열 → UUID(라우팅)+태그(발견)로. 설계 정본은 세션10이 확정(docs/design/v2-agent-registry-uuid-tags_2026-07-04.md), 이번 세션 = 구현. 사용자 GO(핸드오프 §5 순서).
+- **코드 정찰 3대 발견(구현 전제)**:
+  1. `Arc<Mutex<SqliteStore>>`가 `/a2a`(handle_send)와 MCP(send_task, inbox)에 **동일 인스턴스 공유**(main.rs:1755 → build_router + with_a2a_store 둘 다 같은 arc). → **로스터를 SqliteStore 인메모리 필드로 두면 양 라우팅 경로가 배선 0으로 같은 로스터 공유**. event_bus 필드와 동형.
+  2. task 생성 유일 지점 = `create_task_from_message`(handle_send·send_task_text 둘 다 위임). 셀렉터 해석은 이 호출 직전에 concrete uuid로 치환 → 태스크는 항상 구체 to_agent(설계 §5.3 "태스크는 항상 구체 uuid").
+  3. online 판정에 쓸 age 계산은 기존 `a2a::age_secs`(SQL datetime 파서, 거버넌스 #3에서 추가) 재사용 가능.
+- **결정**: (1) 로스터=인메모리 HashMap(§5.1 얇은 시작, 영속 테이블 비범위). (2) 다중 매칭=후보 반환 후 사람 선택(a, 기본). (3) registration=MCP 도구 우선(워커가 이미 McpHttpClient로 MCP 호출), 셀렉터 라우팅만 `/a2a`에도 추가(공유 resolve). (4) 하위호환=레거시 문자열 to_agent exact-match 유지, to_selector는 신규 경로. (5) UUID 자가발급(store.new_task_id 관례 재사용).
+- **베이스라인**: 풀피처(morphology mcp serve worker) **377 pass**. 브로커 PID 25880(이전 세션 stale dev, temp db) 종료(빌드 잠금 해제, 사용자 승인).
+- **태스크 5개**(Plan v2-34): T1 데이터모델+인메모리스토어 / T2 MCP도구+send_task셀렉터 / T3 /a2a toSelector / T4 워커CLI --tags+자동register/heartbeat / T5 docs+스모크. 구현=Sonnet, Opus 리뷰·검증, 커밋 분리.
+
 ## 2026-07-03 세션9: R7 A2A 도그푸딩 완료 + PR CI 도입 + 2레인 + poll 감시자
 
 - **R7(retriever/reader Result 계약)** = Mac 워커 A2A로 완료(b15172c). 스펙은 **커밋 아니라 A2A task 본문**으로 전달(헤드리스 워커가 message.text를 러너 프롬프트로 받음 = 정정). 통합자 독립검증 313 pass.

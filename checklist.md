@@ -329,3 +329,13 @@
 - [x] #2 빌드 피처 광고(Sonnet): a2a_server.rs AgentCard에 buildFeatures: Vec<String>(compile-time cfg! for serve/worker/mcp/engines/semantic/morphology/a2a-out) + build_agent_card 배선 + 카드 테스트. **poll엔 미추가(poll=task목록, capability 아님). 워커별 runner/write 광고=워커 레지스트리 필요=§6 후속.**
 - [x] #5 워커 격리 가드레일(Sonnet): worker.rs/config.rs 순수 헬퍼 write_lane_disrupts_node(project: Option<&Path>, node_cwd) = None→true(cwd에서 실행=위험), Some(p)→canonical(p)==cwd or cwd⊃p면 true. node 레인 배선·work 서브커맨드에서 write+disrupt면 그 레인 거부(명확 안내). **자동 워크트리 프로비저닝=후속.**
 - [ ] 최종: 검증(풀피처 pass 확인) + CLAUDE.md 현재상태·WIN포인터 갱신(Windows 단독 편집 규약) + 세션10 핸드오프.
+
+## 에이전트 레지스트리 (UUID+태그) (세션11, 2026-07-04, docs/plans/v2-34-agent-registry.md)
+
+> 어드레싱: 자유 문자열 → UUID(라우팅)+태그(발견). 로스터=SqliteStore 인메모리 필드(양 경로 공유). 하위호환=레거시 문자열 exact-match 유지. 베이스라인 377. 정본 [설계](docs/design/v2-agent-registry-uuid-tags_2026-07-04.md).
+
+- [ ] T1: 로스터 데이터모델(src/store/agents.rs: AgentEntry/parse_tags/selector_matches/is_online) + SqliteStore 인메모리 roster 필드 + register/heartbeat/list_agents/resolve_selector + 단위테스트.
+- [ ] T2: MCP 도구(register_agent/heartbeat/list_agents) + send_task to_selector(0=no-consumer, 1=라우팅, 2+=후보반환) + McpHttpClient 대칭 + HTTP e2e.
+- [ ] T3: /a2a SendMessage toSelector(공유 resolve, to_agent Option화 하위호환) + 단위테스트.
+- [ ] T4: 워커 CLI --agent(자가 uuid)/--tags + 자동 register + poll 직전 heartbeat.
+- [ ] T5: docs(a2a-usage 등록·발견·셀렉터 레시피, 네이밍→태그 재프레이밍) + 하위호환 확인 + 라이브 스모크.
