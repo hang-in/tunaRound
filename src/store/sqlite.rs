@@ -1129,6 +1129,7 @@ impl SqliteStore {
                  claimed_at = CASE WHEN attempt_count < ?2 THEN NULL ELSE claimed_at END, \
                  lease_expires_at = CASE WHEN attempt_count < ?2 THEN NULL ELSE lease_expires_at END, \
                  claimed_by = CASE WHEN attempt_count < ?2 THEN NULL ELSE claimed_by END, \
+                 runner = CASE WHEN attempt_count < ?2 THEN NULL ELSE runner END, \
                  updated_at = datetime('now') \
                  WHERE state='working' AND lease_expires_at IS NOT NULL \
                  AND julianday('now') > julianday(lease_expires_at)",
@@ -2283,7 +2284,7 @@ mod tests {
             let db = SqliteStore::open_memory().unwrap();
             let task = Task::new("t1", None, "win", "mac", "2026-07-02 09:00:00");
             db.create_task(&task).unwrap();
-            db.try_claim("t1", Some("worker-a"), None).unwrap(); // attempt_count=1.
+            db.try_claim("t1", Some("worker-a"), Some("codex")).unwrap(); // attempt_count=1, runner 기록.
 
             // lease를 과거로 강제 심어 만료를 시뮬레이션한다(raw SQL, wire에 없는 내부 컬럼).
             db.conn
@@ -2298,6 +2299,7 @@ mod tests {
 
             let reloaded = db.get_task("t1").unwrap().unwrap();
             assert_eq!(reloaded.state, TaskState::Submitted, "만료된 working은 submitted로 복귀");
+            assert!(reloaded.runner.is_none(), "runner는 회수(submitted 복귀) 시 클리어되어야 함(claimed_by와 동형)");
 
             let (claimed_at, lease_expires_at, claimed_by, attempt_count) = raw_claim_fields(&db, "t1");
             assert!(claimed_at.is_none(), "claimed_at은 클리어되어야 함");
