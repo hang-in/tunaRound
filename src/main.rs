@@ -667,6 +667,17 @@ fn run_doctor(cfg_path: Option<&str>) -> i32 {
                 fails += 1;
             }
         }
+        // 로스터 태그 형식 검증(k=v,k=v). 잘못된 형식은 node 기동 후 register 때야 실패해 혼란스러우므로
+        // 프리플라이트에서 잡는다(register_agent가 쓰는 parse_tags 재사용).
+        if let Some(t) = &l.tags {
+            match tunaround::store::agents::parse_tags(t) {
+                Ok(_) => println!("OK   lane {} tags: 형식 OK", l.agent),
+                Err(e) => {
+                    println!("FAIL lane {} tags 형식 오류: {e}", l.agent);
+                    fails += 1;
+                }
+            }
+        }
     }
 
     if fails == 0 {
@@ -1326,6 +1337,12 @@ fn main() {
                             Some(spec) => tunaround::worker::parse_context_map(spec)?,
                             None => std::collections::HashMap::new(),
                         };
+                        // 로스터 태그 형식 검증(k=v,k=v). 잘못된 형식이면 register 전에 이 레인만 거부한다
+                        // (parse_context_map fail-fast와 동일 패턴, register_agent가 쓰는 parse_tags 재사용).
+                        if let Some(t) = &l.tags {
+                            tunaround::store::agents::parse_tags(t)
+                                .map_err(|e| format!("lane '{}' tags 형식 오류(k=v,k=v 필요): {e}", l.agent))?;
+                        }
                         let client = connect_with_retry(&core_url, &token, 20).await?;
                         eprintln!("[node] 레인 '{}' 연결 OK, 폴링 시작(interval {}s)", l.agent, l.interval);
                         tunaround::worker::run_worker_loop(
