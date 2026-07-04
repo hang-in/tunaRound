@@ -197,9 +197,35 @@ pub struct AgentCard {
     pub default_input_modes: Vec<String>,
     pub default_output_modes: Vec<String>,
     pub skills: Vec<serde_json::Value>,
+    /// 이 코어 바이너리가 컴파일된 cargo 피처(예: serve/worker/engines/a2a-out). dispatcher·doctor가
+    /// "이 코어가 뭘 할 수 있나"(http 러너 engines, outbound a2a-out 등)를 발견하는 데 참고한다. 거버넌스
+    /// §3.2 능력 광고의 코어 단위판(워커별 runner/write 광고는 워커 레지스트리가 필요해 후속).
+    pub build_features: Vec<String>,
 }
 
-/// A2A 엔드포인트 URL로 최소 Agent Card를 조립한다(순수 함수, url 이외는 정적 값).
+/// 이 바이너리에 컴파일된 cargo 피처 목록을 결정적 순서로 반환한다(compile-time cfg!, 런타임 조회 아님).
+/// Agent Card의 build_features로 광고돼 dispatcher·doctor가 코어 능력을 발견하는 근거가 된다.
+pub fn compiled_features() -> Vec<String> {
+    let mut features = Vec::new();
+    // 능력에 영향을 주는 피처만(런타임 러너·엔드포인트 유무를 좌우). 순서 고정(테스트·비교 안정).
+    for (name, enabled) in [
+        ("morphology", cfg!(feature = "morphology")),
+        ("sqlite", cfg!(feature = "sqlite")),
+        ("semantic", cfg!(feature = "semantic")),
+        ("engines", cfg!(feature = "engines")),
+        ("mcp", cfg!(feature = "mcp")),
+        ("serve", cfg!(feature = "serve")),
+        ("worker", cfg!(feature = "worker")),
+        ("a2a-out", cfg!(feature = "a2a-out")),
+    ] {
+        if enabled {
+            features.push(name.to_string());
+        }
+    }
+    features
+}
+
+/// A2A 엔드포인트 URL로 최소 Agent Card를 조립한다(순수 함수, url·build_features 이외는 정적 값).
 pub fn build_agent_card(a2a_url: &str) -> AgentCard {
     AgentCard {
         name: "tunaround-core".to_string(),
@@ -210,6 +236,7 @@ pub fn build_agent_card(a2a_url: &str) -> AgentCard {
         default_input_modes: vec!["text/plain".to_string()],
         default_output_modes: vec!["text/plain".to_string()],
         skills: Vec::new(),
+        build_features: compiled_features(),
     }
 }
 
@@ -716,6 +743,12 @@ mod tests {
         assert!(v.get("defaultInputModes").is_some(), "defaultInputModes 누락(camelCase)");
         assert!(v.get("defaultOutputModes").is_some(), "defaultOutputModes 누락(camelCase)");
         assert!(v["capabilities"].get("pushNotifications").is_some());
+        // 빌드 피처 광고(거버넌스 #2): camelCase buildFeatures로 방출되고, serve 게이트 안이므로
+        // 최소 serve/mcp는 반드시 포함된다.
+        let features = v.get("buildFeatures").expect("buildFeatures 누락(camelCase)");
+        let features: Vec<String> = serde_json::from_value(features.clone()).unwrap();
+        assert!(features.contains(&"serve".to_string()), "serve 피처 광고 누락: {features:?}");
+        assert!(features.contains(&"mcp".to_string()), "mcp 피처 광고 누락(serve가 끌어옴): {features:?}");
 
         let back: AgentCard = serde_json::from_value(v).unwrap();
         assert_eq!(back, card);
