@@ -1,0 +1,25 @@
+# cargo-release 설정. `cargo release <patch|minor|major>`가 버전 범프 + CHANGELOG [Unreleased] 갱신
+# + 커밋 + 태그(vX.Y.Z) + push를 한 번에 한다. 정책·흐름은 docs/reference/versioning.md 참조.
+
+# crates.io 게시 안 함(라이브러리가 아니라 AGPL 앱. 릴리스 아티팩트는 태그 push 시 cargo-dist가 빌드).
+publish = false
+# 커밋·태그를 push한다(태그가 .github/workflows/release.yml의 cargo-dist를 발화).
+push = true
+# 태그 형식: v0.2.0. release.yml 트리거(**[0-9]+.[0-9]+.[0-9]+*) 및 기존 v0.1.0-rc.1과 정합.
+tag-name = "v{{version}}"
+tag-message = "Release tunaround v{{version}}"
+pre-release-commit-message = "chore(release): v{{version}}"
+# main에서만 릴리스(실수로 피처 브랜치에서 태그 방지).
+allow-branch = ["main"]
+# 서명은 각자 환경에 맡긴다(강제 안 함).
+sign-commit = false
+sign-tag = false
+
+# CHANGELOG를 굳힌다(Keep a Changelog 관례. cargo-release 템플릿 {{version}}/{{date}}/{{prev_tag_name}}).
+# (1) 상단 [Unreleased] 헤더를 [버전] - 날짜로 굳히고 새 빈 [Unreleased]를 심는다.
+# (2) 하단 비교 링크도 갱신한다: [Unreleased]를 새 버전...HEAD로 옮기고 [버전] 링크를 추가한다
+#     (Gemini 리뷰 반영. 안 하면 하단 링크가 낡은 버전을 가리킴).
+pre-release-replacements = [
+  { file = "CHANGELOG.md", search = "## \\[Unreleased\\]", replace = "## [Unreleased]\n\n## [{{version}}] - {{date}}", exactly = 1 },
+  { file = "CHANGELOG.md", search = "\\[Unreleased\\]: (.*)/compare/.*\\.\\.\\.HEAD", replace = "[Unreleased]: ${1}/compare/v{{version}}...HEAD\n[{{version}}]: ${1}/compare/{{prev_tag_name}}...v{{version}}", exactly = 1 },
+]

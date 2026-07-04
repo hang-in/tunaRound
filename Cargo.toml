@@ -1,11 +1,14 @@
 [package]
 name = "tunaround"
-version = "0.1.0-rc.1"
+version = "0.1.0"
 edition = "2024"
 description = "터미널에서 사람이 운전하는 역할 부여 2-에이전트 착수 전 설계 토론 도구"
 repository = "https://github.com/hang-in/tunaRound"
 homepage = "https://github.com/hang-in/tunaRound"
 license = "AGPL-3.0-only"
+# crates.io 게시 대상이 아닌 애플리케이션이라 실수로 `cargo publish`가 돌지 않게 막는다
+# (release.toml의 publish=false와 belt-and-suspenders. Gemini 리뷰 반영).
+publish = false
 
 [dependencies]
 clap = { version = "4", features = ["derive"] }

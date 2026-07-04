@@ -4,6 +4,26 @@
 
 ## [Unreleased]
 
+### 추가 (Added)
+
+- **semi-A2A 파트너 위임(Phase 1)**: A2A Task 데이터모델(Task/TaskState/Message/Part/Artifact, `tasks` 테이블 스키마 v6) + JSON-RPC 엔드포인트(`SendMessage`/`GetTask`/`CancelTask`, `/.well-known/agent-card.json`) + inbox MCP 도구(`poll_tasks`/`claim_task`/`complete_task`/`fail_task`) + dispatcher 도구(`send_task`/`get_task`). 크로스머신 왕복 실증.
+- **A2A 스트리밍(Phase 2, SSE)**: `SendStreamingMessage`/`SubscribeToTask` + store 이벤트 버스. Agent Card `capabilities.streaming=true` 광고.
+- **A2A 자율 워커 데몬**: `tunaround work`(poll->claim->러너 실행->complete 자율 루프). 러너 교체로 이기종 파트너(`--runner claude|codex|opencode|http|a2a`). `context_id` 프로젝트 라우팅(`--context-map`). 러너 실패 시 `fail_task` 전이(completed 위장 안 함).
+- **A2A outbound 러너**: `--runner a2a`로 외부 표준 A2A 에이전트에 표준 위임(a2a-client, `a2a-out` 피처).
+- **워커 노드 온보딩**: `tunaround init`/`node`/`doctor` + `NodeConfig`(config 1개 + 데몬 하나 = 워커 노드). 감시 전용 `tunaround poll`(감독 레인 유휴 0토큰 wake).
+- **브로커 거버넌스**: 네이밍 규약(`to_agent`는 워커만) · Agent Card `buildFeatures` 능력 광고 · 미배달/고착 표시(`⚠no-consumer?`/`⚠stuck?`) + 전역 조망 `tasks` 도구 · write 워커 self-disruption 방지 가드레일.
+
+### 변경 (Changed)
+
+- **개발 방법론**: GitHub Flow + PR CI(3-OS 매트릭스: ubuntu/macOS/windows, build+test+clippy) 도입.
+- **리팩토링(리뷰 기반 R1-R10)**: MCP 에러 계약 정직화(실패를 isError로) · A2A 상태머신 조건부 전이(이중 claim/종료 덮어쓰기 차단) · watchdog 프로세스 트리 종료 · retriever/reader Result 계약 · Embedder dim 동적화 등.
+- **저장소 공개**: `hang-in/tunaRound` PUBLIC 전환(히스토리 시크릿 퍼지).
+
+### 고침 (Fixed)
+
+- 워커 MCP 세션 만료 시 자동 재연결(404 -> handshake 재수행).
+- `watchdog`의 Unix 프로세스 그룹 종료 이식성(외부 `kill -9 -PID` no-op -> `libc::kill`).
+
 ## [0.1.0] - 2026-07-02
 
 첫 공개 릴리스(도그푸딩 후 태그 예정). 터미널에서 사람이 운전하는 역할 부여 2-에이전트(Claude Code · Codex) 착수 전 설계 토론 도구.
