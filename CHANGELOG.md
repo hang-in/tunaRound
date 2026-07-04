@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-07-04
+
 ### 추가 (Added)
 
 - `tunaround poll --on-task '<cmd>'`: task 도착 시 명령을 실행한다(`{id}` 치환 + `TUNAROUND_TASK_ID`/`TUNAROUND_TASK_MSG` 환경변수). Monitor가 없는 하네스(codex 등)의 0토큰 감독 레인 wake 글루. 예: codex는 `--on-task 'codex exec resume --last "task {id} 처리"'`로 세션을 이어받아 처리(idle 0토큰, 문맥 보존).
@@ -61,7 +63,8 @@
 
 - AGPL-3.0-only.
 
-[Unreleased]: https://github.com/hang-in/tunaRound/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/hang-in/tunaRound/compare/v0.2.2...HEAD
+[0.2.2]: https://github.com/hang-in/tunaRound/releases/tag/v0.2.2
 [0.2.1]: https://github.com/hang-in/tunaRound/releases/tag/v0.2.1
 [0.2.0]: https://github.com/hang-in/tunaRound/releases/tag/v0.2.0
 [0.1.0]: https://github.com/hang-in/tunaRound/releases/tag/v0.1.0
