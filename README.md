@@ -11,6 +11,8 @@
 
 토론이 끝나면 결론을 `design.md` 같은 문서로 저장하고, 필요하면 그 자리에서 구현이나 작업 위임으로 이어갈 수 있습니다.
 
+> 코드베이스 구조를 AI 위키로 둘러보려면: [DeepWiki로 tunaRound 살펴보기](https://deepwiki.com/hang-in/tunaRound).
+
 ---
 
 ## 언제 쓰나
