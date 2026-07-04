@@ -17,15 +17,21 @@
 
 코어 하나에 dispatcher·worker가 여럿 붙을 수 있고, 작업은 `to_agent`(받는 워커 id)로 라우팅됩니다.
 
-### 네이밍/어드레싱 규약 (중요)
+### 어드레싱: UUID(라우팅) + 태그(발견)
 
-브로커는 본질적으로 **agent-id 라우팅 task 큐**입니다. `to_agent`는 큐의 subject이고, 그 id를 폴링하는 워커가 소비자입니다. 소비자가 없는 id로 던지면 작업이 조용히 영원히 `submitted`로 남습니다(세션9 실증: dispatcher id로 던져 폴러 없음). 이를 규약으로 없앱니다.
+브로커는 본질적으로 **agent-id 라우팅 task 큐**입니다. `to_agent`는 큐의 subject이고, 그 id를 폴링하는 워커가 소비자입니다. 소비자가 없는 id로 던지면 작업이 조용히 영원히 `submitted`로 남습니다(세션9 실증: dispatcher id로 던져 폴러 없음). tunaRound는 이를 두 층으로 해결합니다.
 
-- **`to_agent`는 폴링하는 워커 id만 씁니다.** dispatcher id는 `from_agent` 전용이며 절대 `to_agent`가 되지 않습니다(던지는 쪽은 poll/claim을 하지 않으므로).
-- **네이밍은 `{머신}-{역할|러너}`** 로, 이름만 봐도 워커인지·러너가 뭔지 드러나게 합니다.
-  - 워커(소비자): `win-worker`·`mac-worker`(claude 기본), `mac-codex`·`mac-llm`(러너 명시).
-  - dispatcher(생산자): `{머신}-dispatch` 또는 사람 이름(`win-opus`). 이건 던지기 전용입니다.
-- **레인 종류 접미어**: 자동(헤드리스 데몬)=`-worker`류, 감독(대화형 세션이 poll)=`-claude`/`-codex`류.
+- **UUID = 라우팅 키.** 워커가 뜰 때 자가 발급(`--agent` 미지정 시 자동)하거나 사람이 읽기 쉬운 id(`win-worker`)를 직접 줍니다. task의 `to_agent`엔 항상 **구체 id 하나**가 남습니다.
+- **태그 = 발견 키.** 워커는 `--tags "machine=win,runner=claude,role=worker"`로 자기를 광고하고, dispatcher는 그 태그로 **발송 시점에 대상을 발견**(`to_selector`)합니다. 발송자가 문자열을 손으로 맞출 필요가 없어 오타-불일치(no-consumer)가 구조적으로 줄어듭니다. 상세는 §9.
+
+**태그 관례**(강제 아님, 표준키만 합의):
+
+- `machine`(win/mac/linux) · `runner`(claude/codex/opencode/llm/a2a) · `role`(worker/supervised/dispatch) · `project`(레포명) · `mode`(read/write). 자유 키도 허용됩니다.
+- 예전 네이밍 규약(`{머신}-{역할}`)은 이제 **태그로 흡수**됩니다. `win-worker`라는 이름 대신 `machine=win,role=worker` 태그로 같은 정보를 라우팅 가능한 형태로 담습니다. 사람이 읽는 id는 `display_name`으로 따로 둘 수 있습니다.
+
+여전히 유효한 규칙:
+
+- **`to_agent`/셀렉터 대상은 폴링하는 워커만.** dispatcher id는 `from_agent` 전용이며 절대 대상이 되지 않습니다(던지는 쪽은 poll/claim을 하지 않으므로). 태그로도 dispatcher를 `role=worker`로 광고하지 않습니다.
 
 > 코어는 미배달을 표시로 알립니다: `submitted`가 오래 claim 안 되면 `get_task`/`tasks`/`poll` 출력에 `⚠no-consumer?`가, `working`이 오래 멈춰 있으면 `⚠stuck?`가 붙습니다(§8). 자동 전이(requeue)는 두지 않았습니다(semi-a2a: 사람이 재던짐 결정).
 
@@ -75,7 +81,8 @@ tunaround work \
 | --- | --- |
 | `--core <url>` | 코어의 **`/mcp`** URL (끝에 `/mcp` 포함). |
 | `--token <T>` | 코어 bearer 토큰. |
-| `--agent <id>` | 이 워커의 id. 이 id를 `to_agent`로 가진 작업만 집습니다. |
+| `--agent <id>` | 이 워커의 id. 이 id를 `to_agent`로 가진 작업만 집습니다. **생략 시 자가 uuid 생성**(로그에 출력). |
+| `--tags <k=v,..>` | 로스터 발견용 태그. dispatcher가 `to_selector`로 이 워커를 찾습니다(§9). 예: `machine=win,runner=claude,role=worker`. |
 | `--runner <claude\|codex\|opencode\|http>` | 작업을 실행할 러너 (기본 `claude`). |
 | `--model <m>` | 러너 모델 (선택). |
 | `--project-path <p>` | 러너가 작업할 디렉터리 (선택). 프로젝트별 격리에 사용. |
@@ -253,3 +260,53 @@ curl -s -H "Authorization: Bearer DEMO" -H "Content-Type: application/json" -X P
 폴러가 없는 작업은 아무도 `poll_tasks`를 안 하므로, **`tasks()`가 그런 no-consumer 작업까지 한눈에** 보여줍니다. 신호를 보면 사람이 취소(`CancelTask`)하거나 올바른 `to_agent`로 다시 던집니다.
 
 > 자동 재큐(claim TTL requeue)·하트비트는 두지 않았습니다(개인 2~3머신엔 과함, 후속). self-disruption(워커가 자기 클론을 갈아엎어 stuck)은 §2의 `--write` + 별도 작업 디렉터리로 애초에 막습니다: write 워커의 작업 디렉터리가 노드 실행 클론과 겹치면 코어가 거부합니다(별도 클론/워크트리 필요).
+
+---
+
+## 9. 에이전트 레지스트리 (등록 · 발견 · 셀렉터 라우팅)
+
+`to_agent`로 문자열을 손으로 맞추는 대신, **워커가 태그로 자기를 광고하고 dispatcher가 태그로 발견**합니다. 로스터는 코어 인메모리라 코어를 재기동하면 비고, 워커가 heartbeat 실패를 감지해 자동 재등록합니다(영속 아님, 재등록으로 복원).
+
+### 9a. 워커 자동 등록
+
+`tunaround work`에 `--tags`를 주면 뜰 때 로스터에 자기 등록하고, 매 폴마다 heartbeat로 online을 유지합니다.
+
+```bash
+tunaround work \
+  --core http://<코어-IP>:8770/mcp --token <TOKEN> \
+  --tags "machine=win,runner=claude,role=worker,project=tunaround" \
+  --runner claude
+# --agent 미지정 -> 자가 uuid 생성(로그: "[work] --agent 미지정 -> 자가 uuid 생성: <uuid>")
+# 등록됨(로그: "[work] 로스터 등록: 등록됨: uuid=<uuid> tags=4개")
+```
+
+`--agent`로 사람이 읽는 id(`win-worker`)를 직접 줘도 됩니다(그 id가 uuid 자리에 들어갈 뿐).
+
+### 9b. dispatcher가 online 워커 발견 (MCP `list_agents`)
+
+```
+list_agents                       # online 전부
+list_agents selector="runner=claude"   # 태그로 필터(부분집합 매칭)
+# -> [<uuid>] <display> tags: machine=win, runner=claude, role=worker (heartbeat=...)
+```
+
+`heartbeat`가 90초(AGENT_TTL_SECS) 넘게 끊긴 워커는 목록에서 빠집니다.
+
+### 9c. 태그로 작업 던지기 (`to_selector`)
+
+`send_task`(MCP) 또는 `SendMessage`(`/a2a`)에 `to_agent` 대신 `to_selector`를 줍니다. 코어가 **발송 시점에 매칭 online uuid로 해석**합니다.
+
+- MCP: `send_task from_agent=win-opus to_selector="runner=claude,project=tunaround" text="..."`
+- `/a2a`: `SendMessage` params에 `"toSelector":"runner=claude"` (그리고 `toAgent`는 생략).
+
+해석 결과:
+
+| 매칭 수 | 코어 동작 |
+| --- | --- |
+| 1개 | 그 uuid로 task 생성(정상 라우팅). task의 `to_agent`엔 구체 uuid가 남습니다. |
+| 0개 | **no-consumer 안내**(task 생성 안 함). "list_agents로 확인하세요". |
+| 2개+ | **후보 목록 반환**(task 생성 안 함). dispatcher가 `to_agent`로 하나를 골라 재요청(HITL). |
+
+`to_agent`와 `to_selector`는 배타입니다(둘 다 주면 에러). **레거시 경로 불변**: `to_agent`에 문자열/uuid를 직접 주면 예전처럼 그 id로 exact-match 라우팅합니다(레지스트리 우회).
+
+> 다중 매칭을 코어가 자동 배정(부하분산)하지 않고 dispatcher에게 되돌리는 건 semi-a2a(사람이 대상 결정)에 맞춘 기본값입니다. 자동 배정은 후속(YAGNI).

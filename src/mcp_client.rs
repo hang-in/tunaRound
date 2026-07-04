@@ -216,6 +216,27 @@ impl McpHttpClient {
         self.call_tool("fail_task", json!({ "task_id": task_id, "reason": reason, "agent": agent }))
             .await
     }
+
+    /// register_agent(uuid, tags, display_name) 얇은 래퍼(워커/세션 자기 등록).
+    pub async fn register_agent(
+        &self,
+        uuid: &str,
+        tags: Option<&str>,
+        display_name: Option<&str>,
+    ) -> Result<String, String> {
+        self.call_tool("register_agent", json!({ "uuid": uuid, "tags": tags, "display_name": display_name }))
+            .await
+    }
+
+    /// heartbeat(uuid) 얇은 래퍼(주기 ping으로 online 유지).
+    pub async fn heartbeat(&self, uuid: &str) -> Result<String, String> {
+        self.call_tool("heartbeat", json!({ "uuid": uuid })).await
+    }
+
+    /// list_agents(selector) 얇은 래퍼(online 에이전트 발견).
+    pub async fn list_agents(&self, selector: Option<&str>) -> Result<String, String> {
+        self.call_tool("list_agents", json!({ "selector": selector })).await
+    }
 }
 
 /// SSE 프레이밍(`data: ...` 라인들) 안에서 JSON-RPC 응답 페이로드를 찾아 파싱한다. 서버(rmcp
@@ -374,5 +395,51 @@ mod tests {
             refreshed_session_id, stale_session_id,
             "재연결 성공 시 session_id가 새 값으로 갱신되어야 함"
         );
+    }
+
+    /// 레지스트리 e2e(Plan v2-34 T2): register_agent -> list_agents(발견) -> send_task(to_selector로
+    /// 라우팅) -> get_task(존재+미완료 확인) 왕복. register_agent가 last_heartbeat를 now로 세팅하므로
+    /// 별도 heartbeat 호출 없이 바로 online이라 list_agents에 뜬다.
+    #[tokio::test]
+    async fn register_list_send_by_selector_get_task_e2e() {
+        let url = spawn_test_server(None).await;
+        let client = McpHttpClient::connect(url, None).await.expect("connect 성공해야 함");
+
+        let register_text = client
+            .register_agent("worker-uuid-1", Some("runner=claude,machine=win"), Some("win-claude"))
+            .await
+            .expect("register_agent 성공해야 함");
+        assert!(register_text.contains("worker-uuid-1"), "register 응답 불일치: {register_text}");
+
+        let list_text = client.list_agents(Some("runner=claude")).await.expect("list_agents 성공해야 함");
+        assert!(list_text.contains("worker-uuid-1"), "list_agents에 등록된 uuid 없음: {list_text}");
+
+        let send_text = client
+            .call_tool(
+                "send_task",
+                json!({
+                    "from_agent": "dispatcher",
+                    "to_agent": null,
+                    "to_selector": "runner=claude",
+                    "text": "셀렉터 라우팅 테스트",
+                    "context_id": null,
+                }),
+            )
+            .await
+            .expect("send_task(to_selector) 성공해야 함");
+        assert!(send_text.contains("state=submitted"), "send_task 응답 불일치: {send_text}");
+        let task_id = send_text
+            .split("task_id=")
+            .nth(1)
+            .and_then(|rest| rest.split_whitespace().next())
+            .expect("task_id 파싱 실패")
+            .to_string();
+
+        let get_text = client
+            .call_tool("get_task", json!({ "task_id": task_id }))
+            .await
+            .expect("get_task 성공해야 함");
+        assert!(get_text.contains(&task_id), "get_task 응답에 task_id 없음: {get_text}");
+        assert!(get_text.contains("state=submitted"), "get_task는 아직 완료 아니어야 함: {get_text}");
     }
 }

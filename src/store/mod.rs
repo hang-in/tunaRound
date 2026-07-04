@@ -3,6 +3,8 @@
 #[cfg(feature = "sqlite")]
 pub mod a2a;
 #[cfg(feature = "sqlite")]
+pub mod agents;
+#[cfg(feature = "sqlite")]
 pub mod sqlite;
 
 pub mod embedding;

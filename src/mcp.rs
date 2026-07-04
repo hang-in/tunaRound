@@ -1,5 +1,6 @@
 // 토론 맥락 검색 MCP 서버: rmcp stdio 서버로 search_context 툴 하나를 노출한다.
 
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use rmcp::{
@@ -12,6 +13,9 @@ use serde::Deserialize;
 
 use crate::orchestrator::{ContextRetriever, RosterSeat, TranscriptReader, TranscriptWriter, Utterance};
 use crate::store::a2a::{Artifact, Message, Part, TaskState};
+use crate::store::agents::{
+    format_ambiguous_candidates, parse_tags, validate_send_target, AgentEntry, SendTarget, AGENT_TTL_SECS,
+};
 use crate::store::sqlite::SqliteStore;
 
 /// search_context 툴 파라미터.
@@ -91,17 +95,45 @@ pub struct FailTaskParams {
     pub agent: Option<String>,
 }
 
-/// send_task 툴 파라미터(dispatcher가 새 A2A task를 위임할 때 사용).
+/// send_task 툴 파라미터(dispatcher가 새 A2A task를 위임할 때 사용). to_agent(구체 대상)와
+/// to_selector(태그 발견, 발송 시점에 uuid로 해석) 중 정확히 하나만 지정한다.
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SendTaskParams {
     /// 보내는 에이전트 id(A2A task의 from_agent).
     pub from_agent: String,
-    /// 받는 에이전트 id(A2A task의 to_agent).
-    pub to_agent: String,
+    /// 받는 에이전트 id(A2A task의 to_agent). to_selector와 배타적.
+    pub to_agent: Option<String>,
     /// 작업 지시 본문.
     pub text: String,
     /// 대화 맥락 id(생략 가능).
     pub context_id: Option<String>,
+    /// 태그 셀렉터 "k=v,k=v"(발견 후 uuid로 라우팅). to_agent와 배타적.
+    pub to_selector: Option<String>,
+}
+
+/// register_agent 툴 파라미터(워커/세션이 뜰 때 로스터에 자기 등록).
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct RegisterAgentParams {
+    /// 에이전트 고유 id(워커 자가 발급 uuid 권장, 라우팅 키).
+    pub uuid: String,
+    /// 발견용 태그 "k=v,k=v"(예: "machine=win,runner=claude,role=worker"). 생략 가능.
+    pub tags: Option<String>,
+    /// 로스터 가독용 표시 이름(생략 가능).
+    pub display_name: Option<String>,
+}
+
+/// heartbeat 툴 파라미터(주기 ping으로 online 유지).
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct HeartbeatParams {
+    /// heartbeat를 갱신할 에이전트 id.
+    pub uuid: String,
+}
+
+/// list_agents 툴 파라미터(online 에이전트 발견, selector로 필터).
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ListAgentsParams {
+    /// 태그 셀렉터 "k=v,k=v"(부분집합 매칭). 생략 시 online 전부.
+    pub selector: Option<String>,
 }
 
 /// get_task 툴 파라미터(dispatcher가 위임한 task의 상태·결과를 확인할 때 사용).
@@ -325,6 +357,54 @@ fn send_task_text(
     };
     let task = store.create_task_from_message(from_agent, to_agent, message)?;
     Ok(format!("생성됨: task_id={} state={}", task.id, task.state.as_str()))
+}
+
+/// AgentEntry 목록을 사람이 읽는 텍스트로 조립한다(비면 "online 에이전트 없음").
+pub fn format_agents(agents: &[AgentEntry]) -> String {
+    if agents.is_empty() {
+        return "online 에이전트 없음".to_string();
+    }
+    agents
+        .iter()
+        .map(|a| {
+            let name = a.display_name.as_deref().unwrap_or("-");
+            let tags = a
+                .tags
+                .iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("[{}] {} tags: {} (heartbeat={})", a.uuid, name, tags, a.last_heartbeat)
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// send_task 셀렉터 인지 버전. Agent면 concrete 발송(send_task_text 위임), Selector면 resolve 후
+/// 0개=no-consumer 안내(생성 안 함), 1개=그 uuid로 발송, 2개+=후보 목록(생성 안 함).
+fn send_task_routed(
+    store: &SqliteStore,
+    from_agent: &str,
+    to_agent: Option<&str>,
+    to_selector: Option<&str>,
+    text: &str,
+    context_id: Option<String>,
+) -> Result<String, String> {
+    match validate_send_target(to_agent, to_selector)? {
+        SendTarget::Agent(agent) => send_task_text(store, from_agent, &agent, text, context_id),
+        SendTarget::Selector(selector) => {
+            let sel = parse_tags(&selector)?;
+            let now = store.now()?;
+            let uuids = store.resolve_selector(&sel, &now, AGENT_TTL_SECS);
+            match uuids.len() {
+                0 => Ok(format!(
+                    "대상 없음(no-consumer): 셀렉터 '{selector}'에 매칭되는 online 에이전트가 없습니다. list_agents로 확인하세요."
+                )),
+                1 => send_task_text(store, from_agent, &uuids[0], text, context_id),
+                _ => Ok(format_ambiguous_candidates(&selector, &uuids)),
+            }
+        }
+    }
 }
 
 /// get_task 순수 로직: task를 조회해 상태를 요약한다. completed면 artifact 텍스트들을 이어붙인다.
@@ -611,10 +691,10 @@ impl TunaSearchServer {
                 "A2A task 저장소 미구성(send_task 비활성)".to_string(),
             )]));
         };
-        let SendTaskParams { from_agent, to_agent, text, context_id } = p;
+        let SendTaskParams { from_agent, to_agent, text, context_id, to_selector } = p;
         let outcome = tokio::task::spawn_blocking(move || {
             let store = store.lock().unwrap_or_else(|e| e.into_inner());
-            send_task_text(&store, &from_agent, &to_agent, &text, context_id)
+            send_task_routed(&store, &from_agent, to_agent.as_deref(), to_selector.as_deref(), &text, context_id)
         })
         .await
         .unwrap_or_else(|e| Err(format!("작업 실패: {e}")));
@@ -623,6 +703,98 @@ impl TunaSearchServer {
             Err(e) => format!("전송 실패: {e}"),
         };
         Ok(CallToolResult::success(vec![Content::text(text)]))
+    }
+
+    #[tool(description = "이 에이전트를 브로커 로스터에 등록한다(uuid+태그, 워커/세션 자기 등록용).")]
+    async fn register_agent(
+        &self,
+        Parameters(p): Parameters<RegisterAgentParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let Some(store) = self.a2a_store.clone() else {
+            return Ok(CallToolResult::success(vec![Content::text(
+                "A2A task 저장소 미구성(register_agent 비활성)".to_string(),
+            )]));
+        };
+        let RegisterAgentParams { uuid, tags, display_name } = p;
+        let outcome = tokio::task::spawn_blocking(move || {
+            let store = store.lock().unwrap_or_else(|e| e.into_inner());
+            let now = store.now()?;
+            let tags = match tags {
+                Some(s) => parse_tags(&s)?,
+                None => BTreeMap::new(),
+            };
+            let tags_len = tags.len();
+            store.register_agent(&uuid, tags, display_name, &now);
+            Ok::<String, String>(format!("등록됨: uuid={uuid} tags={tags_len}개"))
+        })
+        .await
+        .unwrap_or_else(|e| Err(format!("작업 실패: {e}")));
+        // R1: 등록 실패(now/parse_tags 오류)를 success로 위장하지 않는다(클라가 감지하게 isError).
+        match outcome {
+            Ok(t) => Ok(CallToolResult::success(vec![Content::text(t)])),
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!("등록 실패: {e}"))])),
+        }
+    }
+
+    #[tool(description = "로스터에 자기 존재를 갱신한다(online 유지, 주기 호출).")]
+    async fn heartbeat(
+        &self,
+        Parameters(p): Parameters<HeartbeatParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let Some(store) = self.a2a_store.clone() else {
+            return Ok(CallToolResult::success(vec![Content::text(
+                "A2A task 저장소 미구성(heartbeat 비활성)".to_string(),
+            )]));
+        };
+        let uuid = p.uuid;
+        let outcome = tokio::task::spawn_blocking(move || {
+            let store = store.lock().unwrap_or_else(|e| e.into_inner());
+            let now = store.now()?;
+            let ok = store.heartbeat_agent(&uuid, &now);
+            Ok::<String, String>(if ok {
+                format!("heartbeat 갱신: {uuid}")
+            } else {
+                format!("미등록 uuid={uuid}(register_agent 먼저 호출하세요)")
+            })
+        })
+        .await
+        .unwrap_or_else(|e| Err(format!("작업 실패: {e}")));
+        // R1: 실제 실패(now 오류)만 isError. "미등록..."은 클로저에서 Ok라 success로 남아 워커의
+        // 재등록 로직(needs_reregister)이 그 텍스트를 받는다(정상 흐름, 실패 아님).
+        match outcome {
+            Ok(t) => Ok(CallToolResult::success(vec![Content::text(t)])),
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!("heartbeat 실패: {e}"))])),
+        }
+    }
+
+    #[tool(description = "online 에이전트를 발견한다(selector 태그로 필터, dispatcher 라우팅용).")]
+    async fn list_agents(
+        &self,
+        Parameters(p): Parameters<ListAgentsParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let Some(store) = self.a2a_store.clone() else {
+            return Ok(CallToolResult::success(vec![Content::text(
+                "A2A task 저장소 미구성(list_agents 비활성)".to_string(),
+            )]));
+        };
+        let selector = p.selector;
+        let outcome = tokio::task::spawn_blocking(move || {
+            let store = store.lock().unwrap_or_else(|e| e.into_inner());
+            let now = store.now()?;
+            let sel = match selector {
+                Some(s) => parse_tags(&s)?,
+                None => BTreeMap::new(),
+            };
+            let agents = store.list_agents(&sel, &now, AGENT_TTL_SECS);
+            Ok::<String, String>(format_agents(&agents))
+        })
+        .await
+        .unwrap_or_else(|e| Err(format!("작업 실패: {e}")));
+        // R1: 조회 실패(now/parse_tags 오류)를 success로 위장하지 않는다(클라가 감지하게 isError).
+        match outcome {
+            Ok(t) => Ok(CallToolResult::success(vec![Content::text(t)])),
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!("조회 실패: {e}"))])),
+        }
     }
 
     #[tool(description = "위임한 A2A task의 상태를 조회한다(completed면 결과 텍스트도 함께 반환, dispatcher용).")]
@@ -677,8 +849,10 @@ impl ServerHandler for TunaSearchServer {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_instructions(
                 "토론 맥락을 검색하려면 search_context(query)를, 전사 통째를 읽으려면 read_transcript(session_id?, max_turns?)를 호출하세요. \
-                 작업을 맡기는 쪽(dispatcher)은 send_task(from_agent, to_agent, text, context_id?)로 위임하고 get_task(task_id)로 결과를 확인하세요. \
+                 작업을 맡기는 쪽(dispatcher)은 send_task(from_agent, to_agent 또는 to_selector, text, context_id?)로 위임하고 get_task(task_id)로 결과를 확인하세요. \
                  작업을 받는 쪽(worker)은 poll_tasks(agent)로 확인하고 claim_task(task_id)로 착수, complete_task(task_id, result)로 완료를 보고하세요. \
+                 워커/세션은 register_agent(uuid, tags?, display_name?)로 로스터에 등록하고 heartbeat(uuid)로 주기 갱신하며, \
+                 dispatcher는 list_agents(selector?)로 online 에이전트를 발견합니다. \
                  브로커 운영자는 tasks()로 전체 열린 task를 미배달(no-consumer?)/고착(stuck?) 주석과 함께 조망할 수 있습니다."
                     .to_string(),
             )
@@ -1827,6 +2001,71 @@ mod tests {
         assert!(text.contains("nope"), "task_id 언급 없음: {text}");
     }
 
+    // --- 레지스트리 라우팅: 순수 함수 단위테스트는 store::agents로 이동(Plan v2-34 T3) ---
+
+    #[test]
+    fn format_agents_empty_says_none_online() {
+        assert_eq!(format_agents(&[]), "online 에이전트 없음");
+    }
+
+    #[test]
+    fn format_agents_formats_uuid_name_tags_heartbeat() {
+        let mut tags = BTreeMap::new();
+        tags.insert("machine".to_string(), "win".to_string());
+        let agents = vec![AgentEntry {
+            uuid: "uuid-1".to_string(),
+            tags,
+            display_name: Some("win-claude".to_string()),
+            last_heartbeat: "2026-07-04 10:00:00".to_string(),
+        }];
+        let text = format_agents(&agents);
+        assert!(text.contains("uuid-1"));
+        assert!(text.contains("win-claude"));
+        assert!(text.contains("machine=win"));
+        assert!(text.contains("2026-07-04 10:00:00"));
+    }
+
+    #[test]
+    fn send_task_routed_selector_zero_matches_is_no_consumer_and_no_task_created() {
+        let store = SqliteStore::open_memory().unwrap();
+        let text = send_task_routed(&store, "win-claude", None, Some("runner=claude"), "부탁", None)
+            .unwrap();
+        assert!(text.contains("no-consumer") || text.contains("대상 없음"), "안내 불일치: {text}");
+        assert!(store.list_all_open_tasks().unwrap().is_empty(), "task가 생성되면 안 됨");
+    }
+
+    #[test]
+    fn send_task_routed_selector_one_match_creates_task_to_that_uuid() {
+        let store = SqliteStore::open_memory().unwrap();
+        let now = store.now().unwrap();
+        let mut tags = BTreeMap::new();
+        tags.insert("runner".to_string(), "claude".to_string());
+        store.register_agent("uuid-only", tags, None, &now);
+
+        let text =
+            send_task_routed(&store, "win-claude", None, Some("runner=claude"), "부탁", None).unwrap();
+        assert!(text.contains("state=submitted"), "응답 불일치: {text}");
+
+        let tasks = store.list_open_tasks_for("uuid-only").unwrap();
+        assert_eq!(tasks.len(), 1, "uuid-only 앞으로 정확히 하나 생성돼야 함");
+    }
+
+    #[test]
+    fn send_task_routed_selector_multiple_matches_lists_candidates_and_no_task_created() {
+        let store = SqliteStore::open_memory().unwrap();
+        let now = store.now().unwrap();
+        let mut tags = BTreeMap::new();
+        tags.insert("runner".to_string(), "claude".to_string());
+        store.register_agent("uuid-a", tags.clone(), None, &now);
+        store.register_agent("uuid-b", tags, None, &now);
+
+        let text =
+            send_task_routed(&store, "win-claude", None, Some("runner=claude"), "부탁", None).unwrap();
+        assert!(text.contains("uuid-a"), "후보 목록 불일치: {text}");
+        assert!(text.contains("uuid-b"), "후보 목록 불일치: {text}");
+        assert!(store.list_all_open_tasks().unwrap().is_empty(), "task가 생성되면 안 됨");
+    }
+
     #[test]
     fn get_task_text_open_task_shows_state_without_artifacts() {
         let store = SqliteStore::open_memory().unwrap();
@@ -1855,9 +2094,10 @@ mod tests {
         let result = server
             .send_task(Parameters(SendTaskParams {
                 from_agent: "win".into(),
-                to_agent: "mac".into(),
+                to_agent: Some("mac".into()),
                 text: "부탁".into(),
                 context_id: None,
+                to_selector: None,
             }))
             .await;
         assert!(result.is_ok());
@@ -1883,9 +2123,10 @@ mod tests {
         let send_result = server
             .send_task(Parameters(SendTaskParams {
                 from_agent: "win-claude".into(),
-                to_agent: "mac-claude".into(),
+                to_agent: Some("mac-claude".into()),
                 text: "리뷰 부탁".into(),
                 context_id: None,
+                to_selector: None,
             }))
             .await;
         assert!(send_result.is_ok());

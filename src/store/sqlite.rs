@@ -1,10 +1,14 @@
 // SQLite 시스템오브레코드: 메시지 트리 영속 + FTS5 선-형태소화 색인/검색.
 
+use std::cell::RefCell;
+use std::collections::{BTreeMap, HashMap};
+
 use rusqlite::Connection;
 
 use crate::store::a2a::{
     append_history_json, Artifact, Message, Task, TaskEvent, TaskRow, TaskState,
 };
+use crate::store::agents::AgentEntry;
 use crate::store::{StoredMessage, StoredSession};
 
 // 스키마 버전 상수. v3: message_vectors.model_id. v4: message_validity(유효성 메타).
@@ -120,6 +124,9 @@ pub struct SqliteStore {
     conn: Connection,
     /// A2A task 상태변이 broadcast 버스. None이면(스트리밍 미사용 구성) emit은 no-op(§2.1).
     event_bus: Option<tokio::sync::broadcast::Sender<TaskEvent>>,
+    /// 인메모리 에이전트 로스터(uuid → 항목). 영속 아님(브로커 재기동 시 워커 재등록으로 복원).
+    /// 내부 가변성(RefCell): 모든 접근이 바깥 Mutex로 직렬화되므로 &self 메서드로 갱신 가능하다.
+    agent_roster: RefCell<HashMap<String, AgentEntry>>,
 }
 
 /// FTS 검색 결과 한 건.
@@ -139,7 +146,7 @@ impl SqliteStore {
             "PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;",
         )
         .map_err(|e| format!("sqlite: {e}"))?;
-        let db = Self { conn, event_bus: None };
+        let db = Self { conn, event_bus: None, agent_roster: RefCell::new(HashMap::new()) };
         db.migrate()?;
         Ok(db)
     }
@@ -149,7 +156,7 @@ impl SqliteStore {
         let conn = Connection::open_in_memory().map_err(|e| format!("sqlite: {e}"))?;
         conn.execute_batch("PRAGMA foreign_keys=ON;")
             .map_err(|e| format!("sqlite: {e}"))?;
-        let db = Self { conn, event_bus: None };
+        let db = Self { conn, event_bus: None, agent_roster: RefCell::new(HashMap::new()) };
         db.migrate()?;
         Ok(db)
     }
@@ -175,6 +182,62 @@ impl SqliteStore {
         if let Some(tx) = &self.event_bus {
             let _ = tx.send(ev);
         }
+    }
+
+    /// 에이전트를 로스터에 등록(있으면 교체). now는 last_heartbeat 초기값.
+    pub fn register_agent(
+        &self,
+        uuid: &str,
+        tags: BTreeMap<String, String>,
+        display_name: Option<String>,
+        now: &str,
+    ) {
+        self.agent_roster.borrow_mut().insert(
+            uuid.to_string(),
+            AgentEntry { uuid: uuid.to_string(), tags, display_name, last_heartbeat: now.to_string() },
+        );
+    }
+
+    /// heartbeat: 존재하면 last_heartbeat 갱신 후 true, 미등록 uuid면 false(등록 선행 필요).
+    pub fn heartbeat_agent(&self, uuid: &str, now: &str) -> bool {
+        match self.agent_roster.borrow_mut().get_mut(uuid) {
+            Some(entry) => {
+                entry.last_heartbeat = now.to_string();
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// selector에 매칭되며 online인 에이전트를 uuid 오름차순으로 반환(clone).
+    pub fn list_agents(
+        &self,
+        selector: &BTreeMap<String, String>,
+        now: &str,
+        ttl_secs: i64,
+    ) -> Vec<AgentEntry> {
+        let mut out: Vec<AgentEntry> = self
+            .agent_roster
+            .borrow()
+            .values()
+            .filter(|entry| {
+                crate::store::agents::selector_matches(&entry.tags, selector)
+                    && crate::store::agents::is_online(&entry.last_heartbeat, now, ttl_secs)
+            })
+            .cloned()
+            .collect();
+        out.sort_by(|a, b| a.uuid.cmp(&b.uuid));
+        out
+    }
+
+    /// selector 매칭 online 에이전트의 uuid만 정렬해 반환(라우팅 해석용).
+    pub fn resolve_selector(
+        &self,
+        selector: &BTreeMap<String, String>,
+        now: &str,
+        ttl_secs: i64,
+    ) -> Vec<String> {
+        self.list_agents(selector, now, ttl_secs).into_iter().map(|entry| entry.uuid).collect()
     }
 
     /// 스키마 마이그레이션을 실행한다. config 테이블 먼저, schema_version 없으면 v0->v1 일괄 적용.
@@ -2442,5 +2505,71 @@ mod tests {
             assert!(db.get_task("t1").unwrap().is_some());
             let _ = std::fs::remove_file(&path);
         }
+    }
+
+    fn tags(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
+    #[test]
+    fn register_then_list_agents_roundtrip() {
+        let db = SqliteStore::open_memory().unwrap();
+        db.register_agent("u1", tags(&[("machine", "win")]), Some("win-claude".into()), "2026-07-04 10:00:00");
+        let found = db.list_agents(&BTreeMap::new(), "2026-07-04 10:00:10", 90);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].uuid, "u1");
+        assert_eq!(found[0].display_name.as_deref(), Some("win-claude"));
+    }
+
+    #[test]
+    fn heartbeat_agent_updates_existing_and_rejects_unknown() {
+        let db = SqliteStore::open_memory().unwrap();
+        db.register_agent("u1", BTreeMap::new(), None, "2026-07-04 10:00:00");
+        assert!(db.heartbeat_agent("u1", "2026-07-04 10:01:00"));
+        assert!(!db.heartbeat_agent("unknown", "2026-07-04 10:01:00"));
+        let found = db.list_agents(&BTreeMap::new(), "2026-07-04 10:01:05", 90);
+        assert_eq!(found[0].last_heartbeat, "2026-07-04 10:01:00");
+    }
+
+    #[test]
+    fn list_agents_excludes_offline() {
+        let db = SqliteStore::open_memory().unwrap();
+        db.register_agent("u1", BTreeMap::new(), None, "2026-07-04 09:00:00");
+        // now 기준 1시간 경과, ttl 90초 -> offline이라 제외되어야 함.
+        let found = db.list_agents(&BTreeMap::new(), "2026-07-04 10:00:00", 90);
+        assert!(found.is_empty(), "offline 에이전트는 list_agents에서 제외되어야 함");
+    }
+
+    #[test]
+    fn resolve_selector_matches_none_one_or_many() {
+        let db = SqliteStore::open_memory().unwrap();
+        db.register_agent("u1", tags(&[("machine", "win"), ("runner", "claude")]), None, "2026-07-04 10:00:00");
+        db.register_agent("u2", tags(&[("machine", "mac"), ("runner", "claude")]), None, "2026-07-04 10:00:00");
+        let now = "2026-07-04 10:00:10";
+
+        let none = db.resolve_selector(&tags(&[("machine", "linux")]), now, 90);
+        assert!(none.is_empty());
+
+        let one = db.resolve_selector(&tags(&[("machine", "mac")]), now, 90);
+        assert_eq!(one, vec!["u2".to_string()]);
+
+        let many = db.resolve_selector(&tags(&[("runner", "claude")]), now, 90);
+        assert_eq!(many, vec!["u1".to_string(), "u2".to_string()]);
+    }
+
+    #[test]
+    fn list_agents_filters_by_selector_subset() {
+        let db = SqliteStore::open_memory().unwrap();
+        db.register_agent(
+            "u1",
+            tags(&[("machine", "win"), ("runner", "claude"), ("role", "worker")]),
+            None,
+            "2026-07-04 10:00:00",
+        );
+        db.register_agent("u2", tags(&[("machine", "win"), ("runner", "codex")]), None, "2026-07-04 10:00:00");
+        let now = "2026-07-04 10:00:10";
+        let found = db.list_agents(&tags(&[("machine", "win"), ("runner", "claude")]), now, 90);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].uuid, "u1");
     }
 }
