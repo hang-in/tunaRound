@@ -469,6 +469,29 @@ fn run_doctor(cfg_path: Option<&str>) -> i32 {
         None => println!("WARN token: 없음(코어가 토큰을 요구하면 실패)"),
     }
 
+    // 형태소 백엔드 진단(설계 §C: Kiwi 자동다운로드 성공 확인). lindera 폴백도 동작하므로 FAIL 아닌 WARN.
+    #[cfg(feature = "morphology")]
+    match tunaround::search::tokenizer::create_tokenizer("kiwi") {
+        Ok(tk) if tk.backend_name() == "kiwi" => {
+            println!("OK   morphology: Kiwi 로드됨(자동다운로드/캐시 성공)")
+        }
+        Ok(tk) => {
+            // Kiwi 미로드 시 개선책은 OS마다 다르다: Windows는 자동다운로드가 깨져 install 스크립트로
+            // 수동 설치, mac/linux는 자동다운로드 재시도(자산/네트워크 확인). 잘못된 OS 안내를 피한다.
+            #[cfg(windows)]
+            let hint = "scripts/install-kiwi-windows.sh로 수동 설치";
+            #[cfg(not(windows))]
+            let hint = "Kiwi 자산 자동다운로드 실패(네트워크/캐시 확인)";
+            println!(
+                "WARN morphology: Kiwi 폴백={}(형태소 품질 저하, {hint})",
+                tk.backend_name()
+            )
+        }
+        Err(e) => println!("WARN morphology: 토크나이저 초기화 실패({e}), FTS는 fallback 사용"),
+    }
+    #[cfg(not(feature = "morphology"))]
+    println!("WARN morphology: 미빌드(FTS는 fallback 토크나이저 사용)");
+
     if cfg.core == "self" {
         let listen = cfg.listen.as_deref().unwrap_or("0.0.0.0:8770");
         match std::net::TcpListener::bind(listen) {
@@ -582,7 +605,33 @@ fn run_doctor(cfg_path: Option<&str>) -> i32 {
                 }
                 #[cfg(feature = "engines")]
                 match &l.http_base_url {
-                    Some(u) => println!("OK   lane {}[{kind}] runner=http: base_url {u}", l.agent),
+                    Some(u) => {
+                        // 스키마(http://·https://) 누락은 도달 문제가 아니라 설정 형식 오류라 별도로 알린다
+                        // (그러지 않으면 reqwest URL 파싱 실패가 "도달 불가"로 오진단된다).
+                        if !u.starts_with("http://") && !u.starts_with("https://") {
+                            println!(
+                                "FAIL lane {}[{kind}] runner=http: base_url {u} 형식 오류(http:// 또는 https:// 스키마 필요)",
+                                l.agent
+                            );
+                            fails += 1;
+                        } else {
+                            // base_url이 응답하면(HTTP 상태 무관) 도달로 본다. 콜드 스타트/나중 기동
+                            // 가능성이 있으니 도달 불가는 FAIL이 아닌 WARN.
+                            let reachable = reqwest::blocking::Client::new()
+                                .get(u)
+                                .timeout(std::time::Duration::from_secs(3))
+                                .send()
+                                .is_ok();
+                            if reachable {
+                                println!("OK   lane {}[{kind}] runner=http: base_url {u} 도달", l.agent);
+                            } else {
+                                println!(
+                                    "WARN lane {}[{kind}] runner=http: base_url {u} 도달 불가(LLM 미기동?)",
+                                    l.agent
+                                );
+                            }
+                        }
+                    }
                     None => {
                         println!("FAIL lane {}[{kind}] runner=http: http_base_url 누락", l.agent);
                         fails += 1;

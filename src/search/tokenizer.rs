@@ -13,6 +13,9 @@ use lindera::{
 pub trait Tokenizer: Send + Sync {
     fn tokenize(&self, text: &str) -> Vec<String>;
 
+    /// 진단·디버그용 백엔드 식별자(예: "lindera", "kiwi", "simple").
+    fn backend_name(&self) -> &'static str;
+
     fn tokenize_for_fts(&self, text: &str) -> String {
         self.tokenize(text).join(" ")
     }
@@ -66,6 +69,10 @@ impl LinderaKoTokenizer {
 }
 
 impl Tokenizer for LinderaKoTokenizer {
+    fn backend_name(&self) -> &'static str {
+        "lindera"
+    }
+
     fn tokenize(&self, text: &str) -> Vec<String> {
         let tokens = match self.inner.tokenize(text) {
             Ok(t) => t,
@@ -124,6 +131,10 @@ mod kiwi_impl {
     }
 
     impl Tokenizer for KiwiTokenizer {
+        fn backend_name(&self) -> &'static str {
+            "kiwi"
+        }
+
         fn tokenize(&self, text: &str) -> Vec<String> {
             if text.is_empty() {
                 return Vec::new();
@@ -168,6 +179,10 @@ pub use kiwi_impl::KiwiTokenizer;
 pub struct SimpleTokenizer;
 
 impl Tokenizer for SimpleTokenizer {
+    fn backend_name(&self) -> &'static str {
+        "simple"
+    }
+
     fn tokenize(&self, text: &str) -> Vec<String> {
         tokenize_fallback(text)
     }
@@ -229,6 +244,17 @@ mod tests {
     #[test]
     fn create_tokenizer_unknown_falls_back_to_lindera() {
         assert!(create_tokenizer("unknown").is_ok());
+    }
+
+    #[test]
+    fn lindera_backend_name_is_lindera() {
+        let tok = LinderaKoTokenizer::new().expect("lindera ko-dic load");
+        assert_eq!(tok.backend_name(), "lindera");
+    }
+
+    #[test]
+    fn simple_backend_name_is_simple() {
+        assert_eq!(SimpleTokenizer.backend_name(), "simple");
     }
 
     #[test]
