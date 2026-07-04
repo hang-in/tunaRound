@@ -17,6 +17,18 @@
 
 코어 하나에 dispatcher·worker가 여럿 붙을 수 있고, 작업은 `to_agent`(받는 워커 id)로 라우팅됩니다.
 
+### 네이밍/어드레싱 규약 (중요)
+
+브로커는 본질적으로 **agent-id 라우팅 task 큐**입니다. `to_agent`는 큐의 subject이고, 그 id를 폴링하는 워커가 소비자입니다. 소비자가 없는 id로 던지면 작업이 조용히 영원히 `submitted`로 남습니다(세션9 실증: dispatcher id로 던져 폴러 없음). 이를 규약으로 없앱니다.
+
+- **`to_agent`는 폴링하는 워커 id만 씁니다.** dispatcher id는 `from_agent` 전용이며 절대 `to_agent`가 되지 않습니다(던지는 쪽은 poll/claim을 하지 않으므로).
+- **네이밍은 `{머신}-{역할|러너}`** 로, 이름만 봐도 워커인지·러너가 뭔지 드러나게 합니다.
+  - 워커(소비자): `win-worker`·`mac-worker`(claude 기본), `mac-codex`·`mac-llm`(러너 명시).
+  - dispatcher(생산자): `{머신}-dispatch` 또는 사람 이름(`win-opus`). 이건 던지기 전용입니다.
+- **레인 종류 접미어**: 자동(헤드리스 데몬)=`-worker`류, 감독(대화형 세션이 poll)=`-claude`/`-codex`류.
+
+> 코어는 미배달을 표시로 알립니다: `submitted`가 오래 claim 안 되면 `get_task`/`tasks`/`poll` 출력에 `⚠no-consumer?`가, `working`이 오래 멈춰 있으면 `⚠stuck?`가 붙습니다(§8). 자동 전이(requeue)는 두지 않았습니다(semi-a2a: 사람이 재던짐 결정).
+
 > **표준 호환 범위 (정직하게):** 이 A2A는 A2A 프로토콜의 **구조를 차용**해 tunaRound 인스턴스끼리 위임하는 것이 목적입니다. JSON-RPC envelope·`GetTask`는 독립 A2A 클라이언트와 호환됨을 확인했으나(interop 스모크, context-notes 참조), (1) Agent Card가 인증 게이트 + 구식 단일-url 스키마라 표준 클라의 발견이 안 되고, (2) `SendMessage`가 브로커 라우팅 필드(`fromAgent`/`toAgent`)를 요구해 표준 클라가 task를 못 만듭니다. **임의의 제3자 표준 A2A 클라이언트와의 완전 호환은 비목표**이며, 필요해지면 표준↔브로커 번역 어댑터를 별도로 둡니다.
 
 ---
@@ -37,7 +49,10 @@ Agent Card로 코어가 뭘 지원하는지 확인(선택):
 ```bash
 curl -s -H "Authorization: Bearer <TOKEN>" http://<코어-IP>:8770/.well-known/agent-card.json
 # -> capabilities: {"streaming": true, "pushNotifications": false}
+# -> buildFeatures: ["sqlite","mcp","serve","worker", ...]  # 이 코어가 컴파일된 피처(능력 발견용)
 ```
+
+`buildFeatures`로 코어가 무슨 러너/기능을 할 수 있는지 알 수 있습니다(`engines`=http 러너, `a2a-out`=외부 표준 A2A 위임, `worker`=워커 클라이언트). dispatcher·doctor가 라우팅·진단에 참고합니다.
 
 ---
 
@@ -217,3 +232,24 @@ tunaround work --once --agent win-worker --runner claude --core http://127.0.0.1
 curl -s -H "Authorization: Bearer DEMO" -H "Content-Type: application/json" -X POST http://127.0.0.1:8770/a2a \
   -d '{"jsonrpc":"2.0","id":"1","method":"GetTask","params":{"id":"<task_id>"}}'
 ```
+
+---
+
+## 8. 미배달·고착 감지 (거버넌스)
+
+코어는 작업이 조용히 썩는 두 상황을 **표시로** 알립니다(자동 전이는 하지 않습니다 - semi-a2a: 사람이 재던짐 결정). A2A 스펙에 `expired` 같은 상태가 없어 상태를 바꾸는 대신 신호만 붙입니다.
+
+- **`⚠no-consumer?(N분)`**: `submitted`인데 오래(기본 5분 초과) claim이 안 된 작업. 폴링하는 워커가 없다는 뜻(잘못된 `to_agent`로 던졌거나 워커가 안 떠 있음). 세션9의 "dispatcher id로 던져 폴러 없음" 실패가 이 신호로 보입니다.
+- **`⚠stuck?(N분)`**: `working`인데 오래(기본 15분 초과) 갱신이 없는 작업. claim한 워커가 죽었을 가능성(프로세스 사망·세션 만료·self-disruption).
+
+어디서 보이나:
+
+| 도구/명령 | 대상 | no-consumer/stuck 표시 |
+| --- | --- | --- |
+| `get_task(task_id)` (MCP) | dispatcher가 자기 작업 확인 | 붙음 |
+| `tasks()` (MCP, 신규) | 브로커 운영자가 **전역** 열린 작업 조망(to_agent 무관) | 붙음 |
+| `poll_tasks(agent)` (MCP) | 워커가 자기 앞 작업 확인 | 붙음(워커 데몬은 자동 무시하고 claim) |
+
+폴러가 없는 작업은 아무도 `poll_tasks`를 안 하므로, **`tasks()`가 그런 no-consumer 작업까지 한눈에** 보여줍니다. 신호를 보면 사람이 취소(`CancelTask`)하거나 올바른 `to_agent`로 다시 던집니다.
+
+> 자동 재큐(claim TTL requeue)·하트비트는 두지 않았습니다(개인 2~3머신엔 과함, 후속). self-disruption(워커가 자기 클론을 갈아엎어 stuck)은 §2의 `--write` + 별도 작업 디렉터리로 애초에 막습니다: write 워커의 작업 디렉터리가 노드 실행 클론과 겹치면 코어가 거부합니다(별도 클론/워크트리 필요).

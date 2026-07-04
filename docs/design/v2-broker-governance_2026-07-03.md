@@ -76,6 +76,18 @@
 - 풀 DLQ 인프라·재시도 정책 엔진·우선순위 큐 = 개인 규모엔 과함. 필요 신호 시.
 - 능력 기반 "best-fit 자동 선택"(dispatcher가 카드 보고 최적 워커 자동 고름) = Phase 2 이후.
 
+## 5.5 구현 현황 (세션10, 2026-07-04)
+
+§4 우선순위 1~5를 모두 구현했다(사용법 [a2a-usage §8](../reference/a2a-usage.md)).
+
+- **#1 네이밍 컨벤션**: a2a-usage.md에 "to_agent는 폴링하는 워커 id만" + `{머신}-{역할|러너}` 관례 문서화.
+- **#2 능력 광고**: Agent Card에 `buildFeatures`(compile-time cfg!로 코어의 컴파일된 피처). 워커별 runner/write 광고는 워커 레지스트리 필요 → §6 후속. poll엔 미추가(poll=task 목록이지 capability 아님).
+- **#3 고착 노출**: `poll_tasks`/`get_task`/`tasks`에 `⚠stuck?(N분)` 표시(working·updatedAt 낡음).
+- **#4 no-consumer**: `⚠no-consumer?(N분)` 표시(submitted·createdAt TTL 초과) + 신규 `tasks` MCP 도구(브로커 전역 조망, 폴러 없는 task까지 보임). **편차**: §3.3/§4-4는 "expired로 전이"를 적었으나, **A2A 스펙에 expired state가 없어**(세션8 interop 정직화 유지) 비표준 enum을 추가하는 대신 **표시 신호**로 구현했다. dispatcher는 침묵 대신 신호를 받고, 자동 전이(requeue)는 §6로 미룬다.
+- **#5 워커 격리**: **편차**: 자동 워크트리 프로비저닝(§3.4) 대신 **가드레일**로 구현. write 워커의 작업 디렉터리가 node 실행 클론과 겹치면(canonical 경로 조상/자손/동일) 진입 시 거부한다(`write_lane_disrupts_node`). 실제 사고(2026-07-03 뱃지 task)를 막는 안전망이며, 자동 워크트리 생성은 Windows git 리스크·검증 필요로 후속.
+
+검증: `cargo test --features "morphology mcp serve worker"` 344 pass, clippy clean. 커밋 4개(#3·#4 / #2 / #5 / 문서).
+
 ## 6. 한 줄 결론
 
 브로커를 "agent-id 라우팅 task queue"로 명시적으로 인정하고, **네이밍 관례(워커만 to_agent) + Agent Card 능력 광고 + no-consumer TTL** 세 가지만 얹으면 오늘의 두 혼란이 구조적으로 사라진다. 나머지는 SQS/NATS/Celery/A2A의 기존 패턴을 필요할 때 빌려온다.
