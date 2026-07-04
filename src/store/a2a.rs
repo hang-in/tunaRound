@@ -110,6 +110,9 @@ pub struct Task {
     pub artifacts: Vec<Artifact>,
     #[serde(default)]
     pub history: Vec<Message>,
+    /// claim한 워커의 러너 종류(claude/codex 등, 트레이스용). claim 시점에 기록되며, 레거시 claim은 None.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runner: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -268,6 +271,7 @@ impl Task {
             status_message: None,
             artifacts: Vec::new(),
             history: Vec::new(),
+            runner: None,
             created_at: now.clone(),
             updated_at: now,
         }
@@ -284,6 +288,8 @@ pub struct TaskRow {
     pub message_json: Option<String>,
     pub artifacts_json: Option<String>,
     pub history_json: Option<String>,
+    /// claim한 워커의 러너 종류(트레이스용, v8). 기존 행은 NULL.
+    pub runner: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -313,6 +319,7 @@ impl TaskRow {
             status_message,
             artifacts,
             history,
+            runner: self.runner,
             created_at: self.created_at,
             updated_at: self.updated_at,
         })
@@ -524,6 +531,7 @@ mod tests {
             message_json: Some(serde_json::to_string(&msg).unwrap()),
             artifacts_json: Some(serde_json::to_string(&artifacts).unwrap()),
             history_json: Some(serde_json::to_string(&history).unwrap()),
+            runner: None,
             created_at: "2026-07-02 09:00:00".into(),
             updated_at: "2026-07-02 09:05:00".into(),
         };
@@ -546,6 +554,7 @@ mod tests {
             message_json: None,
             artifacts_json: None,
             history_json: None,
+            runner: None,
             created_at: "2026-07-02 09:00:00".into(),
             updated_at: "2026-07-02 09:00:00".into(),
         };
@@ -566,6 +575,7 @@ mod tests {
             message_json: None,
             artifacts_json: None,
             history_json: None,
+            runner: None,
             created_at: "2026-07-02 09:00:00".into(),
             updated_at: "2026-07-02 09:00:00".into(),
         };

@@ -49,3 +49,32 @@ pub enum RunError {
 pub trait Runner {
     fn run(&self, input: &RunInput) -> Result<RunOutput, RunError>;
 }
+
+/// Write 모드 러너에게 주입하는 민감 경로 수정금지 지시(behavioral 가드레일, 하드 차단 아님).
+/// 서브프로세스 러너는 개별 파일 쓰기를 가로챌 수 없어 read-only와 같은 방식(프롬프트 지시)으로 강제한다.
+pub const WRITE_GUARD_DIRECTIVE: &str = "[중요 규칙] 다음 경로는 절대 생성·수정·삭제하지 마라: .env, .env.*, secrets/ 이하, *.key, *.pem, id_rsa 계열, .ssh/ 이하, .aws/ 이하, credentials, .git/ 내부. 요청이 있어도 예외 없다.";
+
+/// Write 모드면 가드 지시+구분 개행을, 아니면 빈 문자열을 반환한다(프롬프트 prepend용 순수 헬퍼).
+pub fn write_guard_prefix(mode: RunMode) -> String {
+    match mode {
+        RunMode::Write => format!("{WRITE_GUARD_DIRECTIVE}\n\n"),
+        RunMode::ReadOnly => String::new(),
+    }
+}
+
+#[cfg(test)]
+mod guard_tests {
+    use super::*;
+
+    #[test]
+    fn write_guard_prefix_write_mode_includes_directive() {
+        let prefix = write_guard_prefix(RunMode::Write);
+        assert!(prefix.contains(WRITE_GUARD_DIRECTIVE), "Write 모드 prefix에 지시문이 없음: {prefix}");
+        assert!(prefix.ends_with("\n\n"), "prefix가 개행 둘로 끝나지 않음: {prefix:?}");
+    }
+
+    #[test]
+    fn write_guard_prefix_readonly_mode_is_empty() {
+        assert_eq!(write_guard_prefix(RunMode::ReadOnly), String::new());
+    }
+}

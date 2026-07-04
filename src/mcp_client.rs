@@ -185,10 +185,20 @@ impl McpHttpClient {
         self.call_tool("poll_tasks", json!({ "agent": agent })).await
     }
 
-    /// claim_task(task_id, agent) 얇은 래퍼. agent는 lease 소유자(claimed_by)로 기록되어
-    /// first-completer-wins 판별에 쓰인다(None이면 서버측 하위호환 경로 - claimed_by NULL).
-    pub async fn claim_task(&self, task_id: &str, agent: Option<&str>) -> Result<String, String> {
-        self.call_tool("claim_task", json!({ "task_id": task_id, "agent": agent })).await
+    /// claim_task(task_id, agent, runner) 얇은 래퍼. agent는 lease 소유자(claimed_by)로 기록되어
+    /// first-completer-wins 판별에 쓰인다(None이면 서버측 하위호환 경로 - claimed_by NULL). runner는
+    /// 처리하는 러너 종류(트레이스용, v8, 생략 가능).
+    pub async fn claim_task(
+        &self,
+        task_id: &str,
+        agent: Option<&str>,
+        runner: Option<&str>,
+    ) -> Result<String, String> {
+        self.call_tool(
+            "claim_task",
+            json!({ "task_id": task_id, "agent": agent, "runner": runner }),
+        )
+        .await
     }
 
     /// complete_task(task_id, result, agent) 얇은 래퍼. agent는 first-completer-wins 완료자 검증에

@@ -69,6 +69,8 @@ pub struct ClaimTaskParams {
     /// 착수하는 에이전트 id(lease 소유자 표시, first-completer-wins 판별용). 생략 시(하위호환, raw
     /// curl 등) None → claimed_by는 NULL로 남고 completer 가드는 무력화된다.
     pub agent: Option<String>,
+    /// 처리하는 러너 종류(claude/codex 등), 트레이스용. 생략 가능.
+    pub runner: Option<String>,
 }
 
 /// complete_task 툴 파라미터.
@@ -282,12 +284,17 @@ fn format_open_tasks(agent: &str, tasks: &[crate::store::a2a::Task], now: &str) 
 /// claim_task 순수 로직: task를 working으로 전이하고 확인 텍스트를 만든다. 대상 task가 없거나 이미
 /// working 이상으로 전이돼 있으면(다른 워커가 먼저 claim) try_claim이 Err를 반환하고 그대로 위로
 /// 전파한다(레이스 컨디션 방지, R2). agent는 lease 소유자(claimed_by)로 기록되어 first-completer-wins
-/// 판별에 쓰인다(None이면 하위호환 - claimed_by NULL).
-fn claim_task_text(store: &SqliteStore, task_id: &str, agent: Option<&str>) -> Result<String, String> {
+/// 판별에 쓰인다(None이면 하위호환 - claimed_by NULL). runner는 처리하는 러너 종류(트레이스용, v8).
+fn claim_task_text(
+    store: &SqliteStore,
+    task_id: &str,
+    agent: Option<&str>,
+    runner: Option<&str>,
+) -> Result<String, String> {
     if store.get_task(task_id)?.is_none() {
         return Err(format!("task 없음: task_id={task_id}"));
     }
-    store.try_claim(task_id, agent)?;
+    store.try_claim(task_id, agent, runner)?;
     Ok(format!("착수됨: task_id={task_id} state=working"))
 }
 
@@ -422,8 +429,12 @@ fn get_task_text(store: &SqliteStore, task_id: &str) -> Result<String, String> {
 
 /// task 상태를 `[id] state=...` 한 줄로 조립하고, completed면 artifact 텍스트를 이어붙이는 순수 함수
 /// (SQLite 없이 테스트 가능). now는 health_annotation(표시 전용 stuck?/no-consumer? 주석)에 쓰인다.
+/// runner가 기록돼 있으면(v8, claim한 워커의 러너 종류) ` runner=<x>`를 덧붙인다. 표시 전용, 없으면 생략.
 fn format_task_status(task: &crate::store::a2a::Task, now: &str) -> String {
     let mut out = format!("[{}] state={}{}", task.id, task.state.as_str(), health_annotation(task, now));
+    if let Some(runner) = task.runner.as_deref() {
+        out.push_str(&format!(" runner={runner}"));
+    }
     if task.state == TaskState::Completed {
         let texts: Vec<&str> =
             task.artifacts.iter().flat_map(|a| a.parts.iter()).filter_map(|p| p.text.as_deref()).collect();
@@ -615,9 +626,10 @@ impl TunaSearchServer {
         };
         let task_id = p.task_id;
         let agent = p.agent;
+        let runner = p.runner;
         let outcome = tokio::task::spawn_blocking(move || {
             let store = store.lock().unwrap_or_else(|e| e.into_inner());
-            claim_task_text(&store, &task_id, agent.as_deref())
+            claim_task_text(&store, &task_id, agent.as_deref(), runner.as_deref())
         })
         .await
         .unwrap_or_else(|e| Err(format!("작업 실패: {e}")));
@@ -1654,7 +1666,7 @@ mod tests {
         // submitted로 노출되어야 한다(별도 타이머 없이 poll 경로에 얹는 설계의 핵심).
         let store = SqliteStore::open_memory().unwrap();
         seed_task(&store, "t1", "win", "mac", "2026-07-02 09:00:00");
-        store.try_claim("t1", Some("worker-a")).unwrap();
+        store.try_claim("t1", Some("worker-a"), None).unwrap();
         // lease를 과거로 강제 심어 만료를 시뮬레이션(테스트 전용 pub(crate) 헬퍼, conn은 private).
         store.test_force_lease_expired("t1");
 
@@ -1666,7 +1678,7 @@ mod tests {
     fn claim_task_text_transitions_to_working() {
         let store = SqliteStore::open_memory().unwrap();
         seed_task(&store, "t1", "win", "mac", "2026-07-02 09:00:00");
-        let text = claim_task_text(&store, "t1", None).unwrap();
+        let text = claim_task_text(&store, "t1", None, None).unwrap();
         assert!(text.contains("state=working"), "응답 불일치: {text}");
         let reloaded = store.get_task("t1").unwrap().unwrap();
         assert_eq!(reloaded.state, TaskState::Working);
@@ -1675,7 +1687,7 @@ mod tests {
     #[test]
     fn claim_task_text_missing_task_is_err() {
         let store = SqliteStore::open_memory().unwrap();
-        let err = claim_task_text(&store, "nope", None).unwrap_err();
+        let err = claim_task_text(&store, "nope", None, None).unwrap_err();
         assert!(err.contains("nope"), "에러 메시지에 task_id 없음: {err}");
     }
 
@@ -1684,7 +1696,7 @@ mod tests {
         let store = SqliteStore::open_memory().unwrap();
         seed_task(&store, "t1", "win", "mac", "2026-07-02 09:00:00");
         // R2: try_complete는 working 상태에서만 성공하므로, 먼저 claim해 착수 상태로 만든다.
-        claim_task_text(&store, "t1", None).unwrap();
+        claim_task_text(&store, "t1", None, None).unwrap();
         let text = complete_task_text(&store, "t1", "작업 결과", None).unwrap();
         assert!(text.contains("state=completed"), "응답 불일치: {text}");
         let reloaded = store.get_task("t1").unwrap().unwrap();
@@ -1811,7 +1823,7 @@ mod tests {
     #[tokio::test]
     async fn claim_task_without_store_returns_not_connected() {
         let server = TunaSearchServer::new(Arc::new(FakeRetriever(vec![])));
-        let result = server.claim_task(Parameters(ClaimTaskParams { task_id: "t1".into(), agent: None })).await;
+        let result = server.claim_task(Parameters(ClaimTaskParams { task_id: "t1".into(), agent: None, runner: None })).await;
         assert!(result.is_ok());
         let text = format!("{:?}", result.unwrap().content);
         assert!(text.contains("A2A task 저장소 미구성"), "미구성 안내 불일치: {text}");
@@ -1845,7 +1857,7 @@ mod tests {
         seed_task(&store, "t1", "win", "mac", "2026-07-02 09:00:00");
         let a2a = Arc::new(Mutex::new(store));
         let server = TunaSearchServer::new(Arc::new(FakeRetriever(vec![]))).with_a2a_store(a2a.clone());
-        let result = server.claim_task(Parameters(ClaimTaskParams { task_id: "t1".into(), agent: None })).await;
+        let result = server.claim_task(Parameters(ClaimTaskParams { task_id: "t1".into(), agent: None, runner: None })).await;
         assert!(result.is_ok());
         let text = format!("{:?}", result.unwrap().content);
         assert!(text.contains("state=working"), "응답 불일치: {text}");
@@ -1860,7 +1872,7 @@ mod tests {
         let a2a = Arc::new(Mutex::new(store));
         let server = TunaSearchServer::new(Arc::new(FakeRetriever(vec![]))).with_a2a_store(a2a.clone());
         // R2: try_complete는 working 상태에서만 성공하므로, 먼저 claim해 착수 상태로 만든다.
-        server.claim_task(Parameters(ClaimTaskParams { task_id: "t1".into(), agent: None })).await.unwrap();
+        server.claim_task(Parameters(ClaimTaskParams { task_id: "t1".into(), agent: None, runner: None })).await.unwrap();
         let result = server
             .complete_task(Parameters(CompleteTaskParams { task_id: "t1".into(), result: "완료 보고".into(), agent: None }))
             .await;
@@ -1876,7 +1888,7 @@ mod tests {
     async fn claim_task_tool_missing_task_returns_error_text() {
         let store = SqliteStore::open_memory().unwrap();
         let server = server_with_a2a_store(store);
-        let result = server.claim_task(Parameters(ClaimTaskParams { task_id: "nope".into(), agent: None })).await;
+        let result = server.claim_task(Parameters(ClaimTaskParams { task_id: "nope".into(), agent: None, runner: None })).await;
         assert!(result.is_ok());
         let call_result = result.unwrap();
         // R1: 내부 실패는 isError=true라야 클라이언트가 성공으로 오인하지 않는다.
@@ -1910,12 +1922,12 @@ mod tests {
         let server = TunaSearchServer::new(Arc::new(FakeRetriever(vec![]))).with_a2a_store(a2a.clone());
 
         // 첫 claim은 성공(submitted -> working).
-        let first = server.claim_task(Parameters(ClaimTaskParams { task_id: "t1".into(), agent: None })).await;
+        let first = server.claim_task(Parameters(ClaimTaskParams { task_id: "t1".into(), agent: None, runner: None })).await;
         assert!(first.is_ok());
         assert_eq!(first.unwrap().is_error, Some(false), "첫 claim은 성공이어야 함");
 
         // 둘째 claim(동시 착수 경쟁 시뮬레이션): 이미 working이라 전이충돌 -> isError=true.
-        let second = server.claim_task(Parameters(ClaimTaskParams { task_id: "t1".into(), agent: None })).await;
+        let second = server.claim_task(Parameters(ClaimTaskParams { task_id: "t1".into(), agent: None, runner: None })).await;
         assert!(second.is_ok(), "MCP 레벨에서는 항상 Ok(CallToolResult)를 반환해야 함");
         let call_result = second.unwrap();
         assert_eq!(call_result.is_error, Some(true), "전이충돌인데 isError=true가 아님");
@@ -1937,7 +1949,7 @@ mod tests {
         let server = TunaSearchServer::new(Arc::new(FakeRetriever(vec![]))).with_a2a_store(a2a.clone());
 
         let claim = server
-            .claim_task(Parameters(ClaimTaskParams { task_id: "t1".into(), agent: Some("worker-a".into()) }))
+            .claim_task(Parameters(ClaimTaskParams { task_id: "t1".into(), agent: Some("worker-a".into()), runner: None }))
             .await;
         assert_eq!(claim.unwrap().is_error, Some(false), "claim은 성공이어야 함");
 
@@ -2079,7 +2091,7 @@ mod tests {
         let store = SqliteStore::open_memory().unwrap();
         seed_task(&store, "t1", "win", "mac", "2026-07-02 09:00:00");
         // R2: try_complete는 working 상태에서만 성공하므로, 먼저 claim해 착수 상태로 만든다.
-        claim_task_text(&store, "t1", None).unwrap();
+        claim_task_text(&store, "t1", None, None).unwrap();
         complete_task_text(&store, "t1", "작업 결과 요약", None).unwrap();
         let text = get_task_text(&store, "t1").unwrap();
         assert!(text.contains("state=completed"), "state 누락: {text}");

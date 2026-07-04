@@ -11,9 +11,11 @@ use std::time::Duration;
 ///   ReadOnly → --disallowedTools Write,Edit,Bash (쓰기 도구 차단)
 /// mcp_config가 Some(json)이면 --mcp-config <json>을 args에 추가한다.
 fn build_claude_args(input: &RunInput, mcp_config: Option<&str>) -> Vec<String> {
+    // Write 모드면 민감 path 수정금지 지시(WRITE_GUARD_DIRECTIVE)를 prepend한다(behavioral 가드레일,
+    // B2). ReadOnly면 write_guard_prefix가 빈 문자열이라 기존 동작과 동일.
     let mut args: Vec<String> = vec![
         "-p".into(),
-        input.prompt.clone(),
+        format!("{}{}", super::write_guard_prefix(input.mode), input.prompt),
         "--output-format".into(),
         "stream-json".into(),
         "--verbose".into(),
@@ -263,6 +265,28 @@ mod tests {
         let joined = build_claude_args(&input, None).join(" ");
         assert!(joined.contains("--dangerously-skip-permissions"));
         assert!(joined.contains("--model claude-x"));
+    }
+
+    #[test]
+    fn args_write_mode_prompt_includes_write_guard_directive() {
+        // B2: Write 모드 프롬프트에 민감 path 수정금지 지시가 prepend되어야 한다.
+        let input = RunInput { prompt: "설정 파일 고쳐줘".into(), mode: RunMode::Write, ..Default::default() };
+        let args = build_claude_args(&input, None);
+        assert!(
+            args.iter().any(|a| a.contains("생성·수정·삭제")),
+            "Write 모드 args에 가드 지시 없음: {args:?}"
+        );
+    }
+
+    #[test]
+    fn args_readonly_mode_prompt_excludes_write_guard_directive() {
+        // ReadOnly는 가드 지시가 없어야 한다(기존 동작 불변).
+        let input = RunInput { prompt: "이 코드 설명해줘".into(), mode: RunMode::ReadOnly, ..Default::default() };
+        let args = build_claude_args(&input, None);
+        assert!(
+            !args.iter().any(|a| a.contains("생성·수정·삭제")),
+            "ReadOnly 모드 args에 가드 지시가 섞여 있음: {args:?}"
+        );
     }
 
     #[test]

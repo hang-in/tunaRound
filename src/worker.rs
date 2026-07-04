@@ -231,13 +231,14 @@ pub fn needs_reregister(heartbeat_response: &str) -> bool {
 /// poll/claim/complete 실패는 eprintln 로그 후 그 task만 건너뛰고 루프는 죽지 않는다.
 /// 루프 진입 전 1회 로스터 자기 등록을 시도하고(실패해도 폴링은 계속, 레지스트리 없는 구 코어 하위호환),
 /// 매 패스 시작 시 heartbeat로 online을 알린다(코어 재기동으로 로스터가 비면 재등록).
-/// 인자 9개는 work 서브커맨드 옵션을 그대로 투영한 것이라(WorkArgs 필드 1:1), 별도 struct로
-/// 묶기보다 이 시그니처를 유지한다(설계문서 §2.2 계약).
+/// 인자들은 work 서브커맨드 옵션을 그대로 투영한 것이라(WorkArgs 필드 1:1, runner_name은 v8 트레이스용
+/// 신규), 별도 struct로 묶기보다 이 시그니처를 유지한다(설계문서 §2.2 계약).
 #[allow(clippy::too_many_arguments)]
 pub async fn run_worker_loop(
     client: &McpHttpClient,
     runner: Arc<dyn Runner + Send + Sync>,
     agent: &str,
+    runner_name: &str,
     tags: Option<String>,
     model: Option<String>,
     project_path: Option<String>,
@@ -266,7 +267,8 @@ pub async fn run_worker_loop(
             Err(e) => eprintln!("[work] heartbeat 실패(무시): {e}"),
         }
 
-        run_one_pass(client, &runner, agent, &model, &project_path, &context_map, mode).await;
+        run_one_pass(client, &runner, agent, runner_name, &model, &project_path, &context_map, mode)
+            .await;
 
         if once {
             return Ok(());
@@ -412,6 +414,7 @@ async fn run_one_pass(
     client: &McpHttpClient,
     runner: &Arc<dyn Runner + Send + Sync>,
     agent: &str,
+    runner_name: &str,
     model: &Option<String>,
     project_path: &Option<String>,
     context_map: &std::collections::HashMap<String, String>,
@@ -428,7 +431,7 @@ async fn run_one_pass(
     let tasks = parse_open_tasks(&poll_text);
     for t in tasks.iter().filter(|t| t.state == "submitted") {
         eprintln!("[work] task {} claim 시도", t.id);
-        if let Err(e) = client.claim_task(&t.id, Some(agent)).await {
+        if let Err(e) = client.claim_task(&t.id, Some(agent), Some(runner_name)).await {
             eprintln!("[work] task {} claim 실패: {e}", t.id);
             continue;
         }
