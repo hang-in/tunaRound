@@ -185,15 +185,25 @@ impl McpHttpClient {
         self.call_tool("poll_tasks", json!({ "agent": agent })).await
     }
 
-    /// claim_task(task_id) 얇은 래퍼.
-    pub async fn claim_task(&self, task_id: &str) -> Result<String, String> {
-        self.call_tool("claim_task", json!({ "task_id": task_id })).await
+    /// claim_task(task_id, agent) 얇은 래퍼. agent는 lease 소유자(claimed_by)로 기록되어
+    /// first-completer-wins 판별에 쓰인다(None이면 서버측 하위호환 경로 - claimed_by NULL).
+    pub async fn claim_task(&self, task_id: &str, agent: Option<&str>) -> Result<String, String> {
+        self.call_tool("claim_task", json!({ "task_id": task_id, "agent": agent })).await
     }
 
-    /// complete_task(task_id, result) 얇은 래퍼.
-    pub async fn complete_task(&self, task_id: &str, result: &str) -> Result<String, String> {
-        self.call_tool("complete_task", json!({ "task_id": task_id, "result": result }))
-            .await
+    /// complete_task(task_id, result, agent) 얇은 래퍼. agent는 first-completer-wins 완료자 검증에
+    /// 쓰인다(claimed_by와 불일치하면 서버가 거부).
+    pub async fn complete_task(
+        &self,
+        task_id: &str,
+        result: &str,
+        agent: Option<&str>,
+    ) -> Result<String, String> {
+        self.call_tool(
+            "complete_task",
+            json!({ "task_id": task_id, "result": result, "agent": agent }),
+        )
+        .await
     }
 
     /// fail_task(task_id, reason) 얇은 래퍼(러너 실패 시 completed 대신 failed로 전이).
