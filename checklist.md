@@ -334,8 +334,8 @@
 
 > 어드레싱: 자유 문자열 → UUID(라우팅)+태그(발견). 로스터=SqliteStore 인메모리 필드(양 경로 공유). 하위호환=레거시 문자열 exact-match 유지. 베이스라인 377. 정본 [설계](docs/design/v2-agent-registry-uuid-tags_2026-07-04.md).
 
-- [ ] T1: 로스터 데이터모델(src/store/agents.rs: AgentEntry/parse_tags/selector_matches/is_online) + SqliteStore 인메모리 roster 필드 + register/heartbeat/list_agents/resolve_selector + 단위테스트.
-- [ ] T2: MCP 도구(register_agent/heartbeat/list_agents) + send_task to_selector(0=no-consumer, 1=라우팅, 2+=후보반환) + McpHttpClient 대칭 + HTTP e2e.
-- [ ] T3: /a2a SendMessage toSelector(공유 resolve, to_agent Option화 하위호환) + 단위테스트.
+- [x] T1: 로스터 데이터모델(src/store/agents.rs: AgentEntry/parse_tags/selector_matches/is_online) + SqliteStore 인메모리 roster 필드(RefCell<HashMap>) + register/heartbeat/list_agents/resolve_selector + 단위테스트 20개. (1c692ca; Sonnet 구현+Opus 리뷰·독립검증) 풀피처 397 pass, clippy 클린.
+- [x] T2: MCP 도구(register_agent/heartbeat/list_agents) + send_task to_selector(0=no-consumer, 1=라우팅, 2+=후보반환) + McpHttpClient 대칭 + HTTP e2e. (5214a33; Sonnet+Opus 리뷰·독립검증) 순수함수 validate_send_target/format_ambiguous_candidates/format_agents/send_task_routed. 풀피처 407 pass, clippy 클린. 하위호환 to_agent 문자열 불변.
+- [x] T3: /a2a SendMessage toSelector(공유 resolve, to_agent Option화 하위호환) + 단위테스트. 리팩토링으로 validate_send_target/SendTarget/format_ambiguous_candidates를 store/agents.rs로 이동(serve·mcp 공유, 피처 커플링 회피). (Sonnet 구현+Opus 리뷰·독립검증) 풀피처 396 lib pass, clippy 클린. 하위호환 to_agent 단독 지정 불변.
 - [ ] T4: 워커 CLI --agent(자가 uuid)/--tags + 자동 register + poll 직전 heartbeat.
 - [ ] T5: docs(a2a-usage 등록·발견·셀렉터 레시피, 네이밍→태그 재프레이밍) + 하위호환 확인 + 라이브 스모크.

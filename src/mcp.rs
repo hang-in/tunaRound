@@ -13,7 +13,9 @@ use serde::Deserialize;
 
 use crate::orchestrator::{ContextRetriever, RosterSeat, TranscriptReader, TranscriptWriter, Utterance};
 use crate::store::a2a::{Artifact, Message, Part, TaskState};
-use crate::store::agents::{parse_tags, AgentEntry, AGENT_TTL_SECS};
+use crate::store::agents::{
+    format_ambiguous_candidates, parse_tags, validate_send_target, AgentEntry, SendTarget, AGENT_TTL_SECS,
+};
 use crate::store::sqlite::SqliteStore;
 
 /// search_context 툴 파라미터.
@@ -355,34 +357,6 @@ fn send_task_text(
     };
     let task = store.create_task_from_message(from_agent, to_agent, message)?;
     Ok(format!("생성됨: task_id={} state={}", task.id, task.state.as_str()))
-}
-
-/// send_task 대상 지정. Agent(구체 uuid) 또는 Selector(태그, 발송 시점 해석).
-pub enum SendTarget {
-    Agent(String),
-    Selector(String),
-}
-
-/// send_task의 대상 지정 검증. to_agent와 to_selector는 정확히 하나만 있어야 한다(공백 문자열은
-/// 없는 것으로 취급 - trim 후 is_empty면 None과 동일하게 본다).
-pub fn validate_send_target(
-    to_agent: Option<&str>,
-    to_selector: Option<&str>,
-) -> Result<SendTarget, String> {
-    let agent = to_agent.map(str::trim).filter(|s| !s.is_empty());
-    let selector = to_selector.map(str::trim).filter(|s| !s.is_empty());
-    match (agent, selector) {
-        (Some(_), Some(_)) => Err("to_agent와 to_selector 중 하나만 지정하세요".to_string()),
-        (None, None) => Err("to_agent 또는 to_selector가 필요합니다".to_string()),
-        (Some(a), None) => Ok(SendTarget::Agent(a.to_string())),
-        (None, Some(s)) => Ok(SendTarget::Selector(s.to_string())),
-    }
-}
-
-/// selector가 여러 online 에이전트에 매칭될 때 dispatcher에게 돌려줄 후보 목록 텍스트(task 생성은 안 함).
-pub fn format_ambiguous_candidates(selector: &str, uuids: &[String]) -> String {
-    let list = uuids.iter().map(|u| format!("- {u}")).collect::<Vec<_>>().join("\n");
-    format!("셀렉터 '{selector}'가 여러 에이전트에 매칭됩니다. to_agent로 하나를 골라 재요청하세요:\n{list}")
 }
 
 /// AgentEntry 목록을 사람이 읽는 텍스트로 조립한다(비면 "online 에이전트 없음").
@@ -2026,42 +2000,7 @@ mod tests {
         assert!(text.contains("nope"), "task_id 언급 없음: {text}");
     }
 
-    // --- 레지스트리 라우팅: 순수 함수 단위테스트 (Plan v2-34 T2) ---
-
-    #[test]
-    fn validate_send_target_rejects_both_and_neither() {
-        assert!(validate_send_target(Some("a"), Some("k=v")).is_err());
-        assert!(validate_send_target(None, None).is_err());
-        // 공백 문자열은 없는 것으로 취급하므로 둘 다 공백이면 "둘 다 없음" 에러.
-        assert!(validate_send_target(Some("  "), None).is_err());
-    }
-
-    #[test]
-    fn validate_send_target_agent_only() {
-        match validate_send_target(Some("mac-claude"), None).unwrap() {
-            SendTarget::Agent(a) => assert_eq!(a, "mac-claude"),
-            SendTarget::Selector(_) => panic!("Agent여야 함"),
-        }
-    }
-
-    #[test]
-    fn validate_send_target_selector_only() {
-        match validate_send_target(None, Some("runner=claude")).unwrap() {
-            SendTarget::Selector(s) => assert_eq!(s, "runner=claude"),
-            SendTarget::Agent(_) => panic!("Selector여야 함"),
-        }
-    }
-
-    #[test]
-    fn format_ambiguous_candidates_lists_uuids() {
-        let text = format_ambiguous_candidates(
-            "runner=claude",
-            &["uuid-1".to_string(), "uuid-2".to_string()],
-        );
-        assert!(text.contains("runner=claude"));
-        assert!(text.contains("uuid-1"));
-        assert!(text.contains("uuid-2"));
-    }
+    // --- 레지스트리 라우팅: 순수 함수 단위테스트는 store::agents로 이동(Plan v2-34 T3) ---
 
     #[test]
     fn format_agents_empty_says_none_online() {

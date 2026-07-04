@@ -86,13 +86,17 @@ impl JsonRpcResponse {
 
 /// SendMessage params. message는 표준 A2A 필드, fromAgent/toAgent는 tunaRound 중앙-브로커 라우팅
 /// 확장이다(순정 A2A는 대상 agent URL로 라우팅하지만 우리는 단일 코어라 명시 필드로 받는다.
-/// docs/design/v2-a2a-partner-delegation_2026-07-02.md §4/§10-1).
+/// docs/design/v2-a2a-partner-delegation_2026-07-02.md §4/§10-1). toSelector는 태그 셀렉터 발견
+/// 라우팅(Plan v2-34 T3, mcp::send_task의 to_selector와 대칭) - toAgent와 배타적이다.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SendParams {
     pub message: Message,
     pub from_agent: String,
-    pub to_agent: String,
+    #[serde(default)]
+    pub to_agent: Option<String>,
+    #[serde(default)]
+    pub to_selector: Option<String>,
 }
 
 /// GetTask/CancelTask 공용 params.
@@ -106,11 +110,28 @@ pub struct TaskIdParams {
     pub history_length: Option<i64>,
 }
 
-/// SendMessage 순수 로직: 얇은 래퍼. task 조립(task_id·시각 발급, status_message/history 세팅,
+/// SendMessage 순수 로직: 셀렉터 인지 라우팅(Plan v2-34 T3). to_agent(구체 대상)면 바로 발송하고,
+/// to_selector(태그 발견)면 발송 시점에 online 에이전트를 resolve해 1개면 그 uuid로, 0개/2개+면 에러로
+/// 반환한다(task 미생성). 대상 결정 후 실제 task 조립(task_id·시각 발급, status_message/history 세팅,
 /// 영속)은 store::create_task_from_message로 위임한다(mcp::send_task 툴과 공유하는 헬퍼 - DRY 우선,
 /// serve<->mcp 크로스피처 직접의존 회피. docs/design/v2-a2a-partner-delegation_2026-07-02.md §10-1).
+/// 검증·셀렉터 해석 헬퍼(SendTarget/validate_send_target/format_ambiguous_candidates)는 store::agents에
+/// 있어 mcp 피처에 의존하지 않고 serve 단독으로도 컴파일된다(Plan v2-34 T2/T3 공유 헬퍼 리팩토링).
 pub fn handle_send(store: &SqliteStore, params: SendParams) -> Result<Task, String> {
-    store.create_task_from_message(&params.from_agent, &params.to_agent, params.message)
+    use crate::store::agents::{format_ambiguous_candidates, parse_tags, validate_send_target, SendTarget, AGENT_TTL_SECS};
+    match validate_send_target(params.to_agent.as_deref(), params.to_selector.as_deref())? {
+        SendTarget::Agent(agent) => store.create_task_from_message(&params.from_agent, &agent, params.message),
+        SendTarget::Selector(sel_str) => {
+            let sel = parse_tags(&sel_str)?;
+            let now = store.now()?;
+            let uuids = store.resolve_selector(&sel, &now, AGENT_TTL_SECS);
+            match uuids.len() {
+                0 => Err(format!("no-consumer: 셀렉터 '{sel_str}'에 매칭되는 online 에이전트가 없습니다")),
+                1 => store.create_task_from_message(&params.from_agent, &uuids[0], params.message),
+                _ => Err(format_ambiguous_candidates(&sel_str, &uuids)),
+            }
+        }
+    }
 }
 
 /// GetTask 순수 로직: 단순 조회 위임(없으면 Ok(None)).
@@ -571,7 +592,12 @@ mod tests {
         let msg = sample_message(Some("ctx1"));
         let task = handle_send(
             &store,
-            SendParams { message: msg.clone(), from_agent: "win-claude".into(), to_agent: "mac-claude".into() },
+            SendParams {
+                message: msg.clone(),
+                from_agent: "win-claude".into(),
+                to_agent: Some("mac-claude".into()),
+                to_selector: None,
+            },
         )
         .unwrap();
 
@@ -593,15 +619,123 @@ mod tests {
         let store = SqliteStore::open_memory().unwrap();
         let t1 = handle_send(
             &store,
-            SendParams { message: sample_message(None), from_agent: "a".into(), to_agent: "b".into() },
+            SendParams {
+                message: sample_message(None),
+                from_agent: "a".into(),
+                to_agent: Some("b".into()),
+                to_selector: None,
+            },
         )
         .unwrap();
         let t2 = handle_send(
             &store,
-            SendParams { message: sample_message(None), from_agent: "a".into(), to_agent: "b".into() },
+            SendParams {
+                message: sample_message(None),
+                from_agent: "a".into(),
+                to_agent: Some("b".into()),
+                to_selector: None,
+            },
         )
         .unwrap();
         assert_ne!(t1.id, t2.id);
+    }
+
+    // --- SendMessage toSelector 라우팅(Plan v2-34 T3) ---
+
+    #[test]
+    fn handle_send_selector_single_match_routes_to_uuid() {
+        let store = SqliteStore::open_memory().unwrap();
+        let now = store.now().unwrap();
+        let mut tags = std::collections::BTreeMap::new();
+        tags.insert("runner".to_string(), "claude".to_string());
+        store.register_agent("uuid-x", tags, None, &now);
+
+        let task = handle_send(
+            &store,
+            SendParams {
+                message: sample_message(None),
+                from_agent: "win-claude".into(),
+                to_agent: None,
+                to_selector: Some("runner=claude".into()),
+            },
+        )
+        .unwrap();
+        assert_eq!(task.to_agent, "uuid-x");
+    }
+
+    #[test]
+    fn handle_send_selector_no_match_is_err() {
+        let store = SqliteStore::open_memory().unwrap();
+        let err = handle_send(
+            &store,
+            SendParams {
+                message: sample_message(None),
+                from_agent: "win-claude".into(),
+                to_agent: None,
+                to_selector: Some("runner=claude".into()),
+            },
+        )
+        .unwrap_err();
+        assert!(err.contains("no-consumer"), "no-consumer 안내가 있어야 함: {err}");
+    }
+
+    #[test]
+    fn handle_send_selector_multiple_matches_is_err() {
+        let store = SqliteStore::open_memory().unwrap();
+        let now = store.now().unwrap();
+        let mut tags = std::collections::BTreeMap::new();
+        tags.insert("runner".to_string(), "claude".to_string());
+        store.register_agent("uuid-a", tags.clone(), None, &now);
+        store.register_agent("uuid-b", tags, None, &now);
+
+        let err = handle_send(
+            &store,
+            SendParams {
+                message: sample_message(None),
+                from_agent: "win-claude".into(),
+                to_agent: None,
+                to_selector: Some("runner=claude".into()),
+            },
+        )
+        .unwrap_err();
+        assert!(err.contains("uuid-a"), "후보 목록 누락: {err}");
+        assert!(err.contains("uuid-b"), "후보 목록 누락: {err}");
+    }
+
+    #[test]
+    fn handle_send_legacy_to_agent_still_routes() {
+        let store = SqliteStore::open_memory().unwrap();
+        let task = handle_send(
+            &store,
+            SendParams {
+                message: sample_message(None),
+                from_agent: "win-claude".into(),
+                to_agent: Some("mac-claude".into()),
+                to_selector: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(task.to_agent, "mac-claude");
+    }
+
+    #[test]
+    fn handle_send_both_or_neither_is_err() {
+        let store = SqliteStore::open_memory().unwrap();
+        assert!(handle_send(
+            &store,
+            SendParams { message: sample_message(None), from_agent: "a".into(), to_agent: None, to_selector: None },
+        )
+        .is_err());
+        assert!(handle_send(
+            &store,
+            SendParams {
+                message: sample_message(None),
+                from_agent: "a".into(),
+                to_agent: Some("b".into()),
+                to_selector: Some("runner=claude".into()),
+            },
+        )
+        .is_err());
     }
 
     #[test]
@@ -609,7 +743,12 @@ mod tests {
         let store = SqliteStore::open_memory().unwrap();
         let created = handle_send(
             &store,
-            SendParams { message: sample_message(None), from_agent: "a".into(), to_agent: "b".into() },
+            SendParams {
+                message: sample_message(None),
+                from_agent: "a".into(),
+                to_agent: Some("b".into()),
+                to_selector: None,
+            },
         )
         .unwrap();
         let got = handle_get(&store, TaskIdParams { id: created.id.clone(), history_length: None }).unwrap();
@@ -628,7 +767,12 @@ mod tests {
         let store = SqliteStore::open_memory().unwrap();
         let created = handle_send(
             &store,
-            SendParams { message: sample_message(None), from_agent: "a".into(), to_agent: "b".into() },
+            SendParams {
+                message: sample_message(None),
+                from_agent: "a".into(),
+                to_agent: Some("b".into()),
+                to_selector: None,
+            },
         )
         .unwrap();
         let canceled = handle_cancel(&store, TaskIdParams { id: created.id.clone(), history_length: None })
