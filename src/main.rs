@@ -182,8 +182,13 @@ struct WorkArgs {
     #[arg(long)]
     token: Option<String>,
     /// 이 워커의 to_agent id(예: win-worker). poll_tasks가 이 agent 앞 task만 본다.
+    /// 미지정 시 자가 uuid 생성(generate_agent_uuid).
     #[arg(long)]
-    agent: String,
+    agent: Option<String>,
+    /// 로스터 발견용 태그 "k=v,k=v"(예: "machine=win,runner=claude,role=worker"). dispatcher가
+    /// to_selector로 이 워커를 발견한다. 생략 가능.
+    #[arg(long)]
+    tags: Option<String>,
     /// task를 실행할 러너 종류(기본 claude).
     #[arg(long, value_enum, default_value_t = WorkRunner::Claude)]
     runner: WorkRunner,
@@ -1104,12 +1109,18 @@ fn main() {
             None => std::collections::HashMap::new(),
         };
 
+        let agent_id = a.agent.clone().unwrap_or_else(tunaround::worker::generate_agent_uuid);
+        if a.agent.is_none() {
+            eprintln!("[work] --agent 미지정 -> 자가 uuid 생성: {agent_id}");
+        }
+
         let result = rt.block_on(async {
             let client = tunaround::mcp_client::McpHttpClient::connect(a.core.clone(), a.token.clone()).await?;
             tunaround::worker::run_worker_loop(
                 &client,
                 runner,
-                &a.agent,
+                &agent_id,
+                a.tags.clone(),
                 a.model.clone(),
                 a.project_path.clone(),
                 context_map,
@@ -1262,6 +1273,7 @@ fn main() {
                             &client,
                             runner,
                             &l.agent,
+                            None, // node 레인 태그는 후속(Plan v2-34 비범위)
                             l.model.clone(),
                             project,
                             context_map,

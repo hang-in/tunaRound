@@ -208,16 +208,37 @@ pub fn parse_context_map(spec: &str) -> Result<std::collections::HashMap<String,
     Ok(map)
 }
 
+/// 워커 자가 uuid 생성(--agent 미지정 시). RNG crate 없이 나노초 타임스탬프+pid+hostname 해시를
+/// 조합해 32 hex로 만든다. 개인 규모 로스터 키로 충분한 유일성(서버 randomblob(16)의 client-side 대체).
+pub fn generate_agent_uuid() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(0);
+    let pid = std::process::id();
+    // hostname을 간단한 FNV-1a 32bit로 접어 엔트로피 보강(머신 간 충돌 완화).
+    let host = std::env::var("COMPUTERNAME").or_else(|_| std::env::var("HOSTNAME")).unwrap_or_default();
+    let mut h: u32 = 0x811c9dc5;
+    for b in host.bytes() { h ^= b as u32; h = h.wrapping_mul(0x0100_0193); }
+    format!("{nanos:016x}{pid:08x}{h:08x}")
+}
+
+/// heartbeat 응답이 "미등록"이면 코어 로스터가 사라진 것(브로커 재기동)으로 보고 재등록이 필요하다고 판정.
+pub fn needs_reregister(heartbeat_response: &str) -> bool {
+    heartbeat_response.contains("미등록")
+}
+
 /// 워커 한 패스: poll -> (submitted만) claim -> runner.run -> complete.
 /// `once=true`면 한 패스 후 반환, 아니면 `interval_secs` 간격으로 무한 루프한다.
 /// poll/claim/complete 실패는 eprintln 로그 후 그 task만 건너뛰고 루프는 죽지 않는다.
-/// 인자 8개는 work 서브커맨드 옵션을 그대로 투영한 것이라(WorkArgs 필드 1:1), 별도 struct로
+/// 루프 진입 전 1회 로스터 자기 등록을 시도하고(실패해도 폴링은 계속, 레지스트리 없는 구 코어 하위호환),
+/// 매 패스 시작 시 heartbeat로 online을 알린다(코어 재기동으로 로스터가 비면 재등록).
+/// 인자 9개는 work 서브커맨드 옵션을 그대로 투영한 것이라(WorkArgs 필드 1:1), 별도 struct로
 /// 묶기보다 이 시그니처를 유지한다(설계문서 §2.2 계약).
 #[allow(clippy::too_many_arguments)]
 pub async fn run_worker_loop(
     client: &McpHttpClient,
     runner: Arc<dyn Runner + Send + Sync>,
     agent: &str,
+    tags: Option<String>,
     model: Option<String>,
     project_path: Option<String>,
     context_map: std::collections::HashMap<String, String>,
@@ -225,7 +246,23 @@ pub async fn run_worker_loop(
     interval_secs: u64,
     once: bool,
 ) -> Result<(), String> {
+    // 로스터 자기 등록(1회). 실패해도 폴링은 계속한다(레지스트리 없는 구 코어 하위호환).
+    match client.register_agent(agent, tags.as_deref(), None).await {
+        Ok(msg) => eprintln!("[work] 로스터 등록: {msg}"),
+        Err(e) => eprintln!("[work] 로스터 등록 실패(무시하고 폴링 계속): {e}"),
+    }
+
     loop {
+        // online 유지. 코어가 재기동돼 로스터가 비었으면(미등록 응답) 재등록한다.
+        match client.heartbeat(agent).await {
+            Ok(resp) if needs_reregister(&resp) => {
+                let _ = client.register_agent(agent, tags.as_deref(), None).await;
+                eprintln!("[work] 코어 재기동 감지 -> 재등록");
+            }
+            Ok(_) => {}
+            Err(e) => eprintln!("[work] heartbeat 실패(무시): {e}"),
+        }
+
         run_one_pass(client, &runner, agent, &model, &project_path, &context_map, mode).await;
 
         if once {
@@ -721,5 +758,18 @@ mod tests {
         ) {
             assert!(!write_lane_disrupts_node(Some(&tmp), &cwd));
         }
+    }
+
+    #[test]
+    fn generate_agent_uuid_is_32_hex() {
+        let id = generate_agent_uuid();
+        assert_eq!(id.len(), 32);
+        assert!(id.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn needs_reregister_detects_missing_registration() {
+        assert!(needs_reregister("미등록 uuid=x(register_agent 먼저 호출하세요)"));
+        assert!(!needs_reregister("heartbeat 갱신: x"));
     }
 }
