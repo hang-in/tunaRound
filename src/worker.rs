@@ -23,6 +23,13 @@ fn is_hex32(s: &str) -> bool {
     s.len() == ID_LEN && s.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
+/// state 세그먼트에서 상태 토큰만 뽑는다(첫 공백 앞). 코어가 poll 출력에 붙이는 표시 전용 주석
+/// (" ⚠stuck?(20m)" 등)을 떼어내, 워커가 state를 "submitted"로 정확히 인식하게 한다. 상태값은
+/// 공백을 포함하지 않으므로 첫 토큰이 곧 상태다.
+fn state_token(seg: &str) -> String {
+    seg.split_whitespace().next().unwrap_or("").to_string()
+}
+
 /// 텍스트에서 블록 헤더(`[<32hex>] from=...`)가 시작하는 바이트 오프셋을 모두 찾는다.
 /// `format_open_tasks`(src/mcp.rs)는 블록을 `"\n\n"`로 join하므로, 헤더는 문자열 맨 앞이거나
 /// 직전 두 글자가 `"\n\n"`일 때만 유효하다고 본다(메시지 본문 안의 우연한 개행과 구분).
@@ -87,16 +94,16 @@ pub fn parse_open_tasks(poll_text: &str) -> Vec<ParsedTask> {
             Some(p) => p,
             None => continue,
         };
-        let between = &after_state[..msg_pos]; // "submitted ctx=projA" 또는 "submitted"
+        let between = &after_state[..msg_pos]; // "submitted ctx=projA" 또는 "submitted ⚠no-consumer?(10m)"
         let msg = after_state[msg_pos + msg_marker.len()..].to_string();
         let (state, context_id) = match between.find(ctx_marker) {
             Some(cp) => {
-                let state = between[..cp].to_string();
+                let state = state_token(&between[..cp]);
                 let ctx_raw = &between[cp + ctx_marker.len()..];
                 let context_id = if ctx_raw == "-" { None } else { Some(ctx_raw.to_string()) };
                 (state, context_id)
             }
-            None => (between.to_string(), None),
+            None => (state_token(between), None),
         };
 
         let id = block[1..1 + ID_LEN].to_string();
@@ -371,6 +378,25 @@ mod tests {
         assert_eq!(tasks[0].context_id.as_deref(), Some("projA"));
         assert_eq!(tasks[0].state, "submitted");
         assert_eq!(tasks[0].msg, "작업 지시");
+    }
+
+    #[test]
+    fn parse_open_tasks_strips_health_annotation_from_state() {
+        // 코어가 poll 출력에 붙이는 표시 전용 주석(⚠stuck?/⚠no-consumer?)이 있어도 워커는 state를
+        // 깨끗한 "submitted"/"working"으로 인식해야 한다(그러지 않으면 no-consumer task를 못 집는 회귀).
+        let id1 = "a".repeat(32);
+        let id2 = "b".repeat(32);
+        let text = format!(
+            "[{id1}] from=disp state=submitted ⚠no-consumer?(10m) ctx=projA msg=오래된 작업\n\n[{id2}] from=disp state=working ⚠stuck?(20m) ctx=- msg=멈춘 작업"
+        );
+        let tasks = parse_open_tasks(&text);
+        assert_eq!(tasks.len(), 2);
+        assert_eq!(tasks[0].state, "submitted", "no-consumer 주석이 state를 오염시킴: {:?}", tasks[0].state);
+        assert_eq!(tasks[0].context_id.as_deref(), Some("projA"));
+        assert_eq!(tasks[0].msg, "오래된 작업");
+        assert_eq!(tasks[1].state, "working", "stuck 주석이 state를 오염시킴: {:?}", tasks[1].state);
+        assert_eq!(tasks[1].context_id, None);
+        assert_eq!(tasks[1].msg, "멈춘 작업");
     }
 
     #[test]

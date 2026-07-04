@@ -102,6 +102,10 @@ pub struct GetTaskParams {
     pub task_id: String,
 }
 
+/// tasks 툴 파라미터(필드 없음). 브로커 전역 열린 task 조망은 대상을 지정할 필요가 없다.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ListTasksParams {}
+
 /// rmcp MCP 서버 핸들러. ContextRetriever를 감싸 search_context/read_transcript 툴을 노출한다.
 #[derive(Clone)]
 pub struct TunaSearchServer {
@@ -164,15 +168,41 @@ impl TunaSearchServer {
     }
 }
 
+/// working이 이 초과 갱신정지면 stuck? 표시(claim 후 사망 의심).
+const STUCK_WORKING_SECS: i64 = 15 * 60;
+/// submitted가 이 초과 미claim이면 no-consumer? 표시(폴러 없음 의심).
+const NO_CONSUMER_SUBMITTED_SECS: i64 = 5 * 60;
+
+/// task의 미배달/고착 의심 주석을 만든다(표시 전용, 상태 전이·저장 없음). working은 updated_at(claim
+/// 시각) 기준 STUCK_WORKING_SECS 초과면 " ⚠stuck?(<분>m)", submitted는 created_at 기준
+/// NO_CONSUMER_SUBMITTED_SECS 초과면 " ⚠no-consumer?(<분>m)"을 붙인다. 그 외(다른 상태, 임계 이내,
+/// now 파싱 실패)는 빈 문자열.
+fn health_annotation(task: &crate::store::a2a::Task, now: &str) -> String {
+    use crate::store::a2a::age_secs;
+    match task.state {
+        TaskState::Working => match age_secs(now, &task.updated_at) {
+            Some(secs) if secs > STUCK_WORKING_SECS => format!(" ⚠stuck?({}m)", secs / 60),
+            _ => String::new(),
+        },
+        TaskState::Submitted => match age_secs(now, &task.created_at) {
+            Some(secs) if secs > NO_CONSUMER_SUBMITTED_SECS => format!(" ⚠no-consumer?({}m)", secs / 60),
+            _ => String::new(),
+        },
+        _ => String::new(),
+    }
+}
+
 /// poll_tasks 순수 로직: agent 앞으로 열린(submitted/working/input_required) task 목록을 사람이 읽기
 /// 쉬운 텍스트로 조립한다. SQLite 호출은 하되 MCP/async 계층과 무관해 in-memory store로 단위테스트 가능.
 fn poll_tasks_text(store: &SqliteStore, agent: &str) -> Result<String, String> {
     let tasks = store.list_open_tasks_for(agent)?;
-    Ok(format_open_tasks(agent, &tasks))
+    let now = store.now()?;
+    Ok(format_open_tasks(agent, &tasks, &now))
 }
 
 /// task 목록을 `[id] from=... state=... msg=...` 줄들로 조립하는 순수 함수(SQLite 없이 테스트 가능).
-fn format_open_tasks(agent: &str, tasks: &[crate::store::a2a::Task]) -> String {
+/// now는 health_annotation(표시 전용 stuck?/no-consumer? 주석)에 쓰인다.
+fn format_open_tasks(agent: &str, tasks: &[crate::store::a2a::Task], now: &str) -> String {
     if tasks.is_empty() {
         return format!("{agent} 앞 열린 task 없음");
     }
@@ -187,7 +217,16 @@ fn format_open_tasks(agent: &str, tasks: &[crate::store::a2a::Task]) -> String {
                 .unwrap_or("(본문 없음)");
             // ctx=<context_id>는 워커가 프로젝트별 라우팅(--context-map)에 쓴다. 없으면 "-".
             let ctx = t.context_id.as_deref().unwrap_or("-");
-            format!("[{}] from={} state={} ctx={} msg={}", t.id, t.from_agent, t.state.as_str(), ctx, msg)
+            let annotation = health_annotation(t, now);
+            format!(
+                "[{}] from={} state={}{} ctx={} msg={}",
+                t.id,
+                t.from_agent,
+                t.state.as_str(),
+                annotation,
+                ctx,
+                msg
+            )
         })
         .collect::<Vec<_>>()
         .join("\n\n")
@@ -267,14 +306,17 @@ fn send_task_text(
 fn get_task_text(store: &SqliteStore, task_id: &str) -> Result<String, String> {
     match store.get_task(task_id)? {
         None => Ok(format!("task 없음: task_id={task_id}")),
-        Some(task) => Ok(format_task_status(&task)),
+        Some(task) => {
+            let now = store.now()?;
+            Ok(format_task_status(&task, &now))
+        }
     }
 }
 
 /// task 상태를 `[id] state=...` 한 줄로 조립하고, completed면 artifact 텍스트를 이어붙이는 순수 함수
-/// (SQLite 없이 테스트 가능).
-fn format_task_status(task: &crate::store::a2a::Task) -> String {
-    let mut out = format!("[{}] state={}", task.id, task.state.as_str());
+/// (SQLite 없이 테스트 가능). now는 health_annotation(표시 전용 stuck?/no-consumer? 주석)에 쓰인다.
+fn format_task_status(task: &crate::store::a2a::Task, now: &str) -> String {
+    let mut out = format!("[{}] state={}{}", task.id, task.state.as_str(), health_annotation(task, now));
     if task.state == TaskState::Completed {
         let texts: Vec<&str> =
             task.artifacts.iter().flat_map(|a| a.parts.iter()).filter_map(|p| p.text.as_deref()).collect();
@@ -285,6 +327,40 @@ fn format_task_status(task: &crate::store::a2a::Task) -> String {
         }
     }
     out
+}
+
+/// tasks 순수 로직: 브로커 전역에서 열려 있는 task를 to_agent 무관하게 전부 조회해 사람이 읽는 텍스트로
+/// 조립한다(운영자 조망용, poll_tasks의 agent 필터판과 대비). health_annotation의 stuck?/no-consumer?
+/// 표시가 그대로 붙어 미배달/고착 의심 task를 한눈에 볼 수 있다.
+fn list_all_tasks_text(store: &SqliteStore, now: &str) -> Result<String, String> {
+    let tasks = store.list_all_open_tasks()?;
+    if tasks.is_empty() {
+        return Ok("열린 task 없음".to_string());
+    }
+    Ok(tasks
+        .iter()
+        .map(|t| {
+            let msg = t
+                .status_message
+                .as_ref()
+                .and_then(|m| m.parts.first())
+                .and_then(|p| p.text.as_deref())
+                .unwrap_or("(본문 없음)");
+            let ctx = t.context_id.as_deref().unwrap_or("-");
+            let annotation = health_annotation(t, now);
+            format!(
+                "[{}] from={} to={} state={}{} ctx={} msg={}",
+                t.id,
+                t.from_agent,
+                t.to_agent,
+                t.state.as_str(),
+                annotation,
+                ctx,
+                msg
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n\n"))
 }
 
 #[tool_router]
@@ -538,6 +614,27 @@ impl TunaSearchServer {
         };
         Ok(CallToolResult::success(vec![Content::text(text)]))
     }
+
+    #[tool(description = "브로커 전역에서 열려 있는 A2A task를 to_agent 무관하게 전부 조회한다(운영자 조망용, 미배달/고착 의심 주석 포함).")]
+    async fn tasks(&self, Parameters(_p): Parameters<ListTasksParams>) -> Result<CallToolResult, McpError> {
+        let Some(store) = self.a2a_store.clone() else {
+            return Ok(CallToolResult::success(vec![Content::text(
+                "A2A task 저장소 미구성(tasks 비활성)".to_string(),
+            )]));
+        };
+        let outcome = tokio::task::spawn_blocking(move || {
+            let store = store.lock().unwrap_or_else(|e| e.into_inner());
+            let now = store.now()?;
+            list_all_tasks_text(&store, &now)
+        })
+        .await
+        .unwrap_or_else(|e| Err(format!("작업 실패: {e}")));
+        let text = match outcome {
+            Ok(t) => t,
+            Err(e) => format!("조회 실패: {e}"),
+        };
+        Ok(CallToolResult::success(vec![Content::text(text)]))
+    }
 }
 
 #[tool_handler]
@@ -547,7 +644,8 @@ impl ServerHandler for TunaSearchServer {
             .with_instructions(
                 "토론 맥락을 검색하려면 search_context(query)를, 전사 통째를 읽으려면 read_transcript(session_id?, max_turns?)를 호출하세요. \
                  작업을 맡기는 쪽(dispatcher)은 send_task(from_agent, to_agent, text, context_id?)로 위임하고 get_task(task_id)로 결과를 확인하세요. \
-                 작업을 받는 쪽(worker)은 poll_tasks(agent)로 확인하고 claim_task(task_id)로 착수, complete_task(task_id, result)로 완료를 보고하세요."
+                 작업을 받는 쪽(worker)은 poll_tasks(agent)로 확인하고 claim_task(task_id)로 착수, complete_task(task_id, result)로 완료를 보고하세요. \
+                 브로커 운영자는 tasks()로 전체 열린 task를 미배달(no-consumer?)/고착(stuck?) 주석과 함께 조망할 수 있습니다."
                     .to_string(),
             )
     }
@@ -1303,7 +1401,7 @@ mod tests {
 
     #[test]
     fn format_open_tasks_empty_says_no_open_tasks() {
-        let text = format_open_tasks("mac-claude", &[]);
+        let text = format_open_tasks("mac-claude", &[], "2026-07-02 09:00:00");
         assert!(text.contains("mac-claude"), "agent 언급 없음: {text}");
         assert!(text.contains("없음"), "빈 목록 안내가 아님: {text}");
     }
@@ -1319,7 +1417,8 @@ mod tests {
             task_id: Some("t1".into()),
             context_id: None,
         });
-        let text = format_open_tasks("mac-claude", &[task]);
+        // now를 created_at과 같게 둬 stuck?/no-consumer? 주석이 안 붙게 한다(이 테스트는 그 표시를 검증하지 않음).
+        let text = format_open_tasks("mac-claude", &[task], "2026-07-02 09:00:00");
         assert!(text.contains("t1"), "task id 누락: {text}");
         assert!(text.contains("win-claude"), "from_agent 누락: {text}");
         assert!(text.contains("submitted"), "state 누락: {text}");
@@ -1399,6 +1498,76 @@ mod tests {
         let store = SqliteStore::open_memory().unwrap();
         let err = fail_task_text(&store, "nope", "사유").unwrap_err();
         assert!(err.contains("nope"), "에러 메시지에 task_id 없음: {err}");
+    }
+
+    // --- health_annotation(표시 전용 stuck?/no-consumer? 주석): 순수 함수 단위테스트 ---
+
+    #[test]
+    fn health_annotation_working_stuck_past_threshold() {
+        let mut task = crate::store::a2a::Task::new("t1", None, "win", "mac", "2026-07-02 09:00:00");
+        task.state = TaskState::Working;
+        task.updated_at = "2026-07-02 09:00:00".into(); // claim 시각.
+        // STUCK_WORKING_SECS(15분) 초과: 09:00:00 -> 09:20:00 = 20분.
+        let annotation = health_annotation(&task, "2026-07-02 09:20:00");
+        assert!(annotation.contains("stuck?"), "stuck 표시 누락: {annotation}");
+        assert!(annotation.contains("20m"), "경과분 표시 불일치: {annotation}");
+    }
+
+    #[test]
+    fn health_annotation_submitted_no_consumer_past_threshold() {
+        let task = crate::store::a2a::Task::new("t1", None, "win", "mac", "2026-07-02 09:00:00");
+        // NO_CONSUMER_SUBMITTED_SECS(5분) 초과: 09:00:00 -> 09:10:00 = 10분.
+        let annotation = health_annotation(&task, "2026-07-02 09:10:00");
+        assert!(annotation.contains("no-consumer?"), "no-consumer 표시 누락: {annotation}");
+        assert!(annotation.contains("10m"), "경과분 표시 불일치: {annotation}");
+    }
+
+    #[test]
+    fn health_annotation_recent_task_is_empty() {
+        let task = crate::store::a2a::Task::new("t1", None, "win", "mac", "2026-07-02 09:00:00");
+        // 임계(5분) 이내: 09:00:00 -> 09:01:00 = 1분.
+        let annotation = health_annotation(&task, "2026-07-02 09:01:00");
+        assert_eq!(annotation, "", "임계 이내인데 주석이 붙음: {annotation}");
+    }
+
+    #[test]
+    fn health_annotation_terminal_state_is_always_empty() {
+        let mut task = crate::store::a2a::Task::new("t1", None, "win", "mac", "2026-07-02 09:00:00");
+        task.state = TaskState::Completed;
+        task.updated_at = "2026-07-02 09:00:00".into();
+        // 아주 오래 지났어도 종료 상태(completed)는 주석을 붙이지 않는다.
+        let annotation = health_annotation(&task, "2026-07-03 09:00:00");
+        assert_eq!(annotation, "", "종료 상태인데 주석이 붙음: {annotation}");
+    }
+
+    // --- tasks 툴(list_all_tasks_text): 순수 함수 단위테스트 ---
+
+    #[test]
+    fn list_all_tasks_text_mixes_multiple_to_agents() {
+        let store = SqliteStore::open_memory().unwrap();
+        seed_task(&store, "t1", "win", "mac", "2026-07-02 09:00:00");
+        seed_task(&store, "t2", "win", "codex", "2026-07-02 09:05:00");
+        let text = list_all_tasks_text(&store, "2026-07-02 09:06:00").unwrap();
+        assert!(text.contains("t1"), "t1 누락: {text}");
+        assert!(text.contains("to=mac"), "to=mac 누락: {text}");
+        assert!(text.contains("t2"), "t2 누락: {text}");
+        assert!(text.contains("to=codex"), "to=codex 누락: {text}");
+    }
+
+    #[test]
+    fn list_all_tasks_text_shows_no_consumer_annotation_for_stale_submitted() {
+        let store = SqliteStore::open_memory().unwrap();
+        seed_task(&store, "t1", "win", "mac", "2026-07-02 09:00:00");
+        // now를 미래로 둬 NO_CONSUMER_SUBMITTED_SECS(5분)을 넘긴다.
+        let text = list_all_tasks_text(&store, "2026-07-02 09:30:00").unwrap();
+        assert!(text.contains("no-consumer?"), "no-consumer 주석 누락: {text}");
+    }
+
+    #[test]
+    fn list_all_tasks_text_empty_says_no_open_tasks() {
+        let store = SqliteStore::open_memory().unwrap();
+        let text = list_all_tasks_text(&store, "2026-07-02 09:00:00").unwrap();
+        assert!(text.contains("없음"), "빈 목록 안내가 아님: {text}");
     }
 
     // --- A2A inbox 툴: MCP 계층(#[tool] 메서드) 테스트 ---
@@ -1654,5 +1823,29 @@ mod tests {
         assert!(result.is_ok());
         let text = format!("{:?}", result.unwrap().content);
         assert!(text.contains("없음"), "미존재 안내 불일치: {text}");
+    }
+
+    // --- tasks 툴(운영자 전역 조망): MCP 계층(#[tool] 메서드) 테스트 ---
+
+    #[tokio::test]
+    async fn tasks_without_store_returns_not_connected() {
+        let server = TunaSearchServer::new(Arc::new(FakeRetriever(vec![])));
+        let result = server.tasks(Parameters(ListTasksParams {})).await;
+        assert!(result.is_ok());
+        let text = format!("{:?}", result.unwrap().content);
+        assert!(text.contains("A2A task 저장소 미구성"), "미구성 안내 불일치: {text}");
+    }
+
+    #[tokio::test]
+    async fn tasks_tool_lists_tasks_across_agents() {
+        let store = SqliteStore::open_memory().unwrap();
+        seed_task(&store, "t1", "win", "mac", "2026-07-02 09:00:00");
+        seed_task(&store, "t2", "win", "codex", "2026-07-02 09:05:00");
+        let server = server_with_a2a_store(store);
+        let result = server.tasks(Parameters(ListTasksParams {})).await;
+        assert!(result.is_ok());
+        let text = format!("{:?}", result.unwrap().content);
+        assert!(text.contains("t1"), "t1 누락: {text}");
+        assert!(text.contains("t2"), "t2 누락: {text}");
     }
 }
