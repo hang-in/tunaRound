@@ -17,3 +17,5 @@ pub mod mcp_client;
 pub mod worker;
 #[cfg(feature = "worker")]
 pub mod codex_appserver;
+#[cfg(feature = "worker")]
+pub mod codex_inject;

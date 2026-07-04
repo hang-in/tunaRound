@@ -42,6 +42,9 @@ enum Commands {
     /// 감시 전용: agent 앞 새 task를 stdout으로 알림만(claim/실행 없음). Monitor로 감싸 감독 레인 wake용(worker 피처).
     #[cfg(feature = "worker")]
     Poll(PollArgs),
+    /// codex app-server 라이브 thread에 turn/start로 유저 턴 1건을 ws로 주입(worker 피처).
+    #[cfg(feature = "worker")]
+    CodexInject(CodexInjectArgs),
     /// 워커 노드 상주: node.toml대로 브로커(self)+자동 워커 레인들을 한 프로세스로(serve+worker 피처).
     #[cfg(all(feature = "serve", feature = "worker"))]
     Node(NodeArgs),
@@ -246,6 +249,34 @@ struct PollArgs {
     /// 예: --on-task 'codex exec resume --last "브로커 task {id}를 claim해서 처리하고 complete로 보고"'.
     #[arg(long)]
     on_task: Option<String>,
+}
+
+/// `codex-inject` 서브커맨드(worker 피처 전용) 옵션: codex app-server 라이브 thread에 turn/start로
+/// 유저 턴 1건을 주입한다(설계 §6 CLI 계약). 한 번 실행 = task 1건 처리(글루가 매 task마다 이 커맨드를 fork).
+#[cfg(feature = "worker")]
+#[derive(Args, Debug)]
+struct CodexInjectArgs {
+    /// codex app-server ws URL(예: ws://127.0.0.1:8790, 로컬 무인증).
+    #[arg(long)]
+    ws: String,
+    /// thread 영속 키. `~/.tunaround/codex-sup-<agent>.thread`에 threadId를 기록/재사용해 맥락을 누적한다.
+    #[arg(long)]
+    agent: String,
+    /// 주입할 유저 턴 텍스트(브로커 task 처리 지시 + task 메시지).
+    #[arg(long)]
+    text: String,
+    /// 승인 정책(기본 never): untrusted/on-failure/on-request/never.
+    #[arg(long, default_value = "never")]
+    approval: String,
+    /// 샌드박스 모드(기본 workspace-write): read-only/workspace-write/danger-full-access.
+    #[arg(long, default_value = "workspace-write")]
+    sandbox: String,
+    /// turn/completed 대기 타임아웃(초, 기본 300).
+    #[arg(long, default_value_t = 300)]
+    timeout: u64,
+    /// 영속 threadId를 무시하고 새 thread를 만든다.
+    #[arg(long)]
+    new: bool,
 }
 
 /// `--runner` 선택지: 기존 Runner trait 구현체 중 어느 것으로 task를 실행할지.
@@ -741,6 +772,9 @@ fn main() {
     // poll <...>: 감시 전용 옵션(worker 피처 전용).
     #[cfg(feature = "worker")]
     let mut poll_args: Option<PollArgs> = None;
+    // codex-inject <...>: codex app-server ws 주입 옵션(worker 피처 전용).
+    #[cfg(feature = "worker")]
+    let mut codex_inject_args: Option<CodexInjectArgs> = None;
     // node <...>: 워커 노드 상주 옵션(serve+worker 피처 전용).
     #[cfg(all(feature = "serve", feature = "worker"))]
     let mut node_args: Option<NodeArgs> = None;
@@ -832,6 +866,14 @@ fn main() {
                 db_path = None;
             }
             poll_args = Some(a);
+        }
+        #[cfg(feature = "worker")]
+        Commands::CodexInject(a) => {
+            #[cfg(feature = "sqlite")]
+            {
+                db_path = None;
+            }
+            codex_inject_args = Some(a);
         }
         #[cfg(all(feature = "serve", feature = "worker"))]
         Commands::Node(a) => {
@@ -1216,6 +1258,33 @@ fn main() {
         });
         if let Err(e) = result {
             eprintln!("[poll] 오류: {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
+    // codex-inject <...>: codex app-server 라이브 thread에 turn/start로 유저 턴 1건 주입(worker 피처).
+    #[cfg(feature = "worker")]
+    if let Some(a) = codex_inject_args {
+        let approval = match tunaround::codex_inject::parse_approval_policy(&a.approval) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("[codex-inject] {e}");
+                std::process::exit(1);
+            }
+        };
+        let sandbox = match tunaround::codex_inject::parse_sandbox_mode(&a.sandbox) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("[codex-inject] {e}");
+                std::process::exit(1);
+            }
+        };
+        let result = rt.block_on(tunaround::codex_inject::run(
+            &a.ws, &a.agent, &a.text, approval, sandbox, a.timeout, a.new,
+        ));
+        if let Err(e) = result {
+            eprintln!("[codex-inject] 오류: {e}");
             std::process::exit(1);
         }
         return;
