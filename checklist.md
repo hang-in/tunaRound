@@ -351,5 +351,5 @@
 
 > agentgateway P1. 축소 근거: v7이 started/completed/session_id 커버, net-new=runner 하나. 베이스라인 421.
 
-- [ ] B1: tasks `runner` 컬럼(스키마 v8) + try_claim에 runner 기록 + mcp/client/worker 배선 + get_task/tasks 노출. 하위호환 None=NULL.
-- [ ] B2: 쓰기 민감 path 가드(WRITE_GUARD_DIRECTIVE, Write 시 claude/codex 프롬프트 주입, behavioral=readonly-soft 정합) + write_guard_prefix 순수테스트. (Opus 직접) 스모크: 코어(127.0.0.1:8899) + `work --once --tags`로 워커 2개 자기등록 → `/a2a` SendMessage toSelector: 단일매칭(smoke-worker 라우팅)/무매칭(no-consumer 에러·미생성)/다중매칭(후보 smoke-worker+smoke-worker2 반환·미생성)/부분집합(machine=mac,runner=claude→smoke-worker2 유일) 전부 정확. 레거시 to_agent 문자열 경로 불변(기존 handle_send 테스트 그대로 pass).
+- [x] B1: tasks `runner` 컬럼(스키마 v8) + try_claim에 runner 기록(claimed_at와 동시점) + mcp/client/worker 배선 + get_task 노출. 하위호환 None=NULL. (bb299cd; Sonnet+Opus 리뷰·독립검증) TASK_COLUMNS 11컬럼 정합 확인, v7→v8 마이그레이션 테스트, 428 pass. poll/tasks 텍스트 표시는 파서 안전성으로 보류(get_task 우선).
+- [x] B2: 쓰기 민감 path 가드(WRITE_GUARD_DIRECTIVE, Write 시 claude/codex 프롬프트 주입, behavioral=readonly-soft 정합, READONLY와 배타) + write_guard_prefix 순수테스트 2. (e833f22) (Opus 직접) 스모크: 코어(127.0.0.1:8899) + `work --once --tags`로 워커 2개 자기등록 → `/a2a` SendMessage toSelector: 단일매칭(smoke-worker 라우팅)/무매칭(no-consumer 에러·미생성)/다중매칭(후보 smoke-worker+smoke-worker2 반환·미생성)/부분집합(machine=mac,runner=claude→smoke-worker2 유일) 전부 정확. 레거시 to_agent 문자열 경로 불변(기존 handle_send 테스트 그대로 pass).
