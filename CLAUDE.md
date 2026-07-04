@@ -27,7 +27,9 @@
 - **#6 새 소스 파일 첫 줄 = 역할 한국어 한 줄 주석.** Rust 예: `// 토론 라운드 프롬프트를 조립하는 순수 함수`. config 파일 제외.
 - **#7 비trivial 작업 전 plan + `checklist.md` + `context-notes.md`.** plan만 주고 코딩 요청 시 멈추고 checklist·notes 먼저 만들지 묻는다.
 
-## 현재 상태 (2026-07-04, 세션 6~11. 세션11 = 에이전트 레지스트리(UUID+태그) 구현·머지)
+## 현재 상태 (2026-07-04, 세션 6~12. 세션12 = agentgateway 검토 후 doctor·트레이스·node태그 3개 PR 머지)
+
+- **세션 12 (2026-07-04): agentgateway 선별 도입 검토 → D·B·C 3개 PR 머지.** 검토 결론=capability는 태그로 이미 됨 + 값싼 trace/denylist만 취하고 정책엔진·별도 backend registry·lineage DAG는 비채택([검토 노트](docs/design/v2-agentgateway-selective-adoption_2026-07-04.md)). **D**(doctor Stage 4, PR #6=`89cdbf2`): Kiwi/형태소 백엔드 + Ollama 도달 진단. **B**(trace+guard, PR #7=`27f04e6`): tasks `runner` 컬럼(스키마 v8, claim 시 기록) + 쓰기 민감 path 가드(WRITE_GUARD_DIRECTIVE, behavioral). **C**(node태그, PR #8=`5f3ec50`): node.toml lane `tags` 배선(node 워커도 셀렉터 발견) + doctor/node 태그형식 검증. 4개 PR 전부 3-OS CI green + CodeRabbit 반영. 스키마 **v8**(tasks.runner). **위임 vs 회담 정리**: A2A=task 위임(1 task→1 워커, 다중매칭=사람선택), 라이브 다자 토론은 단일머신 `chat --roster`(크로스머신 토론은 비목표). 태그 셀렉터로 프로젝트별 격리(project= 태그 규율 전제). **다음**: Mac 노드 태그 등록 온보딩(프롬프트 준비됨) / R9 poll 견고화(옵션) / 릴리스 cadence.
 
 - **세션 11 (2026-07-04): 에이전트 레지스트리(UUID 라우팅 + 태그 발견) 구현 완료·머지(PR #5=`2bbf3d3`).** 어드레싱을 자유 문자열에서 UUID(라우팅)+태그(발견)로. 로스터=`SqliteStore.agent_roster`(RefCell 인메모리, `/a2a`·MCP 양 경로 공유). T1 데이터레이어(`src/store/agents.rs` parse_tags/selector_matches/is_online) / T2 MCP 도구 register_agent·heartbeat·list_agents + send_task `to_selector` / T3 `/a2a` SendMessage `toSelector`(공유 헬퍼 store/agents.rs로 이동) / T4 워커 `--tags`·자가 uuid·자동 register/heartbeat(재기동 시 재등록) / T5 문서+라이브 스모크 4/4. 다중매칭=후보반환(사람선택). 하위호환 레거시 `to_agent` 불변. CodeRabbit 4건(R1 에러계약) 반영. 풀피처 414 pass, 3-OS CI green. 정본 [레지스트리 설계](docs/design/v2-agent-registry-uuid-tags_2026-07-04.md) · 계획 [v2-34](docs/plans/v2-34-agent-registry.md) · 사용법 [a2a-usage §9](docs/reference/a2a-usage.md). **부수**: [agentgateway 선별 도입 검토](docs/design/v2-agentgateway-selective-adoption_2026-07-04.md)(결론: capability=태그(됨)+값싼 trace/denylist만 취함, 정책엔진·별도 backend registry·lineage DAG 비채택). **다음 후보(권고 순): D doctor Stage 4 → B(tasks flat trace 컬럼+쓰기 민감 path denylist) → C(config→런타임 태그 seed·backend를 named seat 은닉).**
 
@@ -57,7 +59,7 @@
 - **v1 + v2 검색/맥락 로드맵(step 2~8) + Stage 3a~3d + codex pull(behavioral) + 실코퍼스 회귀(step6) + 외래어 병기 + 임베딩 qwen3 + 배포/온보딩(clap·cargo-dist·프로파일) 완성.** 검증: **기본 184 lib+6 cli / `--features "semantic morphology mcp serve"` 198 lib+9 cli pass, clippy 클린(no-default 포함).** 스키마 **v5**(created_at).
 - 현행 spec: [docs/design/tunaRound-v1-design_2026-06-29.md](docs/design/tunaRound-v1-design_2026-06-29.md). 진행: [docs/plans/index.md](docs/plans/index.md).
 - **>>> 진입점 먼저 읽기 (각 줄은 해당 머신만 편집) <<<**
-  - **WIN 최신**: [session11](docs/prompts/v2-handoff_2026-07-04_session11.md) - 에이전트 레지스트리(UUID+태그) 구현·머지(PR #5). **다음 후보 = D doctor → B(trace+denylist) → C(태그 seed)**([agentgateway 검토](docs/design/v2-agentgateway-selective-adoption_2026-07-04.md)). (이전: 세션10=거버넌스 구현·v0.2.2 / [session9](docs/prompts/v2-handoff_2026-07-03_session9.md).)
+  - **WIN 최신**: [session12](docs/prompts/v2-handoff_2026-07-04_session12.md) - agentgateway 검토 후 D(doctor)·B(runner트레이스+쓰기가드)·C(node태그) 3 PR 머지. **다음 = Mac 노드 태그 온보딩**(프롬프트 준비됨) / R9 옵션 / 릴리스. (이전: [session11](docs/prompts/v2-handoff_2026-07-04_session11.md)=레지스트리 PR #5.)
   - **MAC 최신**: [mac-rc1](docs/prompts/v2-handoff_2026-07-03_mac-rc1.md) - 맥: v0.1.0-rc.1 발행 + 티키타카.
 - 이전 [session5](docs/prompts/v2-handoff_2026-07-02_session5.md). 맥↔윈도우 왕복은 [docs/reference/dev-mac-windows.md](docs/reference/dev-mac-windows.md). 협업 규약은 위 "맥↔윈도우 협업 규약" 섹션.
 - **Cargo.toml `version="0.2.2"`**(세션10부터 정식 배포, 더 이상 rc 아님). cargo-dist 6타깃 + homebrew-tap 발행 중(cargo-release로 bump). 릴리스 교훈=[dev-mac-windows §6](docs/reference/dev-mac-windows.md). 정본 방향: [배포·온보딩](docs/design/v2-deploy-onboarding_2026-07-02.md) + [A2A](docs/design/v2-A2A-core-backend_2026-06-30.md) + [시간성·유효성](docs/design/v2-temporal-validity-direction_2026-07-01.md).
