@@ -359,3 +359,14 @@
 > T4에서 None으로 미룬 node 레인 태그를 배선. node 워커도 셀렉터로 발견되게. backend는 별도 registry 없이 lane 정의=named backend(문서만).
 
 - [x] C: Lane에 tags 필드(work --tags 동일 형식) + node 레인 run_worker_loop 호출부 배선(T4 None 대체) + 파싱 테스트 + node-onboarding 문서(tags + backend=named-seat 명시). (Opus 직접) 428 pass, clippy 클린. backend registry는 비채택(lane 정의로 충분). (Opus 직접) 스모크: 코어(127.0.0.1:8899) + `work --once --tags`로 워커 2개 자기등록 → `/a2a` SendMessage toSelector: 단일매칭(smoke-worker 라우팅)/무매칭(no-consumer 에러·미생성)/다중매칭(후보 smoke-worker+smoke-worker2 반환·미생성)/부분집합(machine=mac,runner=claude→smoke-worker2 유일) 전부 정확. 레거시 to_agent 문자열 경로 불변(기존 handle_send 테스트 그대로 pass).
+
+## Plan v2-37: codex 라이브 감독 (app-server ws + turn/start 주입) (docs/plans/v2-37-codex-live-supervisor.md)
+
+> 설계 정본 docs/design/v2-codex-live-supervisor-appserver_2026-07-05.md. codex 감독을 헤드리스 exec -> 라이브 app-server thread로. 신규 `tunaround codex-inject`(ws)가 turn/start로 외부 wake. 구현 Sonnet, Opus 리뷰. **설계·계획만 완료, 구현 미착수.**
+
+- [x] P0: 완료(stdio 실측). thread id=result.thread.id, 승인=MCP호출이 never여도 mcpServer/elicitation/request→injector가 action:accept 필수, accept 후 tuna-broker list_agents native 호출 정답(raw HTTP 0). enum 확정. 설계 §5.2·§7 반영
+- [ ] T1: JSON-RPC/프로토콜 순수부(serde 타입 + 프레이밍/파싱 + 단위테스트, codex 무관 CI green)
+- [ ] T2: ws 클라 + `codex-inject` 서브커맨드(tokio-tungstenite, thread 영속, turn_completed 대기)
+- [ ] T3: 승인 처리(무인 티키타카 자동승인 최소셋, §5.2)
+- [ ] T4: watcher 배선(poll --on-task -> codex-inject) + app-server 토큰 env 기동 헬퍼/문서
+- [ ] T5: 문서(a2a-usage codex 감독 레시피, dev-mac-windows SSH 관전) + 라이브 스모크(raw HTTP 폴백 0 broker.db 교차검증, 티키타카 맥락유지, --remote HITL)

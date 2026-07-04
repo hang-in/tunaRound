@@ -2,6 +2,16 @@
 
 > 작업 중 결정과 근거. 계속 append. (규율 #7) 다음 세션이 결정을 재유도하지 않게.
 
+## 2026-07-05 세션12후속: codex 라이브 감독(app-server ws) 설계 (Plan v2-37)
+
+- **경위**: 감독 A2A 자율 수신 테스트 중 codex 감독을 `poll --on-task 'codex exec resume --last'`로 우회 -> 사용자 지적: exec는 **별개 프로세스(워커)**라 감독 티키타카 스코프 위반. 게다가 watcher가 spawn한 codex exec가 **TUNA_BROKER_TOKEN 미상속**(setx User레벨은 이미 뜬 셸에 전파 안 됨) -> tuna-broker MCP 401 미로드 -> codex가 raw HTTP로 자가구조하며 **186k 토큰 낭비**(3회 시도 끝 session-id 헤더 고쳐 성공). task 84f67cb6은 completed 됐으나 잘못된 레일.
+- **역할 확정(사용자)**: win-claude=총감독(HITL, 사용자 터널) / win-codex·mac-claude·mac-codex=a2a 감독 peers. 각 감독=지속맥락 라이브 TUI 티키타카(워커 아님). **이 세션=엔지니어**(총감독 아님, broker MCP 불요, CLI+db로 설정·검증). 총감독=별도 claude TUI(tuna-broker MCP `-s local` 등록, `-s project` 금지=PUBLIC 레포 토큰유출).
+- **"codex 라이브 TUI 외부 wake 불가"는 내 오판(철회)**. 실측: `codex app-server --listen ws://127.0.0.1:PORT`가 **Windows 정상 기동**(관리형 remote-control/daemon만 Unix전용). 프로토콜에 **`turn/start`**(라이브 thread에 유저턴 주입=외부 wake) 존재. `codex --remote ws://`로 사람 관전. app-server가 `~/.codex/config.toml`의 tuna-broker MCP 로드(단 TUNA_BROKER_TOKEN env 필수).
+- **결정**: 사용자 선택 B=설계 정본 먼저(docs/design/v2-codex-live-supervisor-appserver_2026-07-05.md) 후 Sonnet 위임. 신규 `tunaround codex-inject`(tokio-tungstenite ws 클라)가 `poll --on-task` 대상으로 exec-resume 대체. thread 소유=글루(threadId 영속). 크로스머신=브로커가 담당(ws 포워딩은 원격 --remote 관전 때만). 워커(헤드리스 work/exec)와 감독(라이브 thread) 역할 분리.
+- **열린 질문(구현 전 P0 라이브 확인)**: --remote thread 선택 UX / 승인 ServerRequest 라우팅(글루 vs 붙은 TUI) / approvalPolicy·sandboxPolicy enum값 / app-server 재기동 후 thread/resume rollout 복구 / 알림 브로드캐스트 필터. 설계 §7.
+- **상태**: 토큰 고친 exec-resume watcher(b9uf4cuap)는 이 발견으로 구식(구현 전환 시 제거). 브로커 상주 유지(PID 2640, 토큰 고정=backend-private.md 참조). 스키마 v8.
+- **P0 완료(2026-07-05, stdio 실측)**: `codex app-server --listen stdio://` 파이프 구동(파이썬 드라이버)로 initialize->thread/start->turn/start->turn/completed 성립. **확정**: thread id=`result.thread.id`(threadId 아님). rollout `~/.codex/sessions/.../rollout-*.jsonl` 저장(resume 가능). turn/start input=`[{type:"text",text}]`. 완료=`turn/completed` 알림, 최종답=`item/completed`(item.type=agentMessage, phase=final_answer). **승인 반전**: MCP 도구 호출은 approvalPolicy=never여도 `mcpServer/elicitation/request`(id 있는 ServerRequest, _meta.codex_approval_kind=mcp_tool_call, serverName=tuna-broker)로 오고, injector가 `{result:{action:"accept"}}` 응답해야 진행. accept 후 codex가 tuna-broker `list_agents` **native 호출** 정답("online 2개: mac-claude, mac-codex") 반환, **raw HTTP 폴백 0**(토큰 env 전제=세션12 186k 근본원인 해소). enum: approvalPolicy=untrusted/on-failure/on-request/never, sandbox=read-only/workspace-write/danger-full-access, sandboxPolicy=readOnly/workspaceWrite/dangerFullAccess/externalSandbox. **ws 고유(--remote 관전 UX/다중접속 브로드캐스트/재기동 후 resume)는 T2·T5 라이브 확인**. 다음=T1(프로토콜 serde 순수부) Sonnet 위임.
+
 ## 2026-07-04 세션11: 에이전트 레지스트리(UUID+태그) 착수 (Plan v2-34)
 
 - **목적**: 어드레싱을 자유 문자열 → UUID(라우팅)+태그(발견)로. 설계 정본은 세션10이 확정(docs/design/v2-agent-registry-uuid-tags_2026-07-04.md), 이번 세션 = 구현. 사용자 GO(핸드오프 §5 순서).
