@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### 추가 (Added)
+
+- `tunaround poll --on-task '<cmd>'`: task 도착 시 명령을 실행한다(`{id}` 치환 + `TUNAROUND_TASK_ID`/`TUNAROUND_TASK_MSG` 환경변수). Monitor가 없는 하네스(codex 등)의 0토큰 감독 레인 wake 글루. 예: codex는 `--on-task 'codex exec resume --last "task {id} 처리"'`로 세션을 이어받아 처리(idle 0토큰, 문맥 보존).
+
 ## [0.2.1] - 2026-07-04
 
 ### 변경 (Changed)

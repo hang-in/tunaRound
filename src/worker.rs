@@ -255,15 +255,49 @@ fn collect_new_submitted(
     fresh
 }
 
-/// 감시 전용 루프: agent 앞 새 submitted task만 stdout에 한 줄씩 알리고 claim은 하지 않는다.
-/// Claude Code 세션이 이 커맨드를 Monitor로 감싸면, task 도착이 이벤트로 세션을 깨워 스스로
-/// claim/처리하게 할 수 있다(감독 레인을 유휴 0토큰으로 운용). 이미 알린 id는 HashSet으로 디듑한다
+/// on-task 명령의 `{id}` 플레이스홀더를 task id로 치환한다(순수 함수). msg는 셸 인젝션 위험이 있어
+/// 명령 문자열에 치환하지 않고 환경변수(TUNAROUND_TASK_MSG)로만 전달한다.
+fn substitute_task_placeholders(cmd: &str, id: &str) -> String {
+    cmd.replace("{id}", id)
+}
+
+/// task 도착 시 --on-task 명령을 셸로 실행한다(블로킹). `{id}`는 치환하고, id/msg는 환경변수로도 넘긴다.
+/// Monitor가 없는 하네스(codex 등)의 0토큰 wake 글루다(예: `codex exec resume --last "task {id} 처리"`).
+/// unix=sh -c, windows=cmd /C로 실행해 파이프·인용을 자연스럽게 쓴다. 실패는 로그만 하고 루프는 죽지 않는다.
+fn run_on_task(cmd: &str, id: &str, msg: &str) {
+    let expanded = substitute_task_placeholders(cmd, id);
+    #[cfg(windows)]
+    let mut command = {
+        let mut c = std::process::Command::new("cmd");
+        c.arg("/C").arg(&expanded);
+        c
+    };
+    #[cfg(not(windows))]
+    let mut command = {
+        let mut c = std::process::Command::new("sh");
+        c.arg("-c").arg(&expanded);
+        c
+    };
+    command.env("TUNAROUND_TASK_ID", id).env("TUNAROUND_TASK_MSG", msg);
+    eprintln!("[poll] on-task 실행: task {id}");
+    match command.status() {
+        Ok(s) if s.success() => eprintln!("[poll] on-task 완료: task {id}"),
+        Ok(s) => eprintln!("[poll] on-task 비정상 종료(코드 {:?}): task {id}", s.code()),
+        Err(e) => eprintln!("[poll] on-task 실행 실패: {e}"),
+    }
+}
+
+/// 감시 전용 루프: agent 앞 새 submitted task만 알린다(claim은 하지 않는다).
+/// Claude Code 세션이 이 커맨드를 Monitor로 감싸면, task 도착이 stdout 이벤트로 세션을 깨워 스스로
+/// claim/처리하게 할 수 있다(감독 레인을 유휴 0토큰으로 운용). Monitor가 없는 하네스(codex 등)를 위해
+/// `on_task`가 있으면 task마다 그 명령을 실행한다(외부 wake 글루). 이미 알린 id는 HashSet으로 디듑한다
 /// (task는 claim 전까지 submitted로 남아 매 폴마다 재등장하므로 중복 알림을 막는다).
 pub async fn run_poll_loop(
     client: &McpHttpClient,
     agent: &str,
     interval_secs: u64,
     once: bool,
+    on_task: Option<&str>,
 ) -> Result<(), String> {
     use std::io::Write;
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -276,6 +310,12 @@ pub async fn run_poll_loop(
                         t.msg.chars().take(80).collect::<String>().replace('\n', " ");
                     println!("TASK {} :: {preview}", t.id);
                     let _ = std::io::stdout().flush();
+                    // on-task 글루: 블로킹 명령(codex exec resume 등)이라 spawn_blocking으로 await한다
+                    // (reactor는 안 막으면서 순차 처리 - 책임자는 한 번에 하나씩 다룬다).
+                    if let Some(cmd) = on_task {
+                        let (cmd, id, msg) = (cmd.to_string(), t.id.clone(), t.msg.clone());
+                        let _ = tokio::task::spawn_blocking(move || run_on_task(&cmd, &id, &msg)).await;
+                    }
                 }
             }
             // 폴 실패는 이벤트가 아니라 stderr로(Monitor 이벤트 오염 방지). 루프는 죽지 않는다.
@@ -559,6 +599,16 @@ mod tests {
     #[test]
     fn parse_context_map_rejects_duplicate_key() {
         assert!(parse_context_map("projA=/x,projA=/y").is_err());
+    }
+
+    #[test]
+    fn substitute_task_placeholders_replaces_id_only() {
+        let out = substitute_task_placeholders("codex exec resume --last \"task {id} 처리\"", "abc123");
+        assert_eq!(out, "codex exec resume --last \"task abc123 처리\"");
+        // {id}가 여러 번 나와도 모두 치환.
+        assert_eq!(substitute_task_placeholders("{id}-{id}", "x"), "x-x");
+        // {id}가 없으면 그대로(msg는 셸에 치환하지 않으므로 {msg}는 남는다 = env로 전달 전제).
+        assert_eq!(substitute_task_placeholders("run {msg}", "x"), "run {msg}");
     }
 
     #[test]
