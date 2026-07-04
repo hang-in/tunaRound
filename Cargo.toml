@@ -1,6 +1,6 @@
 [package]
 name = "tunaround"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 description = "터미널에서 사람이 운전하는 역할 부여 2-에이전트 착수 전 설계 토론 도구"
 repository = "https://github.com/hang-in/tunaRound"
