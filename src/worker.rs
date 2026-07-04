@@ -133,11 +133,34 @@ fn paths_overlap(a: &std::path::Path, b: &std::path::Path) -> bool {
     a == b || a.starts_with(b) || b.starts_with(a)
 }
 
+/// 경로를 파일시스템 접근 없이 어휘적으로 절대·정규화한다(존재하지 않는 경로도 처리). 상대경로는 base에
+/// 이어붙이고, `.`는 버리고 `..`는 직전 컴포넌트를 pop한다. canonicalize가 실패하는(=아직 없는) 경로의
+/// overlap 판정 폴백으로 쓴다. 심볼릭 링크는 해석하지 않으므로 canonical과 완전 동치는 아니나, cwd 하위
+/// 여부를 보수적으로 보는 데는 충분하다.
+fn normalize_lexically(p: &std::path::Path, base: &std::path::Path) -> std::path::PathBuf {
+    use std::path::{Component, PathBuf};
+    let combined: PathBuf = if p.is_absolute() { p.to_path_buf() } else { base.join(p) };
+    let mut out = PathBuf::new();
+    for comp in combined.components() {
+        match comp {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
+}
+
 /// write 모드 워커가 node 자신이 도는 클론을 갈아엎을(self-disruption) 위험이 있는지 판정한다.
-/// project=None이면 러너가 node 실행 디렉터리(cwd)에서 돌아 위험(true). Some(p)이면 canonical 경로가
-/// node_cwd와 겹치면(같거나 한쪽이 조상) 위험. project 경로가 존재하지 않아 canonical 실패하면 cwd와
-/// 같을 수 없으므로 self-disruption 아님(false, 잘못된 경로 에러는 러너가 따로 surface). read-only
-/// 워커엔 호출하지 않는다(쓰기가 없어 무해). 2026-07-03 뱃지 task self-disruption을 구조적으로 막는다.
+/// project=None이면 러너가 node 실행 디렉터리(cwd)에서 돌아 위험(true). Some(p)이면 cwd와 겹치면
+/// (같거나 한쪽이 조상) 위험. read-only 워커엔 호출하지 않는다(쓰기가 없어 무해). 2026-07-03 뱃지 task
+/// self-disruption을 구조적으로 막는다.
+///
+/// 존재하는 경로는 canonical끼리 비교하고, 아직 없는 경로(canonicalize 실패)는 어휘 정규화로 폴백
+/// 판정한다(gemini 리뷰: 러너가 실행 중 cwd 하위에 그 경로를 생성하면 뒤늦게 self-disruption 여지 -
+/// 보수적으로 미리 겹침으로 본다).
 pub fn write_lane_disrupts_node(
     project: Option<&std::path::Path>,
     node_cwd: &std::path::Path,
@@ -145,10 +168,18 @@ pub fn write_lane_disrupts_node(
     let Some(p) = project else {
         return true; // 작업 디렉터리 미지정 = node cwd에서 write = 위험.
     };
-    let cwd = std::fs::canonicalize(node_cwd).unwrap_or_else(|_| node_cwd.to_path_buf());
     match std::fs::canonicalize(p) {
-        Ok(pc) => paths_overlap(&pc, &cwd),
-        Err(_) => false, // 존재하지 않는 경로는 cwd와 겹칠 수 없다(러너가 별도로 실패 처리).
+        Ok(pc) => {
+            let cwd = std::fs::canonicalize(node_cwd).unwrap_or_else(|_| node_cwd.to_path_buf());
+            paths_overlap(&pc, &cwd)
+        }
+        Err(_) => {
+            // 아직 없는 경로: canonical 대신 어휘 정규화로 양쪽을 같은 형태로 만들어 겹침을 본다
+            // (Windows verbatim `\\?\` 접두 불일치를 피하려 cwd도 canonical 대신 어휘 정규화).
+            let p_lex = normalize_lexically(p, node_cwd);
+            let cwd_lex = normalize_lexically(node_cwd, node_cwd);
+            paths_overlap(&p_lex, &cwd_lex)
+        }
     }
 }
 
@@ -558,11 +589,36 @@ mod tests {
     }
 
     #[test]
-    fn write_lane_disrupts_node_nonexistent_project_is_not_disruption() {
-        // 존재하지 않는 경로는 cwd와 겹칠 수 없다(러너가 별도로 실패 처리).
+    fn write_lane_disrupts_node_nonexistent_under_cwd_is_dangerous() {
+        // 아직 없는 경로라도 cwd 하위면 위험(gemini 리뷰: 러너가 실행 중 생성 후 self-disruption 여지).
         let cwd = std::env::current_dir().unwrap();
         let missing = cwd.join("이_경로는_존재하지_않음_zzz");
-        assert!(!write_lane_disrupts_node(Some(&missing), &cwd));
+        assert!(write_lane_disrupts_node(Some(&missing), &cwd));
+    }
+
+    #[test]
+    fn write_lane_disrupts_node_nonexistent_disjoint_is_safe() {
+        // cwd와 완전히 분리된(조상/자손 아닌) 미존재 절대경로는 안전.
+        let cwd = std::env::current_dir().unwrap();
+        // cwd의 부모 밑 형제 경로(cwd 하위가 아님)를 미존재로 만든다.
+        let parent = cwd.parent().unwrap_or(&cwd);
+        let sibling = parent.join("tunaround_없는_형제_zzz");
+        // 방어: 극히 드물게 sibling이 cwd와 겹치면(동일 이름 등) 이 단정은 건너뛴다.
+        if !normalize_lexically(&sibling, &cwd).starts_with(normalize_lexically(&cwd, &cwd)) {
+            assert!(!write_lane_disrupts_node(Some(&sibling), &cwd));
+        }
+    }
+
+    #[test]
+    fn normalize_lexically_resolves_dot_and_dotdot() {
+        use std::path::Path;
+        let base = Path::new("/home/user/repo");
+        // 상대경로는 base에 이어붙는다.
+        assert_eq!(normalize_lexically(Path::new("sub"), base), Path::new("/home/user/repo/sub"));
+        // `.`은 무시, `..`은 pop.
+        assert_eq!(normalize_lexically(Path::new("./a/../b"), base), Path::new("/home/user/repo/b"));
+        // 절대경로는 base 무시.
+        assert_eq!(normalize_lexically(Path::new("/x/y/../z"), base), Path::new("/x/z"));
     }
 
     #[test]
