@@ -890,6 +890,26 @@ impl SqliteStore {
         rows.into_iter().map(TaskRow::into_task).collect()
     }
 
+    /// 브로커 전역에서 열려 있는(submitted/working/input_required) task를 to_agent 필터 없이
+    /// created_at 오름차순으로 전부 반환한다(운영자 조망용 tasks MCP 도구 전용, list_open_tasks_for와
+    /// 같은 패턴에서 to_agent 조건만 뺀 버전).
+    pub fn list_all_open_tasks(&self) -> Result<Vec<Task>, String> {
+        let mut stmt = self
+            .conn
+            .prepare(&format!(
+                "SELECT {TASK_COLUMNS} FROM tasks \
+                 WHERE state IN ('submitted','working','input_required') \
+                 ORDER BY created_at"
+            ))
+            .map_err(|e| format!("sqlite: {e}"))?;
+        let rows: Vec<TaskRow> = stmt
+            .query_map([], task_row_from_sql)
+            .map_err(|e| format!("sqlite: {e}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("sqlite: {e}"))?;
+        rows.into_iter().map(TaskRow::into_task).collect()
+    }
+
     /// state와 동반 상태 메시지를 원자적으로 갱신한다(A2A TaskStatus 단위). status_message=None이면
     /// 이번 전이에 메시지가 없다는 뜻으로 message_json을 비운다(이전 값 보존 아님).
     pub fn update_task_state(
@@ -1754,6 +1774,25 @@ mod tests {
             assert_eq!(
                 open.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(),
                 vec!["earlier", "later"]
+            );
+        }
+
+        #[test]
+        fn list_all_open_tasks_returns_every_agent_and_excludes_completed() {
+            let db = SqliteStore::open_memory().unwrap();
+            let t1 = Task::new("t1", None, "win", "mac", "2026-07-02 09:00:00"); // open, mac
+            let t2 = Task::new("t2", None, "win", "other", "2026-07-02 09:05:00"); // open, other
+            let mut t3 = Task::new("t3", None, "win", "mac", "2026-07-02 09:10:00"); // completed, mac
+            t3.state = TaskState::Completed;
+            db.create_task(&t1).unwrap();
+            db.create_task(&t2).unwrap();
+            db.create_task(&t3).unwrap();
+
+            let all_open = db.list_all_open_tasks().unwrap();
+            assert_eq!(
+                all_open.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(),
+                vec!["t1", "t2"],
+                "to_agent 필터 없이 열린 task 전부(agent 무관) + completed 제외"
             );
         }
 

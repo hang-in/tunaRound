@@ -319,6 +319,60 @@ impl TaskRow {
     }
 }
 
+/// 한 자리 숫자 ASCII 바이트를 0-9 정수로 변환한다(parse_sql_datetime 내부 헬퍼, 신규 의존 없이 수동 파싱).
+fn digit(b: u8) -> Option<i64> {
+    if b.is_ascii_digit() {
+        Some((b - b'0') as i64)
+    } else {
+        None
+    }
+}
+
+/// 그레고리력 날짜(y-m-d)를 유닉스 epoch 일수로 변환한다(Howard Hinnant의 days_from_civil, 정수 산술만
+/// 사용해 신규 의존 없이 날짜 계산). m/d 범위는 호출자(parse_sql_datetime)가 먼저 검증한다.
+fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400; // [0, 399]
+    let mp = if m > 2 { m - 3 } else { m + 9 }; // [0, 11]
+    let doy = (153 * mp + 2) / 5 + d - 1; // [0, 365]
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy; // [0, 146096]
+    era * 146097 + doe - 719468
+}
+
+/// SQLite `datetime('now')` 포맷("YYYY-MM-DD HH:MM:SS", UTC)을 유닉스 epoch 초로 파싱한다(신규 의존
+/// 없이 고정 포맷만, 실패 시 None). 바이트 단위로만 검사해 비ASCII 입력에도 패닉하지 않는다.
+pub fn parse_sql_datetime(s: &str) -> Option<i64> {
+    let b = s.as_bytes();
+    if b.len() != 19 {
+        return None;
+    }
+    if b[4] != b'-' || b[7] != b'-' || b[10] != b' ' || b[13] != b':' || b[16] != b':' {
+        return None;
+    }
+    let year = digit(b[0])? * 1000 + digit(b[1])? * 100 + digit(b[2])? * 10 + digit(b[3])?;
+    let month = digit(b[5])? * 10 + digit(b[6])?;
+    let day = digit(b[8])? * 10 + digit(b[9])?;
+    let hour = digit(b[11])? * 10 + digit(b[12])?;
+    let minute = digit(b[14])? * 10 + digit(b[15])?;
+    let second = digit(b[17])? * 10 + digit(b[18])?;
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    if hour > 23 || minute > 59 || second > 59 {
+        return None;
+    }
+    let days = days_from_civil(year, month, day);
+    Some(days * 86400 + hour * 3600 + minute * 60 + second)
+}
+
+/// 두 SQL datetime의 경과 초를 계산한다(now-then). 파싱 실패면 None, 음수(시계 역행)는 0으로 클램프.
+pub fn age_secs(now: &str, then: &str) -> Option<i64> {
+    let now_epoch = parse_sql_datetime(now)?;
+    let then_epoch = parse_sql_datetime(then)?;
+    Some((now_epoch - then_epoch).max(0))
+}
+
 /// 기존 history_json(NULL·빈 문자열 가능)에 새 메시지를 append한 JSON 문자열을 만든다(순수 함수).
 pub fn append_history_json(existing: Option<&str>, new_msg: &Message) -> Result<String, String> {
     let mut history: Vec<Message> = match existing {
@@ -650,5 +704,51 @@ mod tests {
         let status_update = frames[1].status_update.as_ref().expect("statusUpdate 없음");
         assert_eq!(status_update.status.state, TaskState::Completed);
         assert!(status_update.is_final);
+    }
+
+    #[test]
+    fn parse_sql_datetime_epoch_zero() {
+        assert_eq!(parse_sql_datetime("1970-01-01 00:00:00"), Some(0));
+    }
+
+    #[test]
+    fn parse_sql_datetime_known_value() {
+        // 1970-01-02 03:04:05 = 하루(86400초) + 3시04분05초.
+        assert_eq!(
+            parse_sql_datetime("1970-01-02 03:04:05"),
+            Some(86400 + 3 * 3600 + 4 * 60 + 5)
+        );
+    }
+
+    #[test]
+    fn parse_sql_datetime_roundtrips_via_days_from_civil() {
+        // 2026-07-04는 1970-01-01로부터 20638일(윤년 계산 포함 수동 검산)이다.
+        assert_eq!(parse_sql_datetime("2026-07-04 00:00:00"), Some(20638 * 86400));
+    }
+
+    #[test]
+    fn parse_sql_datetime_rejects_bad_format() {
+        assert!(parse_sql_datetime("bogus").is_none());
+        assert!(parse_sql_datetime("2026-07-04").is_none()); // 시각 없음(길이 불일치).
+        assert!(parse_sql_datetime("2026/07/04 00:00:00").is_none()); // 구분자 불일치.
+        assert!(parse_sql_datetime("2026-13-04 00:00:00").is_none()); // 월 범위 초과.
+        assert!(parse_sql_datetime("2026-07-04 25:00:00").is_none()); // 시 범위 초과.
+    }
+
+    #[test]
+    fn age_secs_computes_positive_difference() {
+        assert_eq!(age_secs("2026-07-04 00:10:00", "2026-07-04 00:00:00"), Some(600));
+    }
+
+    #[test]
+    fn age_secs_clamps_negative_to_zero() {
+        // now < then(시계 역행 또는 미래 timestamp): 음수 대신 0.
+        assert_eq!(age_secs("2026-07-04 00:00:00", "2026-07-04 00:10:00"), Some(0));
+    }
+
+    #[test]
+    fn age_secs_parse_failure_is_none() {
+        assert_eq!(age_secs("bogus", "2026-07-04 00:00:00"), None);
+        assert_eq!(age_secs("2026-07-04 00:00:00", "bogus"), None);
     }
 }

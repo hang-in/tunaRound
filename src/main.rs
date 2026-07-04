@@ -1026,6 +1026,22 @@ fn main() {
         } else {
             tunaround::runner::RunMode::ReadOnly
         };
+        // 워커 격리 가드레일(거버넌스 #5): write 워커의 작업 디렉터리가 이 프로세스 실행 디렉터리(클론)와
+        // 겹치면 reset --hard 같은 write가 발밑을 갈아엎어 워커가 자살한다(2026-07-03 뱃지 task). 거부하고
+        // 별도 클론/워크트리를 --project-path로 지정하도록 안내한다.
+        if a.write {
+            let cwd = std::env::current_dir().unwrap_or_default();
+            let project = a.project_path.as_deref().map(std::path::Path::new);
+            if tunaround::worker::write_lane_disrupts_node(project, &cwd) {
+                eprintln!(
+                    "[work] 거부: --write 워커의 작업 디렉터리({})가 실행 디렉터리({})와 겹칩니다. \
+                     자기 클론을 갈아엎어 워커가 자살할 수 있습니다. 별도 클론/워크트리를 --project-path로 지정하세요.",
+                    a.project_path.as_deref().unwrap_or("<미지정=cwd>"),
+                    cwd.display()
+                );
+                std::process::exit(1);
+            }
+        }
         let runner: std::sync::Arc<dyn tunaround::runner::Runner + Send + Sync> = match a.runner {
             WorkRunner::Claude => std::sync::Arc::new(tunaround::runner::claude::ClaudeRunner::new()),
             WorkRunner::Codex => std::sync::Arc::new(tunaround::runner::codex::CodexRunner::new()),
@@ -1214,6 +1230,23 @@ fn main() {
                         } else {
                             tunaround::runner::RunMode::ReadOnly
                         };
+                        let project = l.project.as_deref().map(tunaround::config::expand_home);
+                        // 워커 격리 가드레일(거버넌스 #5): write 레인의 작업 디렉터리가 node 실행 클론과
+                        // 겹치면 자기 클론을 갈아엎어 워커가 자살한다(2026-07-03 뱃지 task). 그 레인만
+                        // 거부하고(다른 레인은 계속) 별도 클론/워크트리 지정을 안내한다.
+                        if l.is_write() {
+                            let cwd = std::env::current_dir().unwrap_or_default();
+                            let pp = project.as_deref().map(std::path::Path::new);
+                            if tunaround::worker::write_lane_disrupts_node(pp, &cwd) {
+                                return Err(format!(
+                                    "write 레인의 project({})가 node 실행 디렉터리({})와 겹칩니다. \
+                                     자기 클론 갈아엎기(self-disruption)를 막기 위해 거부합니다. \
+                                     별도 클론/워크트리를 project로 지정하세요.",
+                                    project.as_deref().unwrap_or("<미지정=cwd>"),
+                                    cwd.display()
+                                ));
+                            }
+                        }
                         let context_map = match l.context_map.as_deref() {
                             Some(spec) => tunaround::worker::parse_context_map(spec)?,
                             None => std::collections::HashMap::new(),
@@ -1225,7 +1258,7 @@ fn main() {
                             runner,
                             &l.agent,
                             l.model.clone(),
-                            l.project.as_deref().map(tunaround::config::expand_home),
+                            project,
                             context_map,
                             mode,
                             l.interval,

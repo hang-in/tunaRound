@@ -319,3 +319,13 @@
 - [ ] R9 [낮/옵션] A2A poll 견고화(현 구현 견고성 감안 후순위). 제미나이 #1. **미착수(옵션 유지).**
 - [x] 방법론: PR CI(.github/workflows/ci.yml, build+test+clippy 3-OS 매트릭스, 32cd48c+18371fa) + GitHub Flow(PR #1) 도입.
 - 미루기: Runner async trait(YAGNI), main/mcp 분해(여유시), session-id pull·CoreSync(검증 먼저), 모델 결합(안정적).
+
+## 브로커 거버넌스 구현 (세션10, 2026-07-04, docs/design/v2-broker-governance_2026-07-03.md §4)
+
+> 세션9 두 실패를 구조적으로 제거: (a) no-consumer(폴러 없는 id로 간 task 영구 submitted), (b) self-disruption(워커가 자기 클론 갈아엎어 working 고착). 사용자 결정=전체 5개(#1~#5). 구현=Sonnet 서브 + Opus 리뷰·검증. cargo=Bash `-j 4 CARGO_INCREMENTAL=0`, 검증 = `cargo test --features "morphology mcp serve worker"`.
+
+- [x] #1 네이밍 컨벤션 문서(cost 0, Opus 직접): a2a-usage.md에 "to_agent는 폴링하는 워커 id만(dispatcher id는 from_agent 전용)" + 네이밍 `{머신}-{역할|러너}`(worker=-worker/-codex/-llm, dispatcher=-dispatch/사람이름) + auto=-worker/supervised=-claude 관례.
+- [x] #3+#4 고착·no-consumer 노출(Sonnet, 표시 전용): store/a2a.rs 순수 age 헬퍼(parse_sql_datetime/age_secs) + mcp.rs format_open_tasks(poll)·format_task_status(get_task)에 stuck?(working·updated_at 낡음)·no-consumer?(submitted·created_at TTL초과) 주석 + 신규 `tasks` MCP 도구(브로커 전역 열린 task 조망, list_all_open_tasks 저장소 메서드). 임계값=named const. **A2A expired state 미추가(스펙 부재)=표시 신호로.**
+- [x] #2 빌드 피처 광고(Sonnet): a2a_server.rs AgentCard에 buildFeatures: Vec<String>(compile-time cfg! for serve/worker/mcp/engines/semantic/morphology/a2a-out) + build_agent_card 배선 + 카드 테스트. **poll엔 미추가(poll=task목록, capability 아님). 워커별 runner/write 광고=워커 레지스트리 필요=§6 후속.**
+- [x] #5 워커 격리 가드레일(Sonnet): worker.rs/config.rs 순수 헬퍼 write_lane_disrupts_node(project: Option<&Path>, node_cwd) = None→true(cwd에서 실행=위험), Some(p)→canonical(p)==cwd or cwd⊃p면 true. node 레인 배선·work 서브커맨드에서 write+disrupt면 그 레인 거부(명확 안내). **자동 워크트리 프로비저닝=후속.**
+- [ ] 최종: 검증(풀피처 pass 확인) + CLAUDE.md 현재상태·WIN포인터 갱신(Windows 단독 편집 규약) + 세션10 핸드오프.
