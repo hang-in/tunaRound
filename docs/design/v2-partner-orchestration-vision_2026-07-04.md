@@ -6,11 +6,16 @@
 
 에이전트를 **필요할 때 능동적으로 부르는 협력업체**로 다룬다. 원격/로컬의 다른 에이전트를 감독(터미널)·워커(헤드리스) 모드로 소환해 서로 협력하고, 감독이 워커를 부리고, 필요하면 tunallama 서브에이전트까지 소환하는 유연한 오케스트레이션이 목표. A2A(에이전트=서비스) 모델과 정확히 맞는다.
 
-## 1. 모드 (두 축)
+## 1. 조직 모델 (책임자 / 실무 계층)
 
-- **감독(supervised, 터미널, HITL, 보임)**: 대화형 Claude/Codex 세션. `tunaround poll` 감시자(Monitor wake, 유휴 0토큰)로 task 도착 시 깨어나 처리. 사람이 지켜보며 개입 가능.
-- **워커(headless, 자율, 안 보임)**: `tunaround node`의 auto 레인 = `run_worker_loop`이 claim->러너 실행->complete를 사람 없이. `--runner claude|codex|http|a2a`로 파트너 교체.
-- 둘 다 **원격/로컬 혼재** 가능(크로스머신 A2A, 2머신 실증). **온디맨드 소환** = `send_task(to=<agent>)`.
+협력업체 비유로 두 티어다.
+
+- **감독 = 각 업체 책임자**(supervised, 터미널, HITL, 보임): 대화형 Claude/Codex 세션. 협의·결정하고, 무거운 실무는 아래로 내려보낸다. task 도착 wake는 하네스별로 갈린다: **claude는 `tunaround poll`+Monitor로 0토큰 wake** 가능. **codex는 백그라운드 완료로 호출 에이전트를 깨우는 수단이 없다**(openai/codex#15723: 블로킹 폴 또는 사람 넛지뿐) - codex 책임자는 상시 대기가 어려우므로 "사람이 알리면 책임자가 실무 소환" 흐름으로 운용.
+- **실무담당자 = 워커 + 서브에이전트**(headless, 안 보임): 책임자가 **필요할 때 소환**하는 하위 티어.
+  - 워커: `tunaround work`/node auto 레인 = `run_worker_loop`이 claim->러너 실행->complete를 사람 없이. `--runner claude|codex|http|a2a`.
+  - 서브에이전트: tunallama(tuna-developer 등) 로컬 LLM 위임.
+
+핵심: **책임자끼리 협의**하고, 각 책임자가 **자기 실무(워커/서브에이전트)를 부린다**. 둘 다 원격/로컬 혼재(크로스머신 A2A, 2머신 실증). 온디맨드 소환 = `send_task(to=<agent>)`. 발송은 대칭이라 책임자도 dispatcher다.
 
 ## 2. 상호작용 (핵심)
 
