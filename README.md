@@ -53,13 +53,19 @@ curl --proto '=https' --tlsv1.2 -LsSf https://github.com/hang-in/tunaRound/relea
 irm https://github.com/hang-in/tunaRound/releases/latest/download/tunaround-installer.ps1 | iex
 ```
 
+**Homebrew (macOS · Linux)**
+
+```bash
+brew install hang-in/tap/tunaround
+```
+
 **Cargo** (소스에서 직접 설치. crates.io에는 게시하지 않습니다)
 
 ```bash
 cargo install --git https://github.com/hang-in/tunaRound tunaround
 ```
 
-> 특정 버전이 필요하면 [릴리스 페이지](https://github.com/hang-in/tunaRound/releases)에서 플랫폼 아카이브를 직접 내려받을 수 있습니다. (Homebrew tap은 준비 중입니다.)
+> 특정 버전이 필요하면 [릴리스 페이지](https://github.com/hang-in/tunaRound/releases)에서 플랫폼 아카이브를 직접 내려받을 수 있습니다.
 
 > 소스에서 직접 빌드하거나 개발 모드로 실행하려면 [`docs/development/source-run.md`](docs/development/source-run.md)를 참고하세요.
 
