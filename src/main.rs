@@ -1357,11 +1357,23 @@ fn main() {
         };
 
         // 감독 레인: 데몬화할 수 없으니(세션 부착 본질) watcher 실행 명령만 안내한다.
+        // runner별로 wake 경로가 다르다: claude=세션 하네스 Monitor+poll, codex=app-server 라이브 thread에
+        // codex-inject로 turn/start 주입(codex엔 Monitor가 없음, 설계 v2-37).
         for l in cfg.lane.iter().filter(|l| l.is_supervised()) {
-            eprintln!(
-                "[node] 감독 레인 '{}': 클로드코드 세션에서 아래를 Monitor로 실행하세요\n  tunaround poll --core {} --token <TOKEN> --agent {}",
-                l.agent, core_url, l.agent
-            );
+            if l.runner == "codex" {
+                eprintln!(
+                    "[node] 감독 레인 '{}'(codex): app-server 라이브 감독으로 운용하세요(설계 v2-37).\n  \
+                     1) app-server 기동(토큰 env 필수): TUNA_BROKER_TOKEN=<TOKEN> codex app-server --listen ws://127.0.0.1:<PORT>\n  \
+                     2) (선택) 사람 관전: codex --remote ws://127.0.0.1:<PORT>\n  \
+                     3) 감시+주입: tunaround poll --core {} --token <TOKEN> --agent {} --on-task 'tunaround codex-inject --ws ws://127.0.0.1:<PORT> --agent {} --text \"브로커 task {{id}}를 claim_task로 처리하고 complete_task로 보고하라\"'",
+                    l.agent, core_url, l.agent, l.agent
+                );
+            } else {
+                eprintln!(
+                    "[node] 감독 레인 '{}'(claude): 클로드코드 세션에서 아래를 Monitor로 실행하세요\n  tunaround poll --core {} --token <TOKEN> --agent {}",
+                    l.agent, core_url, l.agent
+                );
+            }
         }
 
         // 자동 레인: 각 워커 루프를 동시에 상주 실행한다.

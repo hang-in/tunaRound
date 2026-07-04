@@ -365,8 +365,9 @@
 > 설계 정본 docs/design/v2-codex-live-supervisor-appserver_2026-07-05.md. codex 감독을 헤드리스 exec -> 라이브 app-server thread로. 신규 `tunaround codex-inject`(ws)가 turn/start로 외부 wake. 구현 Sonnet, Opus 리뷰. **설계·계획만 완료, 구현 미착수.**
 
 - [x] P0: 완료(stdio 실측). thread id=result.thread.id, 승인=MCP호출이 never여도 mcpServer/elicitation/request→injector가 action:accept 필수, accept 후 tuna-broker list_agents native 호출 정답(raw HTTP 0). enum 확정. 설계 §5.2·§7 반영
-- [ ] T1: JSON-RPC/프로토콜 순수부(serde 타입 + 프레이밍/파싱 + 단위테스트, codex 무관 CI green)
-- [ ] T2: ws 클라 + `codex-inject` 서브커맨드(tokio-tungstenite, thread 영속, turn_completed 대기)
-- [ ] T3: 승인 처리(무인 티키타카 자동승인 최소셋, §5.2)
-- [ ] T4: watcher 배선(poll --on-task -> codex-inject) + app-server 토큰 env 기동 헬퍼/문서
-- [ ] T5: 문서(a2a-usage codex 감독 레시피, dev-mac-windows SSH 관전) + 라이브 스모크(raw HTTP 폴백 0 broker.db 교차검증, 티키타카 맥락유지, --remote HITL)
+- [x] T1: 프로토콜 순수부 src/codex_appserver.rs(요청빌더+분류+파싱헬퍼+승인응답빌더). 25테스트, 스키마 대조 검증(Opus). 커밋 45d7f33.
+- [x] T2: ws 클라 src/codex_inject.rs(tokio-tungstenite 0.24, connect→initialize→thread resume|start→turn/start→펌프) + main.rs CodexInject 서브커맨드. 커밋 159364b.
+- [x] T3: 승인 자동응답(decide_action: elicitation accept/승인 granted/unknown LogOnly). T2와 함께 159364b.
+- [x] T4: node 감독 레인 안내 runner별 분기(codex→app-server+codex-inject 레시피, claude→Monitor+poll). main.rs. (Opus 직접)
+- [~] T5: 문서 완료(a2a-usage §10 + dev-mac-windows SSH, 커밋 96c8b34). **라이브 스모크 진행 중**(Opus): app-server 기동→codex-inject 왕복→raw HTTP 폴백0 broker.db 교차검증.
+- 21+25=46 신규 순수 테스트, CI조합(morphology mcp serve worker) clippy 클린. worker 364/기본 290 pass.
