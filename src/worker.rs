@@ -261,15 +261,23 @@ fn substitute_task_placeholders(cmd: &str, id: &str) -> String {
     cmd.replace("{id}", id)
 }
 
-/// task 도착 시 --on-task 명령을 셸로 실행한다(블로킹). `{id}`는 치환하고, id/msg는 환경변수로도 넘긴다.
-/// Monitor가 없는 하네스(codex 등)의 0토큰 wake 글루다(예: `codex exec resume --last "task {id} 처리"`).
-/// unix=sh -c, windows=cmd /C로 실행해 파이프·인용을 자연스럽게 쓴다. 실패는 로그만 하고 루프는 죽지 않는다.
+/// on-task 명령이 멈춰(대화형 입력 대기·네트워크 행) 폴 루프를 영구 정지시키는 걸 막는 안전 상한.
+/// codex/claude 실행이 길 수 있어 넉넉히 준다(초과 시 강제 종료 후 다음 폴로 넘어간다).
+const ON_TASK_TIMEOUT_SECS: u64 = 30 * 60;
+
+/// task 도착 시 --on-task 명령을 셸로 실행한다(타임아웃 상한 있음). `{id}`는 치환하고, id/msg는
+/// 환경변수로도 넘긴다. Monitor가 없는 하네스(codex 등)의 0토큰 wake 글루다.
+/// unix=sh -c, windows=cmd /C. Windows는 raw_arg로 명령행을 원본 그대로 넘긴다(cmd.exe가 표준
+/// CommandLineToArgvW와 다른 규칙이라 .arg()의 이스케이프가 명령 내부 큰따옴표를 깨뜨리기 때문).
+/// 명령이 ON_TASK_TIMEOUT_SECS를 넘기면 강제 종료해 폴 루프가 영구 정지하지 않게 한다(0토큰 감시 목적 보전).
 fn run_on_task(cmd: &str, id: &str, msg: &str) {
     let expanded = substitute_task_placeholders(cmd, id);
     #[cfg(windows)]
     let mut command = {
+        use std::os::windows::process::CommandExt;
         let mut c = std::process::Command::new("cmd");
-        c.arg("/C").arg(&expanded);
+        c.raw_arg("/C");
+        c.raw_arg(&expanded);
         c
     };
     #[cfg(not(windows))]
@@ -280,10 +288,40 @@ fn run_on_task(cmd: &str, id: &str, msg: &str) {
     };
     command.env("TUNAROUND_TASK_ID", id).env("TUNAROUND_TASK_MSG", msg);
     eprintln!("[poll] on-task 실행: task {id}");
-    match command.status() {
-        Ok(s) if s.success() => eprintln!("[poll] on-task 완료: task {id}"),
-        Ok(s) => eprintln!("[poll] on-task 비정상 종료(코드 {:?}): task {id}", s.code()),
-        Err(e) => eprintln!("[poll] on-task 실행 실패: {e}"),
+    let mut child = match command.spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[poll] on-task 실행 실패: {e}");
+            return;
+        }
+    };
+    // 타임아웃 감시: 멈춘 명령이 폴 루프를 영구 정지시키지 않게. spawn_blocking 스레드라 블로킹 sleep OK.
+    let start = std::time::Instant::now();
+    let timeout = Duration::from_secs(ON_TASK_TIMEOUT_SECS);
+    loop {
+        match child.try_wait() {
+            Ok(Some(s)) if s.success() => {
+                eprintln!("[poll] on-task 완료: task {id}");
+                return;
+            }
+            Ok(Some(s)) => {
+                eprintln!("[poll] on-task 비정상 종료(코드 {:?}): task {id}", s.code());
+                return;
+            }
+            Ok(None) => {
+                if start.elapsed() >= timeout {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    eprintln!("[poll] on-task 타임아웃({ON_TASK_TIMEOUT_SECS}s) 강제 종료: task {id}");
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(200));
+            }
+            Err(e) => {
+                eprintln!("[poll] on-task 상태 확인 실패: {e}");
+                return;
+            }
+        }
     }
 }
 
