@@ -86,6 +86,9 @@ pub struct FailTaskParams {
     pub task_id: String,
     /// 실패 사유(상태 메시지로 저장해 dispatcher가 읽는다).
     pub reason: String,
+    /// 실패 보고하는 에이전트 id(first-completer-wins: claimed_by와 불일치하면 거부). 생략 시(하위호환)
+    /// None → 가드 무력화(기존 동작).
+    pub agent: Option<String>,
 }
 
 /// send_task 툴 파라미터(dispatcher가 새 A2A task를 위임할 때 사용).
@@ -281,7 +284,12 @@ fn complete_task_text(
 /// 러너 실행이 실패했을 때 completed로 위장하지 않고 failed로 구분해 dispatcher가 성패를 알 수 있게 한다.
 /// 이미 completed/canceled로 종료된 task면 try_fail이 Err를 반환하고 그대로 위로 전파한다(레이스
 /// 컨디션 방지, R2 - 종료 상태를 failed로 덮어쓰지 못함).
-fn fail_task_text(store: &SqliteStore, task_id: &str, reason: &str) -> Result<String, String> {
+fn fail_task_text(
+    store: &SqliteStore,
+    task_id: &str,
+    reason: &str,
+    agent: Option<&str>,
+) -> Result<String, String> {
     if store.get_task(task_id)?.is_none() {
         return Err(format!("task 없음: task_id={task_id}"));
     }
@@ -293,7 +301,7 @@ fn fail_task_text(store: &SqliteStore, task_id: &str, reason: &str) -> Result<St
         task_id: None,
         context_id: None,
     };
-    store.try_fail(task_id, Some(&message))?;
+    store.try_fail(task_id, Some(&message), agent)?;
     Ok(format!("실패 처리됨: task_id={task_id} state=failed"))
 }
 
@@ -579,9 +587,10 @@ impl TunaSearchServer {
         };
         let task_id = p.task_id;
         let reason = p.reason;
+        let agent = p.agent;
         let outcome = tokio::task::spawn_blocking(move || {
             let store = store.lock().unwrap_or_else(|e| e.into_inner());
-            fail_task_text(&store, &task_id, &reason)
+            fail_task_text(&store, &task_id, &reason, agent.as_deref())
         })
         .await
         .unwrap_or_else(|e| Err(format!("작업 실패: {e}")));
@@ -1521,7 +1530,7 @@ mod tests {
     fn fail_task_text_sets_failed_with_reason() {
         let store = SqliteStore::open_memory().unwrap();
         seed_task(&store, "t1", "win", "mac", "2026-07-02 09:00:00");
-        let text = fail_task_text(&store, "t1", "러너 타임아웃").unwrap();
+        let text = fail_task_text(&store, "t1", "러너 타임아웃", None).unwrap();
         assert!(text.contains("state=failed"), "응답 불일치: {text}");
         let reloaded = store.get_task("t1").unwrap().unwrap();
         assert_eq!(reloaded.state, TaskState::Failed);
@@ -1535,7 +1544,7 @@ mod tests {
     #[test]
     fn fail_task_text_missing_task_is_err() {
         let store = SqliteStore::open_memory().unwrap();
-        let err = fail_task_text(&store, "nope", "사유").unwrap_err();
+        let err = fail_task_text(&store, "nope", "사유", None).unwrap_err();
         assert!(err.contains("nope"), "에러 메시지에 task_id 없음: {err}");
     }
 

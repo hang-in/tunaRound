@@ -1033,28 +1033,28 @@ impl SqliteStore {
     /// 이벤트가 몰릴 수 있고, 구독자는 다음 poll_tasks/get_task로 최신 상태를 확인할 수 있어 SSE 실시간성
     /// 손실이 크지 않다고 판단). 회수(requeue)·격리(failed) 합계 행 수를 반환한다.
     pub fn expire_stale_claims(&self) -> Result<usize, String> {
-        let requeued = self
+        // 단일 UPDATE(암묵적 단일 트랜잭션 = 원자적·fsync 1회)로 처리한다. attempt_count로 갈라
+        // 회수(attempt<MAX: submitted + claim 필드 클리어) 또는 격리(attempt>=MAX: failed, claim 필드는
+        // 포렌식용으로 유지)한다. status_message(지시문)는 어느 쪽도 건드리지 않아 재배달 워커가 읽는다.
+        let affected = self
             .conn
             .execute(
-                "UPDATE tasks SET state=?1, claimed_at=NULL, lease_expires_at=NULL, claimed_by=NULL, \
-                 updated_at=datetime('now') \
+                "UPDATE tasks SET \
+                 state = CASE WHEN attempt_count < ?2 THEN ?1 ELSE ?3 END, \
+                 claimed_at = CASE WHEN attempt_count < ?2 THEN NULL ELSE claimed_at END, \
+                 lease_expires_at = CASE WHEN attempt_count < ?2 THEN NULL ELSE lease_expires_at END, \
+                 claimed_by = CASE WHEN attempt_count < ?2 THEN NULL ELSE claimed_by END, \
+                 updated_at = datetime('now') \
                  WHERE state='working' AND lease_expires_at IS NOT NULL \
-                 AND julianday('now') > julianday(lease_expires_at) \
-                 AND attempt_count < ?2",
-                rusqlite::params![TaskState::Submitted.as_str(), MAX_CLAIM_ATTEMPTS],
+                 AND julianday('now') > julianday(lease_expires_at)",
+                rusqlite::params![
+                    TaskState::Submitted.as_str(),
+                    MAX_CLAIM_ATTEMPTS,
+                    TaskState::Failed.as_str()
+                ],
             )
             .map_err(|e| format!("sqlite: {e}"))?;
-        let failed = self
-            .conn
-            .execute(
-                "UPDATE tasks SET state=?1, updated_at=datetime('now') \
-                 WHERE state='working' AND lease_expires_at IS NOT NULL \
-                 AND julianday('now') > julianday(lease_expires_at) \
-                 AND attempt_count >= ?2",
-                rusqlite::params![TaskState::Failed.as_str(), MAX_CLAIM_ATTEMPTS],
-            )
-            .map_err(|e| format!("sqlite: {e}"))?;
-        Ok(requeued + failed)
+        Ok(affected)
     }
 
     /// task를 조건부로 completed 전이한다(complete). working 상태일 때만 성공한다(레이스 방지: 이미
@@ -1094,17 +1094,26 @@ impl SqliteStore {
     /// 성공한다(레이스 방지: completed/canceled로 이미 종료된 task를 덮어쓰지 못함). status_message는
     /// update_task_state의 관례를 그대로 따른다(None이면 message_json 비움). 전이 성공 시에만
     /// update_task_state와 동일하게 Status 이벤트를 emit한다.
-    pub fn try_fail(&self, task_id: &str, status_message: Option<&Message>) -> Result<(), String> {
+    pub fn try_fail(
+        &self,
+        task_id: &str,
+        status_message: Option<&Message>,
+        failer: Option<&str>,
+    ) -> Result<(), String> {
         let message_json = match status_message {
             Some(m) => Some(serde_json::to_string(m).map_err(|e| format!("json: {e}"))?),
             None => None,
         };
+        // try_complete와 대칭인 first-completer-wins 가드: lease 만료로 requeue된 뒤 되살아난 stale
+        // 워커가 이미 다른 워커가 재claim한 task를 failed로 덮어쓰지 못하게 한다(failer 불일치 거부).
+        // failer=None이면 무력화(하위호환, agent 인자 없는 호출).
         let affected = self
             .conn
             .execute(
                 "UPDATE tasks SET state=?2, message_json=?3, updated_at=datetime('now') \
-                 WHERE task_id=?1 AND state IN ('submitted','working','input_required')",
-                rusqlite::params![task_id, TaskState::Failed.as_str(), message_json],
+                 WHERE task_id=?1 AND state IN ('submitted','working','input_required') \
+                 AND (?4 IS NULL OR claimed_by IS NULL OR claimed_by = ?4)",
+                rusqlite::params![task_id, TaskState::Failed.as_str(), message_json, failer],
             )
             .map_err(|e| format!("sqlite: {e}"))?;
         if affected != 1 {
@@ -2104,7 +2113,7 @@ mod tests {
             let db = SqliteStore::open_memory().unwrap().with_task_events();
             let mut rx = db.task_event_sender().expect("with_task_events 후엔 버스 활성화").subscribe();
             assert!(db.try_claim("nope", None).is_err());
-            assert!(db.try_fail("nope", None).is_err());
+            assert!(db.try_fail("nope", None, None).is_err());
             assert!(db.try_cancel("nope").is_err());
             assert!(rx.try_recv().is_err(), "존재하지 않는 task에 대해 이벤트가 emit됨");
         }
@@ -2274,6 +2283,32 @@ mod tests {
             // claim한 본인(worker-a)이 completer면 성공.
             db.try_complete("t1", &artifacts, Some("worker-a")).unwrap();
             assert_eq!(db.get_task("t1").unwrap().unwrap().state, TaskState::Completed);
+        }
+
+        #[test]
+        fn try_fail_first_completer_wins_rejects_mismatched_failer() {
+            // try_complete와 대칭: 되살아난 stale worker-b가 worker-a claim task를 failed로 덮어쓰지 못한다
+            // (gemini/coderabbit 리뷰). failer=None이면 하위호환으로 통과.
+            let db = SqliteStore::open_memory().unwrap();
+            let task = Task::new("t1", None, "win", "mac", "2026-07-02 09:00:00");
+            db.create_task(&task).unwrap();
+            db.try_claim("t1", Some("worker-a")).unwrap();
+
+            // stale worker-b의 fail은 거부 -> 상태 불변(working).
+            let err = db.try_fail("t1", None, Some("worker-b")).unwrap_err();
+            assert!(err.contains("t1"));
+            assert_eq!(db.get_task("t1").unwrap().unwrap().state, TaskState::Working, "거부 후 상태 불변");
+
+            // claim 본인(worker-a)이면 성공.
+            db.try_fail("t1", None, Some("worker-a")).unwrap();
+            assert_eq!(db.get_task("t1").unwrap().unwrap().state, TaskState::Failed);
+
+            // 하위호환: failer=None이면 가드 무력화(다른 task로 확인).
+            let t2 = Task::new("t2", None, "win", "mac", "2026-07-02 09:00:00");
+            db.create_task(&t2).unwrap();
+            db.try_claim("t2", Some("worker-a")).unwrap();
+            db.try_fail("t2", None, None).unwrap();
+            assert_eq!(db.get_task("t2").unwrap().unwrap().state, TaskState::Failed);
         }
 
         #[test]

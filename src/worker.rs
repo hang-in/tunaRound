@@ -428,13 +428,13 @@ async fn run_one_pass(
             Ok(Err(e)) => {
                 eprintln!("[work] task {} 러너 실패: {e:?}", t.id);
                 let reason = format!("러너 실행 실패: {e:?}");
-                if let Err(fe) = client.fail_task(&t.id, &reason).await {
+                if let Err(fe) = client.fail_task(&t.id, &reason, Some(agent)).await {
                     eprintln!("[work] task {} fail 처리 실패: {fe}", t.id);
                 }
             }
             Err(_canceled) => {
                 eprintln!("[work] task {} 러너 스레드 취소(결과 유실)", t.id);
-                if let Err(fe) = client.fail_task(&t.id, "러너 스레드 취소(결과 유실)").await {
+                if let Err(fe) = client.fail_task(&t.id, "러너 스레드 취소(결과 유실)", Some(agent)).await {
                     eprintln!("[work] task {} fail 처리 실패: {fe}", t.id);
                 }
             }

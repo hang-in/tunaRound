@@ -207,8 +207,13 @@ impl McpHttpClient {
     }
 
     /// fail_task(task_id, reason) 얇은 래퍼(러너 실패 시 completed 대신 failed로 전이).
-    pub async fn fail_task(&self, task_id: &str, reason: &str) -> Result<String, String> {
-        self.call_tool("fail_task", json!({ "task_id": task_id, "reason": reason }))
+    pub async fn fail_task(
+        &self,
+        task_id: &str,
+        reason: &str,
+        agent: Option<&str>,
+    ) -> Result<String, String> {
+        self.call_tool("fail_task", json!({ "task_id": task_id, "reason": reason, "agent": agent }))
             .await
     }
 }
