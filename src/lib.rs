@@ -15,3 +15,5 @@ pub mod a2a_server;
 pub mod mcp_client;
 #[cfg(feature = "worker")]
 pub mod worker;
+#[cfg(feature = "worker")]
+pub mod codex_appserver;
