@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-04
+
 ### 추가 (Added)
 
 - **semi-A2A 파트너 위임(Phase 1)**: A2A Task 데이터모델(Task/TaskState/Message/Part/Artifact, `tasks` 테이블 스키마 v6) + JSON-RPC 엔드포인트(`SendMessage`/`GetTask`/`CancelTask`, `/.well-known/agent-card.json`) + inbox MCP 도구(`poll_tasks`/`claim_task`/`complete_task`/`fail_task`) + dispatcher 도구(`send_task`/`get_task`). 크로스머신 왕복 실증.
@@ -48,5 +50,6 @@
 
 - AGPL-3.0-only.
 
-[Unreleased]: https://github.com/hang-in/tunaRound/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/hang-in/tunaRound/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/hang-in/tunaRound/releases/tag/v0.2.0
 [0.1.0]: https://github.com/hang-in/tunaRound/releases/tag/v0.1.0
