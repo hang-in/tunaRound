@@ -267,6 +267,10 @@ pub struct Lane {
     /// context_id -> project-path 매핑(work의 --context-map과 동일 형식).
     #[serde(default)]
     pub context_map: Option<String>,
+    /// 로스터 발견용 태그(work의 --tags와 동일 형식 "k=v,k=v"). dispatcher가 to_selector로 이 레인
+    /// 워커를 발견한다. 미지정이면 빈 태그로 등록(uuid/exact-id로만 라우팅 가능).
+    #[serde(default)]
+    pub tags: Option<String>,
     /// runner="http" 전용 base URL.
     #[serde(default)]
     pub http_base_url: Option<String>,
@@ -694,6 +698,7 @@ agent = "mac-worker"
 runner = "codex"
 mode = "write"
 project = "~/repos/x"
+tags = "machine=mac,runner=codex,role=worker"
 
 [[lane]]
 agent = "mac-claude"
@@ -710,11 +715,13 @@ kind = "supervised"
         assert!(auto.is_write());
         assert!(!auto.is_supervised());
         assert_eq!(auto.interval, 20, "interval 기본 20");
+        assert_eq!(auto.tags.as_deref(), Some("machine=mac,runner=codex,role=worker"), "lane 태그 파싱");
 
         let sup = &cfg.lane[1];
         assert!(sup.is_supervised());
         assert!(!sup.is_write(), "mode 미지정 = read-only");
         assert_eq!(sup.runner, "claude", "runner 기본 claude");
+        assert_eq!(sup.tags, None, "tags 미지정 = None");
     }
 
     #[test]

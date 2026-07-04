@@ -352,4 +352,10 @@
 > agentgateway P1. 축소 근거: v7이 started/completed/session_id 커버, net-new=runner 하나. 베이스라인 421.
 
 - [x] B1: tasks `runner` 컬럼(스키마 v8) + try_claim에 runner 기록(claimed_at와 동시점) + mcp/client/worker 배선 + get_task 노출. 하위호환 None=NULL. (bb299cd; Sonnet+Opus 리뷰·독립검증) TASK_COLUMNS 11컬럼 정합 확인, v7→v8 마이그레이션 테스트, 428 pass. poll/tasks 텍스트 표시는 파서 안전성으로 보류(get_task 우선).
-- [x] B2: 쓰기 민감 path 가드(WRITE_GUARD_DIRECTIVE, Write 시 claude/codex 프롬프트 주입, behavioral=readonly-soft 정합, READONLY와 배타) + write_guard_prefix 순수테스트 2. (e833f22) (Opus 직접) 스모크: 코어(127.0.0.1:8899) + `work --once --tags`로 워커 2개 자기등록 → `/a2a` SendMessage toSelector: 단일매칭(smoke-worker 라우팅)/무매칭(no-consumer 에러·미생성)/다중매칭(후보 smoke-worker+smoke-worker2 반환·미생성)/부분집합(machine=mac,runner=claude→smoke-worker2 유일) 전부 정확. 레거시 to_agent 문자열 경로 불변(기존 handle_send 테스트 그대로 pass).
+- [x] B2: 쓰기 민감 path 가드(WRITE_GUARD_DIRECTIVE, Write 시 claude/codex 프롬프트 주입, behavioral=readonly-soft 정합, READONLY와 배타) + write_guard_prefix 순수테스트 2. (e833f22) **PR #7 머지(27f04e6)**, CodeRabbit 1건(requeue runner 클리어) 반영.
+
+## C 축소판: node 레인 태그 배선 (config→런타임 태그 seed) (agentgateway 검토 v1-후)
+
+> T4에서 None으로 미룬 node 레인 태그를 배선. node 워커도 셀렉터로 발견되게. backend는 별도 registry 없이 lane 정의=named backend(문서만).
+
+- [x] C: Lane에 tags 필드(work --tags 동일 형식) + node 레인 run_worker_loop 호출부 배선(T4 None 대체) + 파싱 테스트 + node-onboarding 문서(tags + backend=named-seat 명시). (Opus 직접) 428 pass, clippy 클린. backend registry는 비채택(lane 정의로 충분). (Opus 직접) 스모크: 코어(127.0.0.1:8899) + `work --once --tags`로 워커 2개 자기등록 → `/a2a` SendMessage toSelector: 단일매칭(smoke-worker 라우팅)/무매칭(no-consumer 에러·미생성)/다중매칭(후보 smoke-worker+smoke-worker2 반환·미생성)/부분집합(machine=mac,runner=claude→smoke-worker2 유일) 전부 정확. 레거시 to_agent 문자열 경로 불변(기존 handle_send 테스트 그대로 pass).

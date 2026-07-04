@@ -29,8 +29,11 @@ runner  = "claude"                         # claude|codex|opencode|http|a2a
 mode    = "read-only"                      # read-only(기본)|write
 project = "~/privateProject/tunaRound"
 interval = 20
+tags    = "machine=mac,runner=claude,role=worker"  # 로스터 발견용(dispatcher가 to_selector로 발견). 옵션.
 # model, context-map, http-base-url, a2a-card 등 work의 옵션을 그대로 투영(옵션).
 ```
+
+- `tags`(옵션): 자동 레인 워커가 뜰 때 이 태그로 로스터에 자기 등록해, dispatcher가 `to_selector`(예: `runner=claude`)로 발견·라우팅할 수 있다(에이전트 레지스트리, a2a-usage §9). 미지정이면 빈 태그로 등록돼 uuid/exact-id로만 라우팅된다. work의 `--tags`와 동일 형식. **backend(러너+접속)는 별도 registry를 두지 않고 이 lane 정의가 곧 named backend다**(runner/model/http-base-url/a2a-card 필드로 표현, 프로파일로 재사용).
 
 - 감독 레인은 config에 `kind="supervised"`로 선언만 해두고, `node`가 그 watcher 실행 명령(`tunaround poll ...`)을 **출력**해준다(세션에 붙이라고). 데몬이 직접 세션을 못 여니까.
 - 파싱: `src/config.rs`에 `NodeConfig` 추가(기존 config 로더 패턴 재사용). `@env:` 치환 + `~` 확장.
