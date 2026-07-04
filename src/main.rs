@@ -1333,7 +1333,7 @@ fn main() {
                             runner,
                             &l.agent,
                             &l.runner, // v8 트레이스: 레인 설정의 runner 이름을 그대로 기록.
-                            None, // node 레인 태그는 후속(Plan v2-34 비범위)
+                            l.tags.clone(), // 로스터 발견용 태그(node.toml lane.tags, 셀렉터 라우팅)
                             l.model.clone(),
                             project,
                             context_map,
