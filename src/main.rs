@@ -236,6 +236,11 @@ struct PollArgs {
     /// 한 패스만 실행하고 종료(테스트·수동 실행용).
     #[arg(long)]
     once: bool,
+    /// task 도착 시 실행할 명령(선택). `{id}`가 task id로 치환되고 TUNAROUND_TASK_ID/TUNAROUND_TASK_MSG
+    /// 환경변수도 설정된다. Monitor가 없는 하네스(codex 등)의 0토큰 wake 글루.
+    /// 예: --on-task 'codex exec resume --last "브로커 task {id}를 claim해서 처리하고 complete로 보고"'.
+    #[arg(long)]
+    on_task: Option<String>,
 }
 
 /// `--runner` 선택지: 기존 Runner trait 구현체 중 어느 것으로 task를 실행할지.
@@ -1126,7 +1131,7 @@ fn main() {
     if let Some(a) = poll_args {
         let result = rt.block_on(async {
             let client = tunaround::mcp_client::McpHttpClient::connect(a.core.clone(), a.token.clone()).await?;
-            tunaround::worker::run_poll_loop(&client, &a.agent, a.interval, a.once).await
+            tunaround::worker::run_poll_loop(&client, &a.agent, a.interval, a.once, a.on_task.as_deref()).await
         });
         if let Err(e) = result {
             eprintln!("[poll] 오류: {e}");
