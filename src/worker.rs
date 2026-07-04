@@ -256,8 +256,11 @@ pub async fn run_worker_loop(
         // online 유지. 코어가 재기동돼 로스터가 비었으면(미등록 응답) 재등록한다.
         match client.heartbeat(agent).await {
             Ok(resp) if needs_reregister(&resp) => {
-                let _ = client.register_agent(agent, tags.as_deref(), None).await;
-                eprintln!("[work] 코어 재기동 감지 -> 재등록");
+                eprintln!("[work] 코어 재기동 감지 -> 재등록 시도");
+                match client.register_agent(agent, tags.as_deref(), None).await {
+                    Ok(msg) => eprintln!("[work] 재등록 성공: {msg}"),
+                    Err(e) => eprintln!("[work] 재등록 실패: {e}"),
+                }
             }
             Ok(_) => {}
             Err(e) => eprintln!("[work] heartbeat 실패(무시): {e}"),

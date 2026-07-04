@@ -729,11 +729,11 @@ impl TunaSearchServer {
         })
         .await
         .unwrap_or_else(|e| Err(format!("작업 실패: {e}")));
-        let text = match outcome {
-            Ok(t) => t,
-            Err(e) => format!("등록 실패: {e}"),
-        };
-        Ok(CallToolResult::success(vec![Content::text(text)]))
+        // R1: 등록 실패(now/parse_tags 오류)를 success로 위장하지 않는다(클라가 감지하게 isError).
+        match outcome {
+            Ok(t) => Ok(CallToolResult::success(vec![Content::text(t)])),
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!("등록 실패: {e}"))])),
+        }
     }
 
     #[tool(description = "로스터에 자기 존재를 갱신한다(online 유지, 주기 호출).")]
@@ -759,11 +759,12 @@ impl TunaSearchServer {
         })
         .await
         .unwrap_or_else(|e| Err(format!("작업 실패: {e}")));
-        let text = match outcome {
-            Ok(t) => t,
-            Err(e) => format!("heartbeat 실패: {e}"),
-        };
-        Ok(CallToolResult::success(vec![Content::text(text)]))
+        // R1: 실제 실패(now 오류)만 isError. "미등록..."은 클로저에서 Ok라 success로 남아 워커의
+        // 재등록 로직(needs_reregister)이 그 텍스트를 받는다(정상 흐름, 실패 아님).
+        match outcome {
+            Ok(t) => Ok(CallToolResult::success(vec![Content::text(t)])),
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!("heartbeat 실패: {e}"))])),
+        }
     }
 
     #[tool(description = "online 에이전트를 발견한다(selector 태그로 필터, dispatcher 라우팅용).")]
@@ -789,11 +790,11 @@ impl TunaSearchServer {
         })
         .await
         .unwrap_or_else(|e| Err(format!("작업 실패: {e}")));
-        let text = match outcome {
-            Ok(t) => t,
-            Err(e) => format!("조회 실패: {e}"),
-        };
-        Ok(CallToolResult::success(vec![Content::text(text)]))
+        // R1: 조회 실패(now/parse_tags 오류)를 success로 위장하지 않는다(클라가 감지하게 isError).
+        match outcome {
+            Ok(t) => Ok(CallToolResult::success(vec![Content::text(t)])),
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!("조회 실패: {e}"))])),
+        }
     }
 
     #[tool(description = "위임한 A2A task의 상태를 조회한다(completed면 결과 텍스트도 함께 반환, dispatcher용).")]
