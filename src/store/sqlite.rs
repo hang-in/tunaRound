@@ -9,7 +9,9 @@ use crate::store::{StoredMessage, StoredSession};
 
 // 스키마 버전 상수. v3: message_vectors.model_id. v4: message_validity(유효성 메타).
 // v5: messages.created_at. v6: tasks(A2A task 위임, docs/design/v2-a2a-partner-delegation_2026-07-02.md).
-const CURRENT_SCHEMA_VERSION: u32 = 6;
+// v7: tasks.claimed_at/lease_expires_at/claimed_by/attempt_count(claim-후-워커사망 자동 requeue,
+// lease 기반. DB 내부용 컬럼이라 Task wire 구조체(store/a2a.rs)에는 노출하지 않는다).
+const CURRENT_SCHEMA_VERSION: u32 = 7;
 
 // config 테이블 생성 SQL.
 const CREATE_CONFIG: &str = "CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT);";
@@ -79,18 +81,25 @@ CREATE TABLE IF NOT EXISTS message_validity (
 
 // A2A task 위임 테이블. message_json/artifacts_json/history_json은 crate::store::a2a 타입의 직렬화본.
 // created_at/updated_at은 SQL 기본값 없이 애플리케이션(create_task)이 명시적으로 채운다.
+// claimed_at/lease_expires_at/claimed_by/attempt_count(v7)는 claim-후-워커사망 자동 requeue용 DB 내부
+// 컬럼이다(Task wire 구조체에는 노출하지 않음). fresh DB는 여기서 바로 만들고, 기존(v6) DB는 migrate()의
+// ALTER TABLE로 보강한다.
 const CREATE_TASKS: &str = "
 CREATE TABLE IF NOT EXISTS tasks (
-    task_id        TEXT PRIMARY KEY,
-    context_id     TEXT,
-    from_agent     TEXT NOT NULL,
-    to_agent       TEXT NOT NULL,
-    state          TEXT NOT NULL,
-    message_json   TEXT,
-    artifacts_json TEXT,
-    history_json   TEXT,
-    created_at     TEXT NOT NULL,
-    updated_at     TEXT NOT NULL
+    task_id           TEXT PRIMARY KEY,
+    context_id        TEXT,
+    from_agent        TEXT NOT NULL,
+    to_agent          TEXT NOT NULL,
+    state             TEXT NOT NULL,
+    message_json      TEXT,
+    artifacts_json    TEXT,
+    history_json      TEXT,
+    created_at        TEXT NOT NULL,
+    updated_at        TEXT NOT NULL,
+    claimed_at        TEXT,
+    lease_expires_at  TEXT,
+    claimed_by        TEXT,
+    attempt_count     INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_to_agent_state ON tasks(to_agent, state);
 ";
@@ -98,6 +107,13 @@ CREATE INDEX IF NOT EXISTS idx_tasks_to_agent_state ON tasks(to_agent, state);
 // tasks 컬럼 목록(고정 순서). SELECT/INSERT 양쪽에서 재사용해 컬럼 순서 불일치를 방지한다.
 const TASK_COLUMNS: &str = "task_id, context_id, from_agent, to_agent, state, \
      message_json, artifacts_json, history_json, created_at, updated_at";
+
+/// claim lease 기본 유효시간(초). 에이전트 실행이 길 수 있어 넉넉히 잡는다(죽은 워커 감지용이지
+/// task 실행시간 상한이 아니다).
+const CLAIM_LEASE_SECS: i64 = 30 * 60;
+/// requeue 시도 상한. lease 만료로 회수될 때마다 attempt_count가 늘고, 이 값 이상이면 무한 requeue를
+/// 막기 위해 failed로 격리한다.
+const MAX_CLAIM_ATTEMPTS: i64 = 3;
 
 /// SQLite 기반 메시지 트리 저장소.
 pub struct SqliteStore {
@@ -215,6 +231,31 @@ impl SqliteStore {
             if !self.column_exists("messages", "created_at") {
                 self.conn
                     .execute("ALTER TABLE messages ADD COLUMN created_at TEXT", [])
+                    .map_err(|e| format!("sqlite: {e}"))?;
+            }
+            // v7: 기존(v6) DB의 tasks엔 lease 컬럼들이 없으므로 ADD COLUMN으로 보강한다. fresh DB는
+            // CREATE_TASKS에 이미 있어 column_exists가 true → ALTER 생략.
+            if !self.column_exists("tasks", "claimed_at") {
+                self.conn
+                    .execute("ALTER TABLE tasks ADD COLUMN claimed_at TEXT", [])
+                    .map_err(|e| format!("sqlite: {e}"))?;
+            }
+            if !self.column_exists("tasks", "lease_expires_at") {
+                self.conn
+                    .execute("ALTER TABLE tasks ADD COLUMN lease_expires_at TEXT", [])
+                    .map_err(|e| format!("sqlite: {e}"))?;
+            }
+            if !self.column_exists("tasks", "claimed_by") {
+                self.conn
+                    .execute("ALTER TABLE tasks ADD COLUMN claimed_by TEXT", [])
+                    .map_err(|e| format!("sqlite: {e}"))?;
+            }
+            if !self.column_exists("tasks", "attempt_count") {
+                self.conn
+                    .execute(
+                        "ALTER TABLE tasks ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0",
+                        [],
+                    )
                     .map_err(|e| format!("sqlite: {e}"))?;
             }
             self.conn
@@ -955,15 +996,22 @@ impl SqliteStore {
     /// task를 조건부로 working 전이한다(claim). WHERE 절의 현재상태 가드가 상태머신을 저장소 계층에서
     /// 강제한다: submitted/input_required일 때만 성공하므로, 두 워커가 같은 task를 동시에 claim해도
     /// UPDATE 하나만 1행을 갱신하고 나머지는 0행(rows_affected!=1)으로 걸러진다(레이스 방지).
-    /// status_message는 update_task_state의 관례를 따라 항상 비운다(착수 시점엔 새 상태 메시지 없음).
+    /// status_message(=task 지시문)는 지우지 않고 그대로 둔다: requeue로 다시 submitted가 되면 새 워커가
+    /// poll에서 이 지시문(msg)을 읽어 실행하므로, claim에서 지우면 재배달된 task가 빈 프롬프트가 된다.
+    /// 같은 UPDATE에서 lease(claimed_at/lease_expires_at/claimed_by)를 세팅하고 attempt_count를
+    /// 증가시켜, claim-후-워커사망 자동 requeue(expire_stale_claims)의 판단 근거를 남긴다. claimed_by는
+    /// 하위호환을 위해 Option(호출자가 agent id를 안 넘기면 NULL).
     /// 전이 성공 시에만 update_task_state와 동일하게 Status 이벤트를 emit한다.
-    pub fn try_claim(&self, task_id: &str) -> Result<(), String> {
+    pub fn try_claim(&self, task_id: &str, claimed_by: Option<&str>) -> Result<(), String> {
         let affected = self
             .conn
             .execute(
-                "UPDATE tasks SET state=?2, message_json=NULL, updated_at=datetime('now') \
+                "UPDATE tasks SET state=?2, updated_at=datetime('now'), \
+                 claimed_at=datetime('now'), \
+                 lease_expires_at=datetime('now', '+' || ?3 || ' seconds'), \
+                 claimed_by=?4, attempt_count=attempt_count + 1 \
                  WHERE task_id=?1 AND state IN ('submitted','input_required')",
-                rusqlite::params![task_id, TaskState::Working.as_str()],
+                rusqlite::params![task_id, TaskState::Working.as_str(), CLAIM_LEASE_SECS, claimed_by],
             )
             .map_err(|e| format!("sqlite: {e}"))?;
         if affected != 1 {
@@ -975,18 +1023,62 @@ impl SqliteStore {
         Ok(())
     }
 
+    /// lease 만료된 working task를 회수한다(poll 경로에서 호출되는 지연 sweep, 별도 타이머 없음).
+    /// lease_expires_at이 지난 working 중 attempt_count < MAX_CLAIM_ATTEMPTS면 submitted로 되돌리고
+    /// (claim 필드 클리어, attempt_count는 유지해 다음 claim에서 다시 증가), MAX 이상이면 무한 requeue를
+    /// 막기 위해 failed로 격리한다. status_message(지시문)는 건드리지 않는다: 재배달된 워커가 poll에서
+    /// 그 지시문을 읽어 실행해야 하기 때문(try_claim이 지시문을 보존하는 것과 짝). 두 UPDATE는 서로소
+    /// 조건(전자가 먼저 실행돼도 그 행들은 이미 state!='working'으로 바뀌어 후자의 WHERE에 안 걸림)이라
+    /// 실행 순서가 결과에 영향을 주지 않는다. 이벤트 emit은 의도적으로 생략한다(다건 sweep이라 poll마다
+    /// 이벤트가 몰릴 수 있고, 구독자는 다음 poll_tasks/get_task로 최신 상태를 확인할 수 있어 SSE 실시간성
+    /// 손실이 크지 않다고 판단). 회수(requeue)·격리(failed) 합계 행 수를 반환한다.
+    pub fn expire_stale_claims(&self) -> Result<usize, String> {
+        // 단일 UPDATE(암묵적 단일 트랜잭션 = 원자적·fsync 1회)로 처리한다. attempt_count로 갈라
+        // 회수(attempt<MAX: submitted + claim 필드 클리어) 또는 격리(attempt>=MAX: failed, claim 필드는
+        // 포렌식용으로 유지)한다. status_message(지시문)는 어느 쪽도 건드리지 않아 재배달 워커가 읽는다.
+        let affected = self
+            .conn
+            .execute(
+                "UPDATE tasks SET \
+                 state = CASE WHEN attempt_count < ?2 THEN ?1 ELSE ?3 END, \
+                 claimed_at = CASE WHEN attempt_count < ?2 THEN NULL ELSE claimed_at END, \
+                 lease_expires_at = CASE WHEN attempt_count < ?2 THEN NULL ELSE lease_expires_at END, \
+                 claimed_by = CASE WHEN attempt_count < ?2 THEN NULL ELSE claimed_by END, \
+                 updated_at = datetime('now') \
+                 WHERE state='working' AND lease_expires_at IS NOT NULL \
+                 AND julianday('now') > julianday(lease_expires_at)",
+                rusqlite::params![
+                    TaskState::Submitted.as_str(),
+                    MAX_CLAIM_ATTEMPTS,
+                    TaskState::Failed.as_str()
+                ],
+            )
+            .map_err(|e| format!("sqlite: {e}"))?;
+        Ok(affected)
+    }
+
     /// task를 조건부로 completed 전이한다(complete). working 상태일 때만 성공한다(레이스 방지: 이미
-    /// completed/canceled/failed로 종료된 task를 덮어쓰지 못함). 전이 성공 시에만 complete_task와
-    /// 동일하게 Completed 이벤트를 emit한다.
-    pub fn try_complete(&self, task_id: &str, artifacts: &[Artifact]) -> Result<(), String> {
+    /// completed/canceled/failed로 종료된 task를 덮어쓰지 못함). 추가로 first-completer-wins 가드:
+    /// completer가 Some이면 claimed_by가 NULL이거나 completer와 일치할 때만 성공한다. lease 만료로
+    /// requeue된 뒤 뒤늦게 살아난 stale 워커가 이미 다른 워커가 완료시킨(혹은 재claim된) task를
+    /// completer 불일치로 덮어쓰지 못하게 막는다. completer=None이면 이 가드가 무력화되어(claimed_by
+    /// 무관하게 working이면 성공) 기존 동작(하위호환, agent 인자 없는 호출)을 그대로 유지한다.
+    /// 전이 성공 시에만 complete_task와 동일하게 Completed 이벤트를 emit한다.
+    pub fn try_complete(
+        &self,
+        task_id: &str,
+        artifacts: &[Artifact],
+        completer: Option<&str>,
+    ) -> Result<(), String> {
         let artifacts_json =
             serde_json::to_string(artifacts).map_err(|e| format!("json: {e}"))?;
         let affected = self
             .conn
             .execute(
                 "UPDATE tasks SET state=?2, artifacts_json=?3, updated_at=datetime('now') \
-                 WHERE task_id=?1 AND state='working'",
-                rusqlite::params![task_id, TaskState::Completed.as_str(), artifacts_json],
+                 WHERE task_id=?1 AND state='working' \
+                 AND (?4 IS NULL OR claimed_by IS NULL OR claimed_by = ?4)",
+                rusqlite::params![task_id, TaskState::Completed.as_str(), artifacts_json, completer],
             )
             .map_err(|e| format!("sqlite: {e}"))?;
         if affected != 1 {
@@ -1002,17 +1094,26 @@ impl SqliteStore {
     /// 성공한다(레이스 방지: completed/canceled로 이미 종료된 task를 덮어쓰지 못함). status_message는
     /// update_task_state의 관례를 그대로 따른다(None이면 message_json 비움). 전이 성공 시에만
     /// update_task_state와 동일하게 Status 이벤트를 emit한다.
-    pub fn try_fail(&self, task_id: &str, status_message: Option<&Message>) -> Result<(), String> {
+    pub fn try_fail(
+        &self,
+        task_id: &str,
+        status_message: Option<&Message>,
+        failer: Option<&str>,
+    ) -> Result<(), String> {
         let message_json = match status_message {
             Some(m) => Some(serde_json::to_string(m).map_err(|e| format!("json: {e}"))?),
             None => None,
         };
+        // try_complete와 대칭인 first-completer-wins 가드: lease 만료로 requeue된 뒤 되살아난 stale
+        // 워커가 이미 다른 워커가 재claim한 task를 failed로 덮어쓰지 못하게 한다(failer 불일치 거부).
+        // failer=None이면 무력화(하위호환, agent 인자 없는 호출).
         let affected = self
             .conn
             .execute(
                 "UPDATE tasks SET state=?2, message_json=?3, updated_at=datetime('now') \
-                 WHERE task_id=?1 AND state IN ('submitted','working','input_required')",
-                rusqlite::params![task_id, TaskState::Failed.as_str(), message_json],
+                 WHERE task_id=?1 AND state IN ('submitted','working','input_required') \
+                 AND (?4 IS NULL OR claimed_by IS NULL OR claimed_by = ?4)",
+                rusqlite::params![task_id, TaskState::Failed.as_str(), message_json, failer],
             )
             .map_err(|e| format!("sqlite: {e}"))?;
         if affected != 1 {
@@ -1105,6 +1206,21 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f64 {
         return 0.0;
     }
     dot / (norm_a * norm_b)
+}
+
+/// 테스트 전용 크레이트 내부 헬퍼(cfg(test)라 테스트 빌드에만 존재). `conn`은 이 모듈 밖(예:
+/// crate::mcp의 테스트)에서 접근 불가한 private 필드라, lease 만료를 raw SQL로 강제 시뮬레이션해야
+/// 하는 크로스모듈 테스트가 이 pub(crate) 통로로 우회한다(운영 코드 경로에는 영향 없음).
+#[cfg(test)]
+impl SqliteStore {
+    pub(crate) fn test_force_lease_expired(&self, task_id: &str) {
+        self.conn
+            .execute(
+                "UPDATE tasks SET lease_expires_at=datetime('now','-1 hour') WHERE task_id=?1",
+                [task_id],
+            )
+            .unwrap();
+    }
 }
 
 #[cfg(test)]
@@ -1900,11 +2016,11 @@ mod tests {
             db.create_task(&task).unwrap();
 
             // 첫 claim: submitted -> working 성공.
-            db.try_claim("t1").unwrap();
+            db.try_claim("t1", None).unwrap();
             assert_eq!(db.get_task("t1").unwrap().unwrap().state, TaskState::Working);
 
             // 둘째 claim(동시 착수 경쟁 시뮬레이션): 이미 working이라 전이 대상 아님 -> Err.
-            let err = db.try_claim("t1").unwrap_err();
+            let err = db.try_claim("t1", None).unwrap_err();
             assert!(err.contains("t1"), "에러 메시지에 task_id 없음: {err}");
             // 실패한 전이가 상태를 건드리지 않았는지 확인(여전히 working, 다른 상태로 안 튐).
             assert_eq!(db.get_task("t1").unwrap().unwrap().state, TaskState::Working);
@@ -1921,7 +2037,7 @@ mod tests {
                 name: None,
                 parts: vec![Part { text: Some("결과".into()), ..Default::default() }],
             }];
-            let err = db.try_complete("t1", &artifacts).unwrap_err();
+            let err = db.try_complete("t1", &artifacts, None).unwrap_err();
             assert!(err.contains("t1"), "에러 메시지에 task_id 없음: {err}");
             // submitted로 남아있어야 함(완료로 잘못 전이되지 않음).
             assert_eq!(db.get_task("t1").unwrap().unwrap().state, TaskState::Submitted);
@@ -1932,13 +2048,13 @@ mod tests {
             let db = SqliteStore::open_memory().unwrap();
             let task = Task::new("t1", None, "win", "mac", "2026-07-02 09:00:00");
             db.create_task(&task).unwrap();
-            db.try_claim("t1").unwrap();
+            db.try_claim("t1", None).unwrap();
             let artifacts = vec![Artifact {
                 artifact_id: "a1".into(),
                 name: None,
                 parts: vec![Part { text: Some("결과".into()), ..Default::default() }],
             }];
-            db.try_complete("t1", &artifacts).unwrap();
+            db.try_complete("t1", &artifacts, None).unwrap();
             assert_eq!(db.get_task("t1").unwrap().unwrap().state, TaskState::Completed);
 
             // 이미 completed(종료 상태)인 task를 canceled로 덮어쓰려 하면 차단돼야 한다(R2 핵심 회귀).
@@ -1960,14 +2076,14 @@ mod tests {
             let msg = sample_message("m1");
             let task = db.create_task_from_message("win-claude", "mac-claude", msg).unwrap();
 
-            db.try_claim(&task.id).unwrap();
+            db.try_claim(&task.id, None).unwrap();
 
             let artifacts = vec![Artifact {
                 artifact_id: "a1".into(),
                 name: Some("결과물".into()),
                 parts: vec![Part { text: Some("완료 보고".into()), ..Default::default() }],
             }];
-            db.try_complete(&task.id, &artifacts).unwrap();
+            db.try_complete(&task.id, &artifacts, None).unwrap();
 
             // 1) create_task_from_message -> Status(submitted).
             match rx.try_recv().expect("첫 이벤트 없음") {
@@ -1996,10 +2112,283 @@ mod tests {
             // 전이가 없었으니 이벤트도 없어야 한다.
             let db = SqliteStore::open_memory().unwrap().with_task_events();
             let mut rx = db.task_event_sender().expect("with_task_events 후엔 버스 활성화").subscribe();
-            assert!(db.try_claim("nope").is_err());
-            assert!(db.try_fail("nope", None).is_err());
+            assert!(db.try_claim("nope", None).is_err());
+            assert!(db.try_fail("nope", None, None).is_err());
             assert!(db.try_cancel("nope").is_err());
             assert!(rx.try_recv().is_err(), "존재하지 않는 task에 대해 이벤트가 emit됨");
+        }
+
+        // --- lease 기반 claim-후-워커사망 자동 requeue 단위테스트 ---
+
+        /// tasks의 DB 내부 컬럼(claimed_at/lease_expires_at/claimed_by/attempt_count)을 직접 조회한다.
+        /// Task wire 구조체에는 노출되지 않는 컬럼이라 raw SQL로만 검증 가능.
+        fn raw_claim_fields(
+            db: &SqliteStore,
+            task_id: &str,
+        ) -> (Option<String>, Option<String>, Option<String>, i64) {
+            db.conn
+                .query_row(
+                    "SELECT claimed_at, lease_expires_at, claimed_by, attempt_count \
+                     FROM tasks WHERE task_id=?1",
+                    [task_id],
+                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+                )
+                .unwrap()
+        }
+
+        #[test]
+        fn try_claim_sets_lease_claimed_by_and_increments_attempt_count() {
+            let db = SqliteStore::open_memory().unwrap();
+            let task = Task::new("t1", None, "win", "mac", "2026-07-02 09:00:00");
+            db.create_task(&task).unwrap();
+
+            db.try_claim("t1", Some("worker-a")).unwrap();
+
+            let (claimed_at, lease_expires_at, claimed_by, attempt_count) = raw_claim_fields(&db, "t1");
+            assert!(claimed_at.is_some(), "claimed_at이 세팅되어야 함");
+            assert!(lease_expires_at.is_some(), "lease_expires_at이 세팅되어야 함");
+            assert_eq!(claimed_by.as_deref(), Some("worker-a"));
+            assert_eq!(attempt_count, 1, "최초 claim은 attempt_count=1");
+        }
+
+        #[test]
+        fn try_claim_without_agent_leaves_claimed_by_null_backward_compat() {
+            // 하위호환: agent 인자 없이 claim해도(raw curl 등) 정상 동작, claimed_by만 NULL.
+            let db = SqliteStore::open_memory().unwrap();
+            let task = Task::new("t1", None, "win", "mac", "2026-07-02 09:00:00");
+            db.create_task(&task).unwrap();
+
+            db.try_claim("t1", None).unwrap();
+            assert_eq!(db.get_task("t1").unwrap().unwrap().state, TaskState::Working);
+
+            let (_, _, claimed_by, attempt_count) = raw_claim_fields(&db, "t1");
+            assert_eq!(claimed_by, None, "agent 없이 claim하면 claimed_by는 NULL");
+            assert_eq!(attempt_count, 1);
+        }
+
+        #[test]
+        fn expire_stale_claims_requeues_expired_lease_under_max_attempts() {
+            let db = SqliteStore::open_memory().unwrap();
+            let task = Task::new("t1", None, "win", "mac", "2026-07-02 09:00:00");
+            db.create_task(&task).unwrap();
+            db.try_claim("t1", Some("worker-a")).unwrap(); // attempt_count=1.
+
+            // lease를 과거로 강제 심어 만료를 시뮬레이션한다(raw SQL, wire에 없는 내부 컬럼).
+            db.conn
+                .execute(
+                    "UPDATE tasks SET lease_expires_at=datetime('now','-1 hour') WHERE task_id='t1'",
+                    [],
+                )
+                .unwrap();
+
+            let n = db.expire_stale_claims().unwrap();
+            assert_eq!(n, 1, "만료된 claim 1건이 회수되어야 함");
+
+            let reloaded = db.get_task("t1").unwrap().unwrap();
+            assert_eq!(reloaded.state, TaskState::Submitted, "만료된 working은 submitted로 복귀");
+
+            let (claimed_at, lease_expires_at, claimed_by, attempt_count) = raw_claim_fields(&db, "t1");
+            assert!(claimed_at.is_none(), "claimed_at은 클리어되어야 함");
+            assert!(lease_expires_at.is_none(), "lease_expires_at은 클리어되어야 함");
+            assert!(claimed_by.is_none(), "claimed_by는 클리어되어야 함");
+            assert_eq!(attempt_count, 1, "attempt_count는 유지(다음 claim에서 다시 증가)");
+        }
+
+        #[test]
+        fn expire_stale_claims_preserves_task_instruction_for_redelivery() {
+            // requeue된 task는 새 워커가 poll에서 지시문(status_message)을 다시 읽어 실행하므로,
+            // claim·requeue 모두 status_message를 지우면 안 된다(재배달 시 빈 프롬프트 방지).
+            let db = SqliteStore::open_memory().unwrap();
+            let msg = sample_message("m1");
+            let task = db.create_task_from_message("win", "mac", msg.clone()).unwrap();
+            db.try_claim(&task.id, Some("worker-a")).unwrap();
+            db.test_force_lease_expired(&task.id);
+
+            let n = db.expire_stale_claims().unwrap();
+            assert_eq!(n, 1);
+
+            let reloaded = db.get_task(&task.id).unwrap().unwrap();
+            assert_eq!(reloaded.state, TaskState::Submitted, "만료 claim은 submitted로 복귀");
+            assert_eq!(
+                reloaded.status_message,
+                Some(msg),
+                "requeue 후 지시문(status_message)이 보존되어야 재배달 워커가 프롬프트를 얻는다"
+            );
+        }
+
+        #[test]
+        fn expire_stale_claims_fails_task_when_attempt_count_at_max() {
+            let db = SqliteStore::open_memory().unwrap();
+            let task = Task::new("t1", None, "win", "mac", "2026-07-02 09:00:00");
+            db.create_task(&task).unwrap();
+            db.try_claim("t1", Some("worker-a")).unwrap();
+
+            // attempt_count를 상한(MAX_CLAIM_ATTEMPTS=3)까지 도달한 상태로 강제 세팅한다(raw SQL).
+            db.conn
+                .execute(
+                    "UPDATE tasks SET attempt_count=3, \
+                     lease_expires_at=datetime('now','-1 hour') WHERE task_id='t1'",
+                    [],
+                )
+                .unwrap();
+
+            let n = db.expire_stale_claims().unwrap();
+            assert_eq!(n, 1, "상한 도달 claim 1건이 격리되어야 함");
+
+            let reloaded = db.get_task("t1").unwrap().unwrap();
+            assert_eq!(reloaded.state, TaskState::Failed, "상한 초과는 submitted가 아니라 failed로 격리");
+        }
+
+        #[test]
+        fn expire_stale_claims_leaves_unexpired_working_untouched() {
+            let db = SqliteStore::open_memory().unwrap();
+            let task = Task::new("t1", None, "win", "mac", "2026-07-02 09:00:00");
+            db.create_task(&task).unwrap();
+            db.try_claim("t1", Some("worker-a")).unwrap(); // lease는 기본 30분 후(미래).
+
+            let n = db.expire_stale_claims().unwrap();
+            assert_eq!(n, 0, "lease가 아직 안 지났으면 아무것도 회수되지 않아야 함");
+            assert_eq!(db.get_task("t1").unwrap().unwrap().state, TaskState::Working);
+        }
+
+        #[test]
+        fn expire_stale_claims_ignores_non_working_tasks() {
+            // submitted/completed 등 working이 아닌 task는 sweep 대상이 아니다(설사 lease 컬럼이 남아있어도).
+            let db = SqliteStore::open_memory().unwrap();
+            let task = Task::new("t1", None, "win", "mac", "2026-07-02 09:00:00");
+            db.create_task(&task).unwrap(); // submitted, lease 없음.
+
+            let n = db.expire_stale_claims().unwrap();
+            assert_eq!(n, 0);
+            assert_eq!(db.get_task("t1").unwrap().unwrap().state, TaskState::Submitted);
+        }
+
+        #[test]
+        fn try_complete_first_completer_wins_rejects_mismatched_completer() {
+            let db = SqliteStore::open_memory().unwrap();
+            let task = Task::new("t1", None, "win", "mac", "2026-07-02 09:00:00");
+            db.create_task(&task).unwrap();
+            db.try_claim("t1", Some("worker-a")).unwrap();
+
+            let artifacts = vec![Artifact {
+                artifact_id: "a1".into(),
+                name: None,
+                parts: vec![Part { text: Some("결과".into()), ..Default::default() }],
+            }];
+            // stale(되살아난) worker-b가 completer 불일치로 거부되어야 한다(레이스 방지 핵심).
+            let err = db.try_complete("t1", &artifacts, Some("worker-b")).unwrap_err();
+            assert!(err.contains("t1"));
+            assert_eq!(db.get_task("t1").unwrap().unwrap().state, TaskState::Working, "거부 후 상태 불변");
+
+            // claim한 본인(worker-a)이 completer면 성공.
+            db.try_complete("t1", &artifacts, Some("worker-a")).unwrap();
+            assert_eq!(db.get_task("t1").unwrap().unwrap().state, TaskState::Completed);
+        }
+
+        #[test]
+        fn try_fail_first_completer_wins_rejects_mismatched_failer() {
+            // try_complete와 대칭: 되살아난 stale worker-b가 worker-a claim task를 failed로 덮어쓰지 못한다
+            // (gemini/coderabbit 리뷰). failer=None이면 하위호환으로 통과.
+            let db = SqliteStore::open_memory().unwrap();
+            let task = Task::new("t1", None, "win", "mac", "2026-07-02 09:00:00");
+            db.create_task(&task).unwrap();
+            db.try_claim("t1", Some("worker-a")).unwrap();
+
+            // stale worker-b의 fail은 거부 -> 상태 불변(working).
+            let err = db.try_fail("t1", None, Some("worker-b")).unwrap_err();
+            assert!(err.contains("t1"));
+            assert_eq!(db.get_task("t1").unwrap().unwrap().state, TaskState::Working, "거부 후 상태 불변");
+
+            // claim 본인(worker-a)이면 성공.
+            db.try_fail("t1", None, Some("worker-a")).unwrap();
+            assert_eq!(db.get_task("t1").unwrap().unwrap().state, TaskState::Failed);
+
+            // 하위호환: failer=None이면 가드 무력화(다른 task로 확인).
+            let t2 = Task::new("t2", None, "win", "mac", "2026-07-02 09:00:00");
+            db.create_task(&t2).unwrap();
+            db.try_claim("t2", Some("worker-a")).unwrap();
+            db.try_fail("t2", None, None).unwrap();
+            assert_eq!(db.get_task("t2").unwrap().unwrap().state, TaskState::Failed);
+        }
+
+        #[test]
+        fn try_complete_completer_none_bypasses_guard_backward_compat() {
+            // 하위호환: completer=None이면 claimed_by 불일치와 무관하게(가드 무력화) 기존 동작대로 성공.
+            let db = SqliteStore::open_memory().unwrap();
+            let task = Task::new("t1", None, "win", "mac", "2026-07-02 09:00:00");
+            db.create_task(&task).unwrap();
+            db.try_claim("t1", Some("worker-a")).unwrap();
+
+            let artifacts = vec![Artifact {
+                artifact_id: "a1".into(),
+                name: None,
+                parts: vec![Part { text: Some("결과".into()), ..Default::default() }],
+            }];
+            db.try_complete("t1", &artifacts, None).unwrap();
+            assert_eq!(db.get_task("t1").unwrap().unwrap().state, TaskState::Completed);
+        }
+
+        #[test]
+        fn try_complete_succeeds_when_claimed_by_is_null() {
+            // agent 인자 없이 claim된(claimed_by NULL) task는 completer가 있어도 성공해야 한다
+            // (claimed_by IS NULL 분기, 혼재 호출 시나리오 하위호환).
+            let db = SqliteStore::open_memory().unwrap();
+            let task = Task::new("t1", None, "win", "mac", "2026-07-02 09:00:00");
+            db.create_task(&task).unwrap();
+            db.try_claim("t1", None).unwrap();
+
+            let artifacts = vec![Artifact {
+                artifact_id: "a1".into(),
+                name: None,
+                parts: vec![Part { text: Some("결과".into()), ..Default::default() }],
+            }];
+            db.try_complete("t1", &artifacts, Some("worker-a")).unwrap();
+            assert_eq!(db.get_task("t1").unwrap().unwrap().state, TaskState::Completed);
+        }
+
+        #[test]
+        fn migration_v6_to_v7_adds_lease_columns_and_preserves_data() {
+            let dir = std::env::temp_dir();
+            let path = dir.join("tuna_mig_v6v7.db");
+            let _ = std::fs::remove_file(&path);
+            let p = path.to_str().unwrap();
+            // v6 스키마 수동 구성: tasks에 lease 컬럼 없음 + schema_version=6 + 기존 task 1건.
+            {
+                let conn = rusqlite::Connection::open(p).unwrap();
+                conn.execute_batch(
+                    "CREATE TABLE config(key TEXT PRIMARY KEY, value TEXT);
+                     CREATE TABLE sessions(id TEXT PRIMARY KEY, head_id INTEGER, \
+                         created_at TEXT, updated_at TEXT);
+                     CREATE TABLE messages(rowid INTEGER PRIMARY KEY AUTOINCREMENT, \
+                         session_id TEXT NOT NULL, msg_id INTEGER NOT NULL, parent_id INTEGER, \
+                         speaker TEXT NOT NULL, content TEXT NOT NULL, created_at TEXT, \
+                         UNIQUE(session_id, msg_id));
+                     CREATE TABLE tasks(task_id TEXT PRIMARY KEY, context_id TEXT, \
+                         from_agent TEXT NOT NULL, to_agent TEXT NOT NULL, state TEXT NOT NULL, \
+                         message_json TEXT, artifacts_json TEXT, history_json TEXT, \
+                         created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+                     INSERT INTO tasks(task_id, context_id, from_agent, to_agent, state, \
+                         created_at, updated_at) \
+                         VALUES('t1', NULL, 'win', 'mac', 'submitted', \
+                         '2026-07-02 09:00:00', '2026-07-02 09:00:00');
+                     INSERT INTO config(key,value) VALUES('schema_version','6');",
+                )
+                .unwrap();
+            }
+            // open → migrate v6→v7(lease 컬럼 4종 신설).
+            let db = SqliteStore::open(p).unwrap();
+            for col in ["claimed_at", "lease_expires_at", "claimed_by", "attempt_count"] {
+                assert!(db.column_exists("tasks", col), "마이그레이션이 {col} 컬럼을 추가해야 함");
+            }
+            // 기존 task 보존 + attempt_count 기본값 0.
+            let preserved = db.get_task("t1").unwrap().expect("기존 task 보존");
+            assert_eq!(preserved.state, TaskState::Submitted);
+            let (_, _, _, attempt_count) = raw_claim_fields(&db, "t1");
+            assert_eq!(attempt_count, 0, "기존 행의 attempt_count는 기본값 0");
+            // 마이그레이션된 스키마에서 claim이 바로 동작해야 한다(신규 컬럼이 실사용 가능한지 확인).
+            db.try_claim("t1", Some("worker-a")).unwrap();
+            assert_eq!(db.get_task("t1").unwrap().unwrap().state, TaskState::Working);
+            let _ = std::fs::remove_file(&path);
         }
 
         #[test]

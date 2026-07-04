@@ -7,6 +7,7 @@
 ### 추가 (Added)
 
 - `tunaround poll --on-task '<cmd>'`: task 도착 시 명령을 실행한다(`{id}` 치환 + `TUNAROUND_TASK_ID`/`TUNAROUND_TASK_MSG` 환경변수). Monitor가 없는 하네스(codex 등)의 0토큰 감독 레인 wake 글루. 예: codex는 `--on-task 'codex exec resume --last "task {id} 처리"'`로 세션을 이어받아 처리(idle 0토큰, 문맥 보존).
+- **claim-후-워커사망 자동 requeue**(거버넌스 §6): lease 기반. claim 시 `lease_expires_at`/`claimed_by`/`attempt_count` 기록(스키마 v7), poll 경로 지연 sweep(`expire_stale_claims`)이 lease(기본 30분) 만료된 `working`을 `submitted`로 회수하고 `attempt_count`가 상한(3) 초과면 `failed`로 격리(무한 requeue 차단). `complete`는 first-completer-wins 가드(되살아난 stale 워커의 뒤늦은 덮어쓰기 거부). 재배달 시 지시문(status_message) 보존. 별도 타이머·하트비트 없음(YAGNI).
 
 ## [0.2.1] - 2026-07-04
 
