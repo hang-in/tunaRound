@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### 변경 (Changed)
+
+- 릴리스 바이너리(cargo-dist)에 `worker`/`engines`/`a2a-out` 피처 포함. 이제 설치본 하나로 코어(`serve`)뿐 아니라 워커 노드(`tunaround node`/`poll`/`work`), http 러너(`--runner http`), 외부 표준 A2A 위임(`--runner a2a`)까지 동작한다. (v0.2.0 프리빌트는 `serve`만 있어 워커 서브커맨드가 없었다.)
+
 ## [0.2.0] - 2026-07-04
 
 ### 추가 (Added)

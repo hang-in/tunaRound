@@ -28,5 +28,7 @@ install-updater = false
 tap = "hang-in/homebrew-tap"
 # Publish jobs to run in CI
 publish-jobs = ["homebrew"]
-# 풀 기능 단일 바이너리: morphology·sqlite는 default, semantic·mcp·serve를 추가로 켠다.
-features = ["semantic", "mcp", "serve"]
+# 풀 기능 단일 바이너리: morphology·sqlite는 default. 릴리스 바이너리 하나로 코어(serve/mcp) +
+# 감독/자동 워커 노드(worker=poll/work/node) + http 러너(engines) + 외부 표준 A2A 위임(a2a-out)까지
+# 전부 되게 켠다(brew 설치본으로 tunaround node/poll/work가 바로 동작하도록).
+features = ["semantic", "mcp", "serve", "worker", "engines", "a2a-out"]
