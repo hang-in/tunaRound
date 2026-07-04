@@ -1163,12 +1163,22 @@ fn main() {
             eprintln!("[work] --agent 미지정 -> 자가 uuid 생성: {agent_id}");
         }
 
+        // claim 시 tasks.runner에 기록할 러너 종류 이름(v8 트레이스). WorkRunner enum -> 소문자 문자열.
+        let runner_name = match a.runner {
+            WorkRunner::Claude => "claude",
+            WorkRunner::Codex => "codex",
+            WorkRunner::Opencode => "opencode",
+            WorkRunner::Http => "http",
+            WorkRunner::A2a => "a2a",
+        };
+
         let result = rt.block_on(async {
             let client = tunaround::mcp_client::McpHttpClient::connect(a.core.clone(), a.token.clone()).await?;
             tunaround::worker::run_worker_loop(
                 &client,
                 runner,
                 &agent_id,
+                runner_name,
                 a.tags.clone(),
                 a.model.clone(),
                 a.project_path.clone(),
@@ -1322,6 +1332,7 @@ fn main() {
                             &client,
                             runner,
                             &l.agent,
+                            &l.runner, // v8 트레이스: 레인 설정의 runner 이름을 그대로 기록.
                             None, // node 레인 태그는 후속(Plan v2-34 비범위)
                             l.model.clone(),
                             project,

@@ -345,4 +345,11 @@
 > 배포·온보딩 §C의 doctor 잔여. 기존 run_doctor(세션9, node.toml 기반)에 additive 2갭. 베이스라인 414. claude/codex 인증심층·config-less 모드는 비범위.
 
 - [x] T1: Tokenizer::backend_name()(lindera/kiwi/simple) + doctor 형태소 백엔드 probe(morphology 게이트, Kiwi 로드=OK/폴백·미빌드=WARN). (Sonnet+Opus 리뷰·독립검증) 단위테스트 2. 라이브: "OK morphology: Kiwi 로드됨" 확인.
-- [x] T2: doctor http 레인 Ollama 도달 ping(engines 게이트, 3s GET, 도달불가=WARN, 기존 None=FAIL 보존). 라이브: "WARN ... 도달 불가" 확인. 검증 421 pass, 표준 clippy 클린. (Opus 직접) 스모크: 코어(127.0.0.1:8899) + `work --once --tags`로 워커 2개 자기등록 → `/a2a` SendMessage toSelector: 단일매칭(smoke-worker 라우팅)/무매칭(no-consumer 에러·미생성)/다중매칭(후보 smoke-worker+smoke-worker2 반환·미생성)/부분집합(machine=mac,runner=claude→smoke-worker2 유일) 전부 정확. 레거시 to_agent 문자열 경로 불변(기존 handle_send 테스트 그대로 pass).
+- [x] T2: doctor http 레인 Ollama 도달 ping(engines 게이트, 3s GET, 도달불가=WARN, 기존 None=FAIL 보존). 라이브: "WARN ... 도달 불가" 확인. 검증 421 pass, 표준 clippy 클린. **PR #6 머지(89cdbf2)**, CodeRabbit 2건(스키마 검증·OS별 안내) 반영.
+
+## task runner 트레이스 + 쓰기 민감 path 가드 (B 축소판) (docs/plans/v2-36-trace-runner-write-guard.md)
+
+> agentgateway P1. 축소 근거: v7이 started/completed/session_id 커버, net-new=runner 하나. 베이스라인 421.
+
+- [ ] B1: tasks `runner` 컬럼(스키마 v8) + try_claim에 runner 기록 + mcp/client/worker 배선 + get_task/tasks 노출. 하위호환 None=NULL.
+- [ ] B2: 쓰기 민감 path 가드(WRITE_GUARD_DIRECTIVE, Write 시 claude/codex 프롬프트 주입, behavioral=readonly-soft 정합) + write_guard_prefix 순수테스트. (Opus 직접) 스모크: 코어(127.0.0.1:8899) + `work --once --tags`로 워커 2개 자기등록 → `/a2a` SendMessage toSelector: 단일매칭(smoke-worker 라우팅)/무매칭(no-consumer 에러·미생성)/다중매칭(후보 smoke-worker+smoke-worker2 반환·미생성)/부분집합(machine=mac,runner=claude→smoke-worker2 유일) 전부 정확. 레거시 to_agent 문자열 경로 불변(기존 handle_send 테스트 그대로 pass).
