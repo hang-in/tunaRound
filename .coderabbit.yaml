@@ -1,4 +1,8 @@
 # yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
 # CodeRabbit 리뷰 언어를 한국어로 지정한다(리뷰 코멘트 + 채팅 응답 전체).
 # 스키마/옵션: https://docs.coderabbit.ai/reference/configuration
+# 주의: language는 생성 산문(요약·설명)을 한국어로 만든다. 일부 고정 UI 라벨(배지,
+# "Actionable comments posted" 등)은 CodeRabbit 제품 문구라 영어로 남을 수 있다.
 language: ko-KR
+# 리뷰·채팅 어조를 한국어 존댓말로 고정(생성 텍스트에 추가로 적용).
+tone_instructions: "모든 리뷰 코멘트와 요약을 한국어 존댓말로 작성하세요. 코드 식별자·파일 경로·명령어는 원문 그대로 두세요. em-dash 대신 일반 대시(-)나 콜론(:)을 쓰세요."

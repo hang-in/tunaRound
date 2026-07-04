@@ -49,7 +49,10 @@ cargo release minor --execute # 실제 실행
 - `release.yml` 트리거 패턴(`**[0-9]+.[0-9]+.[0-9]+*`)과 정합한다.
 - 태그는 `cargo release`가 만든다(수동 `git tag` 지양 - Cargo.toml/CHANGELOG와 어긋남 방지).
 
-## 5. 현재 상태
+## 5. 현재 상태 (하드코딩 회피)
 
-- 마지막 안정 baseline: **0.1.0**(`Cargo.toml`). rc 기간(`v0.1.0-rc.1`) 종료.
-- 다음 릴리스: **0.2.0**(0.1.0 이후 A2A 위임·스트리밍·워커·outbound·거버넌스 = `[Unreleased]`). 관련 PR 머지 후 `cargo release minor --execute`.
+특정 버전 번호는 이 문서에 적지 않는다(금방 낡는다). 대신 아래에서 확인한다.
+
+- **현재 baseline**: `Cargo.toml`의 `version`(또는 `cargo pkgid`). rc 프리릴리스 기간은 종료했다.
+- **다음 릴리스에 담길 것**: `CHANGELOG.md`의 `## [Unreleased]` 섹션.
+- **다음 버전 결정**: `[Unreleased]`에 파괴적/기능 변경이 있으면 `minor`, 픽스만이면 `patch`(0.x 규칙, §1). 관련 PR 머지 후 `cargo release <bump> --execute`.
