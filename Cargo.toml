@@ -10,6 +10,11 @@ license = "AGPL-3.0-only"
 # (release.toml의 publish=false와 belt-and-suspenders. Gemini 리뷰 반영).
 publish = false
 
+# publish=false는 cargo-dist가 바이너리를 "배포 대상 없음"으로 건너뛰게 만든다. dist=true로
+# 명시해 릴리스 아티팩트(인스톨러) 빌드를 다시 켠다(cargo-dist 안내대로. crates.io 게시와는 무관).
+[package.metadata.dist]
+dist = true
+
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
