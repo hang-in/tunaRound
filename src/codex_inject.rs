@@ -68,20 +68,6 @@ pub fn is_approval_method(method: &str) -> bool {
     )
 }
 
-/// `item/agentMessage/delta` 알림에서 흘려보낼 텍스트를 뽑는다. 정확한 델타 필드명은 P0(stdio) 실측
-/// 범위 밖이라 확정되지 않았다(설계 §7 미해소 잔여) - `delta`를 우선 보고, 없으면 `text`로 폴백한다.
-/// 라이브 스모크(T5)에서 실제 필드명이 다르면 이 함수만 고치면 된다.
-pub fn extract_agent_message_delta(method: &str, params: &Value) -> Option<String> {
-    if method != "item/agentMessage/delta" {
-        return None;
-    }
-    params
-        .get("delta")
-        .and_then(|v| v.as_str())
-        .or_else(|| params.get("text").and_then(|v| v.as_str()))
-        .map(String::from)
-}
-
 /// 들어온 메시지에 대해 injector가 취할 다음 행동(순수 판정, 설계 §4 5단계·§5.2).
 #[derive(Debug, Clone, PartialEq)]
 pub enum InjectAction {
@@ -93,7 +79,11 @@ pub enum InjectAction {
     LogOnly(String),
     /// 우리 threadId의 turn/completed - 루프 종료(성공).
     Complete,
-    /// 무시(다른 thread의 turn/completed, 우리가 보낸 요청의 응답, 그 외 알림).
+    /// 실패 신호(에러 응답 또는 우리 thread의 error 알림) - 루프를 즉시 Err로 끝낸다.
+    /// 이게 없으면 turn/start 거부·턴 오류가 조용히 무시되어 --timeout 전부를 블록한 뒤 원인 없는
+    /// 타임아웃만 남는다(리뷰 findings).
+    Fail(String),
+    /// 무시(다른 thread의 알림, 우리가 보낸 요청의 정상 응답 등).
     Ignore,
 }
 
@@ -112,23 +102,46 @@ pub fn decide_action(msg: &IncomingMessage, our_thread_id: &str) -> InjectAction
             }
         }
         IncomingMessage::Notification { method, params } => {
+            // error 알림(`{error, threadId, turnId, willRetry}`) = 턴 실패 신호. 우리 thread거나
+            // thread 불명이면 즉시 실패로 surface해 --timeout 블록 없이 원인을 남긴다(리뷰 findings).
+            if method == "error" {
+                let ours = params
+                    .get("threadId")
+                    .and_then(|v| v.as_str())
+                    .is_none_or(|t| t == our_thread_id);
+                if ours {
+                    let e =
+                        params.get("error").map(std::string::ToString::to_string).unwrap_or_default();
+                    let retry =
+                        params.get("willRetry").and_then(serde_json::Value::as_bool).unwrap_or(false);
+                    return InjectAction::Fail(format!("codex error 알림: {e} (willRetry={retry})"));
+                }
+                return InjectAction::Ignore;
+            }
             if let Some(tc) = is_turn_completed(method, params) {
                 if tc.thread_id == our_thread_id {
                     InjectAction::Complete
                 } else {
                     InjectAction::Ignore
                 }
-            } else if let Some(text) = extract_final_agent_message(method, params) {
-                // 최종 답변만 stdout으로(델타는 --remote TUI에서 실시간으로 보이고, 로그엔 중복·노이즈라
-                // 흘리지 않는다). extract_agent_message_delta는 델타 shape 문서화·후속용으로 남겨둔다.
-                InjectAction::PrintText(text)
+            } else if params.get("threadId").and_then(|v| v.as_str()) == Some(our_thread_id) {
+                // 우리 thread의 최종 답변만 stdout으로. threadId로 거르지 않으면 같은 ws에 다른 thread가
+                // 붙어 있을 때(사람 --remote 관전 등) 그쪽 답변이 우리 task 결과로 오염될 수 있다(findings).
+                if let Some(text) = extract_final_agent_message(method, params) {
+                    InjectAction::PrintText(text)
+                } else {
+                    InjectAction::Ignore
+                }
             } else {
                 InjectAction::Ignore
             }
         }
-        // 우리가 보낸 요청(initialize/thread.start/thread.resume/turn.start)의 응답은 expect_response가
-        // 별도로 소비하므로, 일반 펌프 단계에서는 무시한다.
-        IncomingMessage::Response { .. } => InjectAction::Ignore,
+        // 우리가 보낸 요청의 응답: 정상(error 없음)은 expect_response가 소비하거나 무시하면 되지만,
+        // 에러 응답(turn/start 거부 등)은 fire-and-forget이라 여기서만 잡히므로 즉시 실패로 surface한다.
+        IncomingMessage::Response { error, .. } => match error {
+            Some(e) => InjectAction::Fail(format!("codex 에러 응답: {e}")),
+            None => InjectAction::Ignore,
+        },
     }
 }
 
@@ -206,6 +219,7 @@ async fn handle_incoming(
             let _ = std::io::stdout().flush();
         }
         InjectAction::LogOnly(s) => eprintln!("[codex-inject] {s}"),
+        InjectAction::Fail(e) => eprintln!("[codex-inject] 실패 신호: {e}"),
         InjectAction::Complete | InjectAction::Ignore => {}
     }
     Ok(action)
@@ -223,16 +237,21 @@ async fn expect_response(
         let msg = recv_json(stream, deadline).await?;
         let Some(incoming) = classify_message(&msg) else { continue };
         if let IncomingMessage::Response { id, result, error } = &incoming {
+            // 에러 응답은 id 일치 여부와 무관하게 즉시 실패로 surface한다(id:null 에러 응답이나 프록시가
+            // id 타입을 바꿔 에코한 경우도 swallow되지 않게, 리뷰 findings).
+            if let Some(err) = error {
+                return Err(format!("codex-inject: 서버 에러 응답(id={id:?}): {err}"));
+            }
             if *id == json!(expect_id) {
-                if let Some(err) = error {
-                    return Err(format!("codex-inject: 서버 에러 응답(id={expect_id}): {err}"));
-                }
                 return Ok(json!({ "result": result.clone().unwrap_or(Value::Null) }));
             }
-            // 우리 관심 밖의 id에 대한 응답 - 무시하고 계속 대기.
+            // 우리 관심 밖의 id에 대한 정상 응답 - 무시하고 계속 대기.
             continue;
         }
-        handle_incoming(sink, &incoming, "").await?;
+        // 핸드셰이크 중 error 알림 등 실패 신호가 오면 즉시 Err로 끝낸다.
+        if let InjectAction::Fail(e) = handle_incoming(sink, &incoming, "").await? {
+            return Err(format!("codex-inject: {e}"));
+        }
     }
 }
 
@@ -279,7 +298,10 @@ pub async fn run(
         send_json(&mut sink, &build_thread_resume_request(resume_id, &tid, Some(approval), Some(sandbox)))
             .await?;
         let resp = expect_response(&mut sink, &mut stream, resume_id, deadline).await?;
-        parse_thread_id(&resp).unwrap_or(tid)
+        parse_thread_id(&resp).unwrap_or_else(|| {
+            eprintln!("[codex-inject] thread/resume 응답에서 thread id 파싱 실패, 기존 {tid} 재사용");
+            tid.clone()
+        })
     } else {
         let start_id = alloc_id!();
         send_json(
@@ -303,9 +325,13 @@ pub async fn run(
     loop {
         let msg = recv_json(&mut stream, deadline).await?;
         let Some(incoming) = classify_message(&msg) else { continue };
-        if handle_incoming(&mut sink, &incoming, &thread_id).await? == InjectAction::Complete {
-            eprintln!("[codex-inject] turn/completed 수신, 종료");
-            return Ok(());
+        match handle_incoming(&mut sink, &incoming, &thread_id).await? {
+            InjectAction::Complete => {
+                eprintln!("[codex-inject] turn/completed 수신, 종료");
+                return Ok(());
+            }
+            InjectAction::Fail(e) => return Err(format!("codex-inject: 턴 실패: {e}")),
+            _ => {}
         }
     }
 }
@@ -370,32 +396,6 @@ mod tests {
         assert!(!is_approval_method("mcpServer/elicitation/request"));
         assert!(!is_approval_method("turn/completed"));
         assert!(!is_approval_method("some/unknown/method"));
-    }
-
-    // -- extract_agent_message_delta --------------------------------------------
-
-    #[test]
-    fn extract_agent_message_delta_prefers_delta_field() {
-        let params = json!({ "delta": "안녕", "text": "무시됨" });
-        assert_eq!(
-            extract_agent_message_delta("item/agentMessage/delta", &params).as_deref(),
-            Some("안녕")
-        );
-    }
-
-    #[test]
-    fn extract_agent_message_delta_falls_back_to_text_field() {
-        let params = json!({ "text": "폴백 텍스트" });
-        assert_eq!(
-            extract_agent_message_delta("item/agentMessage/delta", &params).as_deref(),
-            Some("폴백 텍스트")
-        );
-    }
-
-    #[test]
-    fn extract_agent_message_delta_none_for_other_methods() {
-        let params = json!({ "delta": "안녕" });
-        assert_eq!(extract_agent_message_delta("item/completed", &params), None);
     }
 
     // -- decide_action -----------------------------------------------------------
@@ -467,10 +467,59 @@ mod tests {
         let msg = IncomingMessage::Notification {
             method: "item/completed".to_string(),
             params: json!({
+                "threadId": "tid-1",
                 "item": { "type": "agentMessage", "id": "m1", "text": "완료 답변", "phase": "final_answer" }
             }),
         };
         assert_eq!(decide_action(&msg, "tid-1"), InjectAction::PrintText("완료 답변".to_string()));
+    }
+
+    #[test]
+    fn decide_action_final_agent_message_other_thread_ignored() {
+        // 같은 ws에 붙은 다른 thread의 최종 답변은 우리 결과로 출력하지 않는다(교차 오염 방지).
+        let msg = IncomingMessage::Notification {
+            method: "item/completed".to_string(),
+            params: json!({
+                "threadId": "tid-OTHER",
+                "item": { "type": "agentMessage", "id": "m1", "text": "남의 답변", "phase": "final_answer" }
+            }),
+        };
+        assert_eq!(decide_action(&msg, "tid-1"), InjectAction::Ignore);
+    }
+
+    #[test]
+    fn decide_action_error_notification_our_thread_fails() {
+        let msg = IncomingMessage::Notification {
+            method: "error".to_string(),
+            params: json!({ "error": {"message":"boom"}, "threadId": "tid-1", "turnId": "t9", "willRetry": false }),
+        };
+        match decide_action(&msg, "tid-1") {
+            InjectAction::Fail(s) => assert!(s.contains("boom"), "에러 메시지 포함 기대: {s}"),
+            other => panic!("Fail을 기대했는데 {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decide_action_error_notification_other_thread_ignored() {
+        let msg = IncomingMessage::Notification {
+            method: "error".to_string(),
+            params: json!({ "error": {"message":"boom"}, "threadId": "tid-OTHER", "willRetry": false }),
+        };
+        assert_eq!(decide_action(&msg, "tid-1"), InjectAction::Ignore);
+    }
+
+    #[test]
+    fn decide_action_error_response_fails() {
+        // turn/start 거부 등 에러 응답은 fire-and-forget이라 펌프에서만 잡히므로 Fail로 surface.
+        let msg = IncomingMessage::Response {
+            id: json!(3),
+            result: None,
+            error: Some(json!({ "code": -32602, "message": "invalid params" })),
+        };
+        match decide_action(&msg, "tid-1") {
+            InjectAction::Fail(s) => assert!(s.contains("invalid params"), "에러 포함 기대: {s}"),
+            other => panic!("Fail을 기대했는데 {other:?}"),
+        }
     }
 
     #[test]
