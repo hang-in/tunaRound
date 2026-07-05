@@ -24,8 +24,20 @@ use crate::config::expand_home;
 // 순수부
 // ---------------------------------------------------------------------------
 
+/// agent 값을 파일명 안전 문자로 정규화한다. 정상 id(win-codex-sup 등 영숫자+`-`+`_`)는 불변이고,
+/// `/`·`..` 같은 경로 문자는 `_`로 치환해 `~/.tunaround` 네임스페이스 밖으로 새거나 임의 하위 디렉터리를
+/// 만들지 못하게 한다(경로 탈출 방지, 리뷰 지적).
+fn safe_agent_filename(agent: &str) -> String {
+    let safe: String = agent
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '-' | '_') { c } else { '_' })
+        .collect();
+    if safe.is_empty() { "default".to_string() } else { safe }
+}
+
 /// `--agent` 별 thread 영속 파일 경로(`~/.tunaround/codex-sup-<agent>.thread`, 설계 §5.1/§6).
 pub fn thread_file_path(agent: &str) -> String {
+    let agent = safe_agent_filename(agent);
     expand_home(&format!("~/.tunaround/codex-sup-{agent}.thread"))
 }
 
@@ -255,6 +267,29 @@ async fn expect_response(
     }
 }
 
+/// thread/start를 보내 새 thread를 만들고 threadId를 영속화해 반환한다. else 분기와 resume 실패 시
+/// 자가치유가 공유한다(중복 제거). `next_id`는 호출자의 id 카운터를 그대로 증가시킨다.
+#[allow(clippy::too_many_arguments)]
+async fn start_thread(
+    sink: &mut WsSink,
+    stream: &mut WsRead,
+    next_id: &mut u64,
+    approval: ApprovalPolicy,
+    sandbox: SandboxMode,
+    cwd: Option<&str>,
+    deadline: Instant,
+    thread_path: &str,
+) -> Result<String, String> {
+    *next_id += 1;
+    let start_id = *next_id;
+    send_json(sink, &build_thread_start_request(start_id, Some(approval), Some(sandbox), cwd)).await?;
+    let resp = expect_response(sink, stream, start_id, deadline).await?;
+    let tid = parse_thread_id(&resp)
+        .ok_or_else(|| "codex-inject: thread/start 응답에서 thread id 파싱 실패".to_string())?;
+    persist_thread_id(thread_path, &tid)?;
+    Ok(tid)
+}
+
 /// `tunaround codex-inject` 본체: ws 접속 -> initialize -> thread 확보(resume|start) -> turn/start ->
 /// turn/completed까지 알림 펌프. 성공 시 Ok(()), 타임아웃·프로토콜 에러는 Err(설계 §6 종료코드 계약은
 /// main.rs가 이 Result를 process::exit로 변환).
@@ -268,11 +303,16 @@ pub async fn run(
     timeout_secs: u64,
     force_new: bool,
 ) -> Result<(), String> {
-    let (ws_stream, _resp) = tokio_tungstenite::connect_async(ws_url)
-        .await
-        .map_err(|e| format!("codex-inject: ws 접속 실패({ws_url}): {e}"))?;
-    let (mut sink, mut stream) = ws_stream.split();
+    // deadline을 먼저 잡고 connect_async도 같은 예산으로 감싼다(연결 단계가 무한정 대기하지 않게, 리뷰 지적).
     let deadline = Instant::now() + Duration::from_secs(timeout_secs);
+    let (ws_stream, _resp) = tokio::time::timeout(
+        Duration::from_secs(timeout_secs),
+        tokio_tungstenite::connect_async(ws_url),
+    )
+    .await
+    .map_err(|_| format!("codex-inject: ws 접속 타임아웃({timeout_secs}s, {ws_url})"))?
+    .map_err(|e| format!("codex-inject: ws 접속 실패({ws_url}): {e}"))?;
+    let (mut sink, mut stream) = ws_stream.split();
 
     let mut next_id: u64 = 0;
     macro_rules! alloc_id {
@@ -297,23 +337,27 @@ pub async fn run(
         let resume_id = alloc_id!();
         send_json(&mut sink, &build_thread_resume_request(resume_id, &tid, Some(approval), Some(sandbox)))
             .await?;
-        let resp = expect_response(&mut sink, &mut stream, resume_id, deadline).await?;
-        parse_thread_id(&resp).unwrap_or_else(|| {
-            eprintln!("[codex-inject] thread/resume 응답에서 thread id 파싱 실패, 기존 {tid} 재사용");
-            tid.clone()
-        })
+        match expect_response(&mut sink, &mut stream, resume_id, deadline).await {
+            Ok(resp) => parse_thread_id(&resp).unwrap_or_else(|| {
+                eprintln!("[codex-inject] thread/resume 응답에서 thread id 파싱 실패, 기존 {tid} 재사용");
+                tid.clone()
+            }),
+            // 서버 재기동·thread 만료로 죽은 threadId면 resume이 에러다. 수동 개입(.thread 삭제) 없이
+            // 새 thread로 자가치유한다(리뷰 findings: gemini high + CodeRabbit).
+            Err(e) => {
+                eprintln!("[codex-inject] thread/resume 실패({e}), 새 thread 시작(자가치유)");
+                start_thread(
+                    &mut sink, &mut stream, &mut next_id, approval, sandbox, cwd.as_deref(), deadline,
+                    &thread_path,
+                )
+                .await?
+            }
+        }
     } else {
-        let start_id = alloc_id!();
-        send_json(
-            &mut sink,
-            &build_thread_start_request(start_id, Some(approval), Some(sandbox), cwd.as_deref()),
+        start_thread(
+            &mut sink, &mut stream, &mut next_id, approval, sandbox, cwd.as_deref(), deadline, &thread_path,
         )
-        .await?;
-        let resp = expect_response(&mut sink, &mut stream, start_id, deadline).await?;
-        let tid = parse_thread_id(&resp)
-            .ok_or_else(|| "codex-inject: thread/start 응답에서 thread id 파싱 실패".to_string())?;
-        persist_thread_id(&thread_path, &tid)?;
-        tid
+        .await?
     };
     eprintln!("[codex-inject] thread={thread_id}로 turn/start 주입");
 
@@ -350,6 +394,17 @@ mod tests {
             path.ends_with(".tunaround/codex-sup-win-codex-sup.thread"),
             "예상 접미와 다름: {path}"
         );
+    }
+
+    #[test]
+    fn safe_agent_filename_blocks_path_traversal() {
+        assert_eq!(safe_agent_filename("win-codex-sup"), "win-codex-sup"); // 정상 id는 불변
+        assert_eq!(safe_agent_filename("a_b-1"), "a_b-1");
+        assert_eq!(safe_agent_filename(""), "default");
+        // 경로 문자는 전부 _로 치환되어 네임스페이스를 못 벗어난다.
+        let evil = safe_agent_filename("../../etc/passwd");
+        assert!(!evil.contains('/') && !evil.contains('.'), "경로 문자 잔존: {evil}");
+        assert!(!thread_file_path("../../etc/passwd").contains(".."), "경로 탈출 잔존");
     }
 
     // -- 정책 파싱 -------------------------------------------------------------

@@ -362,7 +362,7 @@
 
 ## Plan v2-37: codex 라이브 감독 (app-server ws + turn/start 주입) (docs/plans/v2-37-codex-live-supervisor.md)
 
-> 설계 정본 docs/design/v2-codex-live-supervisor-appserver_2026-07-05.md. codex 감독을 헤드리스 exec -> 라이브 app-server thread로. 신규 `tunaround codex-inject`(ws)가 turn/start로 외부 wake. 구현 Sonnet, Opus 리뷰. **설계·계획만 완료, 구현 미착수.**
+> 설계 정본 docs/design/v2-codex-live-supervisor-appserver_2026-07-05.md. codex 감독을 헤드리스 exec -> 라이브 app-server thread로. 신규 `tunaround codex-inject`(ws)가 turn/start로 외부 wake. 구현 Sonnet, Opus 리뷰. **P0~T5 구현 완료 + 라이브 스모크 통과(PR #9). 리뷰 findings 반영.**
 
 - [x] P0: 완료(stdio 실측). thread id=result.thread.id, 승인=MCP호출이 never여도 mcpServer/elicitation/request→injector가 action:accept 필수, accept 후 tuna-broker list_agents native 호출 정답(raw HTTP 0). enum 확정. 설계 §5.2·§7 반영
 - [x] T1: 프로토콜 순수부 src/codex_appserver.rs(요청빌더+분류+파싱헬퍼+승인응답빌더). 25테스트, 스키마 대조 검증(Opus). 커밋 45d7f33.
