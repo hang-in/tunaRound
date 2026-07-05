@@ -74,6 +74,19 @@ cargo clippy --features "semantic morphology mcp serve"
 - 네트워크는 Tailscale/LAN/SSH. 코어 바인드는 `0.0.0.0:<port>`, 인증은 bearer.
 - 상세·검증범위: `docs/design/v2-deploy-onboarding_2026-07-02.md`, `docs/design/v2-A2A-core-backend_2026-06-30.md`.
 
+### codex 라이브 감독을 다른 머신에서 관전(SSH 포워딩)
+
+`codex app-server --listen ws://127.0.0.1:<PORT>`는 **localhost 바인드**입니다. 감독이 도는 머신이 아닌 다른 머신에서 `codex --remote`로 그 라이브 thread를 관전하려면 SSH 포트포워딩으로 로컬 포트를 감독 머신에 연결합니다.
+
+```bash
+# 총감독 머신에서: 감독(codex app-server)이 도는 머신으로 포워딩
+ssh -L <PORT>:127.0.0.1:<PORT> <supervisor-host>
+# 별도 터미널에서: 포워딩된 로컬 포트로 접속
+codex --remote ws://127.0.0.1:<PORT>
+```
+
+단, **크로스머신 작업 라우팅 자체는 브로커가 담당**하므로(코어 브로커가 이미 원격 폴러에 작업을 배달) 이 ws 포워딩은 **원격 관전(HITL) 용도로만** 필요합니다 - 예를 들어 맥 총감독이 윈도우 codex 감독에게 작업을 던지는 경로 자체는 브로커 경유라 ws 노출이 필요 없습니다. 상세: [docs/design/v2-codex-live-supervisor-appserver_2026-07-05.md](../design/v2-codex-live-supervisor-appserver_2026-07-05.md) §5.5. `<supervisor-host>`/포트는 각자 환경(SSH config alias 등)으로 대체하고 레포에 실제 호스트명·IP를 남기지 않습니다.
+
 ## 8. 현재 상태 / 재개 포인터 (2026-07-02 기준)
 
 - **완료**: v1 + v2 검색/맥락 로드맵(step 2~8) + Stage 3a-3d + codex pull(behavioral) + 실코퍼스 회귀(step 6) + 외래어 병기 색인 + 임베딩 기본 qwen3. 배포 온보딩 **Stage 1(clap 서브커맨드)·Stage 2(cargo-dist 설정)·Stage 3(tunaround.toml 프로파일)** 구현 완료(Stage 3은 리뷰·커밋 대기).
