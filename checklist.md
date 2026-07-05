@@ -369,5 +369,5 @@
 - [x] T2: ws 클라 src/codex_inject.rs(tokio-tungstenite 0.24, connect→initialize→thread resume|start→turn/start→펌프) + main.rs CodexInject 서브커맨드. 커밋 159364b.
 - [x] T3: 승인 자동응답(decide_action: elicitation accept/승인 granted/unknown LogOnly). T2와 함께 159364b.
 - [x] T4: node 감독 레인 안내 runner별 분기(codex→app-server+codex-inject 레시피, claude→Monitor+poll). main.rs. (Opus 직접)
-- [~] T5: 문서 완료(a2a-usage §10 + dev-mac-windows SSH, 커밋 96c8b34). **라이브 스모크 진행 중**(Opus): app-server 기동→codex-inject 왕복→raw HTTP 폴백0 broker.db 교차검증.
-- 21+25=46 신규 순수 테스트, CI조합(morphology mcp serve worker) clippy 클린. worker 364/기본 290 pass.
+- [x] T5: 문서(a2a-usage §10 + dev-mac-windows SSH, 96c8b34) + **라이브 스모크 통과**(Opus). 스모크 A: codex-inject로 list_agents 왕복(ws→initialize→thread/start→turn/start→elicitation 자동accept→native MCP→"2명"→turn/completed→exit0). 스모크 B: 총감독 SendMessage로 task 생성→codex-inject claim/처리/complete→**GetTask state=completed, runner=codex, artifact="2"**(raw HTTP 폴백0), thread resume으로 맥락연속(티키타카) 실증. **라이브서 turn/completed params=turn.id 중첩 발견·수정**(fix 커밋).
+- **Plan v2-37 완료**(P0+T1~T5). 46 신규 순수 테스트, 전체 lib 453 pass, CI조합 clippy 클린. HITL `--remote` 관전만 사용자 수동 확인 잔여(설계상 성립).
