@@ -181,14 +181,21 @@ pub struct TurnCompleted {
 }
 
 /// method/params가 `turn/completed` 알림이면 threadId/turnId를 뽑는다.
+/// 실측 params 구조는 `{threadId: string, turn: {id, ...}}`다(P0에선 method만 봤고 params 구조는
+/// 라이브 스모크에서야 확인 - `turnId` 평면 필드가 아니라 `turn.id` 중첩). thread_id가 완료 매칭의
+/// 필수 키이고 turn_id는 참고용이라, turn.id가 없으면 빈 문자열로 둔다.
 pub fn is_turn_completed(method: &str, params: &Value) -> Option<TurnCompleted> {
     if method != "turn/completed" {
         return None;
     }
-    Some(TurnCompleted {
-        thread_id: params.get("threadId")?.as_str()?.to_string(),
-        turn_id: params.get("turnId")?.as_str()?.to_string(),
-    })
+    let thread_id = params.get("threadId")?.as_str()?.to_string();
+    let turn_id = params
+        .get("turn")
+        .and_then(|t| t.get("id"))
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    Some(TurnCompleted { thread_id, turn_id })
 }
 
 /// method/params가 `item/completed` 알림이고 그 item이 최종 답변(agentMessage, phase=final_answer)이면
@@ -454,8 +461,9 @@ mod tests {
 
     #[test]
     fn turn_completed_notification_classifies_and_parses() {
+        // 실측 params 구조: threadId 평면 + turn 객체(turnId 평면 아님).
         let msg: Value = serde_json::from_str(
-            r#"{"method":"turn/completed","params":{"threadId":"tid-1","turnId":"turn-1"}}"#,
+            r#"{"method":"turn/completed","params":{"threadId":"tid-1","turn":{"id":"turn-1"}}}"#,
         )
         .unwrap();
         let IncomingMessage::Notification { method, params } = classify_message(&msg).unwrap()

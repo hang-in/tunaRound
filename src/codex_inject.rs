@@ -119,9 +119,9 @@ pub fn decide_action(msg: &IncomingMessage, our_thread_id: &str) -> InjectAction
                     InjectAction::Ignore
                 }
             } else if let Some(text) = extract_final_agent_message(method, params) {
+                // 최종 답변만 stdout으로(델타는 --remote TUI에서 실시간으로 보이고, 로그엔 중복·노이즈라
+                // 흘리지 않는다). extract_agent_message_delta는 델타 shape 문서화·후속용으로 남겨둔다.
                 InjectAction::PrintText(text)
-            } else if let Some(delta) = extract_agent_message_delta(method, params) {
-                InjectAction::PrintText(delta)
             } else {
                 InjectAction::Ignore
             }
@@ -443,7 +443,7 @@ mod tests {
     fn decide_action_turn_completed_matching_thread_completes() {
         let msg = IncomingMessage::Notification {
             method: "turn/completed".to_string(),
-            params: json!({ "threadId": "tid-1", "turnId": "turn-9" }),
+            params: json!({ "threadId": "tid-1", "turn": { "id": "turn-9" } }),
         };
         assert_eq!(decide_action(&msg, "tid-1"), InjectAction::Complete);
     }
@@ -452,12 +452,12 @@ mod tests {
     fn decide_action_turn_completed_other_thread_ignored() {
         let msg = IncomingMessage::Notification {
             method: "turn/completed".to_string(),
-            params: json!({ "threadId": "tid-OTHER", "turnId": "turn-9" }),
+            params: json!({ "threadId": "tid-OTHER", "turn": { "id": "turn-9" } }),
         };
         assert_eq!(decide_action(&msg, "tid-1"), InjectAction::Ignore);
-        // is_turn_completed 자체 파싱도 재확인(회귀 방지 겸용).
+        // is_turn_completed 자체 파싱도 재확인(회귀 방지 겸용). turn_id는 turn.id에서.
         assert_eq!(
-            is_turn_completed("turn/completed", &json!({"threadId":"tid-OTHER","turnId":"turn-9"})),
+            is_turn_completed("turn/completed", &json!({"threadId":"tid-OTHER","turn":{"id":"turn-9"}})),
             Some(TurnCompleted { thread_id: "tid-OTHER".to_string(), turn_id: "turn-9".to_string() })
         );
     }
@@ -474,12 +474,14 @@ mod tests {
     }
 
     #[test]
-    fn decide_action_agent_message_delta_prints_text() {
+    fn decide_action_agent_message_delta_is_ignored() {
+        // 델타는 로그로 흘리지 않고 무시한다(최종답만 출력). extract_agent_message_delta 함수 자체의
+        // 파싱은 별도 테스트로 유지.
         let msg = IncomingMessage::Notification {
             method: "item/agentMessage/delta".to_string(),
             params: json!({ "delta": "진행중..." }),
         };
-        assert_eq!(decide_action(&msg, "tid-1"), InjectAction::PrintText("진행중...".to_string()));
+        assert_eq!(decide_action(&msg, "tid-1"), InjectAction::Ignore);
     }
 
     #[test]
