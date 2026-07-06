@@ -386,23 +386,35 @@ pub async fn run_poll_loop(
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     // 로스터 자기 등록(1회). 실패해도 폴링은 계속한다(레지스트리 없는 구 코어 하위호환).
-    match client.register_agent(agent, tags.as_deref(), None).await {
-        Ok(msg) => eprintln!("[poll] 로스터 등록: {msg}"),
-        Err(e) => eprintln!("[poll] 로스터 등록 실패(무시하고 폴링 계속): {e}"),
-    }
+    // 등록 성공 시 last_heartbeat가 now로 세팅되므로 첫 패스의 heartbeat는 건너뛴다(중복 요청 회피,
+    // once=true 시 특히. 리뷰 반영). 등록 실패 시엔 첫 패스에서 heartbeat로 online을 시도한다.
+    let mut skip_heartbeat = match client.register_agent(agent, tags.as_deref(), None).await {
+        Ok(msg) => {
+            eprintln!("[poll] 로스터 등록: {msg}");
+            true
+        }
+        Err(e) => {
+            eprintln!("[poll] 로스터 등록 실패(무시하고 폴링 계속): {e}");
+            false
+        }
+    };
 
     loop {
         // online 유지. 코어가 재기동돼 로스터가 비었으면(미등록 응답) 재등록한다.
-        match client.heartbeat(agent).await {
-            Ok(resp) if needs_reregister(&resp) => {
-                eprintln!("[poll] 코어 재기동 감지 -> 재등록 시도");
-                match client.register_agent(agent, tags.as_deref(), None).await {
-                    Ok(msg) => eprintln!("[poll] 재등록 성공: {msg}"),
-                    Err(e) => eprintln!("[poll] 재등록 실패: {e}"),
+        if skip_heartbeat {
+            skip_heartbeat = false;
+        } else {
+            match client.heartbeat(agent).await {
+                Ok(resp) if needs_reregister(&resp) => {
+                    eprintln!("[poll] 코어 재기동 감지 -> 재등록 시도");
+                    match client.register_agent(agent, tags.as_deref(), None).await {
+                        Ok(msg) => eprintln!("[poll] 재등록 성공: {msg}"),
+                        Err(e) => eprintln!("[poll] 재등록 실패: {e}"),
+                    }
                 }
+                Ok(_) => {}
+                Err(e) => eprintln!("[poll] heartbeat 실패(무시): {e}"),
             }
-            Ok(_) => {}
-            Err(e) => eprintln!("[poll] heartbeat 실패(무시): {e}"),
         }
 
         match client.poll_tasks(agent).await {
