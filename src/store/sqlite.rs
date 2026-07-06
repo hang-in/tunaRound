@@ -281,6 +281,24 @@ impl SqliteStore {
         self.list_agents(selector, now, ttl_secs).into_iter().map(|entry| entry.uuid).collect()
     }
 
+    /// online 에이전트의 "무장 식별자" 집합: 각 에이전트의 uuid + `session` 태그값(있으면).
+    /// 후보 overlay가 candidate uuid(=jsonl 세션 id)를 여기에 대조해, 이미 무장된 세션을 armed로 표시한다.
+    /// uuid=세션id로 무장한 세션(autoarm·arm 프롬프트)은 uuid로 매칭되고, 고정 이름으로 무장한 감독
+    /// (로스터 uuid=친숙명, 예: mac-claude-sup)은 `session` 태그에 자기 세션 id를 실어야 매칭돼 후보에서
+    /// 정확히 제외된다. session id는 uuid 공간이라 무관 에이전트와 충돌하지 않는다.
+    pub fn armed_session_ids(&self, now: &str, ttl_secs: i64) -> std::collections::HashSet<String> {
+        let mut set = std::collections::HashSet::new();
+        for entry in self.list_agents(&BTreeMap::new(), now, ttl_secs) {
+            if let Some(sid) = entry.tags.get("session")
+                && !sid.is_empty()
+            {
+                set.insert(sid.clone());
+            }
+            set.insert(entry.uuid);
+        }
+        set
+    }
+
     /// 스키마 마이그레이션을 실행한다. config 테이블 먼저, schema_version 없으면 v0->v1 일괄 적용.
     fn migrate(&self) -> Result<(), String> {
         // config 테이블 먼저 보장.
@@ -2689,6 +2707,28 @@ mod tests {
 
         let many = db.resolve_selector(&tags(&[("runner", "claude")]), now, 90);
         assert_eq!(many, vec!["u1".to_string(), "u2".to_string()]);
+    }
+
+    #[test]
+    fn armed_session_ids_includes_uuid_and_session_tag() {
+        let db = SqliteStore::open_memory().unwrap();
+        // (a) uuid=세션 id로 무장(autoarm·arm 프롬프트 경로).
+        db.register_agent("sess-uuid-1", tags(&[("runner", "claude")]), None, "2026-07-04 10:00:00");
+        // (b) 고정 이름으로 무장하되 session 태그에 세션 id를 실음(레거시 감독 마이그레이션 경로).
+        db.register_agent(
+            "mac-claude-sup",
+            tags(&[("runner", "claude"), ("session", "e0502b88")]),
+            None,
+            "2026-07-04 10:00:00",
+        );
+        // (c) offline 에이전트는 무시돼야 함.
+        db.register_agent("stale", tags(&[("session", "zzz")]), None, "2026-07-04 09:00:00");
+
+        let armed = db.armed_session_ids("2026-07-04 10:00:10", 90);
+        assert!(armed.contains("sess-uuid-1"), "uuid로 무장한 세션은 uuid로 매칭");
+        assert!(armed.contains("mac-claude-sup"), "고정 이름 uuid도 포함");
+        assert!(armed.contains("e0502b88"), "session 태그의 세션 id로도 매칭(핵심 수정)");
+        assert!(!armed.contains("zzz"), "offline 에이전트의 session 태그는 제외");
     }
 
     fn candidate(uuid: &str) -> CandidateEntry {

@@ -107,7 +107,9 @@ def main() -> int:
     display = os.environ.get("TUNA_AUTOARM_AGENT") or f"{host}-claude-{session_id[:8]}"
     interval = os.environ.get("TUNA_AUTOARM_INTERVAL", "15")
 
-    tags = f"machine={machine},runner=claude,role={role},project={project},user={user},host={host}"
+    # session 태그 = 이 세션의 jsonl id. 브로커 armed overlay가 discover 후보(uuid=세션 id)를 이 태그로
+    # 대조해, 고정 이름으로 무장해도(uuid≠세션 id) 그 세션을 후보에서 정확히 제외한다(이중 표시 방지).
+    tags = f"machine={machine},runner=claude,role={role},project={project},user={user},host={host},session={session_id}"
 
     sdir = state_dir()
     pidfile = sdir / f"{session_id}.json"
