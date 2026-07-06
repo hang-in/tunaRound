@@ -48,6 +48,9 @@ enum Commands {
     /// 발견 리포터: 로컬 Claude Code 세션을 열거해 브로커에 미무장 후보로 보고한다(v2-40 S2, worker 피처).
     #[cfg(feature = "worker")]
     Discover(DiscoverArgs),
+    /// 총괄 결과 인박스: 내가 던진 task의 완료/실패를 브로커 SSE로 받아 알린다(책임의 이전, worker 피처).
+    #[cfg(feature = "worker")]
+    WatchResults(WatchResultsArgs),
     /// 워커 노드 상주: node.toml대로 브로커(self)+자동 워커 레인들을 한 프로세스로(serve+worker 피처).
     #[cfg(all(feature = "serve", feature = "worker"))]
     Node(NodeArgs),
@@ -288,6 +291,20 @@ struct DiscoverArgs {
     /// 한 번만 열거·보고하고 종료(테스트·수동 실행용).
     #[arg(long)]
     once: bool,
+}
+
+/// `watch-results` 서브커맨드(worker 피처 전용): 총괄이 던진 task의 완료/실패를 브로커 SSE로 받아
+/// stdout으로 알린다(책임의 이전 = 결과 push). 총괄 세션이 Monitor로 감싸면 던지고 자리 떠도 결과가 깨운다.
+#[cfg(feature = "worker")]
+#[derive(Args, Debug)]
+struct WatchResultsArgs {
+    /// 코어 베이스 URL(예: http://127.0.0.1:8770). `/dashboard/events` SSE를 무인증으로 구독한다.
+    #[arg(long)]
+    core: String,
+    /// 관측할 dispatcher id(이 값이 fromAgent인 task의 완료/실패만 알림). 대시보드 goal은 `dashboard`.
+    /// 생략/빈 값이면 모든 완료를 관측한다.
+    #[arg(long, default_value = "dashboard")]
+    dispatcher: String,
 }
 
 /// `codex-inject` 서브커맨드(worker 피처 전용) 옵션: codex app-server 라이브 thread에 turn/start로
@@ -817,6 +834,9 @@ fn main() {
     // discover <...>: 발견 리포터 옵션(worker 피처 전용).
     #[cfg(feature = "worker")]
     let mut discover_args: Option<DiscoverArgs> = None;
+    // watch-results <...>: 총괄 결과 인박스 옵션(worker 피처 전용).
+    #[cfg(feature = "worker")]
+    let mut watch_results_args: Option<WatchResultsArgs> = None;
     // node <...>: 워커 노드 상주 옵션(serve+worker 피처 전용).
     #[cfg(all(feature = "serve", feature = "worker"))]
     let mut node_args: Option<NodeArgs> = None;
@@ -926,6 +946,14 @@ fn main() {
                 db_path = None;
             }
             discover_args = Some(a);
+        }
+        #[cfg(feature = "worker")]
+        Commands::WatchResults(a) => {
+            #[cfg(feature = "sqlite")]
+            {
+                db_path = None;
+            }
+            watch_results_args = Some(a);
         }
         #[cfg(all(feature = "serve", feature = "worker"))]
         Commands::Node(a) => {
@@ -1364,6 +1392,17 @@ fn main() {
         });
         if let Err(e) = result {
             eprintln!("[discover] 오류: {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
+    // watch-results <...>: 총괄이 던진 task의 완료/실패를 브로커 SSE로 받아 stdout으로 알린다(worker 피처).
+    #[cfg(feature = "worker")]
+    if let Some(a) = watch_results_args {
+        let result = rt.block_on(tunaround::watch_results::run(&a.core, &a.dispatcher));
+        if let Err(e) = result {
+            eprintln!("[watch-results] 오류: {e}");
             std::process::exit(1);
         }
         return;
