@@ -289,10 +289,10 @@ impl SqliteStore {
     pub fn armed_session_ids(&self, now: &str, ttl_secs: i64) -> std::collections::HashSet<String> {
         let mut set = std::collections::HashSet::new();
         for entry in self.list_agents(&BTreeMap::new(), now, ttl_secs) {
-            if let Some(sid) = entry.tags.get("session") {
-                if !sid.is_empty() {
-                    set.insert(sid.clone());
-                }
+            if let Some(sid) = entry.tags.get("session")
+                && !sid.is_empty()
+            {
+                set.insert(sid.clone());
             }
             set.insert(entry.uuid);
         }
