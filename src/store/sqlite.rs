@@ -9,6 +9,7 @@ use crate::store::a2a::{
     append_history_json, Artifact, Message, Task, TaskEvent, TaskRow, TaskState,
 };
 use crate::store::agents::AgentEntry;
+use crate::store::candidates::CandidateEntry;
 use crate::store::{StoredMessage, StoredSession};
 
 // 스키마 버전 상수. v3: message_vectors.model_id. v4: message_validity(유효성 메타).
@@ -131,6 +132,9 @@ pub struct SqliteStore {
     /// 인메모리 에이전트 로스터(uuid → 항목). 영속 아님(브로커 재기동 시 워커 재등록으로 복원).
     /// 내부 가변성(RefCell): 모든 접근이 바깥 Mutex로 직렬화되므로 &self 메서드로 갱신 가능하다.
     agent_roster: RefCell<HashMap<String, AgentEntry>>,
+    /// 인메모리 발견 후보 풀(uuid → 후보). 리포터가 열거해 보고한 미무장 세션. roster와 별개 공간이나
+    /// 조회 시 armed overlay(uuid∈online roster)로 승격 표시한다. reported_at TTL로 stale 소멸(영속 아님).
+    candidate_pool: RefCell<HashMap<String, CandidateEntry>>,
 }
 
 /// FTS 검색 결과 한 건.
@@ -150,7 +154,12 @@ impl SqliteStore {
             "PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;",
         )
         .map_err(|e| format!("sqlite: {e}"))?;
-        let db = Self { conn, event_bus: None, agent_roster: RefCell::new(HashMap::new()) };
+        let db = Self {
+            conn,
+            event_bus: None,
+            agent_roster: RefCell::new(HashMap::new()),
+            candidate_pool: RefCell::new(HashMap::new()),
+        };
         db.migrate()?;
         Ok(db)
     }
@@ -160,7 +169,12 @@ impl SqliteStore {
         let conn = Connection::open_in_memory().map_err(|e| format!("sqlite: {e}"))?;
         conn.execute_batch("PRAGMA foreign_keys=ON;")
             .map_err(|e| format!("sqlite: {e}"))?;
-        let db = Self { conn, event_bus: None, agent_roster: RefCell::new(HashMap::new()) };
+        let db = Self {
+            conn,
+            event_bus: None,
+            agent_roster: RefCell::new(HashMap::new()),
+            candidate_pool: RefCell::new(HashMap::new()),
+        };
         db.migrate()?;
         Ok(db)
     }
@@ -228,6 +242,29 @@ impl SqliteStore {
                 crate::store::agents::selector_matches(&entry.tags, selector)
                     && crate::store::agents::is_online(&entry.last_heartbeat, now, ttl_secs)
             })
+            .cloned()
+            .collect();
+        out.sort_by(|a, b| a.uuid.cmp(&b.uuid));
+        out
+    }
+
+    /// 발견 후보를 풀에 보고(upsert). uuid 단위로 교체하며 reported_at은 브로커 수신 시각(now)으로
+    /// 덮어쓴다(리포터 시계 불신). 재보고 없는 후보는 list_candidates의 TTL로 자연 제외된다.
+    pub fn report_candidates(&self, candidates: Vec<CandidateEntry>, now: &str) {
+        let mut pool = self.candidate_pool.borrow_mut();
+        for mut c in candidates {
+            c.reported_at = now.to_string();
+            pool.insert(c.uuid.clone(), c);
+        }
+    }
+
+    /// fresh(reported_at이 ttl_secs 이내)인 후보를 uuid 오름차순으로 반환(clone).
+    pub fn list_candidates(&self, now: &str, ttl_secs: i64) -> Vec<CandidateEntry> {
+        let mut out: Vec<CandidateEntry> = self
+            .candidate_pool
+            .borrow()
+            .values()
+            .filter(|c| crate::store::candidates::is_fresh(&c.reported_at, now, ttl_secs))
             .cloned()
             .collect();
         out.sort_by(|a, b| a.uuid.cmp(&b.uuid));
@@ -2652,6 +2689,43 @@ mod tests {
 
         let many = db.resolve_selector(&tags(&[("runner", "claude")]), now, 90);
         assert_eq!(many, vec!["u1".to_string(), "u2".to_string()]);
+    }
+
+    fn candidate(uuid: &str) -> CandidateEntry {
+        CandidateEntry {
+            uuid: uuid.to_string(),
+            runner: "claude".to_string(),
+            project: Some("tunaround".to_string()),
+            machine: Some("win".to_string()),
+            source: "claude-jsonl".to_string(),
+            age_secs: 5,
+            reported_at: String::new(), // report_candidates가 now로 덮어씀
+        }
+    }
+
+    #[test]
+    fn report_then_list_candidates_roundtrip_and_upsert() {
+        let db = SqliteStore::open_memory().unwrap();
+        db.report_candidates(vec![candidate("s1"), candidate("s2")], "2026-07-06 10:00:00");
+        let found = db.list_candidates("2026-07-06 10:00:10", 180);
+        assert_eq!(found.len(), 2);
+        assert_eq!(found[0].uuid, "s1");
+        assert_eq!(found[0].reported_at, "2026-07-06 10:00:00"); // 브로커 now로 채워짐
+        // 같은 uuid 재보고는 upsert(교체), 개수 불변.
+        db.report_candidates(vec![candidate("s1")], "2026-07-06 10:01:00");
+        let again = db.list_candidates("2026-07-06 10:01:05", 180);
+        assert_eq!(again.len(), 2);
+        let s1 = again.iter().find(|c| c.uuid == "s1").unwrap();
+        assert_eq!(s1.reported_at, "2026-07-06 10:01:00");
+    }
+
+    #[test]
+    fn list_candidates_excludes_stale() {
+        let db = SqliteStore::open_memory().unwrap();
+        db.report_candidates(vec![candidate("s1")], "2026-07-06 09:00:00");
+        // now 기준 1시간 경과, ttl 180초 -> stale이라 제외되어야 함.
+        let found = db.list_candidates("2026-07-06 10:00:00", 180);
+        assert!(found.is_empty(), "stale 후보는 list_candidates에서 제외되어야 함");
     }
 
     #[test]

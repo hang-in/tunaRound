@@ -363,3 +363,39 @@ tunaround poll --core <core-url> --token <TOKEN> --agent <agent-id> \
 ### 플랫폼
 
 관리형 `remote-control`/`app-server daemon`은 Unix 전용이지만, raw `codex app-server --listen ws://`는 **크로스플랫폼**(Windows 포함)으로 확인됐습니다. Windows 감독 머신도 이 경로를 그대로 씁니다.
+
+## 11. 세션 자동무장 훅 (v2-40 S1)
+
+Claude Code **SessionStart 훅**으로 세션을 브로커 로스터에 자동 등록한다. 그러면 그 세션(예: 총감독)이 대시보드 로스터에 online으로 뜬다. 수동 `register` + watcher 기동을 매번 안 해도 된다. 정본 [v2-40 설계](../design/v2-40-universal-session-bus_2026-07-06.md).
+
+### 켜기 (opt-in)
+
+훅은 `.claude/settings.json`에 배선돼 있으나 **`TUNA_AUTOARM=1`일 때만 동작**한다(안 켜면 조용히 no-op). `TUNA_AUTOARM=1`이라도 토큰이 없으면 무장하지 않고 안내 컨텍스트만 남긴다. 필요한 env는 다음과 같다.
+
+```bash
+TUNA_AUTOARM=1                 # 마스터 스위치(필수)
+TUNA_BROKER_TOKEN=<TOKEN>      # bearer 토큰(필수. 없으면 무장 skip + 경고만)
+TUNA_BROKER_CORE=http://127.0.0.1:8770/mcp   # 코어 /mcp URL(기본값)
+TUNA_BIN=tunaround            # 실행 경로(기본 PATH의 tunaround; 미설치면 target/debug/tunaround.exe 등 지정)
+TUNA_AUTOARM_AGENT=win-opus-boss   # 로스터 id(기본 <host>-claude-<session8>). 총감독은 고정 지정 권장
+TUNA_AUTOARM_ROLE=boss        # role 태그(기본 session)
+TUNA_AUTOARM_PROJECT=tunaround # project 태그(기본 cwd basename)
+```
+
+env는 셸/사용자 환경에 두고 **커밋 금지**(레포 PUBLIC). `.claude/settings.json`엔 커맨드만 있고 값은 없다.
+
+### 동작
+
+1. 세션 시작 → `tuna-autoarm.py`가 `TUNA_AUTOARM=1`을 확인(아니면 즉시 no-op).
+2. detached로 `tunaround poll --core .. --token .. --agent .. --tags "machine,runner=claude,role,project,user,host" --interval 15`를 기동. `poll`이 내부적으로 `register_agent` + 주기 `heartbeat`를 돈다(세션·하네스 수명과 무관하게 상주).
+3. `~/.tunaround/autoarm/<session_id>.json`에 pid를 기록(토큰은 저장 안 함).
+4. `additionalContext`로 세션에 "무장됨 + 수신법(Monitor로 poll 로그 감시 또는 poll_tasks/claim/complete)"을 주입.
+5. 세션 종료 → `tuna-disarm.py`(SessionEnd)가 그 poll 프로세스를 kill. deregister 도구가 없으므로 로스터는 heartbeat 중단 후 **TTL 90초**로 offline 처리된다.
+
+### 발견 ≠ 제어 (한계)
+
+자동무장은 **등록·가시성**(로스터 등장)까지다. claude 세션은 외부 제어 소켓이 없어, 이 세션 앞으로 온 task를 **자동 수신**하려면 세션이 스스로 poll 로그를 Monitor로 감시해야 한다(대화형 opt-in). codex는 app-server ws(§10)로 외부 주입이 되므로 다르다. 완전 자동 수신 배선은 후속 단계다.
+
+### LAN 복제
+
+각 머신이 같은 훅(공유 `TUNA_BROKER_CORE` 지정)을 돌리면 로스터 = 전 머신 라이브 세션이 된다. 원격은 core URL을 브로커 LAN 주소로, 토큰을 동일 값으로 둔다.

@@ -780,3 +780,37 @@
 - **총감독 로스터 부재 이해**: win-opus-boss(총감독=이 세션)는 register_agent 안 해 로스터에 없음. 사용자 "4명 아니냐"→v2-40 자동무장이 총감독도 등록해 해결. 현재는 ★로 임의 지정.
 - **Planka**: MCP엔 프로젝트 멤버 추가 도구 없음. Agent 봇의 private 프로젝트라 사용자(d9ng) 안 보임 → 사용자가 tunaRound 프로젝트 새로 만들고 Agent 매니저 추가 → 그 프로젝트(1813009454057129531)에 보드 재생성(카드 17), 옛 private 삭제. **보드 이동(projectId 변경)은 미지원**이라 재생성이 정답. 보드=https://plan.d9ng.co.kr/boards/1813013259255547454.
 - **핸드오프**: docs/prompts/v2-handoff_2026-07-06_dashboard-v2-40.md + CLAUDE.md 세션14 현재상태·WIN 포인터(브랜치, PR #12로 main 반영). backend-private 세션14 최종 라이브(브로커 35652·watcher 46744·app-server 34176). **다음 세션=1) PR #12 머지 → 2) v2-40 S1.**
+
+## 2026-07-06 세션15: PR #11/#12 머지 + v2-40 S1 자동무장 훅 착수
+
+- **PR 머지**: #11(LAN IP redact) squash → main. #12(대시보드)는 맥(d9ng) `6363b45 README 재구성`과 README 충돌 → feat/orchestrator-dashboard를 main에 rebase, 충돌 1블록(로드맵 체크리스트) 해소=내 완료 8항목 유지 + 맥 대시보드 2항목·내 "진행 중" 항목을 완료 1줄(총감독 웹 대시보드 [x])로 통합. force-with-lease → 3-OS CI green → squash 머지. main=841b944. **교훈**: 맥↔윈 README 동시편집이 규약(같은 줄 경합) 대로 충돌 → 통합자가 rebase로 해소.
+- **v2-40 S1 설계 확정**: `tunaround poll`이 이미 register_agent + heartbeat 내장(worker.rs run_poll_loop:377) → 훅은 detached poll 기동만. **deregister/unregister MCP 도구 없음**(mcp.rs 확인) → 정리는 AGENT_TTL_SECS=90 소멸(store/agents.rs). 즉시 dereg는 신규 도구 필요=S1 밖.
+- **스코핑 결정**: S1 = 등록·가시성(로스터 등장, 총감독 win-opus-boss 편입)만 확정. **대화형 세션 task 수신(Monitor wake)은 claude 외부 소켓 부재로 "발견≠제어"**(설계 §1.2) → additionalContext로 수신법 안내만(수동 Monitor), 완전 자동 수신은 후속. 이 분리가 정직한 altitude.
+- **구현 주체**: Opus 직접(Claude Code 훅 stdin/JSON I/O 계약 + tunaround CLI 정밀 배선. 프론트/버전라이브러리 아니지만 정밀 통합이라 tunaLlama 드리프트 회피=메모리 [[tunallama-unsuitable-for-version-ui-libs]] 취지 준용).
+- **env 계약**: TUNA_AUTOARM=1(마스터 opt-in) / TUNA_BROKER_CORE(기본 127.0.0.1:8770/mcp) / TUNA_BROKER_TOKEN(필수, 이미 setx됨) / TUNA_AUTOARM_AGENT(기본 host-claude-session8, 총감독=win-opus-boss) / TUNA_AUTOARM_ROLE(기본 session) / TUNA_AUTOARM_PROJECT(기본 cwd basename) / TUNA_BIN(기본 PATH tunaround).
+- **라이브 상태**: 브로커 detached PID 35652 생존(roster=200), 토큰 [REDACTED-토큰은 gitignored backend-private.md](backend-private). 3자 감독(mac-claude-sup·mac-codex-sup·win-codex-sup) online 유지 중.
+
+## 2026-07-06 세션15 후속: v2-40 S2 발견 리포터 착수
+
+- **S1 완료·머지대기**: 자동무장 훅(8ccacac, PR #13 umbrella). 이 세션 win-opus-boss 실무장→대시보드 4자 online 실증(브라우저 확인). **정책(사용자)**: v2-40 각 단계 커밋만, PR은 v2-40 마무리 시 머지(단계별 새 PR 금지). 브랜치 feat/v2-40-autoarm-hook 누적.
+- **S2 스코프 결정**: claude 세션 발견(jsonl mtime, 무의존)이 MVP. **codex 프로세스 스캔 후속**(codex는 app-server로 이미 armable + process→project 매핑 불안정 + 신규 dep(sysinfo/tasklist glue) 회피).
+- **정찰 사실**: 세션 id=`~/.claude/projects/<mangled-cwd>/<uuid>.jsonl` stem. mangled-cwd=cwd의 /·\·: → `-`(예 D--privateProject-tunaRound). recent mtime=활동. **이 세션 id=4a46a380-...** 발견 가능. roster 저장=SqliteStore.agent_roster(RefCell HashMap, sqlite.rs:133) 미러링. MCP 클라=src/mcp_client.rs McpHttpClient+call_tool 제네릭+타입 래퍼(register_agent 패턴).
+- **armed overlay 결정**: candidate에 armed 저장 안 함. 브로커가 list_candidates/HTTP에서 candidate.uuid가 online roster(AGENT_TTL 90s)에 있으면 armed=true 계산. 무장(S1)되면 자동 armed=true로 승격 표시.
+- **분담**: S2a(4파일 교차배선)=Opus 직접(cohesive 미러, 메모리 [[tunallama-unsuitable-for-version-ui-libs]] 취지=교차배선은 Opus). S2b(discover 자족 순수함수+CLI)=tunaLlama 위임+Opus 리뷰.
+
+## 2026-07-06 세션15 후속2: v2-40 S2·S3 완료 + 라이브 스모크
+
+- **S1~S3 전부 코드 완결·커밋**(브랜치 feat/v2-40-autoarm-hook, 6커밋: 8ccacac S1·82a9d8b S2a·b34f57b S2b·7caaf1a S3·3c21dce 정합성수정). 정책=커밋만, PR은 v2-40 마무리 시(PR #13 umbrella).
+- **S2a**: 브로커 candidate 저장(candidate_pool RefCell)+report/list_candidates MCP+/dashboard/candidates+armed overlay. **S2b**: discover CLI(jsonl mtime 열거→report). **S3**: 대시보드 "발견된 세션" 패널(Candidates.tsx, armed 필터).
+- **라이브 스모크 2개 정합성 버그 발견·수정(3c21dce)**: (1) armed overlay 미매칭 - autoarm이 uuid=친근이름이라 discover 후보(uuid=세션id)와 안 맞음 → **설계 §2.1대로 uuid=세션id + display_name 분리**(poll --display-name 신설). (2) discover project=None - Claude jsonl **1행=요약(cwd 없음)**, cwd는 이후 행 → read_cwd_from_jsonl(앞 40줄 스캔).
+- **라이브 결과**: discover가 이 머신 활동 claude 세션 2건 발견 → **3332c84f(project=secall, armed=False)** + **4a46a380(project=tunaRound, armed=True=보스 dedup)**. **설계 §0 동기예시(tunaRound 세션에서 secall 세션 발견) 실증.** roster=win-opus-boss(display, uuid=세션id 4a46a380).
+- **라이브 상태(현)**: 브로커 detached PID 21196(dashboard+worker 빌드, 토큰 [REDACTED-토큰은 gitignored backend-private.md], db %LOCALAPPDATA%). win-codex-sup watcher 36336. win-opus-boss poll(uuid=4a46a380, display=win-opus-boss). 대시보드 http://127.0.0.1:8770/dashboard 라이브(후보 패널 포함). mac-claude-sup·mac-codex-sup 자동 재연결. **재부팅 시 죽음.**
+- **다음**: 브라우저 패널 렌더 사용자 확인 → S4(codex 직접제어) 또는 v2-40 마무리·PR #13 머지. secall 후보에 send_task로 실제 A2A(단 secall 세션은 미무장이라 수신 워처 필요=발견≠제어).
+
+## 2026-07-06 세션15 후속3: v2-40 S4 codex 직접 제어 (트림 MVP)
+
+- **(b) S4 착수**(사용자). 정찰: codex 자동발견(프로세스 cmdline 스캔)은 sysinfo 등 프로세스-열거 인프라 없어 취약 → **MVP 트림=수동 ws 직접제어부터**(codex 발견은 S4d 후속). codex_inject::run(ws,agent,text,...) 제어 프리미티브 재사용.
+- **핵심 발견**: armed codex 감독(win-codex-sup)은 **이미 goal 폼으로 제어됨**(send_task→poll on-task→codex-inject). S4 net-new=미무장 codex 세션 직접제어. 로컬은 브로커 in-process codex_inject로 ws 직접 도달 가능(worker 피처 빌드).
+- **S4a**: codex_inject::run을 Result<()>→**Result<String>**(PrintText 누적해 최종답 반환, CLI는 handle_incoming이 stdout 출력 유지). 브로커 POST /dashboard/control(loopback ConnectInfo·worker cfg 게이트, ApprovalPolicy::Never+WorkspaceWrite, in-process run). worker 없이 빌드시 501. ControlReq agent/timeout은 not(worker)서 dead_code라 cfg_attr allow.
+- **S4b**: ControlForm.tsx(goal 폼 미러, ws 기본 ws://127.0.0.1:8790, 응답 pre .control-answer). 원격=관전 안내.
+- **피드 관찰(사용자)**: win-codex-sup 미완료=**사용량 초과**(코드버그 아님), mac-codex-sup=모델 gpt-5.4-mini 전환 팝업 선택 후 완료. **인프라 정상, goal→codex 경로 실증.** → S4 스모크도 win codex 사용량 걸리면 경로는 검증되나 codex 응답은 외부요인.

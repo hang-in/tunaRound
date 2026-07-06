@@ -1,4 +1,4 @@
-// 목표 텍스트 + online 감독 멀티선택으로 POST /dashboard/goal 을 호출하는 폼.
+// 목표 텍스트 + online 관리자 멀티선택으로 POST /dashboard/goal 을 호출하는 폼.
 // 목업 "목표 제출" 섹션 이식(토큰 입력칸 없음, loopback 무인증).
 import { useEffect, useState } from 'react'
 import type { Agent } from '../api'
@@ -26,7 +26,7 @@ export default function GoalForm({ agents, remoteViewer }: Props) {
 
   const online = agents.filter((a) => a.online)
 
-  // 새로 나타난 online 감독은 기본 선택 상태로 추가한다(기존 선택은 보존).
+  // 새로 나타난 online 관리자은 기본 선택 상태로 추가한다(기존 선택은 보존).
   useEffect(() => {
     setSelected((prev) => {
       let changed = false
@@ -49,11 +49,11 @@ export default function GoalForm({ agents, remoteViewer }: Props) {
       <section className="goal-section">
         <div className="goal-head">
           <h2 className="section-title">목표 제출</h2>
-          <span className="goal-hint">선택한 감독 각각에게 목표가 전달됩니다</span>
+          <span className="goal-hint">선택한 관리자 각각에게 목표가 전달됩니다</span>
         </div>
         <div className="goal-warning">
           <WarnIcon />
-          원격 관전 모드입니다 — 목표 제출은 로컬(총감독) 세션에서만 가능합니다.
+          원격 관전 모드입니다 — 목표 제출은 로컬(총괄) 세션에서만 가능합니다.
         </div>
       </section>
     )
@@ -111,7 +111,7 @@ export default function GoalForm({ agents, remoteViewer }: Props) {
     <section className="goal-section">
       <div className="goal-head">
         <h2 className="section-title">목표 제출</h2>
-        <span className="goal-hint">선택한 감독 각각에게 목표가 전달됩니다</span>
+        <span className="goal-hint">선택한 관리자 각각에게 목표가 전달됩니다</span>
       </div>
       <div className="goal-body">
         <div className="goal-targets">
@@ -150,8 +150,8 @@ export default function GoalForm({ agents, remoteViewer }: Props) {
         <div className="goal-submit-row">
           <span className="goal-summary">
             {selCount > 0
-              ? selCount + '명의 감독 선택됨 — 각각 독립 task로 생성됩니다'
-              : '대상 감독을 선택하세요'}
+              ? selCount + '명의 관리자 선택됨 — 각각 독립 task로 생성됩니다'
+              : '대상 관리자을 선택하세요'}
           </span>
           <span className="dash-spacer" />
           <button
@@ -160,7 +160,7 @@ export default function GoalForm({ agents, remoteViewer }: Props) {
             disabled={!canSubmit || submitting}
             onClick={onSubmit}
           >
-            {selCount > 0 ? selCount + '명의 감독에게 목표 전달' : '목표 전달'}
+            {selCount > 0 ? selCount + '명의 관리자에게 목표 전달' : '목표 전달'}
           </button>
         </div>
         {status ? <span className="goal-status">{status}</span> : null}

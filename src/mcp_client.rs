@@ -247,6 +247,17 @@ impl McpHttpClient {
     pub async fn list_agents(&self, selector: Option<&str>) -> Result<String, String> {
         self.call_tool("list_agents", json!({ "selector": selector })).await
     }
+
+    /// report_candidates(candidates) 얇은 래퍼(발견 리포터가 후보 배열 보고).
+    /// candidates는 `[{uuid,runner,project?,source,age_secs}, ...]` JSON 배열.
+    pub async fn report_candidates(&self, candidates: Value) -> Result<String, String> {
+        self.call_tool("report_candidates", json!({ "candidates": candidates })).await
+    }
+
+    /// list_candidates() 얇은 래퍼(발견된 미무장 세션 후보 조회, armed overlay 포함).
+    pub async fn list_candidates(&self) -> Result<String, String> {
+        self.call_tool("list_candidates", json!({})).await
+    }
 }
 
 /// SSE 프레이밍(`data: ...` 라인들) 안에서 JSON-RPC 응답 페이로드를 찾아 파싱한다. 서버(rmcp

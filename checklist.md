@@ -391,3 +391,36 @@
 - [x] S3: 브로커 서빙(직접) - Cargo `dashboard` feature + rust-embed(frontend/dist) + /dashboard·favicon·assets/{*path}(MIME 매핑), events/roster는 serve 유지, OFF=안내 페이지, 인라인 HTML 제거. curl 검증(200/MIME/roster/401). lib 456 pass, clippy 클린(ON/OFF).
 - [x] S4: CI - ci.yml ubuntu `dashboard` 잡(node22→npm ci+build→cargo build/clippy --features dashboard). embed=OS독립이라 1잡. 3-OS 매트릭스(dashboard 없이) 유지.
 - [x] S5: 검증 - curl 임베드 전부 통과 + **브라우저 실렌더 확인(사용자 스크린샷: 3자 online 로스터·SSE 연결·goal 폼 DaleUI 렌더, 2열 그리드).** 남음=커밋+push+PR(3-OS+dashboard CI).
+
+## Plan v2-40 S1: SessionStart 자동무장 훅 (docs/plans/v2-40-universal-session-bus.md)
+
+> 설계 정본 docs/design/v2-40-universal-session-bus_2026-07-06.md. opt-in(TUNA_AUTOARM=1) claude 세션이 시작 시 detached `tunaround poll`(register+heartbeat 내장)로 자동 무장 → 로스터 등장(총감독도 편입). 정리=TTL 90초(deregister 도구 없음). 구현=Opus 직접(hook JSON I/O + CLI 정밀 배선, tunaLlama 드리프트 회피).
+
+- [x] S1a: .claude/hooks/tuna-autoarm.py(SessionStart) - opt-in 게이트·detached poll 기동·pidfile·additionalContext. Windows DETACHED_PROCESS/POSIX start_new_session, 중복 무장 가드, 토큰 미저장.
+- [x] S1b: .claude/hooks/tuna-disarm.py(SessionEnd) - pidfile poll kill(taskkill /T · SIGTERM) + pidfile 제거. 로스터 TTL 90초 소멸.
+- [x] S1c: .claude/settings.json 두 훅 배선(${CLAUDE_PROJECT_DIR} 경로, env self-gate).
+- [x] S1d: 문서 a2a-usage §11(env 계약·동작·발견≠제어·LAN 복제).
+- [x] S1e: 라이브 테스트 통과 - mock stdin autoarm → win-autoarm-smoke online 등장(6태그) → disarm → poll kill + 90초 TTL 후 online=False 확인. 나머지 3자 감독 online 유지.
+
+## Plan v2-40 S2: 발견 리포터 (docs/plans/v2-40-universal-session-bus.md)
+
+> 미무장 세션도 대시보드 후보로. MVP=claude 세션(jsonl mtime, 무의존). candidate={uuid,runner,project,source,age_secs,reported_at}, armed는 브로커 overlay(online roster 소속). stale=reported_at TTL.
+
+- [x] S2a(Opus 직접): store/candidates.rs(CandidateEntry+is_fresh+CANDIDATE_TTL_SECS=180) / sqlite.rs candidate_pool+report_candidates(uuid upsert, now 덮어씀)+list_candidates(fresh만) / mcp.rs 도구 report_candidates·list_candidates(armed overlay=online roster) + GET /dashboard/candidates + format_candidates + 안내텍스트 / mcp_client.rs 래퍼. **검증: lib 385 pass(신규 8: is_fresh 4·store 2·format 2), clippy 클린.** bin 재빌드는 브로커 락으로 보류(라이브 스모크 S2c에서 조율).
+- [x] S2b(Opus 직접, 폴백: 경로디코딩 heuristic 스펙민감): src/discover.rs(DiscoveredSession + project_from_cwd·parse_cwd_from_jsonl_line·age_secs_since·read_first_line·enumerate_claude_sessions·sessions_to_candidates_json) + main.rs Discover 서브커맨드(--core/--token/--projects-dir/--stale-mins/--interval/--once) → client.report_candidates 루프. **project는 mangled-dir 대신 jsonl 첫줄 cwd에서 정확 추출**(mangled 디코딩은 lossy). **검증: check(bin+lib) 통과, discover 단위 5건 pass, clippy 클린(rfind 반영).** bin 재빌드는 라이브 스모크 S2c에서.
+- [ ] S2c: 테스트 + 라이브 스모크(이 머신 discover→내 세션 후보→/dashboard/candidates armed overlay).
+
+## Plan v2-40 S3: 대시보드 "발견된 세션" 패널 (docs/plans/v2-40)
+
+> S2 백엔드(/dashboard/candidates) 소비. plain React(프론트=Opus 직접, tunaLlama 부적합). 로스터/피드 스타일 통일. armed(로스터 소속)는 제외하고 미무장 후보만 노출. claude arm은 외부 소켓 부재라 "연결"=세션 id 복사+수동 안내(발견≠제어 정직).
+
+- [x] S3 코드: api.ts Candidate 타입+fetchCandidates / Candidates.tsx(자체 5초 폴, roster 스타일 재사용, armed 필터, runner/project/source shield, amber 상태닷, "연결" 복사 버튼) / App.tsx mount(Feed 다음) / index.css candidates-section(full-width)+status-dot.candidate+candidate-arm. **npm run build 통과(208KB, tsc 클린).**
+- [x] S2c+S3 라이브 스모크(묶음): 브로커 재빌드(dashboard worker)·재기동 → discover --once → **/dashboard/candidates 후보 2건**: 3332c84f(project=secall, armed=False=미무장 후보), 4a46a380(project=tunaRound, armed=True=보스 dedup). **설계 §0 예시(tunaRound→secall 발견) 실현.** roster=win-opus-boss(display, uuid=세션id). project=cwd 정확추출. 브라우저 패널 렌더는 사용자 확인 대기(대시보드 라이브). **정합성 수정 반영(3c21dce): uuid=세션id+display_name, cwd 다중행 스캔.**
+
+## Plan v2-40 S4: codex 직접 제어 (docs/plans/v2-40)
+
+> 대시보드→codex app-server turn/start 직접 주입(codex-inject 재사용). MVP=수동 ws 제어(자동발견 후속). loopback 전용, 브로커 in-process(worker 피처).
+
+- [x] S4a: codex_inject::run→Result<String>(최종답 반환) + POST /dashboard/control(loopback·worker게이트, in-process codex_inject::run) + route. check(worker 유무)·clippy 클린, codex_inject 23 pass.
+- [x] S4b: ControlForm.tsx(ws+지시→POST, answer pre) + api sendControl + App mount + CSS. npm build 211KB.
+- [x] S4c: 라이브 스모크 - POST /dashboard/control(loopback)→브로커→ws://8790 접속→initialize→thread→**turn/start 주입 성공**→codex 실제응답=usageLimitExceeded(win codex 사용량 초과, 외부요인)→브로커 **502+실제 codex에러 정직 반환**. **제어경로·에러처리 검증 완료**(깨끗한 응답만 quota reset 후). 브로커 재기동 PID 28348.

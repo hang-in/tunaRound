@@ -1,6 +1,6 @@
 // 대시보드 브로커 API 타입과 호출 헬퍼(roster 폴, SSE 구독, goal 제출)를 모은 모듈.
 
-// GET /dashboard/roster 응답 요소(등록된 감독 전체 + online 플래그를 서버가 계산해 내려준다).
+// GET /dashboard/roster 응답 요소(등록된 관리자 전체 + online 플래그를 서버가 계산해 내려준다).
 export type Agent = {
   uuid: string
   tags: Record<string, string>
@@ -55,13 +55,35 @@ export type TaskEventMsg = {
   task: Task
 }
 
-// online 감독 목록을 가져온다. 실패는 던져서 호출부가 콘솔 로깅만 하도록 한다.
+// online 관리자 목록을 가져온다. 실패는 던져서 호출부가 콘솔 로깅만 하도록 한다.
 export async function fetchRoster(signal?: AbortSignal): Promise<Agent[]> {
   const res = await fetch('/dashboard/roster', { signal })
   if (!res.ok) {
     throw new Error('roster 조회 실패: ' + res.status)
   }
   return (await res.json()) as Agent[]
+}
+
+// GET /dashboard/candidates 응답 요소(발견 리포터가 보고한 미무장 세션 후보).
+// armed 는 저장값이 아니라 브로커가 online roster 소속으로 계산한 overlay(무장되면 자동 true).
+export type Candidate = {
+  uuid: string
+  runner: string
+  project: string | null
+  machine: string | null
+  source: string
+  age_secs: number
+  reported_at: string
+  armed: boolean
+}
+
+// 발견된 세션 후보 목록을 가져온다(v2-40 S2). 실패는 던져서 호출부가 콘솔 로깅만 하도록 한다.
+export async function fetchCandidates(signal?: AbortSignal): Promise<Candidate[]> {
+  const res = await fetch('/dashboard/candidates', { signal })
+  if (!res.ok) {
+    throw new Error('candidates 조회 실패: ' + res.status)
+  }
+  return (await res.json()) as Candidate[]
 }
 
 // POST /dashboard/goal 성공 응답: 대상별로 생성된 task 를 알려준다.
@@ -74,7 +96,7 @@ export type SendGoalOutcome =
   | { kind: 'forbidden' }
   | { kind: 'error'; message: string }
 
-// 선택한 감독 uuid 목록에게 목표를 전달한다(loopback 무인증, 원격은 403).
+// 선택한 관리자 uuid 목록에게 목표를 전달한다(loopback 무인증, 원격은 403).
 export async function sendGoal(text: string, targets: string[]): Promise<SendGoalOutcome> {
   let res: Response
   try {
@@ -95,4 +117,33 @@ export async function sendGoal(text: string, targets: string[]): Promise<SendGoa
   }
   const data = (await res.json()) as GoalResponse
   return { kind: 'ok', created: data.created }
+}
+
+// codex 직접 제어 결과(POST /dashboard/control 응답).
+export type SendControlOutcome =
+  | { kind: 'ok'; answer: string }
+  | { kind: 'forbidden' }
+  | { kind: 'error'; message: string }
+
+// codex app-server 세션(ws)에 turn/start를 직접 주입한다(v2-40 S4, loopback 무인증, 원격은 403).
+export async function sendControl(ws: string, text: string): Promise<SendControlOutcome> {
+  let res: Response
+  try {
+    res = await fetch('/dashboard/control', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ws, text }),
+    })
+  } catch (err) {
+    return { kind: 'error', message: err instanceof Error ? err.message : String(err) }
+  }
+  if (res.status === 403) {
+    return { kind: 'forbidden' }
+  }
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '')
+    return { kind: 'error', message: 'codex 제어 실패: ' + res.status + (detail ? ' — ' + detail : '') }
+  }
+  const data = (await res.json()) as { answer: string }
+  return { kind: 'ok', answer: data.answer }
 }

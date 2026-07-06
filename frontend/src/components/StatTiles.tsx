@@ -1,4 +1,4 @@
-// 헤더 밑 요약 통계 4타일(온라인 감독/진행중/완료/실패). 목업 "요약 통계" 섹션 이식.
+// 헤더 밑 요약 통계 4타일(온라인 관리자/진행중/완료/실패). 목업 "요약 통계" 섹션 이식.
 
 type Props = {
   onlineCount: number
@@ -20,7 +20,7 @@ export default function StatTiles({
       <div className="stat-tile">
         <span className="stat-label">
           <span className="stat-label-dot" style={{ background: 'var(--ok)' }} />
-          온라인 감독
+          온라인 관리자
         </span>
         <span className="stat-value-row">
           <span className="stat-value">{onlineCount}</span>
