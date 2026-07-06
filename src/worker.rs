@@ -41,7 +41,9 @@ fn find_header_starts(text: &str) -> Vec<usize> {
             continue;
         }
         let at_start = i == 0;
-        let after_blank_line = i >= 2 && &text[i - 2..i] == "\n\n";
+        // char 경계 안전: 직전 2바이트가 멀티바이트 문자 중간이면 get()이 None을 돌려준다
+        // (본문에 한글이 섞인 task 메시지에서 &text[i-2..i] 슬라이스가 패닉하던 버그).
+        let after_blank_line = i >= 2 && text.get(i - 2..i) == Some("\n\n");
         if !(at_start || after_blank_line) {
             continue;
         }
@@ -49,7 +51,12 @@ fn find_header_starts(text: &str) -> Vec<usize> {
         if rest.len() < ID_LEN + "] from=".len() {
             continue;
         }
-        if !is_hex32(&rest[..ID_LEN]) {
+        // char 경계 안전: ID_LEN(32)가 char 경계가 아니면(한글 등) get()이 None → 헤더 아님.
+        // hex32 id는 전부 ASCII라 정상 헤더면 항상 경계에 걸린다.
+        let Some(head) = rest.get(..ID_LEN) else {
+            continue;
+        };
+        if !is_hex32(head) {
             continue;
         }
         if !rest[ID_LEN..].starts_with("] from=") {
@@ -565,6 +572,20 @@ mod tests {
         let tasks = parse_open_tasks(&text);
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].msg, "1번\n2번\n\n3번(빈 줄 포함)");
+    }
+
+    #[test]
+    fn parse_open_tasks_korean_bracket_after_blank_line_does_not_panic() {
+        // 회귀: 본문에 "\n\n[작업] <한글>"이 오면 find_header_starts가 '[' 뒤 32바이트를
+        // 슬라이스하다 멀티바이트 경계('따', bytes 31..34)에서 패닉하던 버그(worker.rs).
+        // 실측 크래시: mac-claude-sup poll이 위임 task 미리보기 중 exit 101.
+        let id = "a".repeat(32);
+        let body = "[통지] 규약 안내\n\n[작업] mac에서 사용자가 따로 띄운 세션들이 안 뜬다";
+        let text = format!("[{id}] from=win-opus-boss state=submitted msg={body}");
+        let tasks = parse_open_tasks(&text); // 패닉하지 않아야 한다
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].id, id);
+        assert_eq!(tasks[0].msg, body);
     }
 
     #[test]
