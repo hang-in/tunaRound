@@ -23,7 +23,8 @@ fn extract_result_text(task: &serde_json::Value) -> String {
         .and_then(|p| p.get("text"))
         .and_then(|t| t.as_str());
     match from_artifact.or(from_status) {
-        Some(t) => t.replace('\n', " ").chars().take(160).collect(),
+        // \r도 제거한다(터미널에서 \r은 커서를 줄 앞으로 보내 기존 출력을 덮어쓴다).
+        Some(t) => t.replace('\r', "").replace('\n', " ").chars().take(160).collect(),
         None => "(내용 없음)".to_string(),
     }
 }
@@ -51,12 +52,19 @@ pub fn parse_result_line(data: &str, dispatcher: &str, seen: &mut HashSet<String
     Some(format!("RESULT {short} {state} <- {to} :: {}", extract_result_text(task)))
 }
 
-/// 브로커 SSE를 구독해 dispatcher의 완료/실패 결과를 stdout으로 흘린다. 연결이 끊기면 종료(호출부가 재기동).
+/// 브로커 SSE를 구독해 dispatcher의 완료/실패 결과를 stdout으로 흘린다. 스트림이 끊기면 Err로 종료해
+/// 호출부(감시 도구)가 재기동하게 한다(exit 0이면 재기동 안 하는 감시자가 있어 Err가 안전).
 pub async fn run(core: &str, dispatcher: &str) -> Result<(), String> {
     use futures_util::StreamExt;
     use std::io::Write;
     let url = format!("{}/dashboard/events", core.trim_end_matches('/'));
-    let resp = reqwest::Client::new()
+    // connect timeout만 둔다(SSE 바디는 무한정 열려 있어야 하므로 전체 요청 timeout은 두지 않는다).
+    // TCP는 붙었는데 응답이 없는 상황(방화벽 drop)에서 send가 무한 대기하는 것을 막는다.
+    let client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| format!("watch-results: 클라이언트 구성 실패: {e}"))?;
+    let resp = client
         .get(&url)
         .send()
         .await
@@ -66,14 +74,17 @@ pub async fn run(core: &str, dispatcher: &str) -> Result<(), String> {
     }
     eprintln!("[watch-results] {url} 구독 시작 (dispatcher={dispatcher})");
     let mut seen: HashSet<String> = HashSet::new();
-    let mut buf = String::new();
+    // 버퍼는 Vec<u8>로 유지한다. 청크마다 UTF-8 변환하면 멀티바이트 문자(한글 등)가 청크 경계에서
+    // 깨지므로(U+FFFD 영구 손실), 개행(\n=ASCII)으로 완결된 라인만 변환한다.
+    let mut buf: Vec<u8> = Vec::new();
     let mut stream = resp.bytes_stream();
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|e| format!("watch-results: 스트림 오류: {e}"))?;
-        buf.push_str(&String::from_utf8_lossy(&chunk));
-        // 개행 단위로 완결된 라인만 처리(부분 청크는 buf에 남긴다).
-        while let Some(pos) = buf.find('\n') {
-            let line: String = buf.drain(..=pos).collect();
+        buf.extend_from_slice(&chunk);
+        while let Some(pos) = buf.iter().position(|&b| b == b'\n') {
+            let line_bytes: Vec<u8> = buf.drain(..=pos).collect();
+            // 라인은 \n에서 끝나므로 완결된 UTF-8(문자 중간에서 안 잘림) → lossy여도 손실 없음.
+            let line = String::from_utf8_lossy(&line_bytes);
             let Some(data) = line.trim_end().strip_prefix("data: ") else {
                 continue;
             };
@@ -83,7 +94,7 @@ pub async fn run(core: &str, dispatcher: &str) -> Result<(), String> {
             }
         }
     }
-    Ok(())
+    Err("watch-results: SSE 스트림이 종료됨(재구독 필요)".to_string())
 }
 
 #[cfg(test)]
