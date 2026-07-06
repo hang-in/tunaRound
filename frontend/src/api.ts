@@ -1,6 +1,6 @@
 // 대시보드 브로커 API 타입과 호출 헬퍼(roster 폴, SSE 구독, goal 제출)를 모은 모듈.
 
-// GET /dashboard/roster 응답 요소(등록된 감독 전체 + online 플래그를 서버가 계산해 내려준다).
+// GET /dashboard/roster 응답 요소(등록된 관리자 전체 + online 플래그를 서버가 계산해 내려준다).
 export type Agent = {
   uuid: string
   tags: Record<string, string>
@@ -55,7 +55,7 @@ export type TaskEventMsg = {
   task: Task
 }
 
-// online 감독 목록을 가져온다. 실패는 던져서 호출부가 콘솔 로깅만 하도록 한다.
+// online 관리자 목록을 가져온다. 실패는 던져서 호출부가 콘솔 로깅만 하도록 한다.
 export async function fetchRoster(signal?: AbortSignal): Promise<Agent[]> {
   const res = await fetch('/dashboard/roster', { signal })
   if (!res.ok) {
@@ -96,7 +96,7 @@ export type SendGoalOutcome =
   | { kind: 'forbidden' }
   | { kind: 'error'; message: string }
 
-// 선택한 감독 uuid 목록에게 목표를 전달한다(loopback 무인증, 원격은 403).
+// 선택한 관리자 uuid 목록에게 목표를 전달한다(loopback 무인증, 원격은 403).
 export async function sendGoal(text: string, targets: string[]): Promise<SendGoalOutcome> {
   let res: Response
   try {

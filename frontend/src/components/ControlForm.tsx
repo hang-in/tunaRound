@@ -23,7 +23,7 @@ export default function ControlForm({ remoteViewer }: Props) {
           <h2 className="section-title">codex 직접 제어</h2>
           <span className="goal-hint">app-server 세션에 turn/start를 직접 주입합니다</span>
         </div>
-        <div className="goal-warning">원격 관전 모드입니다 — codex 제어는 로컬(총감독) 세션에서만 가능합니다.</div>
+        <div className="goal-warning">원격 관전 모드입니다 — codex 제어는 로컬(총괄) 세션에서만 가능합니다.</div>
       </section>
     )
   }
@@ -73,7 +73,7 @@ export default function ControlForm({ remoteViewer }: Props) {
           className="goal-textarea"
           rows={3}
           aria-label="codex에 주입할 지시 텍스트"
-          placeholder="예: 브로커 로스터를 list_agents로 조회해서 online 감독 수를 알려줘"
+          placeholder="예: 브로커 로스터를 list_agents로 조회해서 online 관리자 수를 알려줘"
           value={text}
           onChange={(e) => setText(e.target.value)}
         />

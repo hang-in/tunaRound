@@ -1,5 +1,5 @@
-// 총감독 대시보드 루트. roster 폴링 + heartbeat 변화 감지(pulse) + feed 이벤트 취합(통계)을 소유하고
-// 헤더/통계/로스터/피드/goal 폼을 배치한다. 목업(총감독 대시보드.dc.html) 레이아웃 이식.
+// 총괄 대시보드 루트. roster 폴링 + heartbeat 변화 감지(pulse) + feed 이벤트 취합(통계)을 소유하고
+// 헤더/통계/로스터/피드/goal 폼을 배치한다. 목업(총괄 대시보드.dc.html) 레이아웃 이식.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { Agent, TaskEventMsg } from './api'
 import { fetchRoster } from './api'
@@ -11,7 +11,7 @@ import Candidates from './components/Candidates'
 import GoalForm from './components/GoalForm'
 import ControlForm from './components/ControlForm'
 
-// 로컬(총감독) 세션인지 원격 관전인지 클라이언트에서 판정한다(loopback 여부).
+// 로컬(총괄) 세션인지 원격 관전인지 클라이언트에서 판정한다(loopback 여부).
 const LOOPBACK_HOSTS = ['127.0.0.1', 'localhost', '[::1]', '::1']
 const remoteViewer = !LOOPBACK_HOSTS.includes(location.hostname)
 

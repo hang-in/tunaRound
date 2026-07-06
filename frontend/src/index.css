@@ -1,4 +1,4 @@
-/* 총감독 대시보드 목업(총감독 대시보드.dc.html) 이식: 디자인 토큰 + 리셋 + keyframes + 컴포넌트 클래스.
+/* 총괄 대시보드 목업(총괄 대시보드.dc.html) 이식: 디자인 토큰 + 리셋 + keyframes + 컴포넌트 클래스.
    daleui/styles.css 를 더 이상 쓰지 않으므로 여기서 전부 책임진다. */
 
 :root {
@@ -303,7 +303,7 @@ body {
   color: var(--text-3);
 }
 
-/* ---------- 감독 로스터 ---------- */
+/* ---------- 관리자 로스터 ---------- */
 .roster-section {
   flex: 1 1 380px;
   min-width: 320px;
@@ -392,13 +392,72 @@ body {
   border-color: var(--accent);
 }
 
+/* "연결" 안내 팝업(그 세션에 붙여넣을 arm 프롬프트). */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  background: rgba(10, 14, 22, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+.modal-panel {
+  width: 100%;
+  max-width: 640px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+  padding: 18px 20px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.modal-head {
+  display: flex;
+  align-items: center;
+}
+.modal-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+}
+.modal-close {
+  margin-left: auto;
+  border: none;
+  background: none;
+  color: var(--text-3);
+  font-size: 15px;
+  cursor: pointer;
+  line-height: 1;
+}
+.modal-close:hover {
+  color: var(--text);
+}
+.modal-desc {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-2);
+  line-height: 1.6;
+}
+.modal-prompt {
+  margin: 0;
+  max-height: 260px;
+}
+.modal-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
 .card-row {
   display: flex;
   align-items: center;
   gap: 9px;
   min-height: 20px;
 }
-/* 현재 총감독 지정 별표 토글. */
+/* 현재 총괄 지정 별표 토글. */
 .boss-toggle {
   border: none;
   background: none;
@@ -416,7 +475,7 @@ body {
 .boss-toggle:hover {
   color: var(--accent);
 }
-/* "현재 총감독" 뱃지(대등 카드에 표식만). */
+/* "현재 총괄" 뱃지(대등 카드에 표식만). */
 .pill-boss {
   display: inline-flex;
   align-items: center;

@@ -1,5 +1,5 @@
-// 감독 로스터: 피드와 동일한 패널+행 레이아웃. 각 감독 = 상태닷·머신아이콘·이름·heartbeat·태그.
-// 총감독은 별도 카드가 아니라 대등한 행에 "현재 총감독" 뱃지로 표식(클릭해 지정, 앉는 머신 따라 바뀜).
+// 관리자 로스터: 피드와 동일한 패널+행 레이아웃. 각 관리자 = 상태닷·머신아이콘·이름·heartbeat·태그.
+// 총괄은 별도 카드가 아니라 대등한 행에 "현재 총괄" 뱃지로 표식(클릭해 지정, 앉는 머신 따라 바뀜).
 import { useState } from 'react'
 import type { Agent } from '../api'
 import { relativeTime } from '../api'
@@ -88,7 +88,7 @@ type Props = {
 }
 
 export default function Roster({ agents, pulses }: Props) {
-  // 현재 총감독(내가 앉은 머신). 클릭해 지정, 브라우저별 localStorage 보관.
+  // 현재 총괄(내가 앉은 머신). 클릭해 지정, 브라우저별 localStorage 보관.
   const [boss, setBoss] = useState<string>(() => {
     try {
       return localStorage.getItem(BOSS_KEY) ?? ''
@@ -113,14 +113,14 @@ export default function Roster({ agents, pulses }: Props) {
   return (
     <section className="roster-section">
       <div className="panel-header">
-        <h2 className="section-title">감독 로스터</h2>
+        <h2 className="section-title">관리자 로스터</h2>
         <span className="section-count">
           {onlineCount}/{agents.length} online
         </span>
       </div>
       <div className="roster-list">
         {sorted.length === 0 ? (
-          <div className="roster-empty">등록된 감독 없음.</div>
+          <div className="roster-empty">등록된 관리자 없음.</div>
         ) : (
           sorted.map((s) => {
             const pulse = !!pulses[s.uuid]
@@ -138,12 +138,12 @@ export default function Roster({ agents, pulses }: Props) {
                     type="button"
                     className={'boss-toggle' + (isBoss ? ' on' : '')}
                     onClick={() => toggleBoss(s.uuid)}
-                    title={isBoss ? '현재 총감독(클릭해 해제)' : '클릭해 현재 총감독으로 지정'}
-                    aria-label="현재 총감독 지정"
+                    title={isBoss ? '현재 총괄(클릭해 해제)' : '클릭해 현재 총괄으로 지정'}
+                    aria-label="현재 총괄 지정"
                   >
                     {isBoss ? '★' : '☆'}
                   </button>
-                  {isBoss ? <span className="pill-boss">현재 총감독</span> : null}
+                  {isBoss ? <span className="pill-boss">현재 총괄</span> : null}
                   {s.online ? (
                     <span className="hb-dots">
                       {Array.from({ length: N_DOTS }, (_, i) => (

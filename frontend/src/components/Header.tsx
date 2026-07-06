@@ -34,7 +34,7 @@ export default function Header({ brokerOk, sseOpen, remoteViewer }: Props) {
             <circle cx="8" cy="8" r="1.2" fill="currentColor" />
           </svg>
         </span>
-        <h1 className="dash-title">총감독 대시보드</h1>
+        <h1 className="dash-title">총괄 대시보드</h1>
         <span className="dash-divider" />
         <span className="dash-badge">
           <span className={'dash-badge-dot' + (brokerOk ? '' : ' off')} />

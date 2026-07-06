@@ -1,6 +1,6 @@
 // 발견된 세션(후보) 패널: 발견 리포터가 보고한 미무장 세션을 뜬다(v2-40 S2/S3). 5초 폴로 자족 갱신.
-// armed(=online roster 소속)는 이미 무장돼 로스터에 있으므로 여기선 후보(armed=false)만 노출한다.
-// claude 세션은 외부 제어 소켓이 없어(발견≠제어) "연결"은 세션 id 복사 + 수동 무장 안내에 그친다.
+// armed(=online roster 소속)는 이미 로스터에 있으므로 여기선 후보(armed=false)만 노출한다.
+// claude 세션은 외부 제어 소켓이 없어(발견≠제어) "연결"은 그 세션에 붙여넣을 arm 프롬프트를 팝업으로 안내한다.
 import { useEffect, useState } from 'react'
 import type { Candidate } from '../api'
 import { fetchCandidates } from '../api'
@@ -35,6 +35,29 @@ function formatAge(sec: number): string {
   return Math.floor(hr / 24) + '일 전'
 }
 
+// 발견된 세션을 관리자로 편입시키기 위해 "그 세션에" 붙여넣을 자연어 arm 프롬프트를 만든다.
+// claude는 외부 push가 없어 그 세션이 스스로 poll+Monitor를 켜야 하므로, 사람이 이 프롬프트를 그
+// 세션에 붙여넣으면 세션이 자가 무장한다. core는 이 대시보드를 연 주소 기준(같은 머신 후보에 정확).
+function buildArmPrompt(c: Candidate): string {
+  const core = window.location.origin + '/mcp'
+  const name = (c.machine ? c.machine + '-' : '') + c.runner + '-' + c.uuid.slice(0, 8)
+  const tags = [
+    'machine=' + (c.machine ?? 'unknown'),
+    'runner=' + c.runner,
+    'role=supervised',
+    'project=' + (c.project ?? 'unknown'),
+  ].join(',')
+  return [
+    '이 세션을 tunaRound 브로커에 "관리자"로 등록해줘.',
+    '',
+    '1) 백그라운드로 다음을 실행:',
+    `   tunaround poll --core ${core} --agent ${c.uuid} --display-name ${name} --tags "${tags}" --interval 15`,
+    '2) 그 poll 출력을 Monitor 도구로 감시하다가, task가 도착하면 claim_task로 잡아 처리하고 complete_task로 보고해줘.',
+    '',
+    '(토큰은 TUNA_BROKER_TOKEN 환경변수 사용. 원격 머신이면 --core를 그 머신에서 본 브로커 주소로 바꿔.)',
+  ].join('\n')
+}
+
 function Pill({ k, v, color }: { k: string; v: string; color?: string }) {
   return (
     <span className="shield">
@@ -48,7 +71,9 @@ function Pill({ k, v, color }: { k: string; v: string; color?: string }) {
 
 export default function Candidates() {
   const [candidates, setCandidates] = useState<Candidate[]>([])
-  const [copied, setCopied] = useState<string>('')
+  // "연결" 팝업 대상 후보(null이면 팝업 닫힘).
+  const [armTarget, setArmTarget] = useState<Candidate | null>(null)
+  const [copied, setCopied] = useState(false)
 
   // /dashboard/candidates 를 5초 주기로 폴링한다(roster 폴 주기와 통일).
   useEffect(() => {
@@ -76,17 +101,20 @@ export default function Candidates() {
   // armed(이미 로스터에 있음)는 제외하고 미무장 후보만 노출한다.
   const unarmed = candidates.filter((c) => !c.armed).sort((a, b) => a.age_secs - b.age_secs)
 
-  const onConnect = (uuid: string) => {
-    // 클립보드 API가 없으면 no-op(실제 복사 안 됐는데 "복사됨"이 뜨지 않게).
-    if (!navigator.clipboard) return
+  const openArm = (c: Candidate) => {
+    setArmTarget(c)
+    setCopied(false)
+  }
+  const copyPrompt = () => {
+    if (!armTarget || !navigator.clipboard) return
     navigator.clipboard
-      .writeText(uuid)
+      .writeText(buildArmPrompt(armTarget))
       .then(() => {
-        setCopied(uuid)
-        window.setTimeout(() => setCopied((c) => (c === uuid ? '' : c)), 1500)
+        setCopied(true)
+        window.setTimeout(() => setCopied(false), 1500)
       })
       .catch(() => {
-        // 복사 실패는 무시(수동 복사).
+        // 복사 실패는 무시(사용자가 수동 선택 복사).
       })
   }
 
@@ -112,10 +140,10 @@ export default function Candidates() {
                 <button
                   type="button"
                   className="candidate-arm"
-                  onClick={() => onConnect(c.uuid)}
-                  title="claude 세션은 외부 제어 소켓이 없어 무장은 그 세션에서 직접(TUNA_AUTOARM=1) 켭니다. 세션 id를 복사합니다."
+                  onClick={() => openArm(c)}
+                  title="이 세션을 관리자로 편입하는 방법을 안내합니다(그 세션에 붙여넣기)."
                 >
-                  {copied === c.uuid ? '복사됨' : '연결'}
+                  연결
                 </button>
               </div>
               <div className="tag-row">
@@ -128,6 +156,30 @@ export default function Candidates() {
           ))
         )}
       </div>
+
+      {armTarget ? (
+        <div className="modal-overlay" onClick={() => setArmTarget(null)}>
+          <div className="modal-panel" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-head">
+              <h3 className="modal-title">관리자로 연결</h3>
+              <button type="button" className="modal-close" onClick={() => setArmTarget(null)} aria-label="닫기">
+                ✕
+              </button>
+            </div>
+            <p className="modal-desc">
+              claude 세션은 밖에서 밀어넣을 수 없어, 아래를 <b>그 세션</b>(uuid {armTarget.uuid.slice(0, 8)}…
+              {armTarget.machine ? `, ${armTarget.machine}` : ''})의 Claude Code 프롬프트에 붙여넣으면 세션이 스스로
+              무장해 <b>관리자 로스터</b>로 올라옵니다.
+            </p>
+            <pre className="control-answer modal-prompt">{buildArmPrompt(armTarget)}</pre>
+            <div className="modal-actions">
+              <button type="button" className="goal-submit-btn enabled" onClick={copyPrompt}>
+                {copied ? '복사됨' : '프롬프트 복사'}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </section>
   )
 }
