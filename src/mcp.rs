@@ -1008,7 +1008,8 @@ pub async fn serve_http_mcp_on_listener(
     // 피처가 없으면 /dashboard는 안내 페이지다. write(goal 폼)는 SPA가 /a2a bearer로 게이트한다.
     let mut dashboard = Router::new()
         .route("/dashboard/events", get(dashboard_events_handler))
-        .route("/dashboard/roster", get(dashboard_roster_handler));
+        .route("/dashboard/roster", get(dashboard_roster_handler))
+        .route("/dashboard/goal", axum::routing::post(dashboard_goal_handler));
     #[cfg(feature = "dashboard")]
     {
         // Vite base=/dashboard/라 에셋은 /dashboard/assets/*로 나가 events/roster와 경로 미충돌.
@@ -1027,7 +1028,8 @@ pub async fn serve_http_mcp_on_listener(
     eprintln!("[serve-mcp] HTTP MCP 서버 기동: {bound_addr} (대시보드 SPA: /dashboard)");
     #[cfg(not(feature = "dashboard"))]
     eprintln!("[serve-mcp] HTTP MCP 서버 기동: {bound_addr} (대시보드: dashboard 피처 없이 빌드됨)");
-    axum::serve(listener, app).await?;
+    // ConnectInfo(peer addr)로 /dashboard/goal의 loopback 판정을 하기 위해 connect-info make service를 쓴다.
+    axum::serve(listener, app.into_make_service_with_connect_info::<std::net::SocketAddr>()).await?;
     Ok(())
 }
 
@@ -1161,10 +1163,34 @@ async fn dashboard_roster_handler(
     axum::extract::State(store): axum::extract::State<Arc<Mutex<crate::store::sqlite::SqliteStore>>>,
 ) -> axum::response::Response {
     use axum::response::IntoResponse;
-    let agents: Vec<AgentEntry> = tokio::task::spawn_blocking(move || {
+    // 대시보드는 오프라인 감독도 회색 닷으로 보여줘야 하므로 전체를 반환하고 online 플래그를 붙인다
+    // (라우팅용 list_agents는 online만 반환하지만, 이 뷰는 등록된 전원 + 상태를 노출한다).
+    #[derive(serde::Serialize)]
+    struct DashAgent {
+        uuid: String,
+        tags: BTreeMap<String, String>,
+        display_name: Option<String>,
+        last_heartbeat: String,
+        online: bool,
+    }
+    let agents: Vec<DashAgent> = tokio::task::spawn_blocking(move || {
         let store = store.lock().unwrap_or_else(|e| e.into_inner());
         let now = store.now().unwrap_or_default();
-        store.list_agents(&BTreeMap::new(), &now, AGENT_TTL_SECS)
+        // TTL=i64::MAX로 오프라인 포함 전체 조회 후, online은 실제 TTL(AGENT_TTL_SECS)로 per-agent 계산.
+        store
+            .list_agents(&BTreeMap::new(), &now, i64::MAX)
+            .into_iter()
+            .map(|a| {
+                let online = crate::store::agents::is_online(&a.last_heartbeat, &now, AGENT_TTL_SECS);
+                DashAgent {
+                    uuid: a.uuid,
+                    tags: a.tags,
+                    display_name: a.display_name,
+                    last_heartbeat: a.last_heartbeat,
+                    online,
+                }
+            })
+            .collect()
     })
     .await
     .unwrap_or_default();
@@ -1173,6 +1199,85 @@ async fn dashboard_roster_handler(
         axum::http::StatusCode::OK,
         [(axum::http::header::CONTENT_TYPE, "application/json")],
         body,
+    )
+        .into_response()
+}
+
+/// POST /dashboard/goal: 로컬(loopback) 총감독이 선택한 감독들에게 목표를 던진다(대상마다 1 task).
+/// 원격(비-loopback)은 read-only 관전이라 403. 무인증이지만 loopback 신뢰라 로컬 한정 write.
+/// body = {"text": "...", "targets": ["uuid", ...]}. 응답 = {"created":[{taskId,toAgent}], "errors":[...]}.
+#[cfg(feature = "serve")]
+async fn dashboard_goal_handler(
+    axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    axum::extract::State(store): axum::extract::State<Arc<Mutex<crate::store::sqlite::SqliteStore>>>,
+    body: axum::body::Bytes,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    // loopback만 목표 제출 허용. 원격은 관전 전용.
+    if !peer.ip().is_loopback() {
+        return (
+            axum::http::StatusCode::FORBIDDEN,
+            "원격 관전 모드: 목표 제출은 로컬(loopback)에서만 가능합니다.",
+        )
+            .into_response();
+    }
+    #[derive(serde::Deserialize)]
+    struct GoalReq {
+        text: String,
+        targets: Vec<String>,
+    }
+    let req: GoalReq = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(e) => return (axum::http::StatusCode::BAD_REQUEST, format!("잘못된 요청: {e}")).into_response(),
+    };
+    if req.text.trim().is_empty() || req.targets.is_empty() {
+        return (axum::http::StatusCode::BAD_REQUEST, "목표(text)와 대상(targets)이 필요합니다.").into_response();
+    }
+    #[derive(serde::Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Created {
+        task_id: String,
+        to_agent: String,
+    }
+    #[derive(serde::Serialize)]
+    struct GoalResp {
+        created: Vec<Created>,
+        errors: Vec<String>,
+    }
+    let resp = tokio::task::spawn_blocking(move || {
+        use crate::store::a2a::{Message, Part};
+        let store = store.lock().unwrap_or_else(|e| e.into_inner());
+        let mut created = Vec::new();
+        let mut errors = Vec::new();
+        for uuid in &req.targets {
+            let msg_id = match store.new_task_id() {
+                Ok(id) => id,
+                Err(e) => {
+                    errors.push(format!("{uuid}: {e}"));
+                    continue;
+                }
+            };
+            let message = Message {
+                message_id: msg_id,
+                role: "user".to_string(),
+                parts: vec![Part { text: Some(req.text.clone()), ..Default::default() }],
+                task_id: None,
+                context_id: None,
+            };
+            match store.create_task_from_message("dashboard", uuid, message) {
+                Ok(task) => created.push(Created { task_id: task.id, to_agent: task.to_agent }),
+                Err(e) => errors.push(format!("{uuid}: {e}")),
+            }
+        }
+        GoalResp { created, errors }
+    })
+    .await
+    .unwrap_or(GoalResp { created: vec![], errors: vec!["작업 실패".to_string()] });
+    let bodyv = serde_json::to_vec(&resp).unwrap_or_else(|_| b"{}".to_vec());
+    (
+        axum::http::StatusCode::OK,
+        [(axum::http::header::CONTENT_TYPE, "application/json")],
+        bodyv,
     )
         .into_response()
 }

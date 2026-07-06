@@ -1,11 +1,27 @@
 // 대시보드 브로커 API 타입과 호출 헬퍼(roster 폴, SSE 구독, goal 제출)를 모은 모듈.
 
-// GET /dashboard/roster 응답 요소(online 감독만 서버가 필터해 반환한다).
+// GET /dashboard/roster 응답 요소(등록된 감독 전체 + online 플래그를 서버가 계산해 내려준다).
 export type Agent = {
   uuid: string
   tags: Record<string, string>
   display_name: string | null
   last_heartbeat: string
+  online: boolean
+}
+
+// SQLite datetime('now')는 "YYYY-MM-DD HH:MM:SS" UTC 문자열이다. 사람이 읽는 상대시간으로 바꾼다
+// (대시보드가 UTC를 그대로 찍어 한국시간과 어긋나 보이던 문제 해소).
+export function relativeTime(sqlUtc: string): string {
+  const t = Date.parse(sqlUtc.replace(' ', 'T') + 'Z')
+  if (Number.isNaN(t)) return sqlUtc
+  const sec = Math.max(0, Math.round((Date.now() - t) / 1000))
+  if (sec < 5) return '방금'
+  if (sec < 60) return sec + '초 전'
+  const min = Math.floor(sec / 60)
+  if (min < 60) return min + '분 전'
+  const hr = Math.floor(min / 60)
+  if (hr < 24) return hr + '시간 전'
+  return Math.floor(hr / 24) + '일 전'
 }
 
 // task 아티팩트의 한 조각.
@@ -39,28 +55,6 @@ export type TaskEventMsg = {
   task: Task
 }
 
-// POST /a2a 성공 응답.
-type SendMessageResult = {
-  jsonrpc: string
-  id: number
-  result?: Task
-  error?: { code: number; message: string }
-}
-
-// goal 제출 결과를 호출부에 알리는 판별 유니온.
-export type SendGoalOutcome =
-  | { kind: 'ok'; taskId: string; toAgent: string }
-  | { kind: 'unauthorized' }
-  | { kind: 'error'; message: string }
-
-// 유니크 messageId 생성기. crypto.randomUUID 가 있으면 쓰고 없으면 폴백한다.
-export function newMessageId(): string {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return crypto.randomUUID()
-  }
-  return 'm-' + Date.now() + '-' + Math.random().toString(16).slice(2)
-}
-
 // online 감독 목록을 가져온다. 실패는 던져서 호출부가 콘솔 로깅만 하도록 한다.
 export async function fetchRoster(signal?: AbortSignal): Promise<Agent[]> {
   const res = await fetch('/dashboard/roster', { signal })
@@ -70,54 +64,35 @@ export async function fetchRoster(signal?: AbortSignal): Promise<Agent[]> {
   return (await res.json()) as Agent[]
 }
 
-// Select 대상 값 규약: "sel:role=supervised"(→ toSelector) / "agent:<uuid>"(→ toAgent).
-// 모든 감독을 뜻하는 기본 셀렉터 값.
-export const ALL_SUPERVISORS = 'sel:role=supervised'
+// POST /dashboard/goal 성공 응답: 대상별로 생성된 task 를 알려준다.
+export type GoalCreated = { taskId: string; toAgent: string }
+type GoalResponse = { created: GoalCreated[]; errors?: unknown[] }
 
-// goal 을 브로커에 제출한다. target 은 Select 값 규약(sel: / agent:)을 따른다.
-export async function sendGoal(
-  token: string,
-  target: string,
-  text: string,
-): Promise<SendGoalOutcome> {
-  // 대상 값을 toAgent 또는 toSelector 로 배타 변환한다.
-  const params: {
-    message: { messageId: string; role: 'user'; parts: Part[] }
-    fromAgent: string
-    toAgent?: string
-    toSelector?: string
-  } = {
-    message: { messageId: newMessageId(), role: 'user', parts: [{ text }] },
-    fromAgent: 'dashboard',
-  }
-  if (target.startsWith('agent:')) {
-    params.toAgent = target.slice('agent:'.length)
-  } else if (target.startsWith('sel:')) {
-    params.toSelector = target.slice('sel:'.length)
-  } else {
-    // 방어적 기본값: 알 수 없는 값은 모든 감독 셀렉터로 처리한다.
-    params.toSelector = 'role=supervised'
+// goal 제출 결과를 호출부에 알리는 판별 유니온.
+export type SendGoalOutcome =
+  | { kind: 'ok'; created: GoalCreated[] }
+  | { kind: 'forbidden' }
+  | { kind: 'error'; message: string }
+
+// 선택한 감독 uuid 목록에게 목표를 전달한다(loopback 무인증, 원격은 403).
+export async function sendGoal(text: string, targets: string[]): Promise<SendGoalOutcome> {
+  let res: Response
+  try {
+    res = await fetch('/dashboard/goal', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, targets }),
+    })
+  } catch (err) {
+    return { kind: 'error', message: err instanceof Error ? err.message : String(err) }
   }
 
-  const res = await fetch('/a2a', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: 'Bearer ' + token,
-    },
-    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'SendMessage', params }),
-  })
-
-  if (res.status === 401) {
-    return { kind: 'unauthorized' }
+  if (res.status === 403) {
+    return { kind: 'forbidden' }
   }
-
-  const data = (await res.json()) as SendMessageResult
-  if (data.error) {
-    return { kind: 'error', message: data.error.message }
+  if (!res.ok) {
+    return { kind: 'error', message: 'goal 제출 실패: ' + res.status }
   }
-  if (data.result) {
-    return { kind: 'ok', taskId: data.result.id, toAgent: data.result.toAgent }
-  }
-  return { kind: 'error', message: '알 수 없는 응답 형식입니다.' }
+  const data = (await res.json()) as GoalResponse
+  return { kind: 'ok', created: data.created }
 }

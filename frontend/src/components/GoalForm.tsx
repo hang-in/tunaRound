@@ -1,74 +1,103 @@
-// 목표 텍스트와 대상 감독, 브로커 토큰을 입력받아 POST /a2a 로 task 를 생성하는 폼.
-import { useState } from 'react'
-import {
-  Card,
-  Heading,
-  Text,
-  Button,
-  TextInput,
-  PasswordInput,
-  Select,
-  VStack,
-} from 'daleui'
-import type { Agent, SendGoalOutcome } from '../api'
-import { ALL_SUPERVISORS, sendGoal } from '../api'
-
-// 토큰을 세션 동안 보관해 재입력을 줄인다(Authorization 헤더로만 전송, 로깅 금지).
-const TOKEN_KEY = 'tuna_dash_token'
+// 목표 텍스트 + online 감독 멀티선택으로 POST /dashboard/goal 을 호출하는 폼.
+// 목업 "목표 제출" 섹션 이식(토큰 입력칸 없음, loopback 무인증).
+import { useEffect, useState } from 'react'
+import type { Agent } from '../api'
+import { sendGoal } from '../api'
 
 type Props = {
-  // 대상 Select 옵션을 채우기 위한 현재 로스터.
   agents: Agent[]
+  remoteViewer: boolean
 }
 
-export default function GoalForm({ agents }: Props) {
-  const [token, setToken] = useState<string>(() => {
-    try {
-      return sessionStorage.getItem(TOKEN_KEY) ?? ''
-    } catch {
-      return ''
-    }
-  })
-  const [goal, setGoal] = useState('')
-  const [target, setTarget] = useState<string>(ALL_SUPERVISORS)
-  const [status, setStatus] = useState('')
-  const [submitting, setSubmitting] = useState(false)
+function WarnIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
+      <path d="M7 1.5 13 12H1L7 1.5Z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
+      <path d="M7 5.5v3M7 10.2v0.1" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+    </svg>
+  )
+}
 
-  // 상태 메시지를 사람이 읽는 문구로 변환한다.
-  const describe = (outcome: SendGoalOutcome): string => {
-    if (outcome.kind === 'ok') {
-      return '생성됨: task ' + outcome.taskId.slice(0, 8) + ' -> ' + outcome.toAgent
+export default function GoalForm({ agents, remoteViewer }: Props) {
+  const [selected, setSelected] = useState<Record<string, boolean>>({})
+  const [goal, setGoal] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+  const [status, setStatus] = useState('')
+
+  const online = agents.filter((a) => a.online)
+
+  // 새로 나타난 online 감독은 기본 선택 상태로 추가한다(기존 선택은 보존).
+  useEffect(() => {
+    setSelected((prev) => {
+      let changed = false
+      const next = { ...prev }
+      online.forEach((a) => {
+        if (!(a.uuid in next)) {
+          next[a.uuid] = true
+          changed = true
+        }
+      })
+      return changed ? next : prev
+    })
+    // eslint 계열 룰이 없어도 online 목록 변화에만 반응하면 충분하다.
+    // (agents 전체가 아니라 uuid 조합이 바뀔 때만 실행되도록 join 을 의존성으로 쓴다.)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [online.map((a) => a.uuid).join(',')])
+
+  if (remoteViewer) {
+    return (
+      <section className="goal-section">
+        <div className="goal-head">
+          <h2 className="section-title">목표 제출</h2>
+          <span className="goal-hint">선택한 감독 각각에게 목표가 전달됩니다</span>
+        </div>
+        <div className="goal-warning">
+          <WarnIcon />
+          원격 관전 모드입니다 — 목표 제출은 로컬(총감독) 세션에서만 가능합니다.
+        </div>
+      </section>
+    )
+  }
+
+  const selCount = online.filter((a) => selected[a.uuid]).length
+  const allSelected = selCount === online.length && online.length > 0
+  const canSubmit = goal.trim().length > 0 && selCount > 0
+
+  const toggleAll = () => {
+    if (allSelected) {
+      const next: Record<string, boolean> = {}
+      online.forEach((a) => {
+        next[a.uuid] = false
+      })
+      setSelected((prev) => ({ ...prev, ...next }))
+    } else {
+      const next: Record<string, boolean> = {}
+      online.forEach((a) => {
+        next[a.uuid] = true
+      })
+      setSelected((prev) => ({ ...prev, ...next }))
     }
-    if (outcome.kind === 'unauthorized') {
-      return '인증 실패: 토큰 확인.'
-    }
-    return outcome.message
+  }
+
+  const toggleOne = (uuid: string) => {
+    setSelected((prev) => ({ ...prev, [uuid]: !prev[uuid] }))
   }
 
   const onSubmit = async () => {
-    const t = token.trim()
-    const g = goal.trim()
-    if (!t) {
-      setStatus('브로커 토큰을 입력하세요.')
-      return
-    }
-    if (!g) {
-      setStatus('목표를 입력하세요.')
-      return
-    }
-    try {
-      sessionStorage.setItem(TOKEN_KEY, t)
-    } catch {
-      // 세션 저장 불가 환경은 무시하고 진행한다.
-    }
+    const text = goal.trim()
+    const targets = online.filter((a) => selected[a.uuid]).map((a) => a.uuid)
+    if (!text || targets.length === 0) return
     setSubmitting(true)
     setStatus('')
     try {
-      const outcome = await sendGoal(t, target, g)
-      setStatus(describe(outcome))
+      const outcome = await sendGoal(text, targets)
       if (outcome.kind === 'ok') {
-        // 성공 시 목표 필드만 비운다(토큰/대상은 유지).
         setGoal('')
+        setStatus(outcome.created.length + '개 task 생성됨.')
+      } else if (outcome.kind === 'forbidden') {
+        setStatus('원격 세션에서는 목표를 제출할 수 없습니다(403).')
+      } else {
+        setStatus(outcome.message)
       }
     } catch (err) {
       console.error('[goal] 제출 실패.', err)
@@ -79,48 +108,63 @@ export default function GoalForm({ agents }: Props) {
   }
 
   return (
-    <Card>
-      <Card.Body>
-        <VStack align="stretch" gap="12">
-          <Heading level={2}>목표 제출</Heading>
-          <PasswordInput
-            label="브로커 토큰"
-            placeholder="Bearer 토큰"
-            value={token}
-            onChange={(e) => setToken(e.target.value)}
-          />
-          <TextInput
-            label="목표"
-            placeholder="예: 대시보드 T2 스켈레톤 생성"
-            value={goal}
-            onChange={(e) => setGoal(e.target.value)}
-          />
-          <Select
-            label="대상"
-            aria-label="대상 감독"
-            value={target}
-            onChange={(e) => setTarget(e.target.value)}
-          >
-            <option value={ALL_SUPERVISORS}>모든 감독 (role=supervised)</option>
-            {agents.map((a) => (
-              <option key={a.uuid} value={'agent:' + a.uuid}>
-                {a.display_name ? a.display_name + ' (' + a.uuid + ')' : a.uuid}
-              </option>
-            ))}
-          </Select>
-          <Button
-            tone="brand"
-            variant="solid"
+    <section className="goal-section">
+      <div className="goal-head">
+        <h2 className="section-title">목표 제출</h2>
+        <span className="goal-hint">선택한 감독 각각에게 목표가 전달됩니다</span>
+      </div>
+      <div className="goal-body">
+        <div className="goal-targets">
+          <label className="goal-chip-all">
+            <input type="checkbox" checked={allSelected} onChange={toggleAll} />
+            <span>전체 선택</span>
+          </label>
+          <span className="dash-divider" />
+          {agents.map((a) => {
+            // 대상 체크는 online 만 유효하나, offline 도 목록엔 노출하고 비활성화한다(목업 그대로).
+            const isSel = a.online && !!selected[a.uuid]
+            return (
+              <label
+                className={'goal-chip' + (isSel ? ' selected' : '') + (a.online ? '' : ' offline')}
+                key={a.uuid}
+              >
+                <input
+                  type="checkbox"
+                  checked={isSel}
+                  disabled={!a.online}
+                  onChange={() => toggleOne(a.uuid)}
+                />
+                <span className="goal-chip-uuid">{a.display_name ?? a.uuid}</span>
+                {!a.online ? <span className="goal-chip-offline-label">오프라인</span> : null}
+              </label>
+            )
+          })}
+        </div>
+        <textarea
+          className="goal-textarea"
+          rows={3}
+          placeholder="예: tunaround 저장소의 flaky 테스트를 찾아 원인 분석 후 수정 PR을 올려줘"
+          value={goal}
+          onChange={(e) => setGoal(e.target.value)}
+        />
+        <div className="goal-submit-row">
+          <span className="goal-summary">
+            {selCount > 0
+              ? selCount + '명의 감독 선택됨 — 각각 독립 task로 생성됩니다'
+              : '대상 감독을 선택하세요'}
+          </span>
+          <span className="dash-spacer" />
+          <button
             type="button"
-            loading={submitting}
-            disabled={submitting}
+            className={'goal-submit-btn' + (canSubmit && !submitting ? ' enabled' : '')}
+            disabled={!canSubmit || submitting}
             onClick={onSubmit}
           >
-            제출
-          </Button>
-          {status ? <Text>{status}</Text> : null}
-        </VStack>
-      </Card.Body>
-    </Card>
+            {selCount > 0 ? selCount + '명의 감독에게 목표 전달' : '목표 전달'}
+          </button>
+        </div>
+        {status ? <span className="goal-status">{status}</span> : null}
+      </div>
+    </section>
   )
 }

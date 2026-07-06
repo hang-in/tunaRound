@@ -760,3 +760,16 @@
 - **브라우저 시각검증 막힘**: claude-in-chrome은 정상(example.com 렌더)이나 이 Chrome이 http://127.0.0.1:8770을 에러페이지(URL http 유지=https업그레이드 아님, curl 200=서버정상)→프록시/PNA loopback 차단 추정. 자동 스크린샷 불가, 사용자 눈 확인 필요.
 - **비범위(후속)**: release(cargo-dist)에 dashboard feature+frontend 빌드 통합(release.yml은 dist 자동생성이라 별도 작업). S2 UX: "모든 감독" 셀렉터 다중매칭.
 - **브랜치/PR 상태**: feat/orchestrator-dashboard 위 S1-S4. 커밋 후 push+PR 예정(시각 확인 후). IP redact=PR #11 별도.
+
+## 2026-07-06 세션14 후속3: 대시보드 목업 이식(DaleUI→plain React) + goal 백엔드 + v2-40 설계
+
+- **대시보드 재디자인**: Claude Design 목업(총감독 대시보드.dc.html, 프로젝트 루트 zip)을 정본으로 **DaleUI 프론트를 plain React+CSS로 교체**(Sonnet 위임 이식, Opus 리뷰). daleui import 전부 제거(패키지는 유지). 번들 258→205KB, CSS 67→17KB 감량. 헤더(로고·연결배지·시계)+통계타일+로스터(총감독 정적카드+heartbeat dot-flow/hb-sweep 애니, mac/win 아이콘, shields 태그)+피드(상태색 배지)+goal폼(체크박스 멀티선택, 토큰칸 없음). 라이트/다크 토큰. 컴포넌트=Header/StatTiles/Roster/Feed/GoalForm.
+- **뱃지=shields.io 2세그먼트**(사용자 확정, Primer Label에서 전환): 키|값, .shield/.shield-k/.shield-v + v-machine/runner/role/project 색.
+- **roster online 플래그**: /dashboard/roster가 전체(오프라인 포함) + online:bool 반환(list_agents TTL=MAX + is_online per-agent). 대시보드가 회색 닷으로 offline 표시.
+- **goal 백엔드**: `POST /dashboard/goal`(loopback만, 원격 403=read-only 관전, ConnectInfo peer.is_loopback). `{text,targets:[uuid]}`→대상마다 create_task_from_message(SSE 자동 emit→피드)→`{created:[{taskId,toAgent}],errors}`(camelCase). axum::serve를 into_make_service_with_connect_info로. **결정**: 로컬=풀컨트롤(무토큰), 원격=관전. 자동주입은 비권장(무인증 read페이지에 write토큰 노출).
+- **remote 판정(클라)**: location.hostname loopback 여부 → remoteViewer면 goal폼 숨기고 경고.
+- **heartbeat pulse**: App이 폴 사이 last_heartbeat 변화 감지(useRef)→750ms pulse. UTC는 상대시간("N초 전")으로(대시보드가 UTC 원본 찍어 "오전 5시"로 보이던 혼란 해소).
+- **README 반영**: 로드맵 requeue 완료 이동 + 레지스트리·감독·codex라이브감독·doctor Stage4 추가, 웹UI→총감독 대시보드(진행중)+유니버설 세션버스 추가. 현재상태 A2A에 레지스트리·감독·requeue 추가. mcp-search는 실제 내부 명령이라 정확(철회).
+- **v2-40 유니버설 세션 버스 설계**(docs/design/v2-40): 임의 세션(예 tunaRound→secall) A2A 주소화·발견·제어. 발견≠제어(claude=Monitor워처 opt-in, codex=app-server ws). 자동무장 SessionStart 훅 + 발견 리포터 + 대시보드 후보패널 + 안전 스코핑. 단계 S0(수동무장 지금됨)~S5. **다음 세션 착수.**
+- **검증**: 풀빌드(dashboard) + clippy 클린. 라이브: /dashboard 200(새 SPA), /dashboard/goal loopback→task생성 camelCase, roster online, /mcp 401. 브로커 PID 35652·watcher 46744.
+- **다음**: 이 포트 커밋→PR #12 갱신. Planka 보드+백로그. 다음 세션 핸드오프→v2-40 S1.
