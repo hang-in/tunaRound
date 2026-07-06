@@ -638,6 +638,66 @@ body {
   text-overflow: ellipsis;
 }
 
+/* task 카드 헤더(클릭해 이력 펼침). feed-row-head를 버튼으로 - 리셋 + full-width + 포인터. */
+.feed-card-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  width: 100%;
+  border: none;
+  background: none;
+  padding: 0;
+  margin: 0;
+  cursor: pointer;
+  color: inherit;
+  text-align: left;
+  font: inherit;
+}
+.feed-card-head:hover .feed-shortid {
+  color: var(--accent);
+}
+/* 단계 수 배지(접수·진행중·완료 = 3단계 등). */
+.feed-steps {
+  font-size: 11px;
+  color: var(--text-3);
+  font-family: var(--font-mono);
+  background: var(--surface-2);
+  border-radius: var(--r-sm);
+  padding: 1px 6px;
+}
+/* 펼친 이력 목록(같은 카드 안). */
+.feed-history {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+  padding-left: 10px;
+  border-left: 2px solid var(--border);
+}
+.feed-hrow {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.feed-badge.small {
+  font-size: 10.5px;
+  padding: 0 6px;
+}
+.feed-htext {
+  flex: 1 1 100%;
+  font-size: 12px;
+  color: var(--text-2);
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  max-height: 160px;
+  overflow: auto;
+  background: var(--surface-2);
+  border-radius: var(--r-sm);
+  padding: 6px 8px;
+}
+
 /* ---------- 목표 제출 ---------- */
 .goal-section {
   flex: 1 1 100%;
