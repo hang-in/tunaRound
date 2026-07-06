@@ -307,15 +307,44 @@ body {
 .roster-section {
   flex: 1 1 380px;
   min-width: 320px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow);
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  overflow: hidden;
 }
-.section-head {
+/* 로스터·피드 공용 패널 헤더 바(레이아웃 통일). */
+.panel-header {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 8px;
-  padding: 2px 2px 0;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border);
+}
+.roster-list {
+  display: flex;
+  flex-direction: column;
+}
+.roster-row {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--border);
+  transition: opacity 0.3s;
+}
+.roster-row:last-child {
+  border-bottom: none;
+}
+.roster-row.offline {
+  opacity: 0.55;
+}
+.roster-empty {
+  padding: 16px 18px;
+  color: var(--text-3);
+  font-size: 13px;
 }
 .section-title {
   margin: 0;
@@ -330,53 +359,35 @@ body {
   font-family: var(--font-mono);
 }
 
-.dispatcher-card {
-  position: relative;
-  background: linear-gradient(135deg, color-mix(in srgb, var(--accent) 9%, var(--surface)), var(--surface) 70%);
-  border: 1px solid color-mix(in srgb, var(--accent) 38%, var(--border));
-  border-radius: var(--r-lg);
-  padding: 14px 16px;
-  box-shadow: var(--shadow);
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
 .card-row {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 9px;
   min-height: 20px;
 }
-.dot-ping-wrap {
-  position: relative;
-  width: 9px;
-  height: 9px;
+/* 현재 총감독 지정 별표 토글. */
+.boss-toggle {
+  border: none;
+  background: none;
+  padding: 0 2px;
+  margin: 0;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  color: var(--text-3);
   flex: none;
 }
-.dot-ping-core {
-  position: absolute;
-  inset: 0;
-  border-radius: 50%;
-  background: var(--accent);
+.boss-toggle.on {
+  color: #e3b341;
 }
-.dot-ping-ring {
-  position: absolute;
-  inset: 0;
-  border-radius: 50%;
-  background: var(--accent);
-  animation: ping 2.4s ease-out infinite;
+.boss-toggle:hover {
+  color: var(--accent);
 }
-.dispatcher-name {
-  font-family: var(--font-mono);
-  font-size: 13.5px;
-  font-weight: 600;
-  letter-spacing: -0.01em;
-}
-.pill-active {
+/* "현재 총감독" 뱃지(대등 카드에 표식만). */
+.pill-boss {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  padding: 2px 10px;
+  padding: 2px 9px;
   border-radius: 999px;
   font-size: 11px;
   font-weight: 700;
@@ -385,31 +396,10 @@ body {
   background: color-mix(in srgb, var(--accent) 13%, transparent);
   border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
 }
-.dispatcher-meta {
-  font-size: 12px;
-  color: var(--text-3);
-}
 .tag-row {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-}
-
-.roster-card {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--r-lg);
-  padding: 14px 16px;
-  box-shadow: var(--shadow);
-}
-.roster-card-body {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  transition: opacity 0.3s;
-}
-.roster-card-body.offline {
-  opacity: 0.55;
 }
 .status-dot-wrap {
   position: relative;
@@ -434,16 +424,14 @@ body {
   background: var(--ok);
   animation: ping 0.7s ease-out forwards;
 }
-.machine-icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  border-radius: 5px;
-  background: var(--surface-2);
-  border: 1px solid var(--border);
+/* 머신 글리프: 박스 없이 인라인, 일관 크기·muted 색. */
+.machine-glyph {
   color: var(--text-2);
+  flex: none;
+}
+.machine-glyph-none {
+  display: inline-block;
+  width: 14px;
   flex: none;
 }
 .roster-uuid {
@@ -517,18 +505,6 @@ body {
 .shield-v {
   background: #6b7280;
   font-family: var(--font-mono);
-}
-.shield-v.v-machine {
-  background: #2f6fe4;
-}
-.shield-v.v-runner {
-  background: #8957e5;
-}
-.shield-v.v-role {
-  background: #2da44e;
-}
-.shield-v.v-project {
-  background: #d29922;
 }
 
 /* ---------- 라이브 task 피드 ---------- */
