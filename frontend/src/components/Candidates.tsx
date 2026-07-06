@@ -47,6 +47,9 @@ function buildArmPrompt(c: Candidate): string {
     'runner=' + c.runner,
     'role=supervised',
     'project=' + (c.project ?? 'unknown'),
+    // session 태그 = 이 세션의 jsonl id. 브로커 armed overlay가 후보(uuid=세션 id)를 이 태그로 대조해
+    // 무장 즉시 후보에서 제외한다(uuid=세션 id로도 매칭되지만 고정 이름 무장까지 일관되게 하려 명시).
+    'session=' + c.uuid,
   ].join(',')
   const isWin = c.machine === 'win'
   const short = c.uuid.slice(0, 8)

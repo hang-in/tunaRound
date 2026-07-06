@@ -915,11 +915,8 @@ impl TunaSearchServer {
             let store = store.lock().unwrap_or_else(|e| e.into_inner());
             let now = store.now()?;
             let candidates = store.list_candidates(&now, CANDIDATE_TTL_SECS);
-            // armed overlay: online roster에 있는 uuid는 이미 무장된 것으로 표시.
-            let armed: std::collections::HashSet<String> = store
-                .resolve_selector(&BTreeMap::new(), &now, AGENT_TTL_SECS)
-                .into_iter()
-                .collect();
+            // armed overlay: online roster의 uuid 또는 session 태그에 있으면 이미 무장된 것으로 표시.
+            let armed = store.armed_session_ids(&now, AGENT_TTL_SECS);
             Ok::<String, String>(format_candidates(&candidates, &armed))
         })
         .await
@@ -1349,11 +1346,8 @@ async fn dashboard_candidates_handler(
     let candidates: Vec<DashCandidate> = tokio::task::spawn_blocking(move || {
         let store = store.lock().unwrap_or_else(|e| e.into_inner());
         let now = store.now().unwrap_or_default();
-        // armed overlay: online roster(AGENT_TTL_SECS)에 있는 uuid는 이미 무장된 것으로 표시.
-        let armed: std::collections::HashSet<String> = store
-            .resolve_selector(&BTreeMap::new(), &now, AGENT_TTL_SECS)
-            .into_iter()
-            .collect();
+        // armed overlay: online roster의 uuid 또는 session 태그에 있으면 이미 무장된 것으로 표시.
+        let armed = store.armed_session_ids(&now, AGENT_TTL_SECS);
         store
             .list_candidates(&now, CANDIDATE_TTL_SECS)
             .into_iter()
