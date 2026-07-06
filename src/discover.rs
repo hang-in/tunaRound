@@ -23,6 +23,14 @@ pub fn project_from_cwd(cwd: &str) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+/// 사용자가 지휘할 대상이 아닌 내부 자동화 세션의 cwd인지 판정한다. claude-mem(메모리 플러그인)은
+/// `~/.claude-mem/observer-sessions`에서 주 세션을 관찰하는 에이전트 세션을 대량 생성하는데, 이들이
+/// 후보 패널을 오염시키므로(false positive) 제외한다. `/` 정규화 후 경로 조각으로 매칭한다.
+pub fn is_internal_cwd(cwd: &str) -> bool {
+    let c = cwd.replace('\\', "/");
+    c.contains("/.claude-mem/") || c.ends_with("/.claude-mem")
+}
+
 /// Claude Code 세션 jsonl의 첫 줄(JSON 한 건)에서 cwd 필드를 뽑는다. 파싱 실패/부재는 None.
 pub fn parse_cwd_from_jsonl_line(line: &str) -> Option<String> {
     let v: serde_json::Value = serde_json::from_str(line.trim()).ok()?;
@@ -98,7 +106,12 @@ pub fn enumerate_claude_sessions(
                 continue;
             };
             // cwd는 1행(요약)이 아니라 이후 메시지 행에 있으므로 앞 40줄을 훑어 찾는다.
-            let project = read_cwd_from_jsonl(&path, 40).and_then(|cwd| project_from_cwd(&cwd));
+            let cwd = read_cwd_from_jsonl(&path, 40);
+            // claude-mem observer 등 내부 자동화 세션은 후보에서 제외(false positive).
+            if cwd.as_deref().is_some_and(is_internal_cwd) {
+                continue;
+            }
+            let project = cwd.as_deref().and_then(project_from_cwd);
             out.push(DiscoveredSession { uuid: uuid.to_string(), project, age_secs: age });
         }
     }
@@ -154,6 +167,15 @@ mod tests {
         assert_eq!(project_from_cwd("/home/u/proj/"), Some("proj".to_string()));
         assert_eq!(project_from_cwd(""), None);
         assert_eq!(project_from_cwd("/"), None);
+    }
+
+    #[test]
+    fn is_internal_cwd_excludes_claude_mem() {
+        assert!(is_internal_cwd("/Users/d9ng/.claude-mem/observer-sessions"));
+        assert!(is_internal_cwd("C:\\Users\\d9ng\\.claude-mem\\observer-sessions"));
+        assert!(is_internal_cwd("/home/u/.claude-mem"));
+        assert!(!is_internal_cwd("/Users/d9ng/privateProject/tunaRound"));
+        assert!(!is_internal_cwd("/home/u/secall"));
     }
 
     #[test]

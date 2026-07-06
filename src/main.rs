@@ -1303,7 +1303,9 @@ fn main() {
     #[cfg(feature = "worker")]
     if let Some(a) = poll_args {
         let result = rt.block_on(async {
-            let client = tunaround::mcp_client::McpHttpClient::connect(a.core.clone(), a.token.clone()).await?;
+            // 토큰은 --token 우선, 없으면 TUNA_BROKER_TOKEN env 폴백(argv 노출 회피용).
+            let token = a.token.clone().or_else(|| std::env::var("TUNA_BROKER_TOKEN").ok());
+            let client = tunaround::mcp_client::McpHttpClient::connect(a.core.clone(), token).await?;
             tunaround::worker::run_poll_loop(
                 &client,
                 &a.agent,
@@ -1326,8 +1328,9 @@ fn main() {
     #[cfg(feature = "worker")]
     if let Some(a) = discover_args {
         let result = rt.block_on(async {
-            let client =
-                tunaround::mcp_client::McpHttpClient::connect(a.core.clone(), a.token.clone()).await?;
+            // 토큰은 --token 우선, 없으면 TUNA_BROKER_TOKEN env 폴백(argv 노출 회피용).
+            let token = a.token.clone().or_else(|| std::env::var("TUNA_BROKER_TOKEN").ok());
+            let client = tunaround::mcp_client::McpHttpClient::connect(a.core.clone(), token).await?;
             let projects_dir = match a.projects_dir.clone() {
                 Some(p) => std::path::PathBuf::from(tunaround::config::expand_home(&p)),
                 None => tunaround::discover::default_projects_dir().ok_or_else(|| {
@@ -1335,7 +1338,9 @@ fn main() {
                         .to_string()
                 })?,
             };
-            let stale = std::time::Duration::from_secs(a.stale_mins * 60);
+            // stale_mins*60은 큰 입력에서 overflow하므로 saturating. interval 0은 tight loop라 최소 1초로.
+            let stale = std::time::Duration::from_secs(a.stale_mins.saturating_mul(60));
+            let interval = a.interval.max(1);
             let machine = a.machine.clone().unwrap_or_else(tunaround::discover::default_machine);
             loop {
                 let sessions = tunaround::discover::enumerate_claude_sessions(
@@ -1351,7 +1356,7 @@ fn main() {
                 if a.once {
                     break;
                 }
-                tokio::time::sleep(std::time::Duration::from_secs(a.interval)).await;
+                tokio::time::sleep(std::time::Duration::from_secs(interval)).await;
             }
             Ok::<(), String>(())
         });

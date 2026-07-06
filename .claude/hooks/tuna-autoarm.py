@@ -40,7 +40,8 @@ def pid_alive(pid: int) -> bool:
                 ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
                 capture_output=True, text=True, timeout=5,
             )
-            return str(pid) in out.stdout
+            # 부분 문자열이 아니라 공백 분리 토큰으로 정확히 매칭(메모리 열의 숫자 오탐 방지).
+            return str(pid) in out.stdout.split()
         os.kill(pid, 0)
         return True
     except Exception:
@@ -49,19 +50,20 @@ def pid_alive(pid: int) -> bool:
 
 def launch_detached(cmd: list, log_path: Path) -> int:
     """세션·하네스 수명과 무관하게 상주하도록 완전 분리된 프로세스로 기동한다."""
-    log = open(log_path, "ab")
-    if os.name == "nt":
-        # DETACHED_PROCESS(0x08) | CREATE_NEW_PROCESS_GROUP(0x200): 콘솔·그룹 분리.
-        flags = 0x00000008 | 0x00000200
-        proc = subprocess.Popen(
-            cmd, stdout=log, stderr=log, stdin=subprocess.DEVNULL,
-            creationflags=flags, close_fds=True,
-        )
-    else:
-        proc = subprocess.Popen(
-            cmd, stdout=log, stderr=log, stdin=subprocess.DEVNULL,
-            start_new_session=True, close_fds=True,
-        )
+    # with로 부모의 파일 핸들을 즉시 닫는다(자식은 자기 복제본을 유지 = FD 누수 방지).
+    with open(log_path, "ab") as log:
+        if os.name == "nt":
+            # DETACHED_PROCESS(0x08) | CREATE_NEW_PROCESS_GROUP(0x200): 콘솔·그룹 분리.
+            flags = 0x00000008 | 0x00000200
+            proc = subprocess.Popen(
+                cmd, stdout=log, stderr=log, stdin=subprocess.DEVNULL,
+                creationflags=flags, close_fds=True,
+            )
+        else:
+            proc = subprocess.Popen(
+                cmd, stdout=log, stderr=log, stdin=subprocess.DEVNULL,
+                start_new_session=True, close_fds=True,
+            )
     return proc.pid
 
 
@@ -70,8 +72,9 @@ def main() -> int:
     if os.environ.get("TUNA_AUTOARM") != "1":
         return 0
 
+    # 대화형 터미널에서 stdin 없이 실행하면 json.load가 EOF를 무한 대기하므로 isatty로 가드.
     try:
-        payload = json.load(sys.stdin)
+        payload = json.load(sys.stdin) if not sys.stdin.isatty() else {}
     except Exception:
         payload = {}
     session_id = str(payload.get("session_id") or "unknown")
@@ -118,10 +121,11 @@ def main() -> int:
         except Exception:
             pass  # 손상된 pidfile은 무시하고 새로 기동.
 
+    # 토큰은 --token(argv) 대신 자식이 상속하는 TUNA_BROKER_TOKEN env로 전달한다(프로세스 목록 노출 방지).
+    # poll이 --token 없으면 이 env를 폴백으로 읽는다. token 존재는 위에서 이미 확인했다.
     cmd = [
         tuna_bin, "poll",
         "--core", core,
-        "--token", token,
         "--agent", agent,
         "--display-name", display,
         "--tags", tags,

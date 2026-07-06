@@ -788,7 +788,7 @@
 - **스코핑 결정**: S1 = 등록·가시성(로스터 등장, 총감독 win-opus-boss 편입)만 확정. **대화형 세션 task 수신(Monitor wake)은 claude 외부 소켓 부재로 "발견≠제어"**(설계 §1.2) → additionalContext로 수신법 안내만(수동 Monitor), 완전 자동 수신은 후속. 이 분리가 정직한 altitude.
 - **구현 주체**: Opus 직접(Claude Code 훅 stdin/JSON I/O 계약 + tunaround CLI 정밀 배선. 프론트/버전라이브러리 아니지만 정밀 통합이라 tunaLlama 드리프트 회피=메모리 [[tunallama-unsuitable-for-version-ui-libs]] 취지 준용).
 - **env 계약**: TUNA_AUTOARM=1(마스터 opt-in) / TUNA_BROKER_CORE(기본 127.0.0.1:8770/mcp) / TUNA_BROKER_TOKEN(필수, 이미 setx됨) / TUNA_AUTOARM_AGENT(기본 host-claude-session8, 총감독=win-opus-boss) / TUNA_AUTOARM_ROLE(기본 session) / TUNA_AUTOARM_PROJECT(기본 cwd basename) / TUNA_BIN(기본 PATH tunaround).
-- **라이브 상태**: 브로커 detached PID 35652 생존(roster=200), 토큰 [REDACTED-backend-private](backend-private). 3자 감독(mac-claude-sup·mac-codex-sup·win-codex-sup) online 유지 중.
+- **라이브 상태**: 브로커 detached PID 35652 생존(roster=200), 토큰 [REDACTED-토큰은 gitignored backend-private.md](backend-private). 3자 감독(mac-claude-sup·mac-codex-sup·win-codex-sup) online 유지 중.
 
 ## 2026-07-06 세션15 후속: v2-40 S2 발견 리포터 착수
 
@@ -804,7 +804,7 @@
 - **S2a**: 브로커 candidate 저장(candidate_pool RefCell)+report/list_candidates MCP+/dashboard/candidates+armed overlay. **S2b**: discover CLI(jsonl mtime 열거→report). **S3**: 대시보드 "발견된 세션" 패널(Candidates.tsx, armed 필터).
 - **라이브 스모크 2개 정합성 버그 발견·수정(3c21dce)**: (1) armed overlay 미매칭 - autoarm이 uuid=친근이름이라 discover 후보(uuid=세션id)와 안 맞음 → **설계 §2.1대로 uuid=세션id + display_name 분리**(poll --display-name 신설). (2) discover project=None - Claude jsonl **1행=요약(cwd 없음)**, cwd는 이후 행 → read_cwd_from_jsonl(앞 40줄 스캔).
 - **라이브 결과**: discover가 이 머신 활동 claude 세션 2건 발견 → **3332c84f(project=secall, armed=False)** + **4a46a380(project=tunaRound, armed=True=보스 dedup)**. **설계 §0 동기예시(tunaRound 세션에서 secall 세션 발견) 실증.** roster=win-opus-boss(display, uuid=세션id 4a46a380).
-- **라이브 상태(현)**: 브로커 detached PID 21196(dashboard+worker 빌드, 토큰 [REDACTED-backend-private], db %LOCALAPPDATA%). win-codex-sup watcher 36336. win-opus-boss poll(uuid=4a46a380, display=win-opus-boss). 대시보드 http://127.0.0.1:8770/dashboard 라이브(후보 패널 포함). mac-claude-sup·mac-codex-sup 자동 재연결. **재부팅 시 죽음.**
+- **라이브 상태(현)**: 브로커 detached PID 21196(dashboard+worker 빌드, 토큰 [REDACTED-토큰은 gitignored backend-private.md], db %LOCALAPPDATA%). win-codex-sup watcher 36336. win-opus-boss poll(uuid=4a46a380, display=win-opus-boss). 대시보드 http://127.0.0.1:8770/dashboard 라이브(후보 패널 포함). mac-claude-sup·mac-codex-sup 자동 재연결. **재부팅 시 죽음.**
 - **다음**: 브라우저 패널 렌더 사용자 확인 → S4(codex 직접제어) 또는 v2-40 마무리·PR #13 머지. secall 후보에 send_task로 실제 A2A(단 secall 세션은 미무장이라 수신 워처 필요=발견≠제어).
 
 ## 2026-07-06 세션15 후속3: v2-40 S4 codex 직접 제어 (트림 MVP)

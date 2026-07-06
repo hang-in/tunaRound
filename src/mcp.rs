@@ -1383,6 +1383,35 @@ async fn dashboard_candidates_handler(
         .into_response()
 }
 
+/// 로컬 write 엔드포인트(goal/control)의 local CSRF 방어. 브라우저가 붙이는 `Sec-Fetch-Site`가
+/// `cross-site`면 다른 사이트가 유도한 요청이므로 거부한다. 헤더가 없으면(curl 등 비브라우저) 허용.
+#[cfg(feature = "serve")]
+fn is_cross_site(headers: &axum::http::HeaderMap) -> bool {
+    matches!(
+        headers.get("sec-fetch-site").and_then(|v| v.to_str().ok()),
+        Some("cross-site")
+    )
+}
+
+/// codex 제어(turn/start) 대상 ws가 loopback인지 검사한다(SSRF 방어: 브로커가 임의 원격 ws에
+/// 접속하지 않게). ws://127.0.0.1[:port] / localhost / [::1] / ::1 만 허용한다.
+#[cfg(feature = "serve")]
+fn ws_target_is_loopback(ws: &str) -> bool {
+    // 스킴 제거 후 host[:port]/path에서 host만 취한다.
+    let after = ws
+        .strip_prefix("ws://")
+        .or_else(|| ws.strip_prefix("wss://"))
+        .unwrap_or(ws);
+    let hostport = after.split(['/', '?']).next().unwrap_or(after);
+    // IPv6 대괄호 형태 [::1]:port 처리.
+    let host = if let Some(rest) = hostport.strip_prefix('[') {
+        rest.split(']').next().unwrap_or(rest)
+    } else {
+        hostport.split(':').next().unwrap_or(hostport)
+    };
+    matches!(host, "127.0.0.1" | "localhost" | "::1") || host.starts_with("127.")
+}
+
 /// POST /dashboard/goal: 로컬(loopback) 총감독이 선택한 감독들에게 목표를 던진다(대상마다 1 task).
 /// 원격(비-loopback)은 read-only 관전이라 403. 무인증이지만 loopback 신뢰라 로컬 한정 write.
 /// body = {"text": "...", "targets": ["uuid", ...]}. 응답 = {"created":[{taskId,toAgent}], "errors":[...]}.
@@ -1390,6 +1419,7 @@ async fn dashboard_candidates_handler(
 async fn dashboard_goal_handler(
     axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<std::net::SocketAddr>,
     axum::extract::State(store): axum::extract::State<Arc<Mutex<crate::store::sqlite::SqliteStore>>>,
+    headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> axum::response::Response {
     use axum::response::IntoResponse;
@@ -1400,6 +1430,10 @@ async fn dashboard_goal_handler(
             "원격 관전 모드: 목표 제출은 로컬(loopback)에서만 가능합니다.",
         )
             .into_response();
+    }
+    // local CSRF 방어: 다른 사이트가 유도한 cross-site POST 거부.
+    if is_cross_site(&headers) {
+        return (axum::http::StatusCode::FORBIDDEN, "cross-site 요청 거부(local CSRF 방어).").into_response();
     }
     #[derive(serde::Deserialize)]
     struct GoalReq {
@@ -1469,6 +1503,7 @@ async fn dashboard_goal_handler(
 #[cfg(feature = "serve")]
 async fn dashboard_control_handler(
     axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> axum::response::Response {
     use axum::response::IntoResponse;
@@ -1479,6 +1514,10 @@ async fn dashboard_control_handler(
             "원격 관전 모드: codex 제어는 로컬(loopback)에서만 가능합니다.",
         )
             .into_response();
+    }
+    // local CSRF 방어: 다른 사이트가 유도한 cross-site POST 거부.
+    if is_cross_site(&headers) {
+        return (axum::http::StatusCode::FORBIDDEN, "cross-site 요청 거부(local CSRF 방어).").into_response();
     }
     // agent·timeout은 worker 피처 빌드에서만 읽힌다(worker 없이 빌드하면 501). 조건부 DTO라 dead_code 허용.
     #[derive(serde::Deserialize)]
@@ -1495,6 +1534,14 @@ async fn dashboard_control_handler(
     };
     if req.ws.trim().is_empty() || req.text.trim().is_empty() {
         return (axum::http::StatusCode::BAD_REQUEST, "ws와 text가 필요합니다.").into_response();
+    }
+    // SSRF 방어: 제어 대상 ws는 loopback만(브로커가 임의 원격 ws에 접속하지 않게).
+    if !ws_target_is_loopback(req.ws.trim()) {
+        return (
+            axum::http::StatusCode::FORBIDDEN,
+            "제어 대상 ws는 loopback(127.0.0.1/localhost/[::1])만 허용합니다.",
+        )
+            .into_response();
     }
     #[cfg(feature = "worker")]
     {
@@ -2602,6 +2649,18 @@ mod tests {
     fn format_candidates_empty_says_none() {
         let armed = std::collections::HashSet::new();
         assert_eq!(format_candidates(&[], &armed), "발견된 세션 없음");
+    }
+
+    #[cfg(feature = "serve")]
+    #[test]
+    fn ws_target_is_loopback_accepts_only_local() {
+        assert!(ws_target_is_loopback("ws://127.0.0.1:8790"));
+        assert!(ws_target_is_loopback("ws://localhost:8790"));
+        assert!(ws_target_is_loopback("ws://[::1]:8790"));
+        assert!(ws_target_is_loopback("ws://127.0.0.5:9000/path"));
+        assert!(!ws_target_is_loopback("ws://192.168.1.50:8790"));
+        assert!(!ws_target_is_loopback("ws://evil.example.com:8790"));
+        assert!(!ws_target_is_loopback("ws://10.0.0.1"));
     }
 
     #[test]

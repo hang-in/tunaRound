@@ -77,14 +77,16 @@ export default function Candidates() {
   const unarmed = candidates.filter((c) => !c.armed).sort((a, b) => a.age_secs - b.age_secs)
 
   const onConnect = (uuid: string) => {
-    const copy = navigator.clipboard?.writeText(uuid)
-    Promise.resolve(copy)
+    // 클립보드 API가 없으면 no-op(실제 복사 안 됐는데 "복사됨"이 뜨지 않게).
+    if (!navigator.clipboard) return
+    navigator.clipboard
+      .writeText(uuid)
       .then(() => {
         setCopied(uuid)
         window.setTimeout(() => setCopied((c) => (c === uuid ? '' : c)), 1500)
       })
       .catch(() => {
-        // 클립보드 불가 환경은 무시(수동 복사).
+        // 복사 실패는 무시(수동 복사).
       })
   }
 

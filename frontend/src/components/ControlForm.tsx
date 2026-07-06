@@ -64,6 +64,7 @@ export default function ControlForm({ remoteViewer }: Props) {
         <input
           className="control-ws-input"
           type="text"
+          aria-label="codex app-server ws 주소"
           placeholder="ws://127.0.0.1:8790"
           value={ws}
           onChange={(e) => setWs(e.target.value)}
@@ -71,6 +72,7 @@ export default function ControlForm({ remoteViewer }: Props) {
         <textarea
           className="goal-textarea"
           rows={3}
+          aria-label="codex에 주입할 지시 텍스트"
           placeholder="예: 브로커 로스터를 list_agents로 조회해서 online 감독 수를 알려줘"
           value={text}
           onChange={(e) => setText(e.target.value)}
@@ -87,7 +89,11 @@ export default function ControlForm({ remoteViewer }: Props) {
             {submitting ? '주입 중…' : 'turn/start 주입'}
           </button>
         </div>
-        {status ? <span className="goal-status">{status}</span> : null}
+        {status ? (
+          <span className="goal-status" role="status" aria-live="polite">
+            {status}
+          </span>
+        ) : null}
         {answer ? <pre className="control-answer">{answer}</pre> : null}
       </div>
     </section>
