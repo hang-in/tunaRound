@@ -63,7 +63,10 @@ def main() -> int:
         payload = json.load(sys.stdin) if not sys.stdin.isatty() else {}
     except Exception:
         payload = {}
-    session_id = str(payload.get("session_id") or "unknown")
+    # session_id가 없으면 무장하지도 않았으므로(autoarm이 skip) 정리할 것도 없다. 공유 unknown.json을 건드리지 않는다.
+    session_id = str(payload.get("session_id") or "").strip()
+    if not session_id:
+        return 0
 
     pidfile = Path.home() / ".tunaround" / "autoarm" / f"{session_id}.json"
     if not pidfile.exists():

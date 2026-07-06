@@ -77,7 +77,12 @@ def main() -> int:
         payload = json.load(sys.stdin) if not sys.stdin.isatty() else {}
     except Exception:
         payload = {}
-    session_id = str(payload.get("session_id") or "unknown")
+    # session_id가 없으면 여러 세션이 unknown.json을 공유해 SessionEnd가 남의 poll을 죽일 수 있다.
+    # pidfile 키가 세션별로 유일해야 안전하므로, 없으면 무장하지 않는다.
+    session_id = str(payload.get("session_id") or "").strip()
+    if not session_id:
+        emit_context("[tuna-autoarm] session_id가 없어 무장하지 않았습니다(세션별 pidfile 충돌 방지).")
+        return 0
     cwd = payload.get("cwd") or os.getcwd()
 
     token = os.environ.get("TUNA_BROKER_TOKEN")

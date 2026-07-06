@@ -45,19 +45,55 @@ pub fn age_secs_since(mtime: SystemTime, now: SystemTime) -> i64 {
     }
 }
 
-/// jsonl 파일의 앞 max_lines 줄을 훑어 첫 cwd를 찾는다(전체 로드 회피). Claude Code jsonl은 1행이
-/// 요약(type/customTitle/sessionId, cwd 없음)이고 이후 메시지 행에 cwd가 있어 첫 줄만 보면 놓친다.
-/// 열기 실패/부재는 None.
-pub fn read_cwd_from_jsonl(path: &Path, max_lines: usize) -> Option<String> {
+/// user 메시지의 content(문자열 또는 `[{type:text,text}]` 배열)에서 텍스트를 뽑는다. 빈 결과는 None.
+fn extract_user_text(content: Option<&serde_json::Value>) -> Option<String> {
+    let content = content?;
+    if let Some(s) = content.as_str() {
+        return (!s.is_empty()).then(|| s.to_string());
+    }
+    let arr = content.as_array()?;
+    let t: String = arr
+        .iter()
+        .filter_map(|p| p.get("text").and_then(|x| x.as_str()))
+        .collect::<Vec<_>>()
+        .join(" ");
+    (!t.is_empty()).then_some(t)
+}
+
+/// jsonl 앞 max_lines 줄을 1회 훑어 (cwd, 첫 user 메시지 텍스트)를 함께 뽑는다(파일 재열기 회피).
+/// Claude Code jsonl은 1행이 요약(cwd 없음)이고 이후 메시지 행에 cwd가 있어 첫 줄만 보면 놓친다.
+/// 첫 user 메시지는 automation 세션(secall wiki/journal 등) 판정에 쓴다. message.content가 문자열이거나
+/// `[{type:text,text}]` 배열인 두 형태를 모두 처리한다.
+pub fn scan_jsonl_head(path: &Path, max_lines: usize) -> (Option<String>, Option<String>) {
     use std::io::{BufRead, BufReader};
-    let f = std::fs::File::open(path).ok()?;
+    let Ok(f) = std::fs::File::open(path) else {
+        return (None, None);
+    };
     let reader = BufReader::new(f);
+    let mut cwd: Option<String> = None;
+    let mut first_user: Option<String> = None;
     for line in reader.lines().take(max_lines).map_while(Result::ok) {
-        if let Some(cwd) = parse_cwd_from_jsonl_line(&line) {
-            return Some(cwd);
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line.trim()) else {
+            continue;
+        };
+        if cwd.is_none() {
+            cwd = v.get("cwd").and_then(|c| c.as_str()).map(str::to_string);
+        }
+        if first_user.is_none() && v.get("type").and_then(|t| t.as_str()) == Some("user") {
+            first_user = extract_user_text(v.get("message").and_then(|m| m.get("content")));
+        }
+        if cwd.is_some() && first_user.is_some() {
+            break;
         }
     }
-    None
+    (cwd, first_user)
+}
+
+/// automation 도구가 spawn한 세션인지 첫 user 메시지 마커로 판정한다. secall 위키/저널 자동화는
+/// 첫 메시지를 `<!-- secall:... -->` HTML 주석 마커로 시작한다(claude-mem observer와 같은 부류의
+/// 도구 생성 세션). 첫 user 메시지가 `<!--`로 시작하면 사람이 지휘할 대상이 아니라 후보에서 제외한다.
+pub fn is_automation_first_message(msg: &str) -> bool {
+    msg.trim_start().starts_with("<!--")
 }
 
 /// 기본 Claude Code 프로젝트 디렉토리(`~/.claude/projects`)를 반환한다. HOME/USERPROFILE 미설정이면 None.
@@ -105,10 +141,13 @@ pub fn enumerate_claude_sessions(
             let Some(uuid) = path.file_stem().and_then(|s| s.to_str()) else {
                 continue;
             };
-            // cwd는 1행(요약)이 아니라 이후 메시지 행에 있으므로 앞 40줄을 훑어 찾는다.
-            let cwd = read_cwd_from_jsonl(&path, 40);
-            // claude-mem observer 등 내부 자동화 세션은 후보에서 제외(false positive).
-            if cwd.as_deref().is_some_and(is_internal_cwd) {
+            // cwd·첫 user 메시지는 1행(요약)이 아니라 이후 행에 있으므로 앞 60줄을 1회 훑어 함께 찾는다.
+            let (cwd, first_user) = scan_jsonl_head(&path, 60);
+            // 도구 생성 자동화 세션은 후보에서 제외(false positive):
+            //   claude-mem observer(cwd=~/.claude-mem/) + secall 위키/저널(첫 메시지 <!-- 마커).
+            if cwd.as_deref().is_some_and(is_internal_cwd)
+                || first_user.as_deref().is_some_and(is_automation_first_message)
+            {
                 continue;
             }
             let project = cwd.as_deref().and_then(project_from_cwd);
@@ -176,6 +215,41 @@ mod tests {
         assert!(is_internal_cwd("/home/u/.claude-mem"));
         assert!(!is_internal_cwd("/Users/d9ng/privateProject/tunaRound"));
         assert!(!is_internal_cwd("/home/u/secall"));
+    }
+
+    #[test]
+    fn is_automation_first_message_detects_html_comment_marker() {
+        assert!(is_automation_first_message("<!-- secall:wiki-update -->\n# Wiki Deep Pass"));
+        assert!(is_automation_first_message("  \n<!-- secall:journal -->")); // 선행 공백 허용
+        assert!(!is_automation_first_message("이 레포에서 src/worker.rs를 요약해줘"));
+        assert!(!is_automation_first_message("node 자동레인 테스트: 1+1은?"));
+    }
+
+    #[test]
+    fn enumerate_excludes_automation_and_internal_sessions() {
+        let base = std::env::temp_dir().join(format!("tuna_disc_auto_{}", std::process::id()));
+        let proj = base.join("D--Obsidian-obsidian-vault");
+        std::fs::create_dir_all(&proj).unwrap();
+        let now = SystemTime::now();
+        // 정상 세션(포함돼야 함).
+        std::fs::write(
+            proj.join("aaaa-1111.jsonl"),
+            "{\"type\":\"summary\"}\n\
+             {\"type\":\"user\",\"cwd\":\"D:\\\\Obsidian\\\\obsidian-vault\",\"message\":{\"content\":\"안녕 뭐해\"}}\n",
+        )
+        .unwrap();
+        // secall automation 세션(첫 user 메시지 <!-- 마커, 제외돼야 함).
+        std::fs::write(
+            proj.join("bbbb-2222.jsonl"),
+            "{\"type\":\"summary\"}\n\
+             {\"type\":\"user\",\"cwd\":\"D:\\\\Obsidian\\\\obsidian-vault\",\"message\":{\"content\":\"<!-- secall:wiki-update -->\\n# Wiki\"}}\n",
+        )
+        .unwrap();
+        let found = enumerate_claude_sessions(&base, now, Duration::from_secs(3600));
+        let uuids: Vec<&str> = found.iter().map(|s| s.uuid.as_str()).collect();
+        assert!(uuids.contains(&"aaaa-1111"), "정상 세션은 포함: {uuids:?}");
+        assert!(!uuids.contains(&"bbbb-2222"), "automation 세션은 제외: {uuids:?}");
+        std::fs::remove_dir_all(&base).ok();
     }
 
     #[test]
