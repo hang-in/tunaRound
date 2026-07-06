@@ -21,3 +21,5 @@ pub mod codex_appserver;
 pub mod codex_inject;
 #[cfg(feature = "worker")]
 pub mod discover;
+#[cfg(feature = "worker")]
+pub mod watch_results;
