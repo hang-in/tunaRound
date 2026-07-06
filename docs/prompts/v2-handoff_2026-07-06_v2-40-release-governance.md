@@ -34,3 +34,23 @@
 
 1. `docs/reference/backend-private.md` 하단 라이브값 확인. 죽었으면 그 블록 커맨드로 재기동(**전부 env 토큰, `--token` argv 금지**). 브로커 listen 확인 후 watcher(레이스 회피).
 2. 규율: 구현 위임 ①tunaLlama ②A2A codex ③Sonnet(프론트/버전UI는 Opus/Sonnet), 아키텍트·리뷰=Opus. GitHub Flow + 3-OS CI + 봇 리뷰(**PR 던지면 CodeRabbit/Gemini 리뷰 오니 확인·반영**). 거버넌스 규약(총괄/관리자/실무자) 준수. 레포 PUBLIC=평문 토큰/LAN IP 금지.
+
+## 세션15 후반 추가: 위임의 의미 + 책임의 이전(watch-results)
+
+**개념 정리(중요)**: A2A가 "잘 됐냐"를 파고들다 **위임 ≠ 배정**을 구분했다. 지금 건 **작업 배정(assignment)** — 일은 넘겼지만 감시·실패포착·재시도 판단을 총괄이 쥐고 있다(예: discover 실패를 총괄이 알아채고 push·재시도). **위임(delegation)은 결과에 대한 책임(ownership) 이전** = 총괄이 하는 것뿐 아니라 **지켜보는 것에서도 해방**. 층위: 실행 < 배정(지금) < 위임 < 권한위임.
+
+**책임의 이전 = 두 절반**:
+1. **결과 push 메커니즘**(완료): `tunaround watch-results --core <base> --dispatcher dashboard` (src/watch_results.rs). 브로커 `/dashboard/events` SSE 구독 → fromAgent==dispatcher인 terminal(completed/failed)만 `RESULT <id> <state> <- <to> :: <결과>`로. 총괄 세션이 background+Monitor로 감싸면 **던지고 자리 떠도 결과가 깨움**. **PR #19 머지 + 라이브 실증**(task 1c16d115 dispatch→walk away→Monitor가 `RESULT ... completed <- mac-claude-sup :: pong`로 깨움, broker.db 폴링 0). 리뷰 반영(UTF-8 청크경계 Vec<u8>·CRLF·Err종료·connect timeout). 이전엔 mon_task.py로 broker.db 폴링(=셔틀)했던 것 대체.
+2. **위임 행동 규약**(미완, behavioral): 관리자가 루틴 문제 자가처리·재시도, 막힐 때만 "무엇이 왜 막혔고 뭐가 필요한지" 명확 에스컬레이션. task 지시·a2a-usage에 심을 것. **다음 세션 후보.**
+
+## 잔여(이번에 안 함)
+
+- **#2 발견된 세션 패널 복구**: mac discover가 옛 토큰이라 죽음(로테이션 후 워처만 새 토큰, discover 누락) → 새 토큰 env로 재기동 필요(dispatch 또는 mac 직접). win은 이 총괄 세션 1개만 발견(그마저 armed=필터)이라 빈 게 정상. **빈 패널 UX 개선**(리포터 상태/왜 비었는지 표시).
+- **책임의 이전 프로토콜 절반**(위 2번) 문서화.
+- watch-results **상시 인박스화**: 총괄 세션이 persistent Monitor로 감싸는 운영 레시피(현재는 데모로 1회 검증).
+
+## 라이브 상태(세션15 최종, backend-private 참조)
+
+- 4자 online(env 토큰): win-opus-boss·mac-claude-sup·mac-codex-sup·win-codex-sup.
+- win detached: broker 44620·win-codex-sup watcher 41408·discover 45352·boss poll 20772·**watch-results 18500**. 재부팅 시 소멸.
+- 토큰=User env TUNA_BROKER_TOKEN(setx), 파일/argv 평문 0. main=65b8274(watch-results #19 포함), 릴리스 v0.3.0.
