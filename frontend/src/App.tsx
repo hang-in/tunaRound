@@ -7,6 +7,7 @@ import Header from './components/Header'
 import StatTiles from './components/StatTiles'
 import Roster from './components/Roster'
 import Feed from './components/Feed'
+import Candidates from './components/Candidates'
 import GoalForm from './components/GoalForm'
 
 // 로컬(총감독) 세션인지 원격 관전인지 클라이언트에서 판정한다(loopback 여부).
@@ -125,6 +126,7 @@ export default function App() {
         />
         <Roster agents={agents} pulses={pulses} />
         <Feed onConnectedChange={handleConnected} onEvent={handleEvent} />
+        <Candidates />
         <GoalForm agents={agents} remoteViewer={remoteViewer} />
       </main>
     </div>

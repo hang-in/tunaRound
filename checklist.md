@@ -409,3 +409,10 @@
 - [x] S2a(Opus 직접): store/candidates.rs(CandidateEntry+is_fresh+CANDIDATE_TTL_SECS=180) / sqlite.rs candidate_pool+report_candidates(uuid upsert, now 덮어씀)+list_candidates(fresh만) / mcp.rs 도구 report_candidates·list_candidates(armed overlay=online roster) + GET /dashboard/candidates + format_candidates + 안내텍스트 / mcp_client.rs 래퍼. **검증: lib 385 pass(신규 8: is_fresh 4·store 2·format 2), clippy 클린.** bin 재빌드는 브로커 락으로 보류(라이브 스모크 S2c에서 조율).
 - [x] S2b(Opus 직접, 폴백: 경로디코딩 heuristic 스펙민감): src/discover.rs(DiscoveredSession + project_from_cwd·parse_cwd_from_jsonl_line·age_secs_since·read_first_line·enumerate_claude_sessions·sessions_to_candidates_json) + main.rs Discover 서브커맨드(--core/--token/--projects-dir/--stale-mins/--interval/--once) → client.report_candidates 루프. **project는 mangled-dir 대신 jsonl 첫줄 cwd에서 정확 추출**(mangled 디코딩은 lossy). **검증: check(bin+lib) 통과, discover 단위 5건 pass, clippy 클린(rfind 반영).** bin 재빌드는 라이브 스모크 S2c에서.
 - [ ] S2c: 테스트 + 라이브 스모크(이 머신 discover→내 세션 후보→/dashboard/candidates armed overlay).
+
+## Plan v2-40 S3: 대시보드 "발견된 세션" 패널 (docs/plans/v2-40)
+
+> S2 백엔드(/dashboard/candidates) 소비. plain React(프론트=Opus 직접, tunaLlama 부적합). 로스터/피드 스타일 통일. armed(로스터 소속)는 제외하고 미무장 후보만 노출. claude arm은 외부 소켓 부재라 "연결"=세션 id 복사+수동 안내(발견≠제어 정직).
+
+- [x] S3 코드: api.ts Candidate 타입+fetchCandidates / Candidates.tsx(자체 5초 폴, roster 스타일 재사용, armed 필터, runner/project/source shield, amber 상태닷, "연결" 복사 버튼) / App.tsx mount(Feed 다음) / index.css candidates-section(full-width)+status-dot.candidate+candidate-arm. **npm run build 통과(208KB, tsc 클린).**
+- [ ] S2c+S3 라이브 스모크(묶음): 브로커 재빌드·재기동 → discover --once → /dashboard/candidates 후보 등장 + 브라우저 "발견된 세션" 패널 렌더 + armed overlay(win-opus-boss=armed 제외, 미무장 세션=후보) 확인.

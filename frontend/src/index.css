@@ -359,6 +359,39 @@ body {
   font-family: var(--font-mono);
 }
 
+/* ---------- 발견된 세션(후보) 패널 (v2-40 S3) ---------- */
+.candidates-section {
+  flex: 1 1 100%;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+/* 후보 상태닷: 미무장이라 amber(로스터의 online 녹색과 구분). */
+.status-dot.candidate {
+  background: var(--warn);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--warn) 16%, transparent);
+}
+/* "연결" 액션(claude는 외부 소켓 부재라 세션 id 복사 + 수동 무장 안내). */
+.candidate-arm {
+  flex: none;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text-2);
+  font-size: 12px;
+  padding: 3px 10px;
+  border-radius: var(--r-sm);
+  cursor: pointer;
+  font-family: var(--font-mono);
+}
+.candidate-arm:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
 .card-row {
   display: flex;
   align-items: center;
