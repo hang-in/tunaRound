@@ -407,5 +407,5 @@
 > 미무장 세션도 대시보드 후보로. MVP=claude 세션(jsonl mtime, 무의존). candidate={uuid,runner,project,source,age_secs,reported_at}, armed는 브로커 overlay(online roster 소속). stale=reported_at TTL.
 
 - [x] S2a(Opus 직접): store/candidates.rs(CandidateEntry+is_fresh+CANDIDATE_TTL_SECS=180) / sqlite.rs candidate_pool+report_candidates(uuid upsert, now 덮어씀)+list_candidates(fresh만) / mcp.rs 도구 report_candidates·list_candidates(armed overlay=online roster) + GET /dashboard/candidates + format_candidates + 안내텍스트 / mcp_client.rs 래퍼. **검증: lib 385 pass(신규 8: is_fresh 4·store 2·format 2), clippy 클린.** bin 재빌드는 브로커 락으로 보류(라이브 스모크 S2c에서 조율).
-- [ ] S2b(tunaLlama+Opus 리뷰): tunaround discover 열거(mangled-cwd→project, jsonl stem→uuid, mtime window) + CLI report.
+- [x] S2b(Opus 직접, 폴백: 경로디코딩 heuristic 스펙민감): src/discover.rs(DiscoveredSession + project_from_cwd·parse_cwd_from_jsonl_line·age_secs_since·read_first_line·enumerate_claude_sessions·sessions_to_candidates_json) + main.rs Discover 서브커맨드(--core/--token/--projects-dir/--stale-mins/--interval/--once) → client.report_candidates 루프. **project는 mangled-dir 대신 jsonl 첫줄 cwd에서 정확 추출**(mangled 디코딩은 lossy). **검증: check(bin+lib) 통과, discover 단위 5건 pass, clippy 클린(rfind 반영).** bin 재빌드는 라이브 스모크 S2c에서.
 - [ ] S2c: 테스트 + 라이브 스모크(이 머신 discover→내 세션 후보→/dashboard/candidates armed overlay).

@@ -19,3 +19,5 @@ pub mod worker;
 pub mod codex_appserver;
 #[cfg(feature = "worker")]
 pub mod codex_inject;
+#[cfg(feature = "worker")]
+pub mod discover;

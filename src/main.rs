@@ -45,6 +45,9 @@ enum Commands {
     /// codex app-server 라이브 thread에 turn/start로 유저 턴 1건을 ws로 주입(worker 피처).
     #[cfg(feature = "worker")]
     CodexInject(CodexInjectArgs),
+    /// 발견 리포터: 로컬 Claude Code 세션을 열거해 브로커에 미무장 후보로 보고한다(v2-40 S2, worker 피처).
+    #[cfg(feature = "worker")]
+    Discover(DiscoverArgs),
     /// 워커 노드 상주: node.toml대로 브로커(self)+자동 워커 레인들을 한 프로세스로(serve+worker 피처).
     #[cfg(all(feature = "serve", feature = "worker"))]
     Node(NodeArgs),
@@ -253,6 +256,31 @@ struct PollArgs {
     /// 예: --on-task 'codex exec resume --last "브로커 task {id}를 claim해서 처리하고 complete로 보고"'.
     #[arg(long)]
     on_task: Option<String>,
+}
+
+/// `discover` 서브커맨드(worker 피처 전용) 옵션: 로컬 Claude Code 세션을 열거해 브로커에 미무장
+/// 후보로 보고한다(v2-40 S2). 무장(S1) 안 한 세션도 대시보드 "발견된 세션" 패널에 뜨게 한다.
+#[cfg(feature = "worker")]
+#[derive(Args, Debug)]
+struct DiscoverArgs {
+    /// 코어 `/mcp` 절대 URL(예: http://127.0.0.1:8770/mcp).
+    #[arg(long)]
+    core: String,
+    /// bearer 토큰(코어가 --token으로 띄워졌다면 필요). report는 write 경계라 토큰이 필요하다.
+    #[arg(long)]
+    token: Option<String>,
+    /// 스캔할 projects 디렉토리(생략 시 ~/.claude/projects).
+    #[arg(long)]
+    projects_dir: Option<String>,
+    /// 활동 세션 판정 창(분). jsonl mtime이 이 시간 이내면 활동으로 본다(기본 10분).
+    #[arg(long, default_value_t = 10)]
+    stale_mins: u64,
+    /// 보고 간격(초, 기본 30).
+    #[arg(long, default_value_t = 30)]
+    interval: u64,
+    /// 한 번만 열거·보고하고 종료(테스트·수동 실행용).
+    #[arg(long)]
+    once: bool,
 }
 
 /// `codex-inject` 서브커맨드(worker 피처 전용) 옵션: codex app-server 라이브 thread에 turn/start로
@@ -779,6 +807,9 @@ fn main() {
     // codex-inject <...>: codex app-server ws 주입 옵션(worker 피처 전용).
     #[cfg(feature = "worker")]
     let mut codex_inject_args: Option<CodexInjectArgs> = None;
+    // discover <...>: 발견 리포터 옵션(worker 피처 전용).
+    #[cfg(feature = "worker")]
+    let mut discover_args: Option<DiscoverArgs> = None;
     // node <...>: 워커 노드 상주 옵션(serve+worker 피처 전용).
     #[cfg(all(feature = "serve", feature = "worker"))]
     let mut node_args: Option<NodeArgs> = None;
@@ -878,6 +909,14 @@ fn main() {
                 db_path = None;
             }
             codex_inject_args = Some(a);
+        }
+        #[cfg(feature = "worker")]
+        Commands::Discover(a) => {
+            #[cfg(feature = "sqlite")]
+            {
+                db_path = None;
+            }
+            discover_args = Some(a);
         }
         #[cfg(all(feature = "serve", feature = "worker"))]
         Commands::Node(a) => {
@@ -1270,6 +1309,45 @@ fn main() {
         });
         if let Err(e) = result {
             eprintln!("[poll] 오류: {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
+    // discover <...>: 로컬 Claude Code 세션을 열거해 브로커에 미무장 후보로 보고(v2-40 S2, worker 피처).
+    #[cfg(feature = "worker")]
+    if let Some(a) = discover_args {
+        let result = rt.block_on(async {
+            let client =
+                tunaround::mcp_client::McpHttpClient::connect(a.core.clone(), a.token.clone()).await?;
+            let projects_dir = match a.projects_dir.clone() {
+                Some(p) => std::path::PathBuf::from(tunaround::config::expand_home(&p)),
+                None => tunaround::discover::default_projects_dir().ok_or_else(|| {
+                    "projects 디렉토리를 찾을 수 없습니다(HOME/USERPROFILE 미설정). --projects-dir로 지정하세요"
+                        .to_string()
+                })?,
+            };
+            let stale = std::time::Duration::from_secs(a.stale_mins * 60);
+            loop {
+                let sessions = tunaround::discover::enumerate_claude_sessions(
+                    &projects_dir,
+                    std::time::SystemTime::now(),
+                    stale,
+                );
+                let candidates = tunaround::discover::sessions_to_candidates_json(&sessions);
+                match client.report_candidates(candidates).await {
+                    Ok(resp) => println!("[discover] 세션 {}건 발견·보고: {resp}", sessions.len()),
+                    Err(e) => eprintln!("[discover] 보고 실패(무시): {e}"),
+                }
+                if a.once {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(a.interval)).await;
+            }
+            Ok::<(), String>(())
+        });
+        if let Err(e) = result {
+            eprintln!("[discover] 오류: {e}");
             std::process::exit(1);
         }
         return;
