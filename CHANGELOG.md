@@ -4,6 +4,24 @@
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-06
+
+> 0.2.2 이후 오케스트레이션 레이어가 크게 늘었다(레지스트리·감독·대시보드·세션 버스). 전부 하위호환 추가이며 스키마는 v6→v8(컬럼 추가)로 확장됐다.
+
+### 추가 (Added)
+
+- **에이전트 레지스트리 (UUID 라우팅 + 태그 발견)**: `register_agent`/`heartbeat`/`list_agents` + `send_task`/`SendMessage`의 `to_selector`(태그 셀렉터). 로스터 인메모리(heartbeat TTL 90초). 워커/세션이 자기 uuid로 등록하고 dispatcher가 태그로 발견한다.
+- **감독(관리자) 모드**: watcher가 도는 동안 heartbeat로 상시 online 로스터 유지(`poll --tags`). **codex 라이브 감독**: `codex app-server --listen ws://` + `tunaround codex-inject`(turn/start 외부 주입)로 라이브 thread를 외부에서 wake.
+- **총괄 웹 대시보드** (`serve --features dashboard`의 `/dashboard`): 로스터 + 라이브 task 피드(task별 카드·이력 펼침) + 목표 제출(loopback) + codex 직접 제어(`/dashboard/control`). Vite+React SPA를 rust-embed로 임베드.
+- **유니버설 세션 버스 (v2-40)**: SessionStart 자동무장 훅(opt-in `TUNA_AUTOARM=1`, register+poll) + `tunaround discover`(로컬 Claude Code 세션 발견 리포터, machine 속성, claude-mem·secall automation 노이즈 필터) + 대시보드 "발견된 세션" 후보 패널(cross-machine, armed overlay) + "연결"(arm 프롬프트 안내).
+- **워커 노드 진단 doctor Stage 4**: 형태소 백엔드 이름 + Ollama 도달 진단. node lane `tags` 배선.
+- **task 트레이스**: `tasks.runner` 컬럼(claim 시 기록) + 쓰기 민감 path 가드.
+- **serve/poll/discover `--token` env 폴백**: `TUNA_BROKER_TOKEN` env를 읽어 argv에 토큰을 노출하지 않고 인증한다.
+
+### 보안 (Security)
+
+- 대시보드 write 엔드포인트(`/dashboard/goal`·`/dashboard/control`) local CSRF 방어(`Sec-Fetch-Site`) + control ws 대상 loopback 제한(SSRF 방어).
+
 ## [0.2.2] - 2026-07-04
 
 ### 추가 (Added)

@@ -872,14 +872,16 @@ fn main() {
             config_path = a.common.config;
             profile_name = a.common.profile;
             profile_capable = true;
-            serve_token = a.token;
+            // 토큰은 --token 우선, 없으면 TUNA_BROKER_TOKEN env 폴백(argv 노출 회피).
+            serve_token = a.token.or_else(|| std::env::var("TUNA_BROKER_TOKEN").ok());
             core_addr = Some(a.addr);
             db_path = a.common.db;
         }
         #[cfg(feature = "serve")]
         Commands::Serve(a) => {
             serve_mcp_addr = Some(a.addr);
-            serve_token = a.token;
+            // 토큰은 --token 우선, 없으면 TUNA_BROKER_TOKEN env 폴백(argv 노출 회피).
+            serve_token = a.token.or_else(|| std::env::var("TUNA_BROKER_TOKEN").ok());
             db_path = a.db;
         }
         #[cfg(feature = "mcp")]
