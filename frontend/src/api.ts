@@ -70,6 +70,7 @@ export type Candidate = {
   uuid: string
   runner: string
   project: string | null
+  machine: string | null
   source: string
   age_secs: number
   reported_at: string

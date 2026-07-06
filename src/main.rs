@@ -279,6 +279,9 @@ struct DiscoverArgs {
     /// 활동 세션 판정 창(분). jsonl mtime이 이 시간 이내면 활동으로 본다(기본 10분).
     #[arg(long, default_value_t = 10)]
     stale_mins: u64,
+    /// 이 리포터의 머신 식별자(win|mac|unix 등). 생략 시 TUNA_MACHINE env 또는 빌드 타깃 OS로 추정.
+    #[arg(long)]
+    machine: Option<String>,
     /// 보고 간격(초, 기본 30).
     #[arg(long, default_value_t = 30)]
     interval: u64,
@@ -1333,13 +1336,14 @@ fn main() {
                 })?,
             };
             let stale = std::time::Duration::from_secs(a.stale_mins * 60);
+            let machine = a.machine.clone().unwrap_or_else(tunaround::discover::default_machine);
             loop {
                 let sessions = tunaround::discover::enumerate_claude_sessions(
                     &projects_dir,
                     std::time::SystemTime::now(),
                     stale,
                 );
-                let candidates = tunaround::discover::sessions_to_candidates_json(&sessions);
+                let candidates = tunaround::discover::sessions_to_candidates_json(&sessions, &machine);
                 match client.report_candidates(candidates).await {
                     Ok(resp) => println!("[discover] 세션 {}건 발견·보고: {resp}", sessions.len()),
                     Err(e) => eprintln!("[discover] 보고 실패(무시): {e}"),

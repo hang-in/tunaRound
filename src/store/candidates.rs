@@ -17,6 +17,8 @@ pub struct CandidateEntry {
     pub runner: String,
     /// 추정 프로젝트(발견 출처의 경로/맥락 유래). 불명이면 None.
     pub project: Option<String>,
+    /// 리포터 머신(win|mac|unix). 크로스머신 발견 시 어느 머신의 세션인지 구분한다. 불명이면 None.
+    pub machine: Option<String>,
     /// 발견 출처(예: claude-jsonl). 어떤 열거 경로로 찾았는지.
     pub source: String,
     /// 보고 시점 세션 활동 경과 초(claude=jsonl mtime 유래). 신선도 표시용.

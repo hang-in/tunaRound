@@ -5,7 +5,7 @@ import { useEffect, useState } from 'react'
 import type { Candidate } from '../api'
 import { fetchCandidates } from '../api'
 
-// 러너 값별 색(Roster의 shield 색과 통일).
+// 러너·머신 값별 색(Roster의 shield 색과 통일).
 const RUNNER_COLOR: Record<string, string> = {
   claude: '#c15f3c',
   codex: '#10a37f',
@@ -13,6 +13,15 @@ const RUNNER_COLOR: Record<string, string> = {
 }
 function runnerColor(runner: string): string {
   return RUNNER_COLOR[runner] ?? '#57606a'
+}
+const MACHINE_COLOR: Record<string, string> = {
+  mac: '#6e7681',
+  win: '#0078d4',
+  linux: '#f0883e',
+  unix: '#8791a3',
+}
+function machineColor(machine: string): string {
+  return MACHINE_COLOR[machine] ?? '#57606a'
 }
 
 // 활동 경과 초를 사람이 읽는 상대시간으로.
@@ -108,6 +117,7 @@ export default function Candidates() {
                 </button>
               </div>
               <div className="tag-row">
+                {c.machine ? <Pill k="machine" v={c.machine} color={machineColor(c.machine)} /> : null}
                 <Pill k="runner" v={c.runner} color={runnerColor(c.runner)} />
                 {c.project ? <Pill k="project" v={c.project} /> : null}
                 <Pill k="source" v={c.source} />

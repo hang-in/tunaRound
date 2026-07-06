@@ -2696,6 +2696,7 @@ mod tests {
             uuid: uuid.to_string(),
             runner: "claude".to_string(),
             project: Some("tunaround".to_string()),
+            machine: Some("win".to_string()),
             source: "claude-jsonl".to_string(),
             age_secs: 5,
             reported_at: String::new(), // report_candidates가 now로 덮어씀

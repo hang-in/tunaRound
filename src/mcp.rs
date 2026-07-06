@@ -148,6 +148,8 @@ pub struct CandidateInput {
     pub runner: String,
     /// 추정 프로젝트(불명이면 생략).
     pub project: Option<String>,
+    /// 리포터 머신(win|mac|unix). 크로스머신 발견 시 머신 구분용(생략 가능).
+    pub machine: Option<String>,
     /// 발견 출처(예: claude-jsonl).
     pub source: String,
     /// 세션 활동 경과 초(claude=jsonl mtime 유래).
@@ -428,9 +430,10 @@ pub fn format_candidates(
         .map(|c| {
             let armed = if armed_uuids.contains(&c.uuid) { "armed" } else { "candidate" };
             let project = c.project.as_deref().unwrap_or("-");
+            let machine = c.machine.as_deref().unwrap_or("-");
             format!(
-                "[{}] {}/{} project={} age={}s ({})",
-                c.uuid, c.runner, c.source, project, c.age_secs, armed
+                "[{}] {}/{} machine={} project={} age={}s ({})",
+                c.uuid, c.runner, c.source, machine, project, c.age_secs, armed
             )
         })
         .collect::<Vec<_>>()
@@ -880,6 +883,7 @@ impl TunaSearchServer {
                     uuid: c.uuid,
                     runner: c.runner,
                     project: c.project,
+                    machine: c.machine,
                     source: c.source,
                     age_secs: c.age_secs,
                     reported_at: now.clone(),
@@ -1336,6 +1340,7 @@ async fn dashboard_candidates_handler(
         uuid: String,
         runner: String,
         project: Option<String>,
+        machine: Option<String>,
         source: String,
         age_secs: i64,
         reported_at: String,
@@ -1358,6 +1363,7 @@ async fn dashboard_candidates_handler(
                     uuid: c.uuid,
                     runner: c.runner,
                     project: c.project,
+                    machine: c.machine,
                     source: c.source,
                     age_secs: c.age_secs,
                     reported_at: c.reported_at,
@@ -2564,6 +2570,7 @@ mod tests {
                 uuid: "s1".to_string(),
                 runner: "claude".to_string(),
                 project: Some("tunaround".to_string()),
+                machine: Some("win".to_string()),
                 source: "claude-jsonl".to_string(),
                 age_secs: 5,
                 reported_at: "2026-07-06 10:00:00".to_string(),
@@ -2572,6 +2579,7 @@ mod tests {
                 uuid: "s2".to_string(),
                 runner: "codex".to_string(),
                 project: None,
+                machine: Some("mac".to_string()),
                 source: "claude-jsonl".to_string(),
                 age_secs: 9,
                 reported_at: "2026-07-06 10:00:00".to_string(),
@@ -2586,6 +2594,8 @@ mod tests {
         assert!(text.contains("(candidate)"));
         assert!(text.contains("project=tunaround"));
         assert!(text.contains("project=-")); // s2는 project 불명
+        assert!(text.contains("machine=win"));
+        assert!(text.contains("machine=mac"));
     }
 
     #[test]

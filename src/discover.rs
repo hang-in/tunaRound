@@ -106,9 +106,26 @@ pub fn enumerate_claude_sessions(
     out
 }
 
+/// 이 리포터의 머신 식별자를 정한다. `TUNA_MACHINE` env 우선, 없으면 빌드 타깃 OS로 추정
+/// (macOS=mac, Windows=win, 그 외=unix). 크로스머신 발견 시 후보의 machine 뱃지로 쓰인다.
+pub fn default_machine() -> String {
+    let env_machine = std::env::var("TUNA_MACHINE").ok().filter(|m| !m.trim().is_empty());
+    if let Some(m) = env_machine {
+        return m;
+    }
+    if cfg!(target_os = "windows") {
+        "win".to_string()
+    } else if cfg!(target_os = "macos") {
+        "mac".to_string()
+    } else {
+        "unix".to_string()
+    }
+}
+
 /// 발견된 세션들을 report_candidates 툴이 받는 candidates JSON 배열로 직렬화한다.
 /// source는 발견 출처(claude-jsonl 고정, MVP), runner=claude. project=None이면 필드 생략(null).
-pub fn sessions_to_candidates_json(sessions: &[DiscoveredSession]) -> serde_json::Value {
+/// machine은 이 리포터의 머신 식별자(크로스머신 발견 시 win/mac 구분).
+pub fn sessions_to_candidates_json(sessions: &[DiscoveredSession], machine: &str) -> serde_json::Value {
     let arr: Vec<serde_json::Value> = sessions
         .iter()
         .map(|s| {
@@ -116,6 +133,7 @@ pub fn sessions_to_candidates_json(sessions: &[DiscoveredSession]) -> serde_json
                 "uuid": s.uuid,
                 "runner": "claude",
                 "project": s.project,
+                "machine": machine,
                 "source": "claude-jsonl",
                 "age_secs": s.age_secs,
             })
@@ -196,12 +214,13 @@ mod tests {
             DiscoveredSession { uuid: "s1".into(), project: Some("tunaround".into()), age_secs: 5 },
             DiscoveredSession { uuid: "s2".into(), project: None, age_secs: 9 },
         ];
-        let json = sessions_to_candidates_json(&sessions);
+        let json = sessions_to_candidates_json(&sessions, "win");
         let arr = json.as_array().unwrap();
         assert_eq!(arr.len(), 2);
         assert_eq!(arr[0]["uuid"], "s1");
         assert_eq!(arr[0]["runner"], "claude");
         assert_eq!(arr[0]["project"], "tunaround");
+        assert_eq!(arr[0]["machine"], "win");
         assert_eq!(arr[0]["source"], "claude-jsonl");
         assert_eq!(arr[0]["age_secs"], 5);
         assert!(arr[1]["project"].is_null());
