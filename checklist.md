@@ -381,3 +381,13 @@
 - [x] T3: goal 폼 → SendMessage 완료. **tunaLlama 생성 → Opus 리뷰·적용**(DASHBOARD_HTML만). 폼=토큰(password)·목표·대상 select(roster로 채움 + "모든 감독" 셀렉터 옵션)·상태줄. `submitGoal`이 기존 인증 `POST /a2a SendMessage`를 fetch(Authorization: Bearer 토큰, 미저장) 재사용, `sel:`/`agent:` 접두로 toSelector/toAgent 분기. 신규 Rust 0. **검증**: lib 456 pass(회귀0), clippy 클린. **라이브 스모크**: /dashboard 폼 렌더, JS 요청형태로 인증 write→task submitted, /a2a 무토큰 401, 셀렉터 role=supervised→다중매칭 후보3자 에러(설계대로 HITL). 미커밋(리뷰 후). **관찰**: 기본 "모든 감독" 셀렉터는 다중 online 시 후보에러→드롭다운서 특정 감독 골라 재제출(원클릭 브로드캐스트는 T4후 UX 개선 여지).
 - [ ] T4: claude 감독 post_turn emit 배선(피드 합류, 최소). 범위 크면 별 PR.
 - [ ] T5: 검증 - serve 기동 후 /dashboard 렌더 + goal→감독 처리→피드 반영 라이브 스모크. 라우트/SSE 프레임 단위테스트. 3-OS CI green.
+
+## Plan v2-39: 대시보드 SPA (Vite + React + DaleUI) (docs/plans/v2-39-dashboard-spa.md)
+
+> 설계 정본 docs/design/v2-39-dashboard-spa-daleui_2026-07-06.md. v2-38 백엔드(SSE·roster·goal API) 재사용, 인라인 HTML→DaleUI React SPA. 서빙=rust-embed + `dashboard` feature-gate(사용자 확정). daleui@1.1.1(React 19 peer). feat/orchestrator-dashboard 위 이어감→한 PR.
+
+- [x] S1: frontend/ 스캐폴드(직접) - Vite8+React19.2+TS+daleui@1.1.1(+pretendard·jetbrains-mono), base:/dashboard/, dev proxy(events/roster/a2a→8770), daleui/styles.css+폰트 import. npm build 성공.
+- [x] S2: 3요소 DaleUI 구현. **tunaLlama 버전 API 드리프트→서브에이전트 직접 구현, Opus 리뷰**. api.ts+Roster(Card+Tag online)+Feed(EventSource seq키 200cap)+GoalForm(PasswordInput+Select+Button→/a2a, 토큰 sessionStorage). Opus 수정=index.css 데드CSS 정리+main.tsx 미import(.dash-grid 죽어있던) 버그. npm build 성공.
+- [x] S3: 브로커 서빙(직접) - Cargo `dashboard` feature + rust-embed(frontend/dist) + /dashboard·favicon·assets/{*path}(MIME 매핑), events/roster는 serve 유지, OFF=안내 페이지, 인라인 HTML 제거. curl 검증(200/MIME/roster/401). lib 456 pass, clippy 클린(ON/OFF).
+- [x] S4: CI - ci.yml ubuntu `dashboard` 잡(node22→npm ci+build→cargo build/clippy --features dashboard). embed=OS독립이라 1잡. 3-OS 매트릭스(dashboard 없이) 유지.
+- [x] S5: 검증 - curl 임베드 전부 통과 + **브라우저 실렌더 확인(사용자 스크린샷: 3자 online 로스터·SSE 연결·goal 폼 DaleUI 렌더, 2열 그리드).** 남음=커밋+push+PR(3-OS+dashboard CI).

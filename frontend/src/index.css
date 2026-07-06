@@ -1,0 +1,16 @@
+/* 대시보드 레이아웃만 둔다. base 리셋·body 배경/색/폰트는 daleui/styles.css가 이미 제공한다. */
+
+.dash {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 16px 24px 48px;
+  box-sizing: border-box;
+}
+
+/* 넓으면 다열(로스터 | 피드), 좁으면 세로로 접히는 반응형 그리드. */
+.dash-grid {
+  display: grid;
+  gap: 20px;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  align-items: start;
+}

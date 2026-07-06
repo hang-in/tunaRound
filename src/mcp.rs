@@ -1003,26 +1003,100 @@ pub async fn serve_http_mcp_on_listener(
         merged
     };
 
-    // 대시보드 라우트(무인증 outer, read-only): 정적 HTML + 전역 task SSE 피드 + roster JSON.
-    // 브라우저는 read-only HTML이라 Bearer 헤더를 못 보낸다. bearer layer 밖(outer)에 두어 인증 없이
-    // 로드되게 한다(로컬 바인드 read-only, 저위험). write(goal 폼)는 후속(T3)에 토큰 게이트.
-    let dashboard = Router::new()
-        .route("/dashboard", get(dashboard_handler))
+    // 대시보드 라우트(무인증 outer, read-only). events/roster API는 serve 피처에 항상 존재한다
+    // (SPA 유무 무관, 다른 클라이언트도 쓴다). SPA 정적 에셋은 dashboard 피처에서만 임베드 서빙하고,
+    // 피처가 없으면 /dashboard는 안내 페이지다. write(goal 폼)는 SPA가 /a2a bearer로 게이트한다.
+    let mut dashboard = Router::new()
         .route("/dashboard/events", get(dashboard_events_handler))
-        .route("/dashboard/roster", get(dashboard_roster_handler))
-        .with_state(a2a_store_for_dash);
-    let app = dashboard.merge(authed);
+        .route("/dashboard/roster", get(dashboard_roster_handler));
+    #[cfg(feature = "dashboard")]
+    {
+        // Vite base=/dashboard/라 에셋은 /dashboard/assets/*로 나가 events/roster와 경로 미충돌.
+        dashboard = dashboard
+            .route("/dashboard", get(dashboard_index))
+            .route("/dashboard/favicon.svg", get(dashboard_favicon))
+            .route("/dashboard/assets/{*path}", get(dashboard_asset));
+    }
+    #[cfg(not(feature = "dashboard"))]
+    {
+        dashboard = dashboard.route("/dashboard", get(dashboard_fallback_page));
+    }
+    let app = dashboard.with_state(a2a_store_for_dash).merge(authed);
 
-    eprintln!("[serve-mcp] HTTP MCP 서버 기동: {bound_addr} (대시보드: /dashboard)");
+    #[cfg(feature = "dashboard")]
+    eprintln!("[serve-mcp] HTTP MCP 서버 기동: {bound_addr} (대시보드 SPA: /dashboard)");
+    #[cfg(not(feature = "dashboard"))]
+    eprintln!("[serve-mcp] HTTP MCP 서버 기동: {bound_addr} (대시보드: dashboard 피처 없이 빌드됨)");
     axum::serve(listener, app).await?;
     Ok(())
 }
 
-/// `/dashboard` GET 핸들러: 통합 총감독 대시보드의 정적 read-only 스켈레톤(roster/task피드/goal폼 placeholder).
-/// SSE 구독·goal 폼 동작은 후속(Plan v2-38 T2~T3). 설계 docs/design/v2-orchestrator-dashboard-and-dynamic-boss_2026-07-06.md.
-#[cfg(feature = "serve")]
-async fn dashboard_handler() -> axum::response::Html<&'static str> {
-    axum::response::Html(DASHBOARD_HTML)
+/// 대시보드 SPA(dashboard 피처) 임베드 자산. release=바이너리 내장, debug=디스크(frontend/dist) 읽기.
+/// frontend를 `npm run build`한 뒤 `cargo build --features dashboard`로 임베드한다.
+#[cfg(feature = "dashboard")]
+#[derive(rust_embed::RustEmbed)]
+#[folder = "frontend/dist"]
+struct DashAssets;
+
+/// 임베드된 SPA 자산 하나를 확장자 기반 MIME으로 서빙한다(없으면 404).
+#[cfg(feature = "dashboard")]
+fn serve_embedded(path: &str) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    match DashAssets::get(path) {
+        Some(content) => {
+            ([(axum::http::header::CONTENT_TYPE, mime_for_path(path))], content.data.into_owned()).into_response()
+        }
+        None => axum::http::StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+/// 경로 확장자로 정적 자산 Content-Type을 고른다(SPA 번들이 쓰는 종류만, 신규 의존 회피).
+#[cfg(feature = "dashboard")]
+fn mime_for_path(path: &str) -> &'static str {
+    match path.rsplit('.').next() {
+        Some("html") => "text/html; charset=utf-8",
+        Some("js") => "text/javascript; charset=utf-8",
+        Some("css") => "text/css; charset=utf-8",
+        Some("svg") => "image/svg+xml",
+        Some("woff2") => "font/woff2",
+        Some("woff") => "font/woff",
+        Some("json") => "application/json",
+        Some("ico") => "image/x-icon",
+        Some("png") => "image/png",
+        _ => "application/octet-stream",
+    }
+}
+
+/// GET /dashboard: SPA 진입 index.html.
+#[cfg(feature = "dashboard")]
+async fn dashboard_index() -> axum::response::Response {
+    serve_embedded("index.html")
+}
+
+/// GET /dashboard/favicon.svg: SPA 파비콘.
+#[cfg(feature = "dashboard")]
+async fn dashboard_favicon() -> axum::response::Response {
+    serve_embedded("favicon.svg")
+}
+
+/// GET /dashboard/assets/{*path}: Vite 번들 자산(js/css/폰트 등).
+#[cfg(feature = "dashboard")]
+async fn dashboard_asset(
+    axum::extract::Path(path): axum::extract::Path<String>,
+) -> axum::response::Response {
+    serve_embedded(&format!("assets/{path}"))
+}
+
+/// dashboard 피처 없이 빌드된 경우의 /dashboard 안내 페이지(API events/roster는 그대로 동작).
+#[cfg(all(feature = "serve", not(feature = "dashboard")))]
+async fn dashboard_fallback_page() -> axum::response::Html<&'static str> {
+    axum::response::Html(
+        "<!DOCTYPE html><html lang=\"ko\"><head><meta charset=\"utf-8\"><title>총감독 대시보드</title></head>\
+         <body style=\"font-family:system-ui;margin:2rem\"><h1>대시보드 미포함 빌드</h1>\
+         <p>이 바이너리는 <code>dashboard</code> 피처 없이 빌드되었습니다. \
+         <code>cargo build --features dashboard</code>로 빌드하거나 release 바이너리를 사용하세요. \
+         API <code>/dashboard/events</code>, <code>/dashboard/roster</code>는 동작합니다.</p></body></html>",
+    )
 }
 
 /// 전역 task 이벤트를 JSON data 문자열로 흘리는 순수 스트림(단위테스트 대상). task_id 필터 없이 모든
@@ -1103,151 +1177,6 @@ async fn dashboard_roster_handler(
         .into_response()
 }
 
-/// 대시보드 정적 스켈레톤 HTML(self-contained, 인라인 style/script). 후속에 SSE 구독 JS·goal 폼 배선.
-#[cfg(feature = "serve")]
-const DASHBOARD_HTML: &str = r##"<!DOCTYPE html>
-<html lang="ko">
-<head>
-<meta charset="utf-8">
-<title>총감독 대시보드</title>
-<style>
-  body { background:#111; color:#eee; font-family:monospace,monospace; margin:2rem; }
-  section { border:1px solid #444; padding:1rem; margin-bottom:1rem; }
-  h1 { color:#0f0; }
-</style>
-</head>
-<body>
-<h1>총감독 대시보드</h1>
-<section>
-  <h2>감독 roster</h2>
-  <div id="roster">(감독 roster 불러오는 중...)</div>
-</section>
-<section>
-  <h2>라이브 task 피드</h2>
-  <div id="tasks">(task 이벤트 대기 중...)</div>
-</section>
-<section>
-  <h2>목표 제출</h2>
-  <form id="goal">
-    <div><input type="password" id="goalToken" placeholder="브로커 토큰" autocomplete="off"></div>
-    <div><input type="text" id="goalText" placeholder="목표를 입력하세요"></div>
-    <div>
-      <select id="goalTarget">
-        <option value="sel:role=supervised">모든 감독 (role=supervised)</option>
-      </select>
-    </div>
-    <button type="submit">제출</button>
-  </form>
-  <div id="goalStatus"></div>
-</section>
-<script>
-  // 라이브 task 피드: /dashboard/events SSE를 구독해 이벤트를 #tasks 상단에 prepend한다.
-  var MAX_FEED = 200;
-  function shortId(id) { return (id || "").slice(0, 8); }
-  function taskLine(event, task) {
-    var art = "";
-    try {
-      var t = task.artifacts[0].parts[0].text;
-      if (t) { art = " · " + t.split("\n")[0]; }
-    } catch (e) { art = ""; }
-    return "[" + event + "] " + shortId(task.id) + "  " +
-      (task.fromAgent || "?") + " -> " + (task.toAgent || "?") + "  " +
-      (task.state || "?") + art;
-  }
-  function initFeed() {
-    var box = document.getElementById("tasks");
-    try {
-      var es = new EventSource("/dashboard/events");
-      es.onmessage = function (e) {
-        var payload;
-        try { payload = JSON.parse(e.data); } catch (err) { console.error("task 파싱 실패", err); return; }
-        if (!payload || !payload.task) { return; }
-        var row = document.createElement("div");
-        row.textContent = taskLine(payload.event, payload.task);
-        if (box.firstChild && box.firstChild.nodeType === 3) { box.textContent = ""; }
-        box.insertBefore(row, box.firstChild);
-        while (box.childNodes.length > MAX_FEED) { box.removeChild(box.lastChild); }
-      };
-      es.onerror = function (err) { console.error("SSE 오류", err); };
-    } catch (err) { console.error("EventSource 초기화 실패", err); }
-  }
-  // 감독 roster: /dashboard/roster를 5초 주기로 폴해 #roster를 갱신한다.
-  function renderRoster(list) {
-    var box = document.getElementById("roster");
-    if (!list || !list.length) { box.textContent = "(online 감독 없음)"; return; }
-    box.textContent = "";
-    list.forEach(function (a) {
-      var tags = Object.keys(a.tags || {}).map(function (k) { return k + "=" + a.tags[k]; }).join(" ");
-      var row = document.createElement("div");
-      row.textContent = shortId(a.uuid) + (a.display_name ? " (" + a.display_name + ")" : "") +
-        "  " + tags + "  · " + (a.last_heartbeat || "");
-      box.appendChild(row);
-    });
-  }
-  // 대상 드롭다운을 roster로 채운다("모든 감독" 셀렉터 옵션 + online 감독 각각). 이전 선택 보존.
-  function populateTarget(list) {
-    var sel = document.getElementById("goalTarget");
-    var cur = sel.value;
-    sel.innerHTML = "";
-    var o0 = document.createElement("option");
-    o0.value = "sel:role=supervised"; o0.textContent = "모든 감독 (role=supervised)";
-    sel.appendChild(o0);
-    (list || []).forEach(function (a) {
-      var o = document.createElement("option");
-      o.value = "agent:" + a.uuid;
-      var tags = Object.keys(a.tags || {}).map(function (k) { return k + "=" + a.tags[k]; }).join(" ");
-      o.textContent = a.uuid + (tags ? " (" + tags + ")" : "");
-      sel.appendChild(o);
-    });
-    for (var i = 0; i < sel.options.length; i++) { if (sel.options[i].value === cur) { sel.selectedIndex = i; break; } }
-  }
-  // 유니크 messageId 생성(secure context면 randomUUID, 아니면 폴백).
-  function genMsgId() {
-    try { if (window.crypto && crypto.randomUUID) { return crypto.randomUUID(); } } catch (e) {}
-    return "m-" + Date.now() + "-" + Math.random().toString(16).slice(2);
-  }
-  function setGoalStatus(msg) { document.getElementById("goalStatus").textContent = msg; }
-  // goal 제출: /a2a SendMessage로 task 생성. 토큰은 Authorization 헤더로만 전송(폼값, 미저장).
-  async function submitGoal(e) {
-    e.preventDefault();
-    var token = document.getElementById("goalToken").value.trim();
-    var text = document.getElementById("goalText").value.trim();
-    var target = document.getElementById("goalTarget").value;
-    if (!token) { setGoalStatus("브로커 토큰을 입력하세요."); return; }
-    if (!text) { setGoalStatus("목표를 입력하세요."); return; }
-    var params = { message: { messageId: genMsgId(), role: "user", parts: [{ text: text }] }, fromAgent: "dashboard" };
-    if (target.indexOf("sel:") === 0) { params.toSelector = target.slice(4); }
-    else { params.toAgent = target.slice(6); }
-    var body = { jsonrpc: "2.0", id: 1, method: "SendMessage", params: params };
-    setGoalStatus("제출 중...");
-    try {
-      var r = await fetch("/a2a", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "Authorization": "Bearer " + token },
-        body: JSON.stringify(body)
-      });
-      if (r.status === 401) { setGoalStatus("인증 실패: 토큰을 확인하세요."); return; }
-      var j = await r.json();
-      if (j.error) { setGoalStatus("실패: " + j.error.message); return; }
-      var id = (j.result && j.result.id) ? j.result.id.slice(0, 8) : "?";
-      var to = (j.result && j.result.toAgent) ? j.result.toAgent : "?";
-      setGoalStatus("생성됨: task " + id + " -> " + to);
-      document.getElementById("goalText").value = "";
-    } catch (err) { setGoalStatus("요청 오류: " + err); }
-  }
-  document.getElementById("goal").addEventListener("submit", submitGoal);
-  function loadRoster() {
-    fetch("/dashboard/roster")
-      .then(function (r) { return r.json(); })
-      .then(function (list) { renderRoster(list); populateTarget(list); })
-      .catch(function (err) { console.error("roster 폴 실패", err); });
-  }
-  initFeed();
-  loadRoster();
-  setInterval(loadRoster, 5000);
-</script>
-</body>
-</html>"##;
 
 /// stdin/stdout을 전송으로 사용하는 stdio MCP 서버를 기동한다.
 pub async fn start_mcp_server(

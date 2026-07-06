@@ -742,3 +742,21 @@
 - **재기동 레이스 교훈**: 브로커·watcher를 동시 Start-Process하면 watcher가 브로커 listen 전에 첫 poll→"initialize 요청 실패"로 **종료**(poll 루프가 최초 initialize 실패에 exit). 브로커 기동·listen 확인 후 watcher 기동해야 함(견고화 후보=poll 최초 연결 재시도).
 - **다음**: T2 커밋 여부 사용자 확인 후 T3(goal 폼→SendMessage, 토큰 게이트) 위임. backend-private 세션14 PID = 브로커 39044·watcher 15664(재빌드 후 재기동).
 - **T3 완료(tunaLlama 생성→Opus 리뷰·적용, DASHBOARD_HTML만)**: goal 폼=토큰(password)·목표·대상 select·상태줄. `submitGoal`이 기존 인증 `POST /a2a SendMessage`를 브라우저 fetch(Authorization: Bearer)로 재사용(신규 Rust 0). `sel:role=supervised`/`agent:<uuid>` 접두로 toSelector/toAgent 분기. `populateTarget`이 roster폴로 드롭다운 채움. **검증**: lib 456 pass+clippy 클린. 라이브: 폼 렌더 확인, JS 요청형태(messageId/role/parts/fromAgent/toAgent) 인증 write→task submitted(e30969d3, 취소함), 무토큰 401. **셀렉터 다중매칭**: role=supervised가 3자(mac-claude-sup/mac-codex-sup/win-codex-sup) 매칭→후보나열 에러(v2-34 설계대로, 사용자가 특정 감독 골라 재제출=HITL). 브로커 재기동 PID=41100, watcher=28940(T3 바이너리). **T2·T3 커밋 후 남음=T4(claude post_turn emit) + T5(3-OS CI)→PR.**
+
+## 2026-07-06 세션14 후속: 대시보드 DaleUI SPA 결정 (Plan v2-39)
+
+- **사용자 결정**: 대시보드 디자인에 DaleUI(github.com/DaleStudy/daleui) 도입. 조사: DaleUI=React 19 + Panda CSS 컴포넌트 라이브러리(npm daleui@1.1.1, peer react^19, deps @ark-ui/react·lucide-react, exports `.`+`./styles.css`, styled-system 동봉). 인라인 HTML로는 못 씀 → 프론트 빌드 파이프라인 필요.
+- **서빙 결정 = embed + feature-gate**(사용자 확정, 대안 dir 검토 후). 근거: "리치=optional"은 브라우저 URL이라 embed/dir 무관하게 성립. dir은 cargo-dist 단일바이너리에서 dist 배치·경로 문제로 리치를 오히려 어렵게 함. "터미널 순수파 비강요"는 서빙방식 아니라 cargo `dashboard` feature로 해결(기본 lean, release ON). embed=rust-embed(debug 디스크읽기=dev 반복 빠름, release 내장). UI/UX·결과물은 embed/dir 동일(같은 번들). 매 업데이트 재빌드는 release 때만(dev=Vite HMR).
+- **IP redact**: 별도 브랜치 fix/redact-lan-ip(5eaa047, 192.168.1.179→[사설IP]) → PR #11(→main). 히스토리 완전퍼지(filter-repo)는 맥 조율 동반 별건.
+- **아키텍처**: v2-38 백엔드(/dashboard/events SSE·/dashboard/roster·/a2a) 재사용, 인라인 DASHBOARD_HTML만 SPA로 대체. frontend/ Vite+React19+daleui, base:/dashboard/, npm build→dist→rust-embed(dashboard feature). API 라우트는 serve feature 유지(SPA 유무 무관). dist gitignore, CI node 빌드 단계.
+- **다음**: S1 스캐폴드(node/npm 환경·DaleUI Provider/셋업 확인 후) → tunaLlama 위임 검토.
+
+## 2026-07-06 세션14 후속2: 대시보드 SPA S1-S4 구현 (Plan v2-39)
+
+- **S1 스캐폴드(직접)**: frontend/ = Vite8+React19.2+TS+daleui@1.1.1(+pretendard variable·@fontsource-variable/jetbrains-mono). vite.config base:/dashboard/ + dev proxy(events/roster/a2a→127.0.0.1:8770). main.tsx=폰트+daleui/styles.css+index.css import. 함정: `@fontsource-variable/jetbrains-mono` bare import는 tsc 타입선언 없어 실패→`/index.css` 명시 경로. DaleUI Provider 불요(styles.css만). npm build 성공(Pretendard variable 2MB 폰트 포함).
+- **S2(tunaLlama 위임 실패→서브에이전트 직접)**: 로컬 LLM(kimi)이 DaleUI 버전 API에서 완전 드리프트(존재않는 @daleui/react·Input/Stack/Spinner 환각, 다른 도메인 단일파일). **finding=특정버전 UI 라이브러리 컴포넌트 조립은 tunaLlama 부적합**(tuna_log_limitation 기록). 서브에이전트가 실측 DaleUI API로 직접 구현: api.ts/Roster/Feed/GoalForm/App. **Opus 리뷰 수정 2건**: (a) index.css가 create-vite 데모 CSS(#root 1126px·h1{56px} 전역 오버라이드 등)라 정리, (b) main.tsx가 index.css를 import 안 해 `.dash-grid` 반응형 그리드가 죽어있던 것→daleui 뒤에 import 추가.
+- **S3 서빙(직접, 정밀통합)**: axum 0.8(catch-all `/{*path}`). Cargo `dashboard`=["serve","dep:rust-embed"]. rust-embed(#[folder="frontend/dist"], debug=디스크·release=내장). 라우트 /dashboard·/dashboard/favicon.svg·/dashboard/assets/{*path}(확장자 MIME 매핑, 신규의존 회피), events/roster는 serve 유지(SPA 무관). feature OFF=안내 페이지. 인라인 DASHBOARD_HTML 제거. Vite base=/dashboard/라 assets 경로가 events/roster와 미충돌. curl 검증 전부 통과.
+- **S4 CI**: ci.yml ubuntu `dashboard` 잡(node22→npm ci+build→cargo --features dashboard build/clippy). 3-OS 매트릭스는 dashboard 없이 유지(embed=OS독립).
+- **브라우저 시각검증 막힘**: claude-in-chrome은 정상(example.com 렌더)이나 이 Chrome이 http://127.0.0.1:8770을 에러페이지(URL http 유지=https업그레이드 아님, curl 200=서버정상)→프록시/PNA loopback 차단 추정. 자동 스크린샷 불가, 사용자 눈 확인 필요.
+- **비범위(후속)**: release(cargo-dist)에 dashboard feature+frontend 빌드 통합(release.yml은 dist 자동생성이라 별도 작업). S2 UX: "모든 감독" 셀렉터 다중매칭.
+- **브랜치/PR 상태**: feat/orchestrator-dashboard 위 S1-S4. 커밋 후 push+PR 예정(시각 확인 후). IP redact=PR #11 별도.

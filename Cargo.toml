@@ -30,6 +30,7 @@ reqwest = { version = "0.12", default-features = false, features = ["blocking", 
 rmcp = { version = "1.8.0", features = ["server", "macros", "schemars", "transport-io"], optional = true }
 schemars = { version = "1.0", optional = true }
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio"], optional = true }
+rust-embed = { version = "8", optional = true }
 a2a-client = { version = "0.2", optional = true }
 a2a-types = { version = "0.2", optional = true }
 # codex app-server ws 클라이언트(codex-inject)용. 접속 대상이 항상 로컬 ws://이라 TLS 백엔드는 불요.
@@ -53,6 +54,9 @@ engines = ["dep:reqwest"]
 mcp = ["sqlite", "dep:rmcp", "dep:schemars"]
 # serve: HTTP MCP 서버 상주 모드(axum + rmcp streamable-http). 기본 꺼짐.
 serve = ["mcp", "dep:axum", "rmcp?/transport-streamable-http-server"]
+# dashboard: serve의 /dashboard에 Vite+React+DaleUI SPA(frontend/dist)를 rust-embed로 임베드 서빙.
+# frontend를 먼저 `npm run build`한 뒤 `cargo build --features dashboard`. 기본 꺼짐(lean 빌드는 안내 페이지).
+dashboard = ["serve", "dep:rust-embed"]
 # worker: 원격 코어의 MCP HTTP 엔드포인트를 호출하는 A2A 워커 클라이언트(reqwest만 필요, 서버쪽 dep 불요).
 # + codex-inject(codex app-server ws 클라이언트, tokio-tungstenite). tokio/net·io-util은 이 피처에서만 필요.
 worker = ["dep:reqwest", "dep:tokio-tungstenite", "tokio/net", "tokio/io-util"]
