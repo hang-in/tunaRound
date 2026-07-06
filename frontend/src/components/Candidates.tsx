@@ -35,9 +35,10 @@ function formatAge(sec: number): string {
   return Math.floor(hr / 24) + '일 전'
 }
 
-// 발견된 세션을 관리자로 편입시키기 위해 "그 세션에" 붙여넣을 자연어 arm 프롬프트를 만든다.
-// claude는 외부 push가 없어 그 세션이 스스로 poll+Monitor를 켜야 하므로, 사람이 이 프롬프트를 그
-// 세션에 붙여넣으면 세션이 자가 무장한다. core는 이 대시보드를 연 주소 기준(같은 머신 후보에 정확).
+// 발견된 세션을 관리자로 편입시키기 위해 "그 세션에" 붙여넣을 arm 레시피를 만든다.
+// 두 사전조건을 정직하게 반영: (1) Claude Code Bash 툴은 셸 env(TUNA_BROKER_TOKEN)를 상속하지
+// 않으므로 `!` 접두어로 사용자 셸에서 실행해야 토큰이 유지된다. (2) core는 "그 세션이 있는 머신에서
+// 도달 가능한" 브로커 주소여야 한다(뷰어 origin은 같은 머신일 때만 정확).
 function buildArmPrompt(c: Candidate): string {
   const core = window.location.origin + '/mcp'
   const name = (c.machine ? c.machine + '-' : '') + c.runner + '-' + c.uuid.slice(0, 8)
@@ -47,14 +48,28 @@ function buildArmPrompt(c: Candidate): string {
     'role=supervised',
     'project=' + (c.project ?? 'unknown'),
   ].join(',')
+  const isWin = c.machine === 'win'
+  const short = c.uuid.slice(0, 8)
+  // [1] 사용자 셸에서 백그라운드 실행(플랫폼별). ! 접두어 = 사용자 셸 → 셸 env(토큰) 유지.
+  const runLine = isWin
+    ? `! Start-Process tunaround -ArgumentList 'poll','--core','${core}','--agent','${c.uuid}','--display-name','${name}','--tags','${tags}','--interval','15' -WindowStyle Hidden`
+    : `! nohup tunaround poll --core ${core} --agent ${c.uuid} --display-name ${name} --tags "${tags}" --interval 15 > /tmp/tuna-poll-${short}.log 2>&1 &`
+  const logHint = isWin ? 'poll 프로세스(Start-Process로 띄운 것)' : `/tmp/tuna-poll-${short}.log`
   return [
-    '이 세션을 tunaRound 브로커에 "관리자"로 등록해줘.',
+    '이 세션을 tunaRound 브로커에 "관리자"로 편입하려면 아래 2단계를 따라줘.',
     '',
-    '1) 백그라운드로 다음을 실행:',
-    `   tunaround poll --core ${core} --agent ${c.uuid} --display-name ${name} --tags "${tags}" --interval 15`,
-    '2) 그 poll 출력을 Monitor 도구로 감시하다가, task가 도착하면 claim_task로 잡아 처리하고 complete_task로 보고해줘.',
+    '[1] 이 세션 프롬프트에 아래 한 줄을 그대로 입력해 poll을 백그라운드로 띄운다.',
+    '    (맨 앞 ! = 사용자 셸에서 실행 → TUNA_BROKER_TOKEN 환경변수가 유지된다.',
+    '     Claude Code Bash 툴은 셸 env를 상속하지 않아 그냥 실행하면 토큰이 없다.)',
     '',
-    '(토큰은 TUNA_BROKER_TOKEN 환경변수 사용. 원격 머신이면 --core를 그 머신에서 본 브로커 주소로 바꿔.)',
+    runLine,
+    '',
+    '    ⚠ --core는 "이 머신에서 도달 가능한" 브로커 주소여야 한다.',
+    '      같은 머신이면 위 그대로, 다른 머신이면 http://<브로커-host>:8770/mcp 로 바꾼다.',
+    '    ⚠ TUNA_BROKER_TOKEN 이 이 셸에 export돼 있어야 한다(없으면 위 명령에 --token <값> 추가).',
+    '',
+    `[2] 그 다음 이 세션에게: "${logHint}를 Monitor로 감시하다가 새 TASK가 뜨면`,
+    '    tunaround MCP의 claim_task로 잡아 처리하고 complete_task로 보고해줘."',
   ].join('\n')
 }
 
