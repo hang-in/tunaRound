@@ -446,7 +446,7 @@ env는 셸/사용자 환경에 두고 **커밋 금지**(레포 PUBLIC). `.claude
 
 작업을 던질 때(§4 `SendMessage`의 `parts[].text`, MCP `send_task`의 `text`) 실제 지시 앞에 이 프리앰블을 붙여 위임 규약을 주입한다.
 
-```
+```text
 [위임 규약] 이 작업은 배정이 아니라 위임이다. 결과 ownership이 너에게 있다.
 - 루틴 문제(순단·일시 실패·사소한 모호함)는 스스로 재시도·판단해 진행하라.
 - 반드시 terminal 보고로 끝내라: 성공=complete_task(결과 포함), 실패=fail_task(사유 포함). 침묵 금지.
@@ -471,7 +471,7 @@ tunaround watch-results --core http://127.0.0.1:8770 --dispatcher dashboard
 ```
 
 - `--core`는 **베이스 URL**이다(§1의 `serve` 주소, 끝에 `/mcp` 안 붙임). 내부적으로 `/dashboard/events`를 붙인다.
-- `--dispatcher`(기본 `dashboard`)가 `fromAgent`인 task만 알린다. 대시보드 goal 폼으로 던진 작업은 fromAgent=`dashboard`다. 빈 값이면 모든 완료를 관측한다.
+- `--dispatcher`(기본 `dashboard`)가 `fromAgent`인 task만 알린다. 대시보드 goal 폼으로 던진 작업은 fromAgent=`dashboard`다. 빈 값이면 `fromAgent` 필터를 꺼서 모든 terminal(완료·실패)를 관측한다.
 - `completed`는 artifact 텍스트를, `failed`는 statusMessage(=fail_task 사유)를 160자로 잘라 보여준다. 즉 §12b의 에스컬레이션 3요소를 fail_task 사유에 담으면 여기로 그대로 push된다.
 - SSE가 끊기면 Err로 종료한다(exit 0이면 재기동 안 하는 감시자가 있어 Err가 안전). worker 피처 필요(`cargo build --features "serve worker"`).
 
