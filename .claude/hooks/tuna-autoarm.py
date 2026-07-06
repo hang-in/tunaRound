@@ -92,14 +92,18 @@ def main() -> int:
     machine = os.environ.get("TUNA_MACHINE") or ("win" if os.name == "nt" else "unix")
     project = os.environ.get("TUNA_AUTOARM_PROJECT") or Path(cwd).name or "unknown"
     role = os.environ.get("TUNA_AUTOARM_ROLE", "session")
-    agent = os.environ.get("TUNA_AUTOARM_AGENT") or f"{host}-claude-{session_id[:8]}"
+    # uuid는 라우팅·발견 overlay 키라 세션 id를 쓴다(설계 §2.1: uuid=세션 id). 그래야 discover가
+    # 낸 후보(uuid=세션 id)와 로스터가 매칭돼 armed overlay·중복제거가 성립한다. 사람이 읽는 이름은
+    # display_name으로 분리한다(총감독은 TUNA_AUTOARM_AGENT로 win-opus-boss 등 지정).
+    agent = session_id
+    display = os.environ.get("TUNA_AUTOARM_AGENT") or f"{host}-claude-{session_id[:8]}"
     interval = os.environ.get("TUNA_AUTOARM_INTERVAL", "15")
 
     tags = f"machine={machine},runner=claude,role={role},project={project},user={user},host={host}"
 
     sdir = state_dir()
     pidfile = sdir / f"{session_id}.json"
-    log_path = sdir / f"{agent}.log"
+    log_path = sdir / f"{session_id}.log"
 
     # 중복 무장 가드: 같은 세션의 poll이 이미 살아있으면 재기동하지 않는다.
     if pidfile.exists():
@@ -107,7 +111,7 @@ def main() -> int:
             prev = json.loads(pidfile.read_text(encoding="utf-8"))
             if pid_alive(int(prev.get("pid", -1))):
                 emit_context(
-                    f"[tuna-autoarm] 이미 무장됨: agent={prev.get('agent', agent)} "
+                    f"[tuna-autoarm] 이미 무장됨: {prev.get('display_name') or prev.get('agent', agent)} "
                     f"(poll pid={prev.get('pid')}). 로스터에서 online 상태입니다."
                 )
                 return 0
@@ -119,6 +123,7 @@ def main() -> int:
         "--core", core,
         "--token", token,
         "--agent", agent,
+        "--display-name", display,
         "--tags", tags,
         "--interval", str(interval),
     ]
@@ -137,6 +142,7 @@ def main() -> int:
     pidfile.write_text(json.dumps({
         "pid": pid,
         "agent": agent,
+        "display_name": display,
         "core": core,
         "tags": tags,
         "log": str(log_path),
@@ -145,7 +151,7 @@ def main() -> int:
 
     emit_context(
         f"[tuna-autoarm] 이 세션이 브로커 로스터에 자동 등록되었습니다.\n"
-        f"  agent={agent}  tags={tags}\n"
+        f"  uuid={agent}(세션 id)  display={display}  tags={tags}\n"
         f"  core={core}  poll pid={pid}  log={log_path}\n"
         f"이제 총감독 대시보드(/dashboard/roster)에 online으로 나타납니다. "
         f"이 세션 앞으로 온 A2A task를 받으려면 poll 로그를 Monitor로 감시하거나 "

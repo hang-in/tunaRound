@@ -37,16 +37,19 @@ pub fn age_secs_since(mtime: SystemTime, now: SystemTime) -> i64 {
     }
 }
 
-/// jsonl 파일의 첫 줄만 읽는다(전체 로드 회피). 열기/읽기 실패는 None.
-pub fn read_first_line(path: &Path) -> Option<String> {
+/// jsonl 파일의 앞 max_lines 줄을 훑어 첫 cwd를 찾는다(전체 로드 회피). Claude Code jsonl은 1행이
+/// 요약(type/customTitle/sessionId, cwd 없음)이고 이후 메시지 행에 cwd가 있어 첫 줄만 보면 놓친다.
+/// 열기 실패/부재는 None.
+pub fn read_cwd_from_jsonl(path: &Path, max_lines: usize) -> Option<String> {
     use std::io::{BufRead, BufReader};
     let f = std::fs::File::open(path).ok()?;
-    let mut reader = BufReader::new(f);
-    let mut line = String::new();
-    match reader.read_line(&mut line) {
-        Ok(0) | Err(_) => None,
-        Ok(_) => Some(line),
+    let reader = BufReader::new(f);
+    for line in reader.lines().take(max_lines).map_while(Result::ok) {
+        if let Some(cwd) = parse_cwd_from_jsonl_line(&line) {
+            return Some(cwd);
+        }
     }
+    None
 }
 
 /// 기본 Claude Code 프로젝트 디렉토리(`~/.claude/projects`)를 반환한다. HOME/USERPROFILE 미설정이면 None.
@@ -94,9 +97,8 @@ pub fn enumerate_claude_sessions(
             let Some(uuid) = path.file_stem().and_then(|s| s.to_str()) else {
                 continue;
             };
-            let project = read_first_line(&path)
-                .and_then(|l| parse_cwd_from_jsonl_line(&l))
-                .and_then(|cwd| project_from_cwd(&cwd));
+            // cwd는 1행(요약)이 아니라 이후 메시지 행에 있으므로 앞 40줄을 훑어 찾는다.
+            let project = read_cwd_from_jsonl(&path, 40).and_then(|cwd| project_from_cwd(&cwd));
             out.push(DiscoveredSession { uuid: uuid.to_string(), project, age_secs: age });
         }
     }
@@ -162,9 +164,14 @@ mod tests {
         let proj = base.join("D--privateProject-tunaRound");
         std::fs::create_dir_all(&proj).unwrap();
 
-        // 활동 세션: 방금 쓴 jsonl(cwd 포함).
+        // 활동 세션: 실제 Claude Code jsonl처럼 1행=요약(cwd 없음), 2행=메시지(cwd 포함).
         let fresh = proj.join("11111111-aaaa.jsonl");
-        std::fs::write(&fresh, "{\"cwd\":\"D:\\\\privateProject\\\\tunaRound\"}\n").unwrap();
+        std::fs::write(
+            &fresh,
+            "{\"type\":\"summary\",\"sessionId\":\"11111111-aaaa\"}\n\
+             {\"type\":\"user\",\"cwd\":\"D:\\\\privateProject\\\\tunaRound\"}\n",
+        )
+        .unwrap();
 
         // 비활동 세션: mtime을 과거로(수동 설정 불가하니 stale=0으로 필터 검증).
         let now = SystemTime::now();

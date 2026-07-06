@@ -245,6 +245,10 @@ struct PollArgs {
     /// dispatcher가 to_selector로 이 감독을 발견한다. 생략 가능.
     #[arg(long)]
     tags: Option<String>,
+    /// 로스터 가독용 표시 이름(생략 가능). uuid(=--agent)는 라우팅·발견 overlay 키라 세션 id를 쓰고,
+    /// 사람이 읽는 이름은 이걸로 분리한다(예: --agent <session-id> --display-name win-opus-boss).
+    #[arg(long)]
+    display_name: Option<String>,
     /// poll 간격(초, 기본 15).
     #[arg(long, default_value_t = 15)]
     interval: u64,
@@ -1304,6 +1308,7 @@ fn main() {
                 a.interval,
                 a.once,
                 a.on_task.as_deref(),
+                a.display_name.as_deref(),
             )
             .await
         });
