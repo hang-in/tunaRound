@@ -780,3 +780,12 @@
 - **총감독 로스터 부재 이해**: win-opus-boss(총감독=이 세션)는 register_agent 안 해 로스터에 없음. 사용자 "4명 아니냐"→v2-40 자동무장이 총감독도 등록해 해결. 현재는 ★로 임의 지정.
 - **Planka**: MCP엔 프로젝트 멤버 추가 도구 없음. Agent 봇의 private 프로젝트라 사용자(d9ng) 안 보임 → 사용자가 tunaRound 프로젝트 새로 만들고 Agent 매니저 추가 → 그 프로젝트(1813009454057129531)에 보드 재생성(카드 17), 옛 private 삭제. **보드 이동(projectId 변경)은 미지원**이라 재생성이 정답. 보드=https://plan.d9ng.co.kr/boards/1813013259255547454.
 - **핸드오프**: docs/prompts/v2-handoff_2026-07-06_dashboard-v2-40.md + CLAUDE.md 세션14 현재상태·WIN 포인터(브랜치, PR #12로 main 반영). backend-private 세션14 최종 라이브(브로커 35652·watcher 46744·app-server 34176). **다음 세션=1) PR #12 머지 → 2) v2-40 S1.**
+
+## 2026-07-06 세션15: PR #11/#12 머지 + v2-40 S1 자동무장 훅 착수
+
+- **PR 머지**: #11(LAN IP redact) squash → main. #12(대시보드)는 맥(d9ng) `6363b45 README 재구성`과 README 충돌 → feat/orchestrator-dashboard를 main에 rebase, 충돌 1블록(로드맵 체크리스트) 해소=내 완료 8항목 유지 + 맥 대시보드 2항목·내 "진행 중" 항목을 완료 1줄(총감독 웹 대시보드 [x])로 통합. force-with-lease → 3-OS CI green → squash 머지. main=841b944. **교훈**: 맥↔윈 README 동시편집이 규약(같은 줄 경합) 대로 충돌 → 통합자가 rebase로 해소.
+- **v2-40 S1 설계 확정**: `tunaround poll`이 이미 register_agent + heartbeat 내장(worker.rs run_poll_loop:377) → 훅은 detached poll 기동만. **deregister/unregister MCP 도구 없음**(mcp.rs 확인) → 정리는 AGENT_TTL_SECS=90 소멸(store/agents.rs). 즉시 dereg는 신규 도구 필요=S1 밖.
+- **스코핑 결정**: S1 = 등록·가시성(로스터 등장, 총감독 win-opus-boss 편입)만 확정. **대화형 세션 task 수신(Monitor wake)은 claude 외부 소켓 부재로 "발견≠제어"**(설계 §1.2) → additionalContext로 수신법 안내만(수동 Monitor), 완전 자동 수신은 후속. 이 분리가 정직한 altitude.
+- **구현 주체**: Opus 직접(Claude Code 훅 stdin/JSON I/O 계약 + tunaround CLI 정밀 배선. 프론트/버전라이브러리 아니지만 정밀 통합이라 tunaLlama 드리프트 회피=메모리 [[tunallama-unsuitable-for-version-ui-libs]] 취지 준용).
+- **env 계약**: TUNA_AUTOARM=1(마스터 opt-in) / TUNA_BROKER_CORE(기본 127.0.0.1:8770/mcp) / TUNA_BROKER_TOKEN(필수, 이미 setx됨) / TUNA_AUTOARM_AGENT(기본 host-claude-session8, 총감독=win-opus-boss) / TUNA_AUTOARM_ROLE(기본 session) / TUNA_AUTOARM_PROJECT(기본 cwd basename) / TUNA_BIN(기본 PATH tunaround).
+- **라이브 상태**: 브로커 detached PID 35652 생존(roster=200), 토큰 [REDACTED-backend-private](backend-private). 3자 감독(mac-claude-sup·mac-codex-sup·win-codex-sup) online 유지 중.

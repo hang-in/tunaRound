@@ -391,3 +391,13 @@
 - [x] S3: 브로커 서빙(직접) - Cargo `dashboard` feature + rust-embed(frontend/dist) + /dashboard·favicon·assets/{*path}(MIME 매핑), events/roster는 serve 유지, OFF=안내 페이지, 인라인 HTML 제거. curl 검증(200/MIME/roster/401). lib 456 pass, clippy 클린(ON/OFF).
 - [x] S4: CI - ci.yml ubuntu `dashboard` 잡(node22→npm ci+build→cargo build/clippy --features dashboard). embed=OS독립이라 1잡. 3-OS 매트릭스(dashboard 없이) 유지.
 - [x] S5: 검증 - curl 임베드 전부 통과 + **브라우저 실렌더 확인(사용자 스크린샷: 3자 online 로스터·SSE 연결·goal 폼 DaleUI 렌더, 2열 그리드).** 남음=커밋+push+PR(3-OS+dashboard CI).
+
+## Plan v2-40 S1: SessionStart 자동무장 훅 (docs/plans/v2-40-universal-session-bus.md)
+
+> 설계 정본 docs/design/v2-40-universal-session-bus_2026-07-06.md. opt-in(TUNA_AUTOARM=1) claude 세션이 시작 시 detached `tunaround poll`(register+heartbeat 내장)로 자동 무장 → 로스터 등장(총감독도 편입). 정리=TTL 90초(deregister 도구 없음). 구현=Opus 직접(hook JSON I/O + CLI 정밀 배선, tunaLlama 드리프트 회피).
+
+- [x] S1a: .claude/hooks/tuna-autoarm.py(SessionStart) - opt-in 게이트·detached poll 기동·pidfile·additionalContext. Windows DETACHED_PROCESS/POSIX start_new_session, 중복 무장 가드, 토큰 미저장.
+- [x] S1b: .claude/hooks/tuna-disarm.py(SessionEnd) - pidfile poll kill(taskkill /T · SIGTERM) + pidfile 제거. 로스터 TTL 90초 소멸.
+- [x] S1c: .claude/settings.json 두 훅 배선(${CLAUDE_PROJECT_DIR} 경로, env self-gate).
+- [x] S1d: 문서 a2a-usage §11(env 계약·동작·발견≠제어·LAN 복제).
+- [x] S1e: 라이브 테스트 통과 - mock stdin autoarm → win-autoarm-smoke online 등장(6태그) → disarm → poll kill + 90초 TTL 후 online=False 확인. 나머지 3자 감독 online 유지.
