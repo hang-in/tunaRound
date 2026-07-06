@@ -1055,7 +1055,7 @@ fn serve_embedded(path: &str) -> axum::response::Response {
 fn mime_for_path(path: &str) -> &'static str {
     match path.rsplit('.').next() {
         Some("html") => "text/html; charset=utf-8",
-        Some("js") => "text/javascript; charset=utf-8",
+        Some("js") | Some("mjs") => "text/javascript; charset=utf-8",
         Some("css") => "text/css; charset=utf-8",
         Some("svg") => "image/svg+xml",
         Some("woff2") => "font/woff2",

@@ -1,5 +1,5 @@
 // /dashboard/events SSE 를 구독해 task 이벤트를 실시간으로 최신순 표시하는 피드(상위 200개 유지).
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Card, Tag, Text, VStack, HStack, Heading } from 'daleui'
 import type { TaskEventMsg } from '../api'
 
@@ -18,18 +18,19 @@ type Props = {
 
 export default function Feed({ onConnectedChange }: Props) {
   const [rows, setRows] = useState<FeedRow[]>([])
+  // seq는 useEffect 재실행(StrictMode 이중호출 포함)에도 유지돼야 key 중복이 안 난다.
+  const seqRef = useRef(0)
 
   useEffect(() => {
     const source = new EventSource('/dashboard/events')
-    let seq = 0
 
     source.onopen = () => onConnectedChange(true)
 
     source.onmessage = (event) => {
       try {
         const msg = JSON.parse(event.data) as TaskEventMsg
-        seq += 1
-        const row: FeedRow = { seq, msg }
+        seqRef.current += 1
+        const row: FeedRow = { seq: seqRef.current, msg }
         // 최신을 위로 prepend 하고 상위 200개만 유지한다.
         setRows((prev) => [row, ...prev].slice(0, 200))
       } catch (err) {
