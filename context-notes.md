@@ -747,7 +747,7 @@
 
 - **사용자 결정**: 대시보드 디자인에 DaleUI(github.com/DaleStudy/daleui) 도입. 조사: DaleUI=React 19 + Panda CSS 컴포넌트 라이브러리(npm daleui@1.1.1, peer react^19, deps @ark-ui/react·lucide-react, exports `.`+`./styles.css`, styled-system 동봉). 인라인 HTML로는 못 씀 → 프론트 빌드 파이프라인 필요.
 - **서빙 결정 = embed + feature-gate**(사용자 확정, 대안 dir 검토 후). 근거: "리치=optional"은 브라우저 URL이라 embed/dir 무관하게 성립. dir은 cargo-dist 단일바이너리에서 dist 배치·경로 문제로 리치를 오히려 어렵게 함. "터미널 순수파 비강요"는 서빙방식 아니라 cargo `dashboard` feature로 해결(기본 lean, release ON). embed=rust-embed(debug 디스크읽기=dev 반복 빠름, release 내장). UI/UX·결과물은 embed/dir 동일(같은 번들). 매 업데이트 재빌드는 release 때만(dev=Vite HMR).
-- **IP redact**: 별도 브랜치 fix/redact-lan-ip(5eaa047, 192.168.1.179→[사설IP]) → PR #11(→main). 히스토리 완전퍼지(filter-repo)는 맥 조율 동반 별건.
+- **IP redact**: 별도 브랜치 fix/redact-lan-ip(5eaa047, 맥 LAN IP 평문→[사설IP]) → PR #11(→main). 히스토리 완전퍼지(filter-repo)는 맥 조율 동반 별건.
 - **아키텍처**: v2-38 백엔드(/dashboard/events SSE·/dashboard/roster·/a2a) 재사용, 인라인 DASHBOARD_HTML만 SPA로 대체. frontend/ Vite+React19+daleui, base:/dashboard/, npm build→dist→rust-embed(dashboard feature). API 라우트는 serve feature 유지(SPA 유무 무관). dist gitignore, CI node 빌드 단계.
 - **다음**: S1 스캐폴드(node/npm 환경·DaleUI Provider/셋업 확인 후) → tunaLlama 위임 검토.
 
