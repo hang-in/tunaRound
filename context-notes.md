@@ -773,3 +773,10 @@
 - **v2-40 유니버설 세션 버스 설계**(docs/design/v2-40): 임의 세션(예 tunaRound→secall) A2A 주소화·발견·제어. 발견≠제어(claude=Monitor워처 opt-in, codex=app-server ws). 자동무장 SessionStart 훅 + 발견 리포터 + 대시보드 후보패널 + 안전 스코핑. 단계 S0(수동무장 지금됨)~S5. **다음 세션 착수.**
 - **검증**: 풀빌드(dashboard) + clippy 클린. 라이브: /dashboard 200(새 SPA), /dashboard/goal loopback→task생성 camelCase, roster online, /mcp 401. 브로커 PID 35652·watcher 46744.
 - **다음**: 이 포트 커밋→PR #12 갱신. Planka 보드+백로그. 다음 세션 핸드오프→v2-40 S1.
+
+## 2026-07-06 세션14 후속4: 디자인 피드백 반영 + Planka + 핸드오프
+
+- **디자인 피드백 4건 반영**(사용자 스크린샷 기반, Opus 직접): (1) 로스터를 피드와 동일 패널+헤더바+행(divider) 구조로 통일(개별카드→행). (2) shields 뱃지 값 세그먼트를 **값별 색**(mac≠win, claude≠codex, supervised≠dispatcher; VALUE_COLOR 맵 + 미등록값 해시 팔레트, 인라인 style). (3) mac/win 글리프 박스 제거+14px 인라인 muted, windows SVG 교체. (4) 가짜 총감독 카드 제거→대등 행 + ★토글로 "현재 총감독" 지정(localStorage `tuna_dash_boss`, 앉는 머신 따라). 커밋 bec79fe.
+- **총감독 로스터 부재 이해**: win-opus-boss(총감독=이 세션)는 register_agent 안 해 로스터에 없음. 사용자 "4명 아니냐"→v2-40 자동무장이 총감독도 등록해 해결. 현재는 ★로 임의 지정.
+- **Planka**: MCP엔 프로젝트 멤버 추가 도구 없음. Agent 봇의 private 프로젝트라 사용자(d9ng) 안 보임 → 사용자가 tunaRound 프로젝트 새로 만들고 Agent 매니저 추가 → 그 프로젝트(1813009454057129531)에 보드 재생성(카드 17), 옛 private 삭제. **보드 이동(projectId 변경)은 미지원**이라 재생성이 정답. 보드=https://plan.d9ng.co.kr/boards/1813013259255547454.
+- **핸드오프**: docs/prompts/v2-handoff_2026-07-06_dashboard-v2-40.md + CLAUDE.md 세션14 현재상태·WIN 포인터(브랜치, PR #12로 main 반영). backend-private 세션14 최종 라이브(브로커 35652·watcher 46744·app-server 34176). **다음 세션=1) PR #12 머지 → 2) v2-40 S1.**
