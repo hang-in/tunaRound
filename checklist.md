@@ -371,3 +371,13 @@
 - [x] T4: node 감독 레인 안내 runner별 분기(codex→app-server+codex-inject 레시피, claude→Monitor+poll). main.rs. (Opus 직접)
 - [x] T5: 문서(a2a-usage §10 + dev-mac-windows SSH, 96c8b34) + **라이브 스모크 통과**(Opus). 스모크 A: codex-inject로 list_agents 왕복(ws→initialize→thread/start→turn/start→elicitation 자동accept→native MCP→"2명"→turn/completed→exit0). 스모크 B: 총감독 SendMessage로 task 생성→codex-inject claim/처리/complete→**GetTask state=completed, runner=codex, artifact="2"**(raw HTTP 폴백0), thread resume으로 맥락연속(티키타카) 실증. **라이브서 turn/completed params=turn.id 중첩 발견·수정**(fix 커밋).
 - **Plan v2-37 완료**(P0+T1~T5). 46 신규 순수 테스트, 전체 lib 453 pass, CI조합 clippy 클린. HITL `--remote` 관전만 사용자 수동 확인 잔여(설계상 성립).
+
+## Plan v2-38: 통합 총감독 대시보드 MVP (docs/plans/v2-38-orchestrator-dashboard.md)
+
+> 설계 정본 docs/design/v2-orchestrator-dashboard-and-dynamic-boss_2026-07-06.md. `tunaround serve`의 `/dashboard`가 read-only 웹으로 4자 감독 roster + 라이브 task 피드 + goal 폼 서빙. 브로커 기존 SSE 이벤트버스·roster·task 상태 재사용(net-new 최소). 구현 위임 ①tunaLlama ②A2A codex ③Sonnet, Opus 리뷰. 베이스라인 453.
+
+- [x] T1: `/dashboard` GET 라우트 + 정적 read-only HTML 스켈레톤(roster/task/goal placeholder). tunaLlama 생성→Opus 리뷰(bearer 밖 outer router merge, auth 유지)→적용. 라이브 GET=200, POST /mcp=401. 커밋 4aa586c.
+- [x] T2: SSE 배선 완료. **tunaLlama(kimi) 생성 → Opus 리뷰·적용**(src/mcp.rs만). GET `/dashboard/events`(전역 SSE: 모든 TaskEvent를 `{"event":"status|completed","task":{camelCase}}` JSON, Lagged 스킵·Closed 종료, 무인증 outer) + GET `/dashboard/roster`(list_agents 빈selector JSON, axum json피처 미활성이라 serde_json 수동 응답=신규의존0) + DASHBOARD_HTML JS(EventSource 피드 200cap + roster 5초 폴). 순수스트림 단위테스트 1. **검증**: lib 456 pass(회귀0)+통합/doc pass, clippy 클린. **라이브 스모크**: /dashboard=200, /dashboard/roster=200 JSON(3자 감독 online), /dashboard/events=text/event-stream 유지+실 task submitted 이벤트 수신 확인, /mcp 401(auth 경계 불변). 미커밋(리뷰 후).
+- [ ] T3: goal 폼 → SendMessage(handle_send 재사용). write=토큰 게이트(폼에 토큰 필드 → fetch Authorization). to_agent 또는 to_selector.
+- [ ] T4: claude 감독 post_turn emit 배선(피드 합류, 최소). 범위 크면 별 PR.
+- [ ] T5: 검증 - serve 기동 후 /dashboard 렌더 + goal→감독 처리→피드 반영 라이브 스모크. 라우트/SSE 프레임 단위테스트. 3-OS CI green.

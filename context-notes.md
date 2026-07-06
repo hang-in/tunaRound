@@ -724,3 +724,20 @@
 - **실버그 4개**: R1(MCP 실패를 success로 위장→claim/complete 실패 못 감지), R2(무조건 UPDATE→이중claim/terminal덮어쓰기, 조건부 전이로 수정), R3(watchdog 부모PID만 kill→트리 종료 /T·process_group), R5(save_session orphan 벡터/유효성).
 - **findings**: R10=워커 세션만료 404(도그푸딩 발견, 자동재연결 수정) / 동시워커 워크트리 오염(격리 필요) / 워커=헤드리스 데몬(fresh spawn)이 handoff·/clear 불요(live 세션은 축적됨) / tunaLlama config 필요 / 통합자가 브랜치 push를 git-watch auto-poll=사람릴레이0 / 방법론=GitHub Flow+PR CI가 semi-a2a에 적합(A2A큐=이슈트래커, git PR=코드통합).
 - **남음**: R7(retriever/reader Result 계약, 큼, Mac에 헤드리스 데몬으로) · 브랜치→main 머지(겹침0 clean) · PR CI + 태스크당 브랜치 도입 · usecase 문서. 진입점 docs/prompts/v2-handoff_2026-07-03_session8-refactor.md.
+
+## 2026-07-06 세션14: roster 복구 + 대시보드 T2 정찰 (Plan v2-38)
+
+- **세션 시작 상태**: 브로커(41012)·codex app-server(8790)·win watcher(31428) detached 생존(재부팅 안 됨). 단 watcher는 옛 바이너리(--tags/heartbeat 없음)라 로스터 stale. 허브 Monitor 인박스·맥 watcher는 세션-바운드로 죽음.
+- **Step 1 roster 복구 완료(Windows)**: feat/orchestrator-dashboard(main rebase=heartbeat+T1) 체크아웃 → 브로커·watcher 종료(Windows exe 락: 실행 중 tunaround.exe 덮어쓰기 불가라 둘 다 내려야 재빌드됨) → `cargo build --features "morphology mcp serve worker"`(10s 증분) → 브로커 재기동(PID 38172, 동일 커맨드) → **win-codex-sup watcher `--tags "machine=win,runner=codex,role=supervised,project=tunaround"` 붙여 재기동(PID 41408)**. 검증: list_agents/`to_selector=role=supervised` → win-codex-sup 반환·heartbeat 갱신 확인. backend-private.md 갱신 필요(PID).
+- **Step 1 맥 쪽**: A2A task e0bc5b3f 큐잉(from win-opus-boss → to mac-claude-sup): git pull + 재빌드 + mac 감독 watcher --tags 재기동 요청. 맥 세션이 watcher 재-arm하면 자동 수신.
+- **A2A send_task 필드 주의**: MCP send_task 인자 = `from_agent`, `to_agent`, `text`(message 아님). (raw MCP curl 시 필수 3필드.)
+- **대시보드 T2 배선 정찰(구현 전제)**:
+  1. 이벤트버스 = `SqliteStore.task_event_sender() -> Option<broadcast::Sender<TaskEvent>>`(sqlite.rs:180). serve/core는 `build_http_mcp_backends`가 `store4.with_task_events()`로 **활성**(main.rs:1942). 기존 a2a_server SSE(handle_send_streaming_message/subscribe_to_task)는 task_id로 **필터링된** per-task JSON-RPC SSE(A2A 프로토콜). 대시보드는 **전역 피드**가 필요 → 신규 GET /dashboard/events(모든 TaskEvent).
+  2. roster = `store.list_agents(selector, now)`(sqlite.rs:217, list_agents MCP 툴이 씀). /dashboard/roster JSON으로 노출, 브라우저 주기 폴.
+  3. 배선점 = mcp.rs `serve_http_mcp_on_listener`: line 950 `build_router(a2a_store, ...)`가 a2a_store를 move하기 전에 `a2a_store.clone()`을 대시보드 라우트 State로. 현 대시보드는 outer router(무인증, line 1006)에 `/dashboard`만. 여기에 `/dashboard/events`(SSE)·`/dashboard/roster`(JSON) 추가, `.with_state(dash_store)`.
+  4. 브라우저 EventSource=GET+커스텀헤더 불가 → SSE 피드는 무인증 outer router(read-only local bind, 저위험). goal 폼 write(T3)만 토큰 게이트.
+- **위임 계획**: T2 구현 1순위 tunaLlama(kimi). 정밀 스펙(위 배선점) 주고 생성→Opus 리뷰. feat/orchestrator-dashboard에서 이어감→PR.
+- **T2 완료(tunaLlama 생성→Opus 리뷰·적용, src/mcp.rs)**: `dashboard_event_json_stream`(전역 TaskEvent→JSON, 순수·테스트) + `dashboard_events_handler`(GET /dashboard/events SSE, 버스 미활성 503) + `dashboard_roster_handler`(GET /dashboard/roster, serde_json 수동 응답=axum json피처 미활성 회피, 신규의존0) + HTML JS(EventSource 피드 200cap + roster 5초 폴). 배선=a2a_store clone → dashboard 서브라우터 `.with_state` → `.merge(authed)`(auth 경계 불변). **검증**: 전체 build+lib 456 pass(회귀0)+clippy 클린. 라이브 스모크 4종 통과(/dashboard 200, /roster 3자 online JSON, /events SSE 실이벤트 수신, /mcp 401). tunaLlama 이탈점=axum::Json→serde_json 수동(합당, json피처 미활성).
+- **맥 roster 복구 자동 완료**: 스모크 중 /dashboard/roster에 mac-claude-sup·mac-codex-sup·win-codex-sup **3자 다 online**(heartbeat 갱신). 맥이 A2A task e0bc5b3f 소비해 git pull+재빌드+--tags 재기동한 것 = step 1 맥 쪽도 성사(사람 셔틀 0). to_selector role=supervised = 3자 반환.
+- **재기동 레이스 교훈**: 브로커·watcher를 동시 Start-Process하면 watcher가 브로커 listen 전에 첫 poll→"initialize 요청 실패"로 **종료**(poll 루프가 최초 initialize 실패에 exit). 브로커 기동·listen 확인 후 watcher 기동해야 함(견고화 후보=poll 최초 연결 재시도).
+- **다음**: T2 커밋 여부 사용자 확인 후 T3(goal 폼→SendMessage, 토큰 게이트) 위임. backend-private 세션14 PID = 브로커 39044·watcher 15664(재빌드 후 재기동).
