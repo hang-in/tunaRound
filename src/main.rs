@@ -238,6 +238,10 @@ struct PollArgs {
     /// 감시할 to_agent id(이 agent 앞 새 submitted task만 알린다).
     #[arg(long)]
     agent: String,
+    /// 로스터 발견용 태그 "k=v,k=v"(예: "machine=win,runner=codex,role=supervised,project=tunaround").
+    /// dispatcher가 to_selector로 이 감독을 발견한다. 생략 가능.
+    #[arg(long)]
+    tags: Option<String>,
     /// poll 간격(초, 기본 15).
     #[arg(long, default_value_t = 15)]
     interval: u64,
@@ -1254,7 +1258,15 @@ fn main() {
     if let Some(a) = poll_args {
         let result = rt.block_on(async {
             let client = tunaround::mcp_client::McpHttpClient::connect(a.core.clone(), a.token.clone()).await?;
-            tunaround::worker::run_poll_loop(&client, &a.agent, a.interval, a.once, a.on_task.as_deref()).await
+            tunaround::worker::run_poll_loop(
+                &client,
+                &a.agent,
+                a.tags.clone(),
+                a.interval,
+                a.once,
+                a.on_task.as_deref(),
+            )
+            .await
         });
         if let Err(e) = result {
             eprintln!("[poll] 오류: {e}");
@@ -2083,6 +2095,44 @@ mod cli_tests {
         match cli.command {
             Some(Commands::Reindex(a)) => assert_eq!(a.db.as_deref(), Some("x.db")),
             other => panic!("Reindex 서브커맨드 기대, 실제: {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "worker")]
+    #[test]
+    fn poll_parses_tags_for_supervisor_roster_discovery() {
+        // 감독(supervisor) poll watcher도 워커처럼 --tags로 발견 가능해야 한다(로스터 상시 online 유지 배선).
+        let cli = Cli::try_parse_from([
+            "tunaround",
+            "poll",
+            "--core",
+            "http://127.0.0.1:8770/mcp",
+            "--agent",
+            "win-sup",
+            "--tags",
+            "machine=win,runner=codex,role=supervised,project=tunaround",
+        ])
+        .expect("파싱 성공");
+        match cli.command {
+            Some(Commands::Poll(a)) => {
+                assert_eq!(a.agent, "win-sup");
+                assert_eq!(
+                    a.tags.as_deref(),
+                    Some("machine=win,runner=codex,role=supervised,project=tunaround")
+                );
+            }
+            other => panic!("Poll 서브커맨드 기대, 실제: {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "worker")]
+    #[test]
+    fn poll_tags_is_optional() {
+        let cli = Cli::try_parse_from(["tunaround", "poll", "--core", "http://x/mcp", "--agent", "a"])
+            .expect("파싱 성공");
+        match cli.command {
+            Some(Commands::Poll(a)) => assert_eq!(a.tags, None),
+            other => panic!("Poll 서브커맨드 기대, 실제: {other:?}"),
         }
     }
 }
