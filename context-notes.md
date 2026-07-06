@@ -806,3 +806,11 @@
 - **라이브 결과**: discover가 이 머신 활동 claude 세션 2건 발견 → **3332c84f(project=secall, armed=False)** + **4a46a380(project=tunaRound, armed=True=보스 dedup)**. **설계 §0 동기예시(tunaRound 세션에서 secall 세션 발견) 실증.** roster=win-opus-boss(display, uuid=세션id 4a46a380).
 - **라이브 상태(현)**: 브로커 detached PID 21196(dashboard+worker 빌드, 토큰 [REDACTED-backend-private], db %LOCALAPPDATA%). win-codex-sup watcher 36336. win-opus-boss poll(uuid=4a46a380, display=win-opus-boss). 대시보드 http://127.0.0.1:8770/dashboard 라이브(후보 패널 포함). mac-claude-sup·mac-codex-sup 자동 재연결. **재부팅 시 죽음.**
 - **다음**: 브라우저 패널 렌더 사용자 확인 → S4(codex 직접제어) 또는 v2-40 마무리·PR #13 머지. secall 후보에 send_task로 실제 A2A(단 secall 세션은 미무장이라 수신 워처 필요=발견≠제어).
+
+## 2026-07-06 세션15 후속3: v2-40 S4 codex 직접 제어 (트림 MVP)
+
+- **(b) S4 착수**(사용자). 정찰: codex 자동발견(프로세스 cmdline 스캔)은 sysinfo 등 프로세스-열거 인프라 없어 취약 → **MVP 트림=수동 ws 직접제어부터**(codex 발견은 S4d 후속). codex_inject::run(ws,agent,text,...) 제어 프리미티브 재사용.
+- **핵심 발견**: armed codex 감독(win-codex-sup)은 **이미 goal 폼으로 제어됨**(send_task→poll on-task→codex-inject). S4 net-new=미무장 codex 세션 직접제어. 로컬은 브로커 in-process codex_inject로 ws 직접 도달 가능(worker 피처 빌드).
+- **S4a**: codex_inject::run을 Result<()>→**Result<String>**(PrintText 누적해 최종답 반환, CLI는 handle_incoming이 stdout 출력 유지). 브로커 POST /dashboard/control(loopback ConnectInfo·worker cfg 게이트, ApprovalPolicy::Never+WorkspaceWrite, in-process run). worker 없이 빌드시 501. ControlReq agent/timeout은 not(worker)서 dead_code라 cfg_attr allow.
+- **S4b**: ControlForm.tsx(goal 폼 미러, ws 기본 ws://127.0.0.1:8790, 응답 pre .control-answer). 원격=관전 안내.
+- **피드 관찰(사용자)**: win-codex-sup 미완료=**사용량 초과**(코드버그 아님), mac-codex-sup=모델 gpt-5.4-mini 전환 팝업 선택 후 완료. **인프라 정상, goal→codex 경로 실증.** → S4 스모크도 win codex 사용량 걸리면 경로는 검증되나 codex 응답은 외부요인.

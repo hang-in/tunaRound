@@ -51,7 +51,16 @@
 - candidate 보고에 토큰·LAN IP 평문 금지(uuid·project·runner·age만). read(발견) 무인증 로컬, report는 토큰(브로커 write 경계).
 - project 태그로 스코프 격리(엉뚱 프로젝트 세션 노출 방지는 S3 필터).
 
-## S3~S5 (설계 §4 골자, 후속)
-- S3 대시보드 "발견된 세션" 패널(candidate armed=false, "연결/arm" 액션) + candidate→roster 승격 애니.
-- S4 codex 직접 제어(app-server candidate turn/start) + busy/available/consent 스코핑.
+## S4: codex 직접 제어 (app-server turn/start 주입)
+
+> 대시보드에서 codex app-server 세션에 turn/start를 직접 주입해 제어한다(v2-37 codex-inject 재사용).
+> **MVP 트림**: codex 프로세스 자동발견(cmdline 스캔)은 기존 프로세스-열거 인프라(sysinfo) 없어 취약 → 후속.
+> **수동 ws 제어부터 실증.** 로컬(loopback) 전용, 브로커 in-process codex_inject(worker 피처).
+
+- [x] S4a: `codex_inject::run`이 최종답 반환(Result<String>, PrintText 누적) + 브로커 `POST /dashboard/control`(loopback만, worker 게이트): `{ws,text,agent?,timeout?}` → in-process turn/start 주입 → `{answer}`. **check(worker 유무 양쪽)·clippy 클린, codex_inject 23 pass.**
+- [x] S4b: 대시보드 ControlForm.tsx(ws 입력 + 지시 텍스트 → POST /dashboard/control, 응답 pre 표시). 원격=관전 안내. api.ts sendControl. App mount + CSS. **npm build 211KB.**
+- [ ] S4c 라이브 스모크: 대시보드 제어 폼 → codex app-server(ws://8790)에 주입 → 응답 확인(단 codex 사용량/모델 외부요인 가능).
+- [ ] S4d(후속): codex 세션 자동발견(프로세스/rollout) → 후보 패널 편입 + busy/consent 스코핑.
+
+## S5 (설계 §4, 후속)
 - S5 검증: tunaRound→secall 세션 왕복 + 크로스머신 발견/arm.

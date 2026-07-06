@@ -1129,7 +1129,8 @@ pub async fn serve_http_mcp_on_listener(
         .route("/dashboard/events", get(dashboard_events_handler))
         .route("/dashboard/roster", get(dashboard_roster_handler))
         .route("/dashboard/candidates", get(dashboard_candidates_handler))
-        .route("/dashboard/goal", axum::routing::post(dashboard_goal_handler));
+        .route("/dashboard/goal", axum::routing::post(dashboard_goal_handler))
+        .route("/dashboard/control", axum::routing::post(dashboard_control_handler));
     #[cfg(feature = "dashboard")]
     {
         // Vite base=/dashboard/라 에셋은 /dashboard/assets/*로 나가 events/roster와 경로 미충돌.
@@ -1455,6 +1456,74 @@ async fn dashboard_goal_handler(
         .into_response()
 }
 
+
+/// POST /dashboard/control: 로컬(loopback) 총감독이 codex app-server 세션에 turn/start를 직접 주입한다
+/// (v2-40 S4). body = {"ws":"ws://127.0.0.1:8790","text":"지시","agent"?:"...","timeout"?:300}.
+/// 응답 = {"answer":"codex 최종답"} 또는 에러. 원격(비-loopback)은 403(관전 전용). 실제 주입은 worker 피처.
+#[cfg(feature = "serve")]
+async fn dashboard_control_handler(
+    axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    body: axum::body::Bytes,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    // loopback만 제어 허용. 원격은 관전 전용(goal과 동일 신뢰 경계).
+    if !peer.ip().is_loopback() {
+        return (
+            axum::http::StatusCode::FORBIDDEN,
+            "원격 관전 모드: codex 제어는 로컬(loopback)에서만 가능합니다.",
+        )
+            .into_response();
+    }
+    // agent·timeout은 worker 피처 빌드에서만 읽힌다(worker 없이 빌드하면 501). 조건부 DTO라 dead_code 허용.
+    #[derive(serde::Deserialize)]
+    #[cfg_attr(not(feature = "worker"), allow(dead_code))]
+    struct ControlReq {
+        ws: String,
+        text: String,
+        agent: Option<String>,
+        timeout: Option<u64>,
+    }
+    let req: ControlReq = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(e) => return (axum::http::StatusCode::BAD_REQUEST, format!("잘못된 요청: {e}")).into_response(),
+    };
+    if req.ws.trim().is_empty() || req.text.trim().is_empty() {
+        return (axum::http::StatusCode::BAD_REQUEST, "ws와 text가 필요합니다.").into_response();
+    }
+    #[cfg(feature = "worker")]
+    {
+        let agent = req.agent.unwrap_or_else(|| "dashboard-control".to_string());
+        let timeout = req.timeout.unwrap_or(300);
+        // 제어 주입은 tuna-broker MCP 호출 자동승인(never) + workspace-write(감독 레시피와 동일).
+        let approval = crate::codex_appserver::ApprovalPolicy::Never;
+        let sandbox = crate::codex_appserver::SandboxMode::WorkspaceWrite;
+        match crate::codex_inject::run(&req.ws, &agent, &req.text, approval, sandbox, timeout, false).await {
+            Ok(answer) => {
+                #[derive(serde::Serialize)]
+                struct Resp {
+                    answer: String,
+                }
+                let bodyv = serde_json::to_vec(&Resp { answer }).unwrap_or_else(|_| b"{}".to_vec());
+                (
+                    axum::http::StatusCode::OK,
+                    [(axum::http::header::CONTENT_TYPE, "application/json")],
+                    bodyv,
+                )
+                    .into_response()
+            }
+            Err(e) => (axum::http::StatusCode::BAD_GATEWAY, format!("codex 제어 실패: {e}")).into_response(),
+        }
+    }
+    #[cfg(not(feature = "worker"))]
+    {
+        let _ = req;
+        (
+            axum::http::StatusCode::NOT_IMPLEMENTED,
+            "worker 피처 없이 빌드됨: codex 제어(codex-inject) 비활성입니다.",
+        )
+            .into_response()
+    }
+}
 
 /// stdin/stdout을 전송으로 사용하는 stdio MCP 서버를 기동한다.
 pub async fn start_mcp_server(

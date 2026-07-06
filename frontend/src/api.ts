@@ -117,3 +117,32 @@ export async function sendGoal(text: string, targets: string[]): Promise<SendGoa
   const data = (await res.json()) as GoalResponse
   return { kind: 'ok', created: data.created }
 }
+
+// codex 직접 제어 결과(POST /dashboard/control 응답).
+export type SendControlOutcome =
+  | { kind: 'ok'; answer: string }
+  | { kind: 'forbidden' }
+  | { kind: 'error'; message: string }
+
+// codex app-server 세션(ws)에 turn/start를 직접 주입한다(v2-40 S4, loopback 무인증, 원격은 403).
+export async function sendControl(ws: string, text: string): Promise<SendControlOutcome> {
+  let res: Response
+  try {
+    res = await fetch('/dashboard/control', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ws, text }),
+    })
+  } catch (err) {
+    return { kind: 'error', message: err instanceof Error ? err.message : String(err) }
+  }
+  if (res.status === 403) {
+    return { kind: 'forbidden' }
+  }
+  if (!res.ok) {
+    const detail = await res.text().catch(() => '')
+    return { kind: 'error', message: 'codex 제어 실패: ' + res.status + (detail ? ' — ' + detail : '') }
+  }
+  const data = (await res.json()) as { answer: string }
+  return { kind: 'ok', answer: data.answer }
+}

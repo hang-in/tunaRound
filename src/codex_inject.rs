@@ -302,7 +302,7 @@ pub async fn run(
     sandbox: SandboxMode,
     timeout_secs: u64,
     force_new: bool,
-) -> Result<(), String> {
+) -> Result<String, String> {
     // deadline을 먼저 잡고 connect_async도 같은 예산으로 감싼다(연결 단계가 무한정 대기하지 않게, 리뷰 지적).
     let deadline = Instant::now() + Duration::from_secs(timeout_secs);
     let (ws_stream, _resp) = tokio::time::timeout(
@@ -366,15 +366,24 @@ pub async fn run(
     send_json(&mut sink, &build_turn_start_request(turn_start_id, &thread_id, text, Some(approval))).await?;
 
     // 4. turn/completed까지 알림 펌프(승인은 handle_incoming이 자동응답).
+    // 최종답(PrintText)을 누적해 반환한다 - CLI는 handle_incoming이 이미 stdout에 출력하고,
+    // 대시보드 제어(/dashboard/control)는 이 반환값을 응답으로 쓴다.
+    let mut answer = String::new();
     loop {
         let msg = recv_json(&mut stream, deadline).await?;
         let Some(incoming) = classify_message(&msg) else { continue };
         match handle_incoming(&mut sink, &incoming, &thread_id).await? {
             InjectAction::Complete => {
                 eprintln!("[codex-inject] turn/completed 수신, 종료");
-                return Ok(());
+                return Ok(answer);
             }
             InjectAction::Fail(e) => return Err(format!("codex-inject: 턴 실패: {e}")),
+            InjectAction::PrintText(t) => {
+                if !answer.is_empty() {
+                    answer.push('\n');
+                }
+                answer.push_str(&t);
+            }
             _ => {}
         }
     }

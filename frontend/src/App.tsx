@@ -9,6 +9,7 @@ import Roster from './components/Roster'
 import Feed from './components/Feed'
 import Candidates from './components/Candidates'
 import GoalForm from './components/GoalForm'
+import ControlForm from './components/ControlForm'
 
 // 로컬(총감독) 세션인지 원격 관전인지 클라이언트에서 판정한다(loopback 여부).
 const LOOPBACK_HOSTS = ['127.0.0.1', 'localhost', '[::1]', '::1']
@@ -128,6 +129,7 @@ export default function App() {
         <Feed onConnectedChange={handleConnected} onEvent={handleEvent} />
         <Candidates />
         <GoalForm agents={agents} remoteViewer={remoteViewer} />
+        <ControlForm remoteViewer={remoteViewer} />
       </main>
     </div>
   )

@@ -416,3 +416,11 @@
 
 - [x] S3 코드: api.ts Candidate 타입+fetchCandidates / Candidates.tsx(자체 5초 폴, roster 스타일 재사용, armed 필터, runner/project/source shield, amber 상태닷, "연결" 복사 버튼) / App.tsx mount(Feed 다음) / index.css candidates-section(full-width)+status-dot.candidate+candidate-arm. **npm run build 통과(208KB, tsc 클린).**
 - [x] S2c+S3 라이브 스모크(묶음): 브로커 재빌드(dashboard worker)·재기동 → discover --once → **/dashboard/candidates 후보 2건**: 3332c84f(project=secall, armed=False=미무장 후보), 4a46a380(project=tunaRound, armed=True=보스 dedup). **설계 §0 예시(tunaRound→secall 발견) 실현.** roster=win-opus-boss(display, uuid=세션id). project=cwd 정확추출. 브라우저 패널 렌더는 사용자 확인 대기(대시보드 라이브). **정합성 수정 반영(3c21dce): uuid=세션id+display_name, cwd 다중행 스캔.**
+
+## Plan v2-40 S4: codex 직접 제어 (docs/plans/v2-40)
+
+> 대시보드→codex app-server turn/start 직접 주입(codex-inject 재사용). MVP=수동 ws 제어(자동발견 후속). loopback 전용, 브로커 in-process(worker 피처).
+
+- [x] S4a: codex_inject::run→Result<String>(최종답 반환) + POST /dashboard/control(loopback·worker게이트, in-process codex_inject::run) + route. check(worker 유무)·clippy 클린, codex_inject 23 pass.
+- [x] S4b: ControlForm.tsx(ws+지시→POST, answer pre) + api sendControl + App mount + CSS. npm build 211KB.
+- [ ] S4c: 라이브 스모크(대시보드 제어폼→ws://8790 주입→응답).
