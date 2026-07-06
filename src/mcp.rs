@@ -16,6 +16,7 @@ use crate::store::a2a::{Artifact, Message, Part, TaskState};
 use crate::store::agents::{
     format_ambiguous_candidates, parse_tags, validate_send_target, AgentEntry, SendTarget, AGENT_TTL_SECS,
 };
+use crate::store::candidates::{CandidateEntry, CANDIDATE_TTL_SECS};
 use crate::store::sqlite::SqliteStore;
 
 /// search_context 툴 파라미터.
@@ -137,6 +138,32 @@ pub struct ListAgentsParams {
     /// 태그 셀렉터 "k=v,k=v"(부분집합 매칭). 생략 시 online 전부.
     pub selector: Option<String>,
 }
+
+/// report_candidates 툴의 후보 한 건(발견 리포터가 열거해 보고). reported_at은 브로커가 수신 시각으로 채운다.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct CandidateInput {
+    /// 세션 id(claude=jsonl 파일 stem). roster uuid와 같은 공간이라 armed overlay가 가능하다.
+    pub uuid: String,
+    /// 러너 종류(claude | codex | ...).
+    pub runner: String,
+    /// 추정 프로젝트(불명이면 생략).
+    pub project: Option<String>,
+    /// 발견 출처(예: claude-jsonl).
+    pub source: String,
+    /// 세션 활동 경과 초(claude=jsonl mtime 유래).
+    pub age_secs: i64,
+}
+
+/// report_candidates 툴 파라미터(발견 리포터가 로컬 세션 후보 배열을 보고).
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ReportCandidatesParams {
+    /// 보고할 후보 목록(uuid 단위 upsert, 재보고 없으면 TTL로 소멸).
+    pub candidates: Vec<CandidateInput>,
+}
+
+/// list_candidates 툴 파라미터(필드 없음). fresh 후보 전체를 armed overlay와 함께 반환한다.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ListCandidatesParams {}
 
 /// get_task 툴 파라미터(dispatcher가 위임한 task의 상태·결과를 확인할 때 사용).
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -382,6 +409,29 @@ pub fn format_agents(agents: &[AgentEntry]) -> String {
                 .collect::<Vec<_>>()
                 .join(", ");
             format!("[{}] {} tags: {} (heartbeat={})", a.uuid, name, tags, a.last_heartbeat)
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// CandidateEntry 목록을 사람이 읽는 텍스트로 조립한다(비면 "발견된 세션 없음").
+/// armed_uuids(online roster 소속)에 있으면 armed, 아니면 candidate로 표시한다.
+pub fn format_candidates(
+    candidates: &[CandidateEntry],
+    armed_uuids: &std::collections::HashSet<String>,
+) -> String {
+    if candidates.is_empty() {
+        return "발견된 세션 없음".to_string();
+    }
+    candidates
+        .iter()
+        .map(|c| {
+            let armed = if armed_uuids.contains(&c.uuid) { "armed" } else { "candidate" };
+            let project = c.project.as_deref().unwrap_or("-");
+            format!(
+                "[{}] {}/{} project={} age={}s ({})",
+                c.uuid, c.runner, c.source, project, c.age_secs, armed
+            )
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -809,6 +859,74 @@ impl TunaSearchServer {
         }
     }
 
+    #[tool(description = "발견한 미무장 세션 후보를 브로커에 보고한다(발견 리포터용, uuid 단위 upsert).")]
+    async fn report_candidates(
+        &self,
+        Parameters(p): Parameters<ReportCandidatesParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let Some(store) = self.a2a_store.clone() else {
+            return Ok(CallToolResult::success(vec![Content::text(
+                "A2A task 저장소 미구성(report_candidates 비활성)".to_string(),
+            )]));
+        };
+        let inputs = p.candidates;
+        let outcome = tokio::task::spawn_blocking(move || {
+            let store = store.lock().unwrap_or_else(|e| e.into_inner());
+            let now = store.now()?;
+            let count = inputs.len();
+            let entries: Vec<CandidateEntry> = inputs
+                .into_iter()
+                .map(|c| CandidateEntry {
+                    uuid: c.uuid,
+                    runner: c.runner,
+                    project: c.project,
+                    source: c.source,
+                    age_secs: c.age_secs,
+                    reported_at: now.clone(),
+                })
+                .collect();
+            store.report_candidates(entries, &now);
+            Ok::<String, String>(format!("후보 {count}건 보고됨"))
+        })
+        .await
+        .unwrap_or_else(|e| Err(format!("작업 실패: {e}")));
+        // R1: 보고 실패(now 오류)를 success로 위장하지 않는다.
+        match outcome {
+            Ok(t) => Ok(CallToolResult::success(vec![Content::text(t)])),
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!("보고 실패: {e}"))])),
+        }
+    }
+
+    #[tool(description = "발견된(미무장) 세션 후보를 조회한다(armed overlay: online roster 소속이면 armed).")]
+    async fn list_candidates(
+        &self,
+        Parameters(_p): Parameters<ListCandidatesParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let Some(store) = self.a2a_store.clone() else {
+            return Ok(CallToolResult::success(vec![Content::text(
+                "A2A task 저장소 미구성(list_candidates 비활성)".to_string(),
+            )]));
+        };
+        let outcome = tokio::task::spawn_blocking(move || {
+            let store = store.lock().unwrap_or_else(|e| e.into_inner());
+            let now = store.now()?;
+            let candidates = store.list_candidates(&now, CANDIDATE_TTL_SECS);
+            // armed overlay: online roster에 있는 uuid는 이미 무장된 것으로 표시.
+            let armed: std::collections::HashSet<String> = store
+                .resolve_selector(&BTreeMap::new(), &now, AGENT_TTL_SECS)
+                .into_iter()
+                .collect();
+            Ok::<String, String>(format_candidates(&candidates, &armed))
+        })
+        .await
+        .unwrap_or_else(|e| Err(format!("작업 실패: {e}")));
+        // R1: 조회 실패(now 오류)를 success로 위장하지 않는다.
+        match outcome {
+            Ok(t) => Ok(CallToolResult::success(vec![Content::text(t)])),
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!("조회 실패: {e}"))])),
+        }
+    }
+
     #[tool(description = "위임한 A2A task의 상태를 조회한다(completed면 결과 텍스트도 함께 반환, dispatcher용).")]
     async fn get_task(
         &self,
@@ -865,6 +983,7 @@ impl ServerHandler for TunaSearchServer {
                  작업을 받는 쪽(worker)은 poll_tasks(agent)로 확인하고 claim_task(task_id)로 착수, complete_task(task_id, result)로 완료를 보고하세요. \
                  워커/세션은 register_agent(uuid, tags?, display_name?)로 로스터에 등록하고 heartbeat(uuid)로 주기 갱신하며, \
                  dispatcher는 list_agents(selector?)로 online 에이전트를 발견합니다. \
+                 발견 리포터는 report_candidates(candidates)로 미무장 세션 후보를 보고하고 list_candidates()로 후보를 조회합니다(armed=online roster 소속). \
                  브로커 운영자는 tasks()로 전체 열린 task를 미배달(no-consumer?)/고착(stuck?) 주석과 함께 조망할 수 있습니다."
                     .to_string(),
             )
@@ -1009,6 +1128,7 @@ pub async fn serve_http_mcp_on_listener(
     let mut dashboard = Router::new()
         .route("/dashboard/events", get(dashboard_events_handler))
         .route("/dashboard/roster", get(dashboard_roster_handler))
+        .route("/dashboard/candidates", get(dashboard_candidates_handler))
         .route("/dashboard/goal", axum::routing::post(dashboard_goal_handler));
     #[cfg(feature = "dashboard")]
     {
@@ -1195,6 +1315,59 @@ async fn dashboard_roster_handler(
     .await
     .unwrap_or_default();
     let body = serde_json::to_vec(&agents).unwrap_or_else(|_| b"[]".to_vec());
+    (
+        axum::http::StatusCode::OK,
+        [(axum::http::header::CONTENT_TYPE, "application/json")],
+        body,
+    )
+        .into_response()
+}
+
+/// GET /dashboard/candidates: 발견된(미무장) 세션 후보 JSON. 브라우저가 주기 폴(S3 "발견된 세션" 패널).
+/// armed는 저장값이 아니라 online roster 소속으로 계산한 overlay다(무장되면 자동 armed=true로 승격 표시).
+#[cfg(feature = "serve")]
+async fn dashboard_candidates_handler(
+    axum::extract::State(store): axum::extract::State<Arc<Mutex<crate::store::sqlite::SqliteStore>>>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    #[derive(serde::Serialize)]
+    struct DashCandidate {
+        uuid: String,
+        runner: String,
+        project: Option<String>,
+        source: String,
+        age_secs: i64,
+        reported_at: String,
+        armed: bool,
+    }
+    let candidates: Vec<DashCandidate> = tokio::task::spawn_blocking(move || {
+        let store = store.lock().unwrap_or_else(|e| e.into_inner());
+        let now = store.now().unwrap_or_default();
+        // armed overlay: online roster(AGENT_TTL_SECS)에 있는 uuid는 이미 무장된 것으로 표시.
+        let armed: std::collections::HashSet<String> = store
+            .resolve_selector(&BTreeMap::new(), &now, AGENT_TTL_SECS)
+            .into_iter()
+            .collect();
+        store
+            .list_candidates(&now, CANDIDATE_TTL_SECS)
+            .into_iter()
+            .map(|c| {
+                let is_armed = armed.contains(&c.uuid);
+                DashCandidate {
+                    uuid: c.uuid,
+                    runner: c.runner,
+                    project: c.project,
+                    source: c.source,
+                    age_secs: c.age_secs,
+                    reported_at: c.reported_at,
+                    armed: is_armed,
+                }
+            })
+            .collect()
+    })
+    .await
+    .unwrap_or_default();
+    let body = serde_json::to_vec(&candidates).unwrap_or_else(|_| b"[]".to_vec());
     (
         axum::http::StatusCode::OK,
         [(axum::http::header::CONTENT_TYPE, "application/json")],
@@ -2313,6 +2486,43 @@ mod tests {
         assert!(text.contains("win-claude"));
         assert!(text.contains("machine=win"));
         assert!(text.contains("2026-07-04 10:00:00"));
+    }
+
+    #[test]
+    fn format_candidates_marks_armed_overlay() {
+        let cands = vec![
+            CandidateEntry {
+                uuid: "s1".to_string(),
+                runner: "claude".to_string(),
+                project: Some("tunaround".to_string()),
+                source: "claude-jsonl".to_string(),
+                age_secs: 5,
+                reported_at: "2026-07-06 10:00:00".to_string(),
+            },
+            CandidateEntry {
+                uuid: "s2".to_string(),
+                runner: "codex".to_string(),
+                project: None,
+                source: "claude-jsonl".to_string(),
+                age_secs: 9,
+                reported_at: "2026-07-06 10:00:00".to_string(),
+            },
+        ];
+        // s1은 online roster 소속(armed), s2는 미무장(candidate).
+        let armed: std::collections::HashSet<String> = ["s1".to_string()].into_iter().collect();
+        let text = format_candidates(&cands, &armed);
+        assert!(text.contains("[s1]"));
+        assert!(text.contains("(armed)"));
+        assert!(text.contains("[s2]"));
+        assert!(text.contains("(candidate)"));
+        assert!(text.contains("project=tunaround"));
+        assert!(text.contains("project=-")); // s2는 project 불명
+    }
+
+    #[test]
+    fn format_candidates_empty_says_none() {
+        let armed = std::collections::HashSet::new();
+        assert_eq!(format_candidates(&[], &armed), "발견된 세션 없음");
     }
 
     #[test]

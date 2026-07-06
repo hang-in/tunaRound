@@ -789,3 +789,11 @@
 - **구현 주체**: Opus 직접(Claude Code 훅 stdin/JSON I/O 계약 + tunaround CLI 정밀 배선. 프론트/버전라이브러리 아니지만 정밀 통합이라 tunaLlama 드리프트 회피=메모리 [[tunallama-unsuitable-for-version-ui-libs]] 취지 준용).
 - **env 계약**: TUNA_AUTOARM=1(마스터 opt-in) / TUNA_BROKER_CORE(기본 127.0.0.1:8770/mcp) / TUNA_BROKER_TOKEN(필수, 이미 setx됨) / TUNA_AUTOARM_AGENT(기본 host-claude-session8, 총감독=win-opus-boss) / TUNA_AUTOARM_ROLE(기본 session) / TUNA_AUTOARM_PROJECT(기본 cwd basename) / TUNA_BIN(기본 PATH tunaround).
 - **라이브 상태**: 브로커 detached PID 35652 생존(roster=200), 토큰 [REDACTED-backend-private](backend-private). 3자 감독(mac-claude-sup·mac-codex-sup·win-codex-sup) online 유지 중.
+
+## 2026-07-06 세션15 후속: v2-40 S2 발견 리포터 착수
+
+- **S1 완료·머지대기**: 자동무장 훅(8ccacac, PR #13 umbrella). 이 세션 win-opus-boss 실무장→대시보드 4자 online 실증(브라우저 확인). **정책(사용자)**: v2-40 각 단계 커밋만, PR은 v2-40 마무리 시 머지(단계별 새 PR 금지). 브랜치 feat/v2-40-autoarm-hook 누적.
+- **S2 스코프 결정**: claude 세션 발견(jsonl mtime, 무의존)이 MVP. **codex 프로세스 스캔 후속**(codex는 app-server로 이미 armable + process→project 매핑 불안정 + 신규 dep(sysinfo/tasklist glue) 회피).
+- **정찰 사실**: 세션 id=`~/.claude/projects/<mangled-cwd>/<uuid>.jsonl` stem. mangled-cwd=cwd의 /·\·: → `-`(예 D--privateProject-tunaRound). recent mtime=활동. **이 세션 id=4a46a380-...** 발견 가능. roster 저장=SqliteStore.agent_roster(RefCell HashMap, sqlite.rs:133) 미러링. MCP 클라=src/mcp_client.rs McpHttpClient+call_tool 제네릭+타입 래퍼(register_agent 패턴).
+- **armed overlay 결정**: candidate에 armed 저장 안 함. 브로커가 list_candidates/HTTP에서 candidate.uuid가 online roster(AGENT_TTL 90s)에 있으면 armed=true 계산. 무장(S1)되면 자동 armed=true로 승격 표시.
+- **분담**: S2a(4파일 교차배선)=Opus 직접(cohesive 미러, 메모리 [[tunallama-unsuitable-for-version-ui-libs]] 취지=교차배선은 Opus). S2b(discover 자족 순수함수+CLI)=tunaLlama 위임+Opus 리뷰.

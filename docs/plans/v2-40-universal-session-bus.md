@@ -28,8 +28,30 @@
 - 토큰·LAN IP 평문 커밋 금지(설정은 env/gitignored). `.claude/settings.json`엔 값 아닌 커맨드만.
 - 중복 무장 가드(같은 세션 재-hook 시 pidfile 생존이면 skip).
 
-## S2~S5 (설계 §4 골자, 후속)
-- S2 발견 리포터: `tunaround discover`(로컬 세션 열거 → 브로커 candidate 보고) + candidate 저장/조회.
-- S3 대시보드 "발견된 세션" 패널 + arm 액션.
+## S2: 발견 리포터 (미무장 세션 가시화)
+
+> 목표: 무장(S1) 안 한 세션도 대시보드에 후보(candidate)로 뜨게 한다. 각 머신이 로컬 세션을 열거해 브로커에 보고 → 브로커가 집계 → 대시보드 "발견된 세션" 패널(S3).
+> MVP 스코프: **claude 세션 발견**(`~/.claude/projects/<mangled-cwd>/*.jsonl` recent mtime, 무의존). codex 프로세스 스캔은 후속(codex는 app-server 경로로 이미 armable + process→project 매핑 불안정).
+
+### 데이터 계약
+- CandidateEntry: `{uuid(=세션 id), runner, project, source, age_secs, reported_at}`. `armed`는 저장하지 않고 브로커가 조회 시 online roster 소속 여부로 overlay 계산.
+- stale: reported_at 기준 TTL(기본 CANDIDATE_TTL_SECS, 예 180초)로 자연 제외(리포터 죽으면 후보에서 사라짐).
+
+- [ ] S2a (Opus 직접, 4파일 교차배선): 브로커 candidate 저장 + 조회 + overlay.
+  - `src/store/candidates.rs`(신규): CandidateEntry 모델 + 순수 함수(is_fresh 등) + 단위테스트.
+  - `sqlite.rs`: `candidate_pool: RefCell<HashMap<String,CandidateEntry>>` 필드 + `report_candidates(reporter_key, Vec<CandidateEntry>, now)`(리포터별 전체 교체) + `list_candidates(now, ttl)`(fresh만).
+  - `mcp.rs`: MCP 도구 `report_candidates`(candidates 배열)/`list_candidates` + `GET /dashboard/candidates`(무인증 outer, armed overlay=uuid∈online roster). 스키마/툴 안내 갱신.
+  - `mcp_client.rs`: `report_candidates`/`list_candidates` 타입 래퍼(register_agent 패턴).
+- [ ] S2b (tunaLlama 위임 + Opus 리뷰): `tunaround discover` 열거.
+  - 순수 함수: mangled-cwd 디렉토리명 → project 추정, jsonl stem → 세션 uuid, mtime window(--stale-mins)로 활동 세션 필터. 단위테스트.
+  - CLI `discover --core --token [--interval N] [--stale-mins M] [--once]`: 열거 → CandidateEntry 빌드 → `client.report_candidates`. --interval 데몬/--once.
+- [ ] S2c: 테스트 + 라이브 스모크 - 이 머신 discover → 내 세션(4a46a380..)이 후보 등장 → `/dashboard/candidates`에 armed overlay(win-opus-boss 무장분은 armed=true, 미무장 세션은 armed=false) 확인. 3-OS CI(discover 순수부 + 임베드 무관).
+
+### 안전
+- candidate 보고에 토큰·LAN IP 평문 금지(uuid·project·runner·age만). read(발견) 무인증 로컬, report는 토큰(브로커 write 경계).
+- project 태그로 스코프 격리(엉뚱 프로젝트 세션 노출 방지는 S3 필터).
+
+## S3~S5 (설계 §4 골자, 후속)
+- S3 대시보드 "발견된 세션" 패널(candidate armed=false, "연결/arm" 액션) + candidate→roster 승격 애니.
 - S4 codex 직접 제어(app-server candidate turn/start) + busy/available/consent 스코핑.
 - S5 검증: tunaRound→secall 세션 왕복 + 크로스머신 발견/arm.

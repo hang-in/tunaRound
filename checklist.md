@@ -401,3 +401,11 @@
 - [x] S1c: .claude/settings.json 두 훅 배선(${CLAUDE_PROJECT_DIR} 경로, env self-gate).
 - [x] S1d: 문서 a2a-usage §11(env 계약·동작·발견≠제어·LAN 복제).
 - [x] S1e: 라이브 테스트 통과 - mock stdin autoarm → win-autoarm-smoke online 등장(6태그) → disarm → poll kill + 90초 TTL 후 online=False 확인. 나머지 3자 감독 online 유지.
+
+## Plan v2-40 S2: 발견 리포터 (docs/plans/v2-40-universal-session-bus.md)
+
+> 미무장 세션도 대시보드 후보로. MVP=claude 세션(jsonl mtime, 무의존). candidate={uuid,runner,project,source,age_secs,reported_at}, armed는 브로커 overlay(online roster 소속). stale=reported_at TTL.
+
+- [x] S2a(Opus 직접): store/candidates.rs(CandidateEntry+is_fresh+CANDIDATE_TTL_SECS=180) / sqlite.rs candidate_pool+report_candidates(uuid upsert, now 덮어씀)+list_candidates(fresh만) / mcp.rs 도구 report_candidates·list_candidates(armed overlay=online roster) + GET /dashboard/candidates + format_candidates + 안내텍스트 / mcp_client.rs 래퍼. **검증: lib 385 pass(신규 8: is_fresh 4·store 2·format 2), clippy 클린.** bin 재빌드는 브로커 락으로 보류(라이브 스모크 S2c에서 조율).
+- [ ] S2b(tunaLlama+Opus 리뷰): tunaround discover 열거(mangled-cwd→project, jsonl stem→uuid, mtime window) + CLI report.
+- [ ] S2c: 테스트 + 라이브 스모크(이 머신 discover→내 세션 후보→/dashboard/candidates armed overlay).
