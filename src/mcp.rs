@@ -934,6 +934,7 @@ pub async fn serve_http_mcp_on_listener(
         http::{StatusCode, header::AUTHORIZATION},
         middleware::{self, Next},
         response::IntoResponse,
+        routing::get,
     };
     use rmcp::transport::streamable_http_server::{
         StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
@@ -946,6 +947,8 @@ pub async fn serve_http_mcp_on_listener(
     // MCP inbox 툴(poll_tasks/claim_task/complete_task)도 같은 a2a_store Arc를 공유한다(새 커넥션을
     // 만들지 않고 단일 mutex로 직렬화. Phase 1 저볼륨 전제. docs/design/v2-a2a-partner-delegation_2026-07-02.md §10-1).
     let a2a_store_for_mcp = a2a_store.clone();
+    // 대시보드 SSE/roster용 clone(같은 store = 같은 이벤트버스·로스터를 공유한다).
+    let a2a_store_for_dash = a2a_store.clone();
     let a2a_router = crate::a2a_server::build_router(a2a_store, agent_card);
 
     let retriever2 = retriever.clone();
@@ -977,7 +980,7 @@ pub async fn serve_http_mcp_on_listener(
     // MCP(/mcp)와 A2A(/a2a, /.well-known/agent-card.json)를 같은 axum app으로 병합한다.
     let merged = Router::new().nest_service("/mcp", service).merge(a2a_router);
 
-    let router: Router = if let Some(tok) = token {
+    let authed: Router = if let Some(tok) = token {
         let tok = Arc::new(tok);
         let bearer = middleware::from_fn(move |request: Request, next: Next| {
             let tok = tok.clone();
@@ -1000,10 +1003,285 @@ pub async fn serve_http_mcp_on_listener(
         merged
     };
 
-    eprintln!("[serve-mcp] HTTP MCP 서버 기동: {bound_addr}");
-    axum::serve(listener, router).await?;
+    // 대시보드 라우트(무인증 outer, read-only). events/roster API는 serve 피처에 항상 존재한다
+    // (SPA 유무 무관, 다른 클라이언트도 쓴다). SPA 정적 에셋은 dashboard 피처에서만 임베드 서빙하고,
+    // 피처가 없으면 /dashboard는 안내 페이지다. write(goal 폼)는 SPA가 /a2a bearer로 게이트한다.
+    let mut dashboard = Router::new()
+        .route("/dashboard/events", get(dashboard_events_handler))
+        .route("/dashboard/roster", get(dashboard_roster_handler))
+        .route("/dashboard/goal", axum::routing::post(dashboard_goal_handler));
+    #[cfg(feature = "dashboard")]
+    {
+        // Vite base=/dashboard/라 에셋은 /dashboard/assets/*로 나가 events/roster와 경로 미충돌.
+        dashboard = dashboard
+            .route("/dashboard", get(dashboard_index))
+            .route("/dashboard/favicon.svg", get(dashboard_favicon))
+            .route("/dashboard/assets/{*path}", get(dashboard_asset));
+    }
+    #[cfg(not(feature = "dashboard"))]
+    {
+        dashboard = dashboard.route("/dashboard", get(dashboard_fallback_page));
+    }
+    let app = dashboard.with_state(a2a_store_for_dash).merge(authed);
+
+    #[cfg(feature = "dashboard")]
+    eprintln!("[serve-mcp] HTTP MCP 서버 기동: {bound_addr} (대시보드 SPA: /dashboard)");
+    #[cfg(not(feature = "dashboard"))]
+    eprintln!("[serve-mcp] HTTP MCP 서버 기동: {bound_addr} (대시보드: dashboard 피처 없이 빌드됨)");
+    // ConnectInfo(peer addr)로 /dashboard/goal의 loopback 판정을 하기 위해 connect-info make service를 쓴다.
+    axum::serve(listener, app.into_make_service_with_connect_info::<std::net::SocketAddr>()).await?;
     Ok(())
 }
+
+/// 대시보드 SPA(dashboard 피처) 임베드 자산. release=바이너리 내장, debug=디스크(frontend/dist) 읽기.
+/// frontend를 `npm run build`한 뒤 `cargo build --features dashboard`로 임베드한다.
+#[cfg(feature = "dashboard")]
+#[derive(rust_embed::RustEmbed)]
+#[folder = "frontend/dist"]
+struct DashAssets;
+
+/// 임베드된 SPA 자산 하나를 확장자 기반 MIME으로 서빙한다(없으면 404).
+#[cfg(feature = "dashboard")]
+fn serve_embedded(path: &str) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    match DashAssets::get(path) {
+        Some(content) => {
+            ([(axum::http::header::CONTENT_TYPE, mime_for_path(path))], content.data.into_owned()).into_response()
+        }
+        None => axum::http::StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+/// 경로 확장자로 정적 자산 Content-Type을 고른다(SPA 번들이 쓰는 종류만, 신규 의존 회피).
+#[cfg(feature = "dashboard")]
+fn mime_for_path(path: &str) -> &'static str {
+    match path.rsplit('.').next() {
+        Some("html") => "text/html; charset=utf-8",
+        Some("js") | Some("mjs") => "text/javascript; charset=utf-8",
+        Some("css") => "text/css; charset=utf-8",
+        Some("svg") => "image/svg+xml",
+        Some("woff2") => "font/woff2",
+        Some("woff") => "font/woff",
+        Some("json") => "application/json",
+        Some("ico") => "image/x-icon",
+        Some("png") => "image/png",
+        _ => "application/octet-stream",
+    }
+}
+
+/// GET /dashboard: SPA 진입 index.html.
+#[cfg(feature = "dashboard")]
+async fn dashboard_index() -> axum::response::Response {
+    serve_embedded("index.html")
+}
+
+/// GET /dashboard/favicon.svg: SPA 파비콘.
+#[cfg(feature = "dashboard")]
+async fn dashboard_favicon() -> axum::response::Response {
+    serve_embedded("favicon.svg")
+}
+
+/// GET /dashboard/assets/{*path}: Vite 번들 자산(js/css/폰트 등).
+#[cfg(feature = "dashboard")]
+async fn dashboard_asset(
+    axum::extract::Path(path): axum::extract::Path<String>,
+) -> axum::response::Response {
+    serve_embedded(&format!("assets/{path}"))
+}
+
+/// dashboard 피처 없이 빌드된 경우의 /dashboard 안내 페이지(API events/roster는 그대로 동작).
+#[cfg(all(feature = "serve", not(feature = "dashboard")))]
+async fn dashboard_fallback_page() -> axum::response::Html<&'static str> {
+    axum::response::Html(
+        "<!DOCTYPE html><html lang=\"ko\"><head><meta charset=\"utf-8\"><title>총감독 대시보드</title></head>\
+         <body style=\"font-family:system-ui;margin:2rem\"><h1>대시보드 미포함 빌드</h1>\
+         <p>이 바이너리는 <code>dashboard</code> 피처 없이 빌드되었습니다. \
+         <code>cargo build --features dashboard</code>로 빌드하거나 release 바이너리를 사용하세요. \
+         API <code>/dashboard/events</code>, <code>/dashboard/roster</code>는 동작합니다.</p></body></html>",
+    )
+}
+
+/// 전역 task 이벤트를 JSON data 문자열로 흘리는 순수 스트림(단위테스트 대상). task_id 필터 없이 모든
+/// TaskEvent를 내보낸다. Lagged는 스킵하고 계속, Closed면 종료한다.
+#[cfg(feature = "serve")]
+fn dashboard_event_json_stream(
+    rx: tokio::sync::broadcast::Receiver<crate::store::a2a::TaskEvent>,
+) -> impl futures_util::Stream<Item = String> {
+    use crate::store::a2a::TaskEvent;
+    futures_util::stream::unfold(rx, |mut rx| async move {
+        loop {
+            match rx.recv().await {
+                Ok(ev) => {
+                    let (kind, task) = match &ev {
+                        TaskEvent::Status(t) => ("status", t),
+                        TaskEvent::Completed(t) => ("completed", t),
+                    };
+                    let envelope = serde_json::json!({ "event": kind, "task": task });
+                    let data = serde_json::to_string(&envelope).unwrap_or_else(|_| "{}".to_string());
+                    return Some((data, rx));
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
+            }
+        }
+    })
+}
+
+/// 위 JSON 문자열을 axum SSE Event로 감싼다(HTTP 핸들러 전용 얇은 래퍼).
+#[cfg(feature = "serve")]
+fn dashboard_event_stream(
+    rx: tokio::sync::broadcast::Receiver<crate::store::a2a::TaskEvent>,
+) -> impl futures_util::Stream<Item = Result<axum::response::sse::Event, std::convert::Infallible>> {
+    use futures_util::StreamExt;
+    dashboard_event_json_stream(rx).map(|data| Ok(axum::response::sse::Event::default().data(data)))
+}
+
+/// GET /dashboard/events: 전역 task 이벤트 SSE(대시보드 라이브 피드). 브라우저 EventSource가 구독한다.
+#[cfg(feature = "serve")]
+async fn dashboard_events_handler(
+    axum::extract::State(store): axum::extract::State<Arc<Mutex<crate::store::sqlite::SqliteStore>>>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let sender = {
+        let store = store.lock().unwrap_or_else(|e| e.into_inner());
+        store.task_event_sender()
+    };
+    let Some(sender) = sender else {
+        return (axum::http::StatusCode::SERVICE_UNAVAILABLE, "task event bus 미활성").into_response();
+    };
+    let rx = sender.subscribe();
+    let stream = dashboard_event_stream(rx);
+    axum::response::sse::Sse::new(stream)
+        .keep_alive(axum::response::sse::KeepAlive::default())
+        .into_response()
+}
+
+/// GET /dashboard/roster: online 감독 roster(list_agents, 빈 selector = 전체) JSON. 브라우저가 주기 폴.
+/// axum "json" 피처(신규 의존) 없이 serde_json(기존 의존)만으로 application/json 응답을 만든다.
+#[cfg(feature = "serve")]
+async fn dashboard_roster_handler(
+    axum::extract::State(store): axum::extract::State<Arc<Mutex<crate::store::sqlite::SqliteStore>>>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    // 대시보드는 오프라인 감독도 회색 닷으로 보여줘야 하므로 전체를 반환하고 online 플래그를 붙인다
+    // (라우팅용 list_agents는 online만 반환하지만, 이 뷰는 등록된 전원 + 상태를 노출한다).
+    #[derive(serde::Serialize)]
+    struct DashAgent {
+        uuid: String,
+        tags: BTreeMap<String, String>,
+        display_name: Option<String>,
+        last_heartbeat: String,
+        online: bool,
+    }
+    let agents: Vec<DashAgent> = tokio::task::spawn_blocking(move || {
+        let store = store.lock().unwrap_or_else(|e| e.into_inner());
+        let now = store.now().unwrap_or_default();
+        // TTL=i64::MAX로 오프라인 포함 전체 조회 후, online은 실제 TTL(AGENT_TTL_SECS)로 per-agent 계산.
+        store
+            .list_agents(&BTreeMap::new(), &now, i64::MAX)
+            .into_iter()
+            .map(|a| {
+                let online = crate::store::agents::is_online(&a.last_heartbeat, &now, AGENT_TTL_SECS);
+                DashAgent {
+                    uuid: a.uuid,
+                    tags: a.tags,
+                    display_name: a.display_name,
+                    last_heartbeat: a.last_heartbeat,
+                    online,
+                }
+            })
+            .collect()
+    })
+    .await
+    .unwrap_or_default();
+    let body = serde_json::to_vec(&agents).unwrap_or_else(|_| b"[]".to_vec());
+    (
+        axum::http::StatusCode::OK,
+        [(axum::http::header::CONTENT_TYPE, "application/json")],
+        body,
+    )
+        .into_response()
+}
+
+/// POST /dashboard/goal: 로컬(loopback) 총감독이 선택한 감독들에게 목표를 던진다(대상마다 1 task).
+/// 원격(비-loopback)은 read-only 관전이라 403. 무인증이지만 loopback 신뢰라 로컬 한정 write.
+/// body = {"text": "...", "targets": ["uuid", ...]}. 응답 = {"created":[{taskId,toAgent}], "errors":[...]}.
+#[cfg(feature = "serve")]
+async fn dashboard_goal_handler(
+    axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    axum::extract::State(store): axum::extract::State<Arc<Mutex<crate::store::sqlite::SqliteStore>>>,
+    body: axum::body::Bytes,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    // loopback만 목표 제출 허용. 원격은 관전 전용.
+    if !peer.ip().is_loopback() {
+        return (
+            axum::http::StatusCode::FORBIDDEN,
+            "원격 관전 모드: 목표 제출은 로컬(loopback)에서만 가능합니다.",
+        )
+            .into_response();
+    }
+    #[derive(serde::Deserialize)]
+    struct GoalReq {
+        text: String,
+        targets: Vec<String>,
+    }
+    let req: GoalReq = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(e) => return (axum::http::StatusCode::BAD_REQUEST, format!("잘못된 요청: {e}")).into_response(),
+    };
+    if req.text.trim().is_empty() || req.targets.is_empty() {
+        return (axum::http::StatusCode::BAD_REQUEST, "목표(text)와 대상(targets)이 필요합니다.").into_response();
+    }
+    #[derive(serde::Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Created {
+        task_id: String,
+        to_agent: String,
+    }
+    #[derive(serde::Serialize)]
+    struct GoalResp {
+        created: Vec<Created>,
+        errors: Vec<String>,
+    }
+    let resp = tokio::task::spawn_blocking(move || {
+        use crate::store::a2a::{Message, Part};
+        let store = store.lock().unwrap_or_else(|e| e.into_inner());
+        let mut created = Vec::new();
+        let mut errors = Vec::new();
+        for uuid in &req.targets {
+            let msg_id = match store.new_task_id() {
+                Ok(id) => id,
+                Err(e) => {
+                    errors.push(format!("{uuid}: {e}"));
+                    continue;
+                }
+            };
+            let message = Message {
+                message_id: msg_id,
+                role: "user".to_string(),
+                parts: vec![Part { text: Some(req.text.clone()), ..Default::default() }],
+                task_id: None,
+                context_id: None,
+            };
+            match store.create_task_from_message("dashboard", uuid, message) {
+                Ok(task) => created.push(Created { task_id: task.id, to_agent: task.to_agent }),
+                Err(e) => errors.push(format!("{uuid}: {e}")),
+            }
+        }
+        GoalResp { created, errors }
+    })
+    .await
+    .unwrap_or(GoalResp { created: vec![], errors: vec!["작업 실패".to_string()] });
+    let bodyv = serde_json::to_vec(&resp).unwrap_or_else(|_| b"{}".to_vec());
+    (
+        axum::http::StatusCode::OK,
+        [(axum::http::header::CONTENT_TYPE, "application/json")],
+        bodyv,
+    )
+        .into_response()
+}
+
 
 /// stdin/stdout을 전송으로 사용하는 stdio MCP 서버를 기동한다.
 pub async fn start_mcp_server(
@@ -2193,5 +2471,33 @@ mod tests {
         let text = format!("{:?}", result.unwrap().content);
         assert!(text.contains("t1"), "t1 누락: {text}");
         assert!(text.contains("t2"), "t2 누락: {text}");
+    }
+
+    // 대시보드 전역 SSE 순수 스트림: Status/Completed 이벤트를 필터 없이 순서대로 JSON으로 내보내는지 검증한다.
+    #[cfg(feature = "serve")]
+    #[tokio::test]
+    async fn dashboard_event_json_stream_emits_status_then_completed() {
+        use crate::store::a2a::{Task, TaskEvent};
+        use futures_util::StreamExt;
+
+        let (tx, rx) = tokio::sync::broadcast::channel::<TaskEvent>(16);
+        let stream = dashboard_event_json_stream(rx);
+        futures_util::pin_mut!(stream);
+
+        let task_a = Task::new("task-a", None, "win-claude", "mac-claude", "2026-07-06 10:00:00");
+        let mut task_b = Task::new("task-b", None, "win-claude", "mac-codex", "2026-07-06 10:01:00");
+        task_b.state = TaskState::Completed;
+        tx.send(TaskEvent::Status(task_a.clone())).unwrap();
+        tx.send(TaskEvent::Completed(task_b.clone())).unwrap();
+
+        let f1: serde_json::Value =
+            serde_json::from_str(&stream.next().await.expect("frame1 있어야 함")).unwrap();
+        assert_eq!(f1["event"], "status");
+        assert_eq!(f1["task"]["id"], "task-a");
+
+        let f2: serde_json::Value =
+            serde_json::from_str(&stream.next().await.expect("frame2 있어야 함")).unwrap();
+        assert_eq!(f2["event"], "completed");
+        assert_eq!(f2["task"]["id"], "task-b");
     }
 }

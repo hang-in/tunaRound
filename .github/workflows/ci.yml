@@ -50,3 +50,38 @@ jobs:
 
       - name: Clippy (deny warnings)
         run: cargo clippy --features "morphology mcp serve worker" -- -D warnings
+
+  # 대시보드 SPA(dashboard 피처): frontend를 먼저 npm build한 뒤 rust-embed로 임베드하는 경로를 검증한다.
+  # embed 서빙 코드는 OS 독립(플랫폼 cfg 없음)이라 3-OS 매트릭스가 아니라 ubuntu 1잡으로 충분(macOS 10배 분 회피).
+  dashboard:
+    name: dashboard SPA (frontend build + embed)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable, edition 2024)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build frontend (Vite + React + DaleUI)
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Build (dashboard feature, SPA embedded)
+        run: cargo build --features "morphology mcp serve worker dashboard" --verbose
+
+      - name: Clippy (dashboard, deny warnings)
+        run: cargo clippy --features "morphology mcp serve worker dashboard" -- -D warnings

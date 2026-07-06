@@ -6,7 +6,7 @@
 
 - 사용자 응답·문서는 **한국어 존댓말**. **em-dash 사용금지**(일반 대시 `-` 또는 콜론 `:`). ANSI 박스 드로잉 자제.
 - 도메인 도착 URL/도메인은 비노출(소스공개, 서비스 비공개).
-- 구현 위임은 **Sonnet 서브에이전트**(codex 비사용), Opus가 스펙·리뷰·검증.
+- 구현 위임 우선순위(2026-07-06 개정): **① tunaLlama(kimi-k2.7-code:cloud) → ② A2A codex 감독 → ③ Sonnet 서브에이전트.** 아키텍트·스펙·리뷰·검증은 **Opus**. (상위 순위가 스코프/컨텍스트 한계로 막히면 다음 순위로 폴백.)
 - 한 세션 한 목적. 검증(build/test)과 commit/push는 분리.
 
 ## 맥↔윈도우 협업 규약 (git 교통정리, 2026-07-03)
@@ -27,7 +27,9 @@
 - **#6 새 소스 파일 첫 줄 = 역할 한국어 한 줄 주석.** Rust 예: `// 토론 라운드 프롬프트를 조립하는 순수 함수`. config 파일 제외.
 - **#7 비trivial 작업 전 plan + `checklist.md` + `context-notes.md`.** plan만 주고 코딩 요청 시 멈추고 checklist·notes 먼저 만들지 묻는다.
 
-## 현재 상태 (2026-07-06, 세션 6~13. 세션13 = 4자 감독 무-셔틀 mesh 라이브 + v2-37 codex 감독·heartbeat 머지 + 대시보드 설계/T1)
+## 현재 상태 (2026-07-06, 세션 6~14. 세션14 = 총감독 대시보드 완성(목업 React SPA) + goal loopback + v2-40 세션버스 설계)
+
+- **세션 14 (2026-07-06): roster 복구 → 총감독 대시보드 완성(목업 React 이식) → v2-40 설계.** ① roster 복구(win watcher `--tags` 재기동 + 맥 자율 재기동 = 3자 감독 online). ② **대시보드 v2-38 T1-T3**(라우트 + 전역 SSE 피드 + roster JSON + goal 폼) → **v2-39 DaleUI SPA(rust-embed 임베드, `dashboard` cargo feature)** → **Claude Design 목업을 plain React로 재이식**(DaleUI 제거, 번들 258→205KB; 통계타일·총감독 표식·heartbeat 애니·shields 값별뱃지·체크박스 멀티선택). ③ **goal 백엔드** `POST /dashboard/goal` = **loopback 무토큰 / 원격 403 read-only 관전**(ConnectInfo). 결정: 로컬=풀컨트롤, 원격=관전. ④ **디자인 반영**(사용자 피드백): 로스터-피드 레이아웃 통일 / 뱃지 값별색 / 아이콘 정돈 / 총감독=대등카드+★토글 지정. ⑤ README 최신화 + **v2-40 유니버설 세션버스 설계**([v2-40](docs/design/v2-40-universal-session-bus_2026-07-06.md): 임의 세션 A2A 주소화·발견·제어, 자동무장 SessionStart 훅) + **Planka 백로그 보드**. **다음=1) PR #12 머지 → 2) v2-40 S1(자동무장 훅).** 브랜치 `feat/orchestrator-dashboard`(bec79fe, PR #12). 진입점 [dashboard-v2-40 핸드오프](docs/prompts/v2-handoff_2026-07-06_dashboard-v2-40.md).
 
 - **세션 13 (2026-07-06): 4자 감독 무-셔틀 mesh 라이브 + 통합 총감독 대시보드 착수.** v2-37 codex 라이브 감독(PR #9=`252e09e`: `codex app-server ws`+`codex-inject` turn/start 주입, 헤드리스 exec 대체)·heartbeat(PR #10=`d7deae3`: poll에 register/heartbeat+`--tags`) 머지. **4자 감독**(win-codex-sup/mac-claude-sup/mac-codex-sup + **win-opus-boss 허브**) 크로스머신 자율 수신·3~4자 티키타카 실증(사람 릴레이 0, 허브도 **Monitor 인박스 자동수신**). 동적 총감독(자리=역할, hydration ritual)·codex narrate 수정(과정 가시)·hydration으로 roster/ack 갭 empirical 발견·정리 실증. **구현 위임 규율 개정**: ①tunaLlama(kimi-k2.7-code:cloud) ②A2A codex ③Sonnet, 아키텍트=Opus. **통합 총감독 대시보드** 설계 정본([v2-orchestrator-dashboard](docs/design/v2-orchestrator-dashboard-and-dynamic-boss_2026-07-06.md))+계획 [v2-38](docs/plans/v2-38-orchestrator-dashboard.md), **T1**(`/dashboard` 라우트+스켈레톤, tunaLlama 생성→Opus 리뷰→적용, 라이브 200) 완료(브랜치 `feat/orchestrator-dashboard`, main rebase). **다음=1) roster 복구(heartbeat로 to_selector 복구) → 2) 대시보드 T2/T3(tunaLlama).** 진입점 [orchestrator-dashboard 핸드오프](docs/prompts/v2-handoff_2026-07-06_orchestrator-dashboard.md).
 
@@ -61,7 +63,7 @@
 - **v1 + v2 검색/맥락 로드맵(step 2~8) + Stage 3a~3d + codex pull(behavioral) + 실코퍼스 회귀(step6) + 외래어 병기 + 임베딩 qwen3 + 배포/온보딩(clap·cargo-dist·프로파일) 완성.** 검증: **기본 184 lib+6 cli / `--features "semantic morphology mcp serve"` 198 lib+9 cli pass, clippy 클린(no-default 포함).** 스키마 **v5**(created_at).
 - 현행 spec: [docs/design/tunaRound-v1-design_2026-06-29.md](docs/design/tunaRound-v1-design_2026-06-29.md). 진행: [docs/plans/index.md](docs/plans/index.md).
 - **>>> 진입점 먼저 읽기 (각 줄은 해당 머신만 편집) <<<**
-  - **WIN 최신**: [orchestrator-dashboard](docs/prompts/v2-handoff_2026-07-06_orchestrator-dashboard.md) - **4자 감독 무-셔틀 mesh 라이브 + 통합 대시보드**. v2-37 codex 감독·heartbeat 머지 완료. 다음=1) roster 복구 → 2) 대시보드 T2/T3. 라이브값=gitignored backend-private.md. 위임 규율=①tunaLlama ②A2A codex ③Sonnet. (이전: [supervised-a2a](docs/prompts/v2-handoff_2026-07-04_supervised-a2a.md) / [session12](docs/prompts/v2-handoff_2026-07-04_session12.md)=D·B·C 3PR.)
+  - **WIN 최신**: [dashboard-v2-40](docs/prompts/v2-handoff_2026-07-06_dashboard-v2-40.md) - **총감독 대시보드 완성(목업 React SPA + goal loopback) → PR #12**. 다음=1) PR #12 머지 → 2) v2-40 유니버설 세션버스 S1(자동무장 훅). 작업 브랜치 `feat/orchestrator-dashboard`. 라이브값=gitignored backend-private.md. (이전: [orchestrator-dashboard](docs/prompts/v2-handoff_2026-07-06_orchestrator-dashboard.md) / [supervised-a2a](docs/prompts/v2-handoff_2026-07-04_supervised-a2a.md).)
   - **MAC 최신**: [mac-rc1](docs/prompts/v2-handoff_2026-07-03_mac-rc1.md) - 맥: v0.1.0-rc.1 발행 + 티키타카.
 - 이전 [session5](docs/prompts/v2-handoff_2026-07-02_session5.md). 맥↔윈도우 왕복은 [docs/reference/dev-mac-windows.md](docs/reference/dev-mac-windows.md). 협업 규약은 위 "맥↔윈도우 협업 규약" 섹션.
 - **Cargo.toml `version="0.2.2"`**(세션10부터 정식 배포, 더 이상 rc 아님). cargo-dist 6타깃 + homebrew-tap 발행 중(cargo-release로 bump). 릴리스 교훈=[dev-mac-windows §6](docs/reference/dev-mac-windows.md). 정본 방향: [배포·온보딩](docs/design/v2-deploy-onboarding_2026-07-02.md) + [A2A](docs/design/v2-A2A-core-backend_2026-06-30.md) + [시간성·유효성](docs/design/v2-temporal-validity-direction_2026-07-01.md).

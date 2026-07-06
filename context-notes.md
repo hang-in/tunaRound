@@ -724,3 +724,59 @@
 - **실버그 4개**: R1(MCP 실패를 success로 위장→claim/complete 실패 못 감지), R2(무조건 UPDATE→이중claim/terminal덮어쓰기, 조건부 전이로 수정), R3(watchdog 부모PID만 kill→트리 종료 /T·process_group), R5(save_session orphan 벡터/유효성).
 - **findings**: R10=워커 세션만료 404(도그푸딩 발견, 자동재연결 수정) / 동시워커 워크트리 오염(격리 필요) / 워커=헤드리스 데몬(fresh spawn)이 handoff·/clear 불요(live 세션은 축적됨) / tunaLlama config 필요 / 통합자가 브랜치 push를 git-watch auto-poll=사람릴레이0 / 방법론=GitHub Flow+PR CI가 semi-a2a에 적합(A2A큐=이슈트래커, git PR=코드통합).
 - **남음**: R7(retriever/reader Result 계약, 큼, Mac에 헤드리스 데몬으로) · 브랜치→main 머지(겹침0 clean) · PR CI + 태스크당 브랜치 도입 · usecase 문서. 진입점 docs/prompts/v2-handoff_2026-07-03_session8-refactor.md.
+
+## 2026-07-06 세션14: roster 복구 + 대시보드 T2 정찰 (Plan v2-38)
+
+- **세션 시작 상태**: 브로커(41012)·codex app-server(8790)·win watcher(31428) detached 생존(재부팅 안 됨). 단 watcher는 옛 바이너리(--tags/heartbeat 없음)라 로스터 stale. 허브 Monitor 인박스·맥 watcher는 세션-바운드로 죽음.
+- **Step 1 roster 복구 완료(Windows)**: feat/orchestrator-dashboard(main rebase=heartbeat+T1) 체크아웃 → 브로커·watcher 종료(Windows exe 락: 실행 중 tunaround.exe 덮어쓰기 불가라 둘 다 내려야 재빌드됨) → `cargo build --features "morphology mcp serve worker"`(10s 증분) → 브로커 재기동(PID 38172, 동일 커맨드) → **win-codex-sup watcher `--tags "machine=win,runner=codex,role=supervised,project=tunaround"` 붙여 재기동(PID 41408)**. 검증: list_agents/`to_selector=role=supervised` → win-codex-sup 반환·heartbeat 갱신 확인. backend-private.md 갱신 필요(PID).
+- **Step 1 맥 쪽**: A2A task e0bc5b3f 큐잉(from win-opus-boss → to mac-claude-sup): git pull + 재빌드 + mac 감독 watcher --tags 재기동 요청. 맥 세션이 watcher 재-arm하면 자동 수신.
+- **A2A send_task 필드 주의**: MCP send_task 인자 = `from_agent`, `to_agent`, `text`(message 아님). (raw MCP curl 시 필수 3필드.)
+- **대시보드 T2 배선 정찰(구현 전제)**:
+  1. 이벤트버스 = `SqliteStore.task_event_sender() -> Option<broadcast::Sender<TaskEvent>>`(sqlite.rs:180). serve/core는 `build_http_mcp_backends`가 `store4.with_task_events()`로 **활성**(main.rs:1942). 기존 a2a_server SSE(handle_send_streaming_message/subscribe_to_task)는 task_id로 **필터링된** per-task JSON-RPC SSE(A2A 프로토콜). 대시보드는 **전역 피드**가 필요 → 신규 GET /dashboard/events(모든 TaskEvent).
+  2. roster = `store.list_agents(selector, now)`(sqlite.rs:217, list_agents MCP 툴이 씀). /dashboard/roster JSON으로 노출, 브라우저 주기 폴.
+  3. 배선점 = mcp.rs `serve_http_mcp_on_listener`: line 950 `build_router(a2a_store, ...)`가 a2a_store를 move하기 전에 `a2a_store.clone()`을 대시보드 라우트 State로. 현 대시보드는 outer router(무인증, line 1006)에 `/dashboard`만. 여기에 `/dashboard/events`(SSE)·`/dashboard/roster`(JSON) 추가, `.with_state(dash_store)`.
+  4. 브라우저 EventSource=GET+커스텀헤더 불가 → SSE 피드는 무인증 outer router(read-only local bind, 저위험). goal 폼 write(T3)만 토큰 게이트.
+- **위임 계획**: T2 구현 1순위 tunaLlama(kimi). 정밀 스펙(위 배선점) 주고 생성→Opus 리뷰. feat/orchestrator-dashboard에서 이어감→PR.
+- **T2 완료(tunaLlama 생성→Opus 리뷰·적용, src/mcp.rs)**: `dashboard_event_json_stream`(전역 TaskEvent→JSON, 순수·테스트) + `dashboard_events_handler`(GET /dashboard/events SSE, 버스 미활성 503) + `dashboard_roster_handler`(GET /dashboard/roster, serde_json 수동 응답=axum json피처 미활성 회피, 신규의존0) + HTML JS(EventSource 피드 200cap + roster 5초 폴). 배선=a2a_store clone → dashboard 서브라우터 `.with_state` → `.merge(authed)`(auth 경계 불변). **검증**: 전체 build+lib 456 pass(회귀0)+clippy 클린. 라이브 스모크 4종 통과(/dashboard 200, /roster 3자 online JSON, /events SSE 실이벤트 수신, /mcp 401). tunaLlama 이탈점=axum::Json→serde_json 수동(합당, json피처 미활성).
+- **맥 roster 복구 자동 완료**: 스모크 중 /dashboard/roster에 mac-claude-sup·mac-codex-sup·win-codex-sup **3자 다 online**(heartbeat 갱신). 맥이 A2A task e0bc5b3f 소비해 git pull+재빌드+--tags 재기동한 것 = step 1 맥 쪽도 성사(사람 셔틀 0). to_selector role=supervised = 3자 반환.
+- **재기동 레이스 교훈**: 브로커·watcher를 동시 Start-Process하면 watcher가 브로커 listen 전에 첫 poll→"initialize 요청 실패"로 **종료**(poll 루프가 최초 initialize 실패에 exit). 브로커 기동·listen 확인 후 watcher 기동해야 함(견고화 후보=poll 최초 연결 재시도).
+- **다음**: T2 커밋 여부 사용자 확인 후 T3(goal 폼→SendMessage, 토큰 게이트) 위임. backend-private 세션14 PID = 브로커 39044·watcher 15664(재빌드 후 재기동).
+- **T3 완료(tunaLlama 생성→Opus 리뷰·적용, DASHBOARD_HTML만)**: goal 폼=토큰(password)·목표·대상 select·상태줄. `submitGoal`이 기존 인증 `POST /a2a SendMessage`를 브라우저 fetch(Authorization: Bearer)로 재사용(신규 Rust 0). `sel:role=supervised`/`agent:<uuid>` 접두로 toSelector/toAgent 분기. `populateTarget`이 roster폴로 드롭다운 채움. **검증**: lib 456 pass+clippy 클린. 라이브: 폼 렌더 확인, JS 요청형태(messageId/role/parts/fromAgent/toAgent) 인증 write→task submitted(e30969d3, 취소함), 무토큰 401. **셀렉터 다중매칭**: role=supervised가 3자(mac-claude-sup/mac-codex-sup/win-codex-sup) 매칭→후보나열 에러(v2-34 설계대로, 사용자가 특정 감독 골라 재제출=HITL). 브로커 재기동 PID=41100, watcher=28940(T3 바이너리). **T2·T3 커밋 후 남음=T4(claude post_turn emit) + T5(3-OS CI)→PR.**
+
+## 2026-07-06 세션14 후속: 대시보드 DaleUI SPA 결정 (Plan v2-39)
+
+- **사용자 결정**: 대시보드 디자인에 DaleUI(github.com/DaleStudy/daleui) 도입. 조사: DaleUI=React 19 + Panda CSS 컴포넌트 라이브러리(npm daleui@1.1.1, peer react^19, deps @ark-ui/react·lucide-react, exports `.`+`./styles.css`, styled-system 동봉). 인라인 HTML로는 못 씀 → 프론트 빌드 파이프라인 필요.
+- **서빙 결정 = embed + feature-gate**(사용자 확정, 대안 dir 검토 후). 근거: "리치=optional"은 브라우저 URL이라 embed/dir 무관하게 성립. dir은 cargo-dist 단일바이너리에서 dist 배치·경로 문제로 리치를 오히려 어렵게 함. "터미널 순수파 비강요"는 서빙방식 아니라 cargo `dashboard` feature로 해결(기본 lean, release ON). embed=rust-embed(debug 디스크읽기=dev 반복 빠름, release 내장). UI/UX·결과물은 embed/dir 동일(같은 번들). 매 업데이트 재빌드는 release 때만(dev=Vite HMR).
+- **IP redact**: 별도 브랜치 fix/redact-lan-ip(5eaa047, 맥 LAN IP 평문→[사설IP]) → PR #11(→main). 히스토리 완전퍼지(filter-repo)는 맥 조율 동반 별건.
+- **아키텍처**: v2-38 백엔드(/dashboard/events SSE·/dashboard/roster·/a2a) 재사용, 인라인 DASHBOARD_HTML만 SPA로 대체. frontend/ Vite+React19+daleui, base:/dashboard/, npm build→dist→rust-embed(dashboard feature). API 라우트는 serve feature 유지(SPA 유무 무관). dist gitignore, CI node 빌드 단계.
+- **다음**: S1 스캐폴드(node/npm 환경·DaleUI Provider/셋업 확인 후) → tunaLlama 위임 검토.
+
+## 2026-07-06 세션14 후속2: 대시보드 SPA S1-S4 구현 (Plan v2-39)
+
+- **S1 스캐폴드(직접)**: frontend/ = Vite8+React19.2+TS+daleui@1.1.1(+pretendard variable·@fontsource-variable/jetbrains-mono). vite.config base:/dashboard/ + dev proxy(events/roster/a2a→127.0.0.1:8770). main.tsx=폰트+daleui/styles.css+index.css import. 함정: `@fontsource-variable/jetbrains-mono` bare import는 tsc 타입선언 없어 실패→`/index.css` 명시 경로. DaleUI Provider 불요(styles.css만). npm build 성공(Pretendard variable 2MB 폰트 포함).
+- **S2(tunaLlama 위임 실패→서브에이전트 직접)**: 로컬 LLM(kimi)이 DaleUI 버전 API에서 완전 드리프트(존재않는 @daleui/react·Input/Stack/Spinner 환각, 다른 도메인 단일파일). **finding=특정버전 UI 라이브러리 컴포넌트 조립은 tunaLlama 부적합**(tuna_log_limitation 기록). 서브에이전트가 실측 DaleUI API로 직접 구현: api.ts/Roster/Feed/GoalForm/App. **Opus 리뷰 수정 2건**: (a) index.css가 create-vite 데모 CSS(#root 1126px·h1{56px} 전역 오버라이드 등)라 정리, (b) main.tsx가 index.css를 import 안 해 `.dash-grid` 반응형 그리드가 죽어있던 것→daleui 뒤에 import 추가.
+- **S3 서빙(직접, 정밀통합)**: axum 0.8(catch-all `/{*path}`). Cargo `dashboard`=["serve","dep:rust-embed"]. rust-embed(#[folder="frontend/dist"], debug=디스크·release=내장). 라우트 /dashboard·/dashboard/favicon.svg·/dashboard/assets/{*path}(확장자 MIME 매핑, 신규의존 회피), events/roster는 serve 유지(SPA 무관). feature OFF=안내 페이지. 인라인 DASHBOARD_HTML 제거. Vite base=/dashboard/라 assets 경로가 events/roster와 미충돌. curl 검증 전부 통과.
+- **S4 CI**: ci.yml ubuntu `dashboard` 잡(node22→npm ci+build→cargo --features dashboard build/clippy). 3-OS 매트릭스는 dashboard 없이 유지(embed=OS독립).
+- **브라우저 시각검증 막힘**: claude-in-chrome은 정상(example.com 렌더)이나 이 Chrome이 http://127.0.0.1:8770을 에러페이지(URL http 유지=https업그레이드 아님, curl 200=서버정상)→프록시/PNA loopback 차단 추정. 자동 스크린샷 불가, 사용자 눈 확인 필요.
+- **비범위(후속)**: release(cargo-dist)에 dashboard feature+frontend 빌드 통합(release.yml은 dist 자동생성이라 별도 작업). S2 UX: "모든 감독" 셀렉터 다중매칭.
+- **브랜치/PR 상태**: feat/orchestrator-dashboard 위 S1-S4. 커밋 후 push+PR 예정(시각 확인 후). IP redact=PR #11 별도.
+
+## 2026-07-06 세션14 후속3: 대시보드 목업 이식(DaleUI→plain React) + goal 백엔드 + v2-40 설계
+
+- **대시보드 재디자인**: Claude Design 목업(총감독 대시보드.dc.html, 프로젝트 루트 zip)을 정본으로 **DaleUI 프론트를 plain React+CSS로 교체**(Sonnet 위임 이식, Opus 리뷰). daleui import 전부 제거(패키지는 유지). 번들 258→205KB, CSS 67→17KB 감량. 헤더(로고·연결배지·시계)+통계타일+로스터(총감독 정적카드+heartbeat dot-flow/hb-sweep 애니, mac/win 아이콘, shields 태그)+피드(상태색 배지)+goal폼(체크박스 멀티선택, 토큰칸 없음). 라이트/다크 토큰. 컴포넌트=Header/StatTiles/Roster/Feed/GoalForm.
+- **뱃지=shields.io 2세그먼트**(사용자 확정, Primer Label에서 전환): 키|값, .shield/.shield-k/.shield-v + v-machine/runner/role/project 색.
+- **roster online 플래그**: /dashboard/roster가 전체(오프라인 포함) + online:bool 반환(list_agents TTL=MAX + is_online per-agent). 대시보드가 회색 닷으로 offline 표시.
+- **goal 백엔드**: `POST /dashboard/goal`(loopback만, 원격 403=read-only 관전, ConnectInfo peer.is_loopback). `{text,targets:[uuid]}`→대상마다 create_task_from_message(SSE 자동 emit→피드)→`{created:[{taskId,toAgent}],errors}`(camelCase). axum::serve를 into_make_service_with_connect_info로. **결정**: 로컬=풀컨트롤(무토큰), 원격=관전. 자동주입은 비권장(무인증 read페이지에 write토큰 노출).
+- **remote 판정(클라)**: location.hostname loopback 여부 → remoteViewer면 goal폼 숨기고 경고.
+- **heartbeat pulse**: App이 폴 사이 last_heartbeat 변화 감지(useRef)→750ms pulse. UTC는 상대시간("N초 전")으로(대시보드가 UTC 원본 찍어 "오전 5시"로 보이던 혼란 해소).
+- **README 반영**: 로드맵 requeue 완료 이동 + 레지스트리·감독·codex라이브감독·doctor Stage4 추가, 웹UI→총감독 대시보드(진행중)+유니버설 세션버스 추가. 현재상태 A2A에 레지스트리·감독·requeue 추가. mcp-search는 실제 내부 명령이라 정확(철회).
+- **v2-40 유니버설 세션 버스 설계**(docs/design/v2-40): 임의 세션(예 tunaRound→secall) A2A 주소화·발견·제어. 발견≠제어(claude=Monitor워처 opt-in, codex=app-server ws). 자동무장 SessionStart 훅 + 발견 리포터 + 대시보드 후보패널 + 안전 스코핑. 단계 S0(수동무장 지금됨)~S5. **다음 세션 착수.**
+- **검증**: 풀빌드(dashboard) + clippy 클린. 라이브: /dashboard 200(새 SPA), /dashboard/goal loopback→task생성 camelCase, roster online, /mcp 401. 브로커 PID 35652·watcher 46744.
+- **다음**: 이 포트 커밋→PR #12 갱신. Planka 보드+백로그. 다음 세션 핸드오프→v2-40 S1.
+
+## 2026-07-06 세션14 후속4: 디자인 피드백 반영 + Planka + 핸드오프
+
+- **디자인 피드백 4건 반영**(사용자 스크린샷 기반, Opus 직접): (1) 로스터를 피드와 동일 패널+헤더바+행(divider) 구조로 통일(개별카드→행). (2) shields 뱃지 값 세그먼트를 **값별 색**(mac≠win, claude≠codex, supervised≠dispatcher; VALUE_COLOR 맵 + 미등록값 해시 팔레트, 인라인 style). (3) mac/win 글리프 박스 제거+14px 인라인 muted, windows SVG 교체. (4) 가짜 총감독 카드 제거→대등 행 + ★토글로 "현재 총감독" 지정(localStorage `tuna_dash_boss`, 앉는 머신 따라). 커밋 bec79fe.
+- **총감독 로스터 부재 이해**: win-opus-boss(총감독=이 세션)는 register_agent 안 해 로스터에 없음. 사용자 "4명 아니냐"→v2-40 자동무장이 총감독도 등록해 해결. 현재는 ★로 임의 지정.
+- **Planka**: MCP엔 프로젝트 멤버 추가 도구 없음. Agent 봇의 private 프로젝트라 사용자(d9ng) 안 보임 → 사용자가 tunaRound 프로젝트 새로 만들고 Agent 매니저 추가 → 그 프로젝트(1813009454057129531)에 보드 재생성(카드 17), 옛 private 삭제. **보드 이동(projectId 변경)은 미지원**이라 재생성이 정답. 보드=https://plan.d9ng.co.kr/boards/1813013259255547454.
+- **핸드오프**: docs/prompts/v2-handoff_2026-07-06_dashboard-v2-40.md + CLAUDE.md 세션14 현재상태·WIN 포인터(브랜치, PR #12로 main 반영). backend-private 세션14 최종 라이브(브로커 35652·watcher 46744·app-server 34176). **다음 세션=1) PR #12 머지 → 2) v2-40 S1.**
