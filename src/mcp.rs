@@ -1129,9 +1129,16 @@ const DASHBOARD_HTML: &str = r##"<!DOCTYPE html>
 <section>
   <h2>목표 제출</h2>
   <form id="goal">
-    <input type="text" name="goal" placeholder="목표를 입력하세요" disabled>
-    <button type="submit" disabled>제출</button>
+    <div><input type="password" id="goalToken" placeholder="브로커 토큰" autocomplete="off"></div>
+    <div><input type="text" id="goalText" placeholder="목표를 입력하세요"></div>
+    <div>
+      <select id="goalTarget">
+        <option value="sel:role=supervised">모든 감독 (role=supervised)</option>
+      </select>
+    </div>
+    <button type="submit">제출</button>
   </form>
+  <div id="goalStatus"></div>
 </section>
 <script>
   // 라이브 task 피드: /dashboard/events SSE를 구독해 이벤트를 #tasks 상단에 prepend한다.
@@ -1177,10 +1184,62 @@ const DASHBOARD_HTML: &str = r##"<!DOCTYPE html>
       box.appendChild(row);
     });
   }
+  // 대상 드롭다운을 roster로 채운다("모든 감독" 셀렉터 옵션 + online 감독 각각). 이전 선택 보존.
+  function populateTarget(list) {
+    var sel = document.getElementById("goalTarget");
+    var cur = sel.value;
+    sel.innerHTML = "";
+    var o0 = document.createElement("option");
+    o0.value = "sel:role=supervised"; o0.textContent = "모든 감독 (role=supervised)";
+    sel.appendChild(o0);
+    (list || []).forEach(function (a) {
+      var o = document.createElement("option");
+      o.value = "agent:" + a.uuid;
+      var tags = Object.keys(a.tags || {}).map(function (k) { return k + "=" + a.tags[k]; }).join(" ");
+      o.textContent = a.uuid + (tags ? " (" + tags + ")" : "");
+      sel.appendChild(o);
+    });
+    for (var i = 0; i < sel.options.length; i++) { if (sel.options[i].value === cur) { sel.selectedIndex = i; break; } }
+  }
+  // 유니크 messageId 생성(secure context면 randomUUID, 아니면 폴백).
+  function genMsgId() {
+    try { if (window.crypto && crypto.randomUUID) { return crypto.randomUUID(); } } catch (e) {}
+    return "m-" + Date.now() + "-" + Math.random().toString(16).slice(2);
+  }
+  function setGoalStatus(msg) { document.getElementById("goalStatus").textContent = msg; }
+  // goal 제출: /a2a SendMessage로 task 생성. 토큰은 Authorization 헤더로만 전송(폼값, 미저장).
+  async function submitGoal(e) {
+    e.preventDefault();
+    var token = document.getElementById("goalToken").value.trim();
+    var text = document.getElementById("goalText").value.trim();
+    var target = document.getElementById("goalTarget").value;
+    if (!token) { setGoalStatus("브로커 토큰을 입력하세요."); return; }
+    if (!text) { setGoalStatus("목표를 입력하세요."); return; }
+    var params = { message: { messageId: genMsgId(), role: "user", parts: [{ text: text }] }, fromAgent: "dashboard" };
+    if (target.indexOf("sel:") === 0) { params.toSelector = target.slice(4); }
+    else { params.toAgent = target.slice(6); }
+    var body = { jsonrpc: "2.0", id: 1, method: "SendMessage", params: params };
+    setGoalStatus("제출 중...");
+    try {
+      var r = await fetch("/a2a", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Authorization": "Bearer " + token },
+        body: JSON.stringify(body)
+      });
+      if (r.status === 401) { setGoalStatus("인증 실패: 토큰을 확인하세요."); return; }
+      var j = await r.json();
+      if (j.error) { setGoalStatus("실패: " + j.error.message); return; }
+      var id = (j.result && j.result.id) ? j.result.id.slice(0, 8) : "?";
+      var to = (j.result && j.result.toAgent) ? j.result.toAgent : "?";
+      setGoalStatus("생성됨: task " + id + " -> " + to);
+      document.getElementById("goalText").value = "";
+    } catch (err) { setGoalStatus("요청 오류: " + err); }
+  }
+  document.getElementById("goal").addEventListener("submit", submitGoal);
   function loadRoster() {
     fetch("/dashboard/roster")
       .then(function (r) { return r.json(); })
-      .then(renderRoster)
+      .then(function (list) { renderRoster(list); populateTarget(list); })
       .catch(function (err) { console.error("roster 폴 실패", err); });
   }
   initFeed();
