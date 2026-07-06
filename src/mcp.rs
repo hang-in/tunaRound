@@ -934,6 +934,7 @@ pub async fn serve_http_mcp_on_listener(
         http::{StatusCode, header::AUTHORIZATION},
         middleware::{self, Next},
         response::IntoResponse,
+        routing::get,
     };
     use rmcp::transport::streamable_http_server::{
         StreamableHttpServerConfig, StreamableHttpService, session::local::LocalSessionManager,
@@ -977,7 +978,7 @@ pub async fn serve_http_mcp_on_listener(
     // MCP(/mcp)와 A2A(/a2a, /.well-known/agent-card.json)를 같은 axum app으로 병합한다.
     let merged = Router::new().nest_service("/mcp", service).merge(a2a_router);
 
-    let router: Router = if let Some(tok) = token {
+    let authed: Router = if let Some(tok) = token {
         let tok = Arc::new(tok);
         let bearer = middleware::from_fn(move |request: Request, next: Next| {
             let tok = tok.clone();
@@ -1000,10 +1001,57 @@ pub async fn serve_http_mcp_on_listener(
         merged
     };
 
-    eprintln!("[serve-mcp] HTTP MCP 서버 기동: {bound_addr}");
-    axum::serve(listener, router).await?;
+    // /dashboard는 read-only HTML이라 브라우저가 Bearer 헤더를 못 보낸다. bearer layer 밖(outer router)에
+    // 두어 인증 없이 로드되게 한다(로컬 바인드 read-only, 저위험). goal 폼의 write는 후속에 토큰 게이트.
+    let app = Router::new().route("/dashboard", get(dashboard_handler)).merge(authed);
+
+    eprintln!("[serve-mcp] HTTP MCP 서버 기동: {bound_addr} (대시보드: /dashboard)");
+    axum::serve(listener, app).await?;
     Ok(())
 }
+
+/// `/dashboard` GET 핸들러: 통합 총감독 대시보드의 정적 read-only 스켈레톤(roster/task피드/goal폼 placeholder).
+/// SSE 구독·goal 폼 동작은 후속(Plan v2-38 T2~T3). 설계 docs/design/v2-orchestrator-dashboard-and-dynamic-boss_2026-07-06.md.
+#[cfg(feature = "serve")]
+async fn dashboard_handler() -> axum::response::Html<&'static str> {
+    axum::response::Html(DASHBOARD_HTML)
+}
+
+/// 대시보드 정적 스켈레톤 HTML(self-contained, 인라인 style/script). 후속에 SSE 구독 JS·goal 폼 배선.
+#[cfg(feature = "serve")]
+const DASHBOARD_HTML: &str = r##"<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<title>총감독 대시보드</title>
+<style>
+  body { background:#111; color:#eee; font-family:monospace,monospace; margin:2rem; }
+  section { border:1px solid #444; padding:1rem; margin-bottom:1rem; }
+  h1 { color:#0f0; }
+</style>
+</head>
+<body>
+<h1>총감독 대시보드</h1>
+<section>
+  <h2>감독 roster</h2>
+  <div id="roster">(감독 roster - SSE/폴 배선 예정)</div>
+</section>
+<section>
+  <h2>라이브 task 피드</h2>
+  <div id="tasks">(라이브 task 피드 - SSE 구독 예정)</div>
+</section>
+<section>
+  <h2>목표 제출</h2>
+  <form id="goal">
+    <input type="text" name="goal" placeholder="목표를 입력하세요" disabled>
+    <button type="submit" disabled>제출</button>
+  </form>
+</section>
+<script>
+  // TODO: SSE 구독(task 피드), roster 폴, goal 폼 SendMessage 배선 (Plan v2-38 T2~T3)
+</script>
+</body>
+</html>"##;
 
 /// stdin/stdout을 전송으로 사용하는 stdio MCP 서버를 기동한다.
 pub async fn start_mcp_server(

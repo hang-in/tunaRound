@@ -8,7 +8,7 @@
 
 ## Tasks
 
-- [ ] T1: `/dashboard` GET 라우트 + 정적 read-only HTML(인라인 JS, self-contained). 기존 serve 라우터에 추가. 토큰 게이트(로컬).
+- [x] T1: `/dashboard` GET 라우트 + 정적 read-only HTML 스켈레톤(roster/task/goal 섹션 placeholder). **tunaLlama(kimi) 생성 → Opus 리뷰(bearer Ok-래핑 버그 걸러내고 기존 미들웨어 유지) → 적용.** auth 우회 배선(outer router에 merge)으로 브라우저 로드 가능. 라이브: GET /dashboard=200+HTML, POST /mcp=401(게이트 유지). clippy 클린.
 - [ ] T2: SSE 배선 - 대시보드 JS가 브로커 SSE(기존 TaskEvent 스트림) 구독 → task 상태 전이·artifact를 피드에 실시간 렌더. roster는 list_agents/heartbeat 조회(주기 폴 또는 이벤트).
 - [ ] T3: goal 제출 폼 → 기존 `SendMessage`(to_agent 선택 또는 to_selector) 호출로 task 생성.
 - [ ] T4: claude 감독 post_turn emit 배선(최소) - claude 감독 턴이 브로커 피드에 합류. (범위 크면 별 PR로 분리 가능.)
