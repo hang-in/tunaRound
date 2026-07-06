@@ -29,7 +29,7 @@ Opus가 감독 A2A 테스트 중 **curl↔MCP를 오가며 "되니 안되니" fl
 ## 다음 세션 순서(사용자 확정)
 
 1. **① 윈도우 codex 감독** 자율 수신 세팅·테스트(사용자가 codex를 `TUNA_BROKER_TOKEN=<tok> codex`로 새로 띄움 → register_agent(win-codex-sup, role=supervised) → 감시 루프 1회 → 총감독이 던지면 자동 처리).
-2. **② 되면 LAN 맥 claude/codex 감독**도 같은 방식(맥은 core=192.168.1.179).
+2. **② 되면 LAN 맥 claude/codex 감독**도 같은 방식(맥은 core=[사설IP], 실값은 gitignored backend-private.md).
 3. **③ 그 다음 워커**(감독 테스트 통과 후).
 
 ## 첫 행동
