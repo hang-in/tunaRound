@@ -797,3 +797,12 @@
 - **정찰 사실**: 세션 id=`~/.claude/projects/<mangled-cwd>/<uuid>.jsonl` stem. mangled-cwd=cwd의 /·\·: → `-`(예 D--privateProject-tunaRound). recent mtime=활동. **이 세션 id=4a46a380-...** 발견 가능. roster 저장=SqliteStore.agent_roster(RefCell HashMap, sqlite.rs:133) 미러링. MCP 클라=src/mcp_client.rs McpHttpClient+call_tool 제네릭+타입 래퍼(register_agent 패턴).
 - **armed overlay 결정**: candidate에 armed 저장 안 함. 브로커가 list_candidates/HTTP에서 candidate.uuid가 online roster(AGENT_TTL 90s)에 있으면 armed=true 계산. 무장(S1)되면 자동 armed=true로 승격 표시.
 - **분담**: S2a(4파일 교차배선)=Opus 직접(cohesive 미러, 메모리 [[tunallama-unsuitable-for-version-ui-libs]] 취지=교차배선은 Opus). S2b(discover 자족 순수함수+CLI)=tunaLlama 위임+Opus 리뷰.
+
+## 2026-07-06 세션15 후속2: v2-40 S2·S3 완료 + 라이브 스모크
+
+- **S1~S3 전부 코드 완결·커밋**(브랜치 feat/v2-40-autoarm-hook, 6커밋: 8ccacac S1·82a9d8b S2a·b34f57b S2b·7caaf1a S3·3c21dce 정합성수정). 정책=커밋만, PR은 v2-40 마무리 시(PR #13 umbrella).
+- **S2a**: 브로커 candidate 저장(candidate_pool RefCell)+report/list_candidates MCP+/dashboard/candidates+armed overlay. **S2b**: discover CLI(jsonl mtime 열거→report). **S3**: 대시보드 "발견된 세션" 패널(Candidates.tsx, armed 필터).
+- **라이브 스모크 2개 정합성 버그 발견·수정(3c21dce)**: (1) armed overlay 미매칭 - autoarm이 uuid=친근이름이라 discover 후보(uuid=세션id)와 안 맞음 → **설계 §2.1대로 uuid=세션id + display_name 분리**(poll --display-name 신설). (2) discover project=None - Claude jsonl **1행=요약(cwd 없음)**, cwd는 이후 행 → read_cwd_from_jsonl(앞 40줄 스캔).
+- **라이브 결과**: discover가 이 머신 활동 claude 세션 2건 발견 → **3332c84f(project=secall, armed=False)** + **4a46a380(project=tunaRound, armed=True=보스 dedup)**. **설계 §0 동기예시(tunaRound 세션에서 secall 세션 발견) 실증.** roster=win-opus-boss(display, uuid=세션id 4a46a380).
+- **라이브 상태(현)**: 브로커 detached PID 21196(dashboard+worker 빌드, 토큰 [REDACTED-backend-private], db %LOCALAPPDATA%). win-codex-sup watcher 36336. win-opus-boss poll(uuid=4a46a380, display=win-opus-boss). 대시보드 http://127.0.0.1:8770/dashboard 라이브(후보 패널 포함). mac-claude-sup·mac-codex-sup 자동 재연결. **재부팅 시 죽음.**
+- **다음**: 브라우저 패널 렌더 사용자 확인 → S4(codex 직접제어) 또는 v2-40 마무리·PR #13 머지. secall 후보에 send_task로 실제 A2A(단 secall 세션은 미무장이라 수신 워처 필요=발견≠제어).

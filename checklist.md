@@ -415,4 +415,4 @@
 > S2 백엔드(/dashboard/candidates) 소비. plain React(프론트=Opus 직접, tunaLlama 부적합). 로스터/피드 스타일 통일. armed(로스터 소속)는 제외하고 미무장 후보만 노출. claude arm은 외부 소켓 부재라 "연결"=세션 id 복사+수동 안내(발견≠제어 정직).
 
 - [x] S3 코드: api.ts Candidate 타입+fetchCandidates / Candidates.tsx(자체 5초 폴, roster 스타일 재사용, armed 필터, runner/project/source shield, amber 상태닷, "연결" 복사 버튼) / App.tsx mount(Feed 다음) / index.css candidates-section(full-width)+status-dot.candidate+candidate-arm. **npm run build 통과(208KB, tsc 클린).**
-- [ ] S2c+S3 라이브 스모크(묶음): 브로커 재빌드·재기동 → discover --once → /dashboard/candidates 후보 등장 + 브라우저 "발견된 세션" 패널 렌더 + armed overlay(win-opus-boss=armed 제외, 미무장 세션=후보) 확인.
+- [x] S2c+S3 라이브 스모크(묶음): 브로커 재빌드(dashboard worker)·재기동 → discover --once → **/dashboard/candidates 후보 2건**: 3332c84f(project=secall, armed=False=미무장 후보), 4a46a380(project=tunaRound, armed=True=보스 dedup). **설계 §0 예시(tunaRound→secall 발견) 실현.** roster=win-opus-boss(display, uuid=세션id). project=cwd 정확추출. 브라우저 패널 렌더는 사용자 확인 대기(대시보드 라이브). **정합성 수정 반영(3c21dce): uuid=세션id+display_name, cwd 다중행 스캔.**
