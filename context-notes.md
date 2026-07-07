@@ -842,3 +842,15 @@
 - **구현**: 프론트 병합(백엔드 무변경, dist 새로고침 반영). `activity.ts` mergeSessions(순수: roster+candidates를 session uuid로 병합, age 산출, active/idle 분리, autoBoss). App이 둘 다 폴→병합→active를 Roster, idle을 Candidates. Roster=SessionRow+autoBoss(override는 localStorage), Candidates=idle rows(미무장만 연결버튼, 유휴 armed는 "유휴 감독" 표식). 원격 agent(로컬 discover 커버 밖)=heartbeat 폴백(online→활성). 216KB tsc 클린.
 - **라이브 검증(시뮬)**: 로스터=mac 3감독(heartbeat)+win-opus-boss(★ age10s 자동)+mac-claude-tunaRound(미무장 활성). 유휴=없음. autoBoss=edf8c348(이 세션) 정확. 크로스머신 후보(mac discover)도 병합됨.
 - **한계/후속**: 원격은 jsonl age 못 봐 heartbeat 프록시(크로스머신 활동 정밀화=각 머신 discover 세션태그 보고, 후속). -B/-C 충돌 증분 미구현(현 데이터 충돌 없음, 후속).
+
+## 2026-07-07 세션17: autoarm 전면화(전 프로젝트) + 라이브 피드백 반영
+
+- **사용자 피드백(라이브 대시보드)**: 중복(mac-claude-sup 고정이름 세션태그없음 ↔ jsonl 후보 e0502b88 = 상관실패로 2줄), boss 미무장, 순서(총감독 최상단), uuid 2번째줄 전부, 뱃지 높이↓, session 또렷하게, 다른 TUI 미표시, "TUI 세션 시작하면 모두 heartbeat 줘야".
+- **결정(사용자)**: 전 프로젝트 자동무장 / win 지금 켜고 이름 규칙대로 리네임 / -B/-C·casing OK / mac A2A OK.
+- **조치**:
+  - #3~6 프론트 폴리시(548604e): 총감독 최상단·uuid 2번째줄 전부(session태그없으면 uuid)·뱃지 padding 4→2·session 색 dim→text.
+  - **autoarm 전면화(win)**: User env `TUNA_AUTOARM=1` + `TUNA_BIN=target\debug\tunaround.exe`(PATH tunaround 구버전=--display-name 미지원 회피). 전역 훅 설치 = `~/.claude/hooks/tuna-{autoarm,disarm}.py` 복사 + `~/.claude/settings.json` SessionStart에 autoarm 블록 추가(claude-vault 보존)·SessionEnd disarm 신설. **한 hooks 블록에 python+python3 두 명령=순차실행이라 pidfile guard로 레이스 없음**, win은 `$HOME` 미전개로 python3 변이 자연실패=플랫폼 자동선택. JSON 검증 통과.
+  - **이 세션 재무장**: win-opus-boss(36020) 종료 → **win-claude-tunaRound**(PID 10592, role=session) + pidfile 갱신. boss 고정이름 폐기 → 활동 자동감지 ★.
+  - **-B/-C 충돌**: activity.ts assignLabels(같은 base면 uuid정렬 순 -B/-C, 첫개 무접미) + Roster/Candidates가 s.label 사용. casing은 autoarm project=cwd basename 일관화로 해소.
+- **라이브 검증**: 로스터=win-claude-tunaRound(boss)+3감독, 후보=win-claude-secall(미무장 활성)+병합된 자기. mac 중복은 mac 후보 TTL소멸로 현재 안 보임.
+- **mac 남음(A2A)**: mac에 TUNA_AUTOARM=1+TUNA_BIN(mac 새 바이너리)+전역훅(settings 공유면 이미 있음, 아니면 추가) → mac 감독들 autoarm 재무장(uuid=세션id+세션태그)해 후보와 병합(중복 소멸).

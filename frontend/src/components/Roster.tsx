@@ -135,7 +135,7 @@ export default function Roster({ rows, pulses, autoBossUuid }: Props) {
           sorted.map((s) => {
             const pulse = !!pulses[s.uuid]
             const isBoss = effectiveBoss === s.uuid
-            const name = s.displayName || [s.machine, s.runner, s.project].filter(Boolean).join('-')
+            const name = s.label
             const activityLabel = s.lastHeartbeat ? relativeTime(s.lastHeartbeat) : agoLabel(s.ageSecs)
             return (
               <div className={'roster-row' + (s.online ? '' : ' offline')} key={s.uuid}>

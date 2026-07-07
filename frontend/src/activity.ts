@@ -19,6 +19,29 @@ export type SessionRow = {
   ageSecs: number // 활동 경과(작을수록 최근). jsonl age 또는 heartbeat 폴백.
   hasJsonlAge: boolean // age가 실제 jsonl 활동에서 온 것(원격 heartbeat 폴백과 구분)
   source: 'roster' | 'candidate' | 'both'
+  label: string // 표시 이름(displayName 또는 machine-runner-project). 같은 이름 충돌 시 -B/-C 증분.
+}
+
+// 각 행의 표시 이름을 정하고, 같은 base가 여럿이면 uuid 정렬 순으로 -B/-C를 붙인다(첫 개는 무접미).
+function assignLabels(rows: SessionRow[]): void {
+  const base = (r: SessionRow) =>
+    r.displayName || [r.machine, r.runner, r.project].filter(Boolean).join('-') || r.uuid
+  const groups = new Map<string, SessionRow[]>()
+  for (const r of rows) {
+    const b = base(r)
+    if (!groups.has(b)) groups.set(b, [])
+    groups.get(b)!.push(r)
+  }
+  for (const [b, group] of groups) {
+    if (group.length === 1) {
+      group[0].label = b
+      continue
+    }
+    group.sort((a, b2) => a.uuid.localeCompare(b2.uuid))
+    group.forEach((r, i) => {
+      r.label = i === 0 ? b : `${b}-${String.fromCharCode(66 + i - 1)}` // B, C, D...
+    })
+  }
 }
 
 // agent가 candidate(세션)와 같은 세션인지: agent uuid==세션id 또는 agent의 session 태그==세션id.
@@ -59,6 +82,7 @@ export function mergeSessions(agents: Agent[], candidates: Candidate[], idleSecs
       ageSecs: c.age_secs,
       hasJsonlAge: true,
       source: agent ? 'both' : 'candidate',
+      label: '',
     })
   }
 
@@ -78,8 +102,11 @@ export function mergeSessions(agents: Agent[], candidates: Candidate[], idleSecs
       ageSecs: a.online ? 0 : idleSecs + 1, // online=활성 취급, offline=유휴
       hasJsonlAge: false,
       source: 'roster',
+      label: '',
     })
   }
+
+  assignLabels(rows)
 
   const active = rows.filter((r) => r.ageSecs < idleSecs)
   const idle = rows.filter((r) => r.ageSecs >= idleSecs)

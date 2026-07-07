@@ -124,7 +124,7 @@ export default function Candidates({ rows }: { rows: SessionRow[] }) {
           <div className="roster-empty">유휴 세션 없음(전부 활성).</div>
         ) : (
           idle.map((c) => {
-            const name = c.displayName || [c.machine, c.runner, c.project].filter(Boolean).join('-') || c.uuid
+            const name = c.label
             return (
               <div className="roster-row" key={c.uuid}>
                 <div className="card-row">
