@@ -1,9 +1,8 @@
-// 발견된 세션(후보) 패널: 발견 리포터가 보고한 미무장 세션을 뜬다(v2-40 S2/S3). 5초 폴로 자족 갱신.
-// armed(=online roster 소속)는 이미 로스터에 있으므로 여기선 후보(armed=false)만 노출한다.
-// claude 세션은 외부 제어 소켓이 없어(발견≠제어) "연결"은 그 세션에 붙여넣을 arm 프롬프트를 팝업으로 안내한다.
-import { useEffect, useState } from 'react'
-import type { Candidate } from '../api'
-import { fetchCandidates } from '../api'
+// 발견/유휴 세션 패널: 활동 age >= 60분으로 로스터에서 강등된 유휴 세션(설계 v2-41). App이 병합·분리해 넘긴다.
+// 유휴 armed(감독이 자리 비움)와 미무장 발견 세션이 섞인다. 미무장 claude는 외부 제어 소켓이 없어(발견≠제어)
+// "연결"은 그 세션에 붙여넣을 arm 프롬프트를 팝업으로 안내한다(붙여넣고 활동하면 로스터로 복귀).
+import { useState } from 'react'
+import type { SessionRow } from '../activity'
 
 // 러너·머신 값별 색(Roster의 shield 색과 통일).
 const RUNNER_COLOR: Record<string, string> = {
@@ -39,13 +38,14 @@ function formatAge(sec: number): string {
 // 두 사전조건을 정직하게 반영: (1) Claude Code Bash 툴은 셸 env(TUNA_BROKER_TOKEN)를 상속하지
 // 않으므로 `!` 접두어로 사용자 셸에서 실행해야 토큰이 유지된다. (2) core는 "그 세션이 있는 머신에서
 // 도달 가능한" 브로커 주소여야 한다(뷰어 origin은 같은 머신일 때만 정확).
-function buildArmPrompt(c: Candidate): string {
+function buildArmPrompt(c: SessionRow): string {
   const core = window.location.origin + '/mcp'
+  const runner = c.runner ?? 'claude'
   // 사람이 읽는 이름: OS-엔진-프로젝트(예: win-claude-tunaRound). uuid 꼬리 대신 프로젝트.
-  const name = (c.machine ?? 'unknown') + '-' + c.runner + '-' + (c.project ?? 'unknown')
+  const name = (c.machine ?? 'unknown') + '-' + runner + '-' + (c.project ?? 'unknown')
   const tags = [
     'machine=' + (c.machine ?? 'unknown'),
-    'runner=' + c.runner,
+    'runner=' + runner,
     'role=supervised',
     'project=' + (c.project ?? 'unknown'),
     // session 태그 = 이 세션의 jsonl id. 브로커 armed overlay가 후보(uuid=세션 id)를 이 태그로 대조해
@@ -88,39 +88,15 @@ function Pill({ k, v, color }: { k: string; v: string; color?: string }) {
   )
 }
 
-export default function Candidates() {
-  const [candidates, setCandidates] = useState<Candidate[]>([])
-  // "연결" 팝업 대상 후보(null이면 팝업 닫힘).
-  const [armTarget, setArmTarget] = useState<Candidate | null>(null)
+export default function Candidates({ rows }: { rows: SessionRow[] }) {
+  // "연결" 팝업 대상(null이면 팝업 닫힘).
+  const [armTarget, setArmTarget] = useState<SessionRow | null>(null)
   const [copied, setCopied] = useState(false)
 
-  // /dashboard/candidates 를 5초 주기로 폴링한다(roster 폴 주기와 통일).
-  useEffect(() => {
-    let cancelled = false
-    const controller = new AbortController()
-    const load = () => {
-      fetchCandidates(controller.signal)
-        .then((list) => {
-          if (!cancelled) setCandidates(list)
-        })
-        .catch((err) => {
-          if (err instanceof DOMException && err.name === 'AbortError') return
-          console.error('[candidates] 조회 실패.', err)
-        })
-    }
-    load()
-    const timer = window.setInterval(load, 5000)
-    return () => {
-      cancelled = true
-      controller.abort()
-      window.clearInterval(timer)
-    }
-  }, [])
+  // App이 유휴(age>=60분)만 병합해 넘긴다. 최근 활동 순(age 오름차순)으로 이미 정렬됨.
+  const idle = rows
 
-  // armed(이미 로스터에 있음)는 제외하고 미무장 후보만 노출한다.
-  const unarmed = candidates.filter((c) => !c.armed).sort((a, b) => a.age_secs - b.age_secs)
-
-  const openArm = (c: Candidate) => {
+  const openArm = (c: SessionRow) => {
     setArmTarget(c)
     setCopied(false)
   }
@@ -140,39 +116,49 @@ export default function Candidates() {
   return (
     <section className="candidates-section">
       <div className="panel-header">
-        <h2 className="section-title">발견된 세션</h2>
-        <span className="section-count">{unarmed.length} 후보</span>
+        <h2 className="section-title">발견 / 유휴 세션</h2>
+        <span className="section-count">{idle.length} 유휴</span>
       </div>
       <div className="roster-list">
-        {unarmed.length === 0 ? (
-          <div className="roster-empty">발견된 미무장 세션 없음.</div>
+        {idle.length === 0 ? (
+          <div className="roster-empty">유휴 세션 없음(전부 활성).</div>
         ) : (
-          unarmed.map((c) => (
-            <div className="roster-row" key={c.uuid}>
-              <div className="card-row">
-                <span className="status-dot-wrap">
-                  <span className="status-dot candidate" />
-                </span>
-                <span className="roster-uuid">{c.uuid}</span>
-                <span className="dash-spacer" />
-                <span className="hb-label">활동 {formatAge(c.age_secs)}</span>
-                <button
-                  type="button"
-                  className="candidate-arm"
-                  onClick={() => openArm(c)}
-                  title="이 세션을 관리자로 편입하는 방법을 안내합니다(그 세션에 붙여넣기)."
-                >
-                  연결
-                </button>
+          idle.map((c) => {
+            const name = c.displayName || [c.machine, c.runner, c.project].filter(Boolean).join('-') || c.uuid
+            return (
+              <div className="roster-row" key={c.uuid}>
+                <div className="card-row">
+                  <span className="status-dot-wrap">
+                    <span className="status-dot candidate" />
+                  </span>
+                  <span className="roster-uuid">{name}</span>
+                  {c.armed ? (
+                    <span className="pill-idle" title="무장(A2A 수신 가능)됐으나 유휴 - 그 TUI에서 활동하면 로스터로 복귀">
+                      유휴 감독
+                    </span>
+                  ) : null}
+                  <span className="dash-spacer" />
+                  <span className="hb-label">활동 {formatAge(c.ageSecs)}</span>
+                  {!c.armed ? (
+                    <button
+                      type="button"
+                      className="candidate-arm"
+                      onClick={() => openArm(c)}
+                      title="이 세션을 관리자로 편입하는 방법을 안내합니다(그 세션에 붙여넣기)."
+                    >
+                      연결
+                    </button>
+                  ) : null}
+                </div>
+                <div className="tag-row">
+                  {c.machine ? <Pill k="machine" v={c.machine} color={machineColor(c.machine)} /> : null}
+                  {c.runner ? <Pill k="runner" v={c.runner} color={runnerColor(c.runner)} /> : null}
+                  {c.project ? <Pill k="project" v={c.project} /> : null}
+                  <Pill k="source" v={c.source} />
+                </div>
               </div>
-              <div className="tag-row">
-                {c.machine ? <Pill k="machine" v={c.machine} color={machineColor(c.machine)} /> : null}
-                <Pill k="runner" v={c.runner} color={runnerColor(c.runner)} />
-                {c.project ? <Pill k="project" v={c.project} /> : null}
-                <Pill k="source" v={c.source} />
-              </div>
-            </div>
-          ))
+            )
+          })
         )}
       </div>
 

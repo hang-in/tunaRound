@@ -1,8 +1,8 @@
 // 관리자 로스터: 피드와 동일한 패널+행 레이아웃. 각 관리자 = 상태닷·머신아이콘·이름·heartbeat·태그.
 // 총괄은 별도 카드가 아니라 대등한 행에 "현재 총괄" 뱃지로 표식(클릭해 지정, 앉는 머신 따라 바뀜).
 import { useState } from 'react'
-import type { Agent } from '../api'
 import { relativeTime } from '../api'
+import type { SessionRow } from '../activity'
 
 // 태그 표시 순서. 없는 키는 뒤에 알파벳순.
 const TAG_ORDER = ['machine', 'runner', 'role', 'project']
@@ -18,6 +18,14 @@ function orderedTags(tags: Record<string, string>): Array<[string, string]> {
 
 const N_DOTS = 14
 const BOSS_KEY = 'tuna_dash_boss'
+
+// 미무장(heartbeat 없는) 세션의 활동 경과 라벨. ageSecs(jsonl 활동 이후 초)에서 대략 표기.
+function agoLabel(secs: number): string {
+  if (secs < 60) return '방금'
+  const m = Math.round(secs / 60)
+  if (m < 60) return `${m}분 전`
+  return `${Math.round(m / 60)}시간 전`
+}
 
 // 태그 값별 색(같은 키라도 값에 따라 다르게: mac≠win, claude≠codex, supervised≠dispatcher).
 // 알려진 값은 고정 색, 나머지는 값 해시로 팔레트에서 안정적으로 배정.
@@ -81,23 +89,27 @@ function TagPill({ k, v }: { k: string; v: string }) {
 }
 
 type Props = {
-  agents: Agent[]
+  // 활성 세션(활동 age < 60분). 이미 age 오름차순(최근 먼저)으로 정렬돼 들어온다(설계 v2-41).
+  rows: SessionRow[]
   // uuid -> 방금 heartbeat 가 갱신돼 pulse 애니를 잠깐 보여줄지 여부.
   pulses: Record<string, boolean>
+  // 자동 총감독 후보(활성 중 사람 입력 최신). 수동 ★ override가 없으면 이걸 총감독으로 표식.
+  autoBossUuid: string
 }
 
-export default function Roster({ agents, pulses }: Props) {
-  // 현재 총괄(내가 앉은 머신). 클릭해 지정, 브라우저별 localStorage 보관.
-  const [boss, setBoss] = useState<string>(() => {
+export default function Roster({ rows, pulses, autoBossUuid }: Props) {
+  // 수동 총감독 override. 비어 있으면 autoBossUuid(자동최신)를 쓴다. 클릭 토글 = override 설정/해제.
+  const [manualBoss, setManualBoss] = useState<string>(() => {
     try {
       return localStorage.getItem(BOSS_KEY) ?? ''
     } catch {
       return ''
     }
   })
+  const effectiveBoss = manualBoss || autoBossUuid
   const toggleBoss = (uuid: string) => {
-    const next = boss === uuid ? '' : uuid
-    setBoss(next)
+    const next = manualBoss === uuid ? '' : uuid
+    setManualBoss(next)
     try {
       localStorage.setItem(BOSS_KEY, next)
     } catch {
@@ -105,25 +117,23 @@ export default function Roster({ agents, pulses }: Props) {
     }
   }
 
-  // online 먼저, offline 뒤(서버는 uuid 오름차순만 보장).
-  const sorted = [...agents].sort((a, b) => Number(b.online) - Number(a.online))
-  const onlineCount = agents.filter((a) => a.online).length
+  const sorted = rows
 
   return (
     <section className="roster-section">
       <div className="panel-header">
         <h2 className="section-title">관리자 로스터</h2>
-        <span className="section-count">
-          {onlineCount}/{agents.length} online
-        </span>
+        <span className="section-count">{sorted.length} 활성</span>
       </div>
       <div className="roster-list">
         {sorted.length === 0 ? (
-          <div className="roster-empty">등록된 관리자 없음.</div>
+          <div className="roster-empty">활성 세션 없음.</div>
         ) : (
           sorted.map((s) => {
             const pulse = !!pulses[s.uuid]
-            const isBoss = boss === s.uuid
+            const isBoss = effectiveBoss === s.uuid
+            const name = s.displayName || [s.machine, s.runner, s.project].filter(Boolean).join('-')
+            const activityLabel = s.lastHeartbeat ? relativeTime(s.lastHeartbeat) : agoLabel(s.ageSecs)
             return (
               <div className={'roster-row' + (s.online ? '' : ' offline')} key={s.uuid}>
                 <div className="card-row">
@@ -131,8 +141,8 @@ export default function Roster({ agents, pulses }: Props) {
                     <span className={'status-dot' + (s.online ? ' online' : '')} />
                     {pulse ? <span className="status-ping" /> : null}
                   </span>
-                  <MachineGlyph machine={s.tags.machine} />
-                  <span className="roster-uuid">{s.display_name ?? s.uuid}</span>
+                  <MachineGlyph machine={s.machine ?? undefined} />
+                  <span className="roster-uuid">{name || s.uuid}</span>
                   <button
                     type="button"
                     className={'boss-toggle' + (isBoss ? ' on' : '')}
@@ -143,6 +153,7 @@ export default function Roster({ agents, pulses }: Props) {
                     {isBoss ? '★' : '☆'}
                   </button>
                   {isBoss ? <span className="pill-boss">현재 총괄</span> : null}
+                  {!s.armed ? <span className="pill-unarmed" title="poll 미등록 = A2A 수신 불가(발견만)">미무장</span> : null}
                   {s.online ? (
                     <span className="hb-dots">
                       {Array.from({ length: N_DOTS }, (_, i) => (
@@ -154,7 +165,7 @@ export default function Roster({ agents, pulses }: Props) {
                   <span className="dash-spacer" />
                   <span className="hb-label-group">
                     <HbClockIcon />
-                    <span className="hb-label">{relativeTime(s.last_heartbeat)}</span>
+                    <span className="hb-label">{activityLabel}</span>
                   </span>
                 </div>
                 <div className="tag-row">

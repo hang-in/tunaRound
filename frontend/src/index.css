@@ -488,6 +488,20 @@ body {
   background: color-mix(in srgb, var(--accent) 13%, transparent);
   border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
 }
+/* 미무장(poll 미등록 = A2A 수신 불가, 발견만) / 유휴(무장됐으나 60분+ 무활동) 표식. */
+.pill-unarmed,
+.pill-idle {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  color: var(--text-dim, #8b949e);
+  background: rgba(110, 118, 129, 0.16);
+  border: 1px solid rgba(110, 118, 129, 0.28);
+}
 .tag-row {
   display: flex;
   flex-wrap: wrap;

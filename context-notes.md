@@ -835,3 +835,10 @@
   - **구현 산출**: main.rs node codex 힌트 소폭 갱신(--remote=라이브 관전, 대시보드=통합 로그) + 설계 §10 결정기록. 코드 로직 변경 없음(스펙이 "이미 됨/유지"로 수렴).
 - **총괄 세션 dedup(Point 2)**: 발견 후보에 이 총괄 세션(edf8c348)이 뜨는 냄새 = 미무장 탓(autoarm은 TUNA_AUTOARM=1 게이트, 이 세션 미설정). dedup 로직(armed_session_ids: uuid+session태그) 자체는 정상, 충돌 아님. **조치=이 세션 수동 무장**(poll --agent edf8c348 --display-name win-opus-boss --tags "...,session=edf8c348", detached PID 36020) + pidfile(~/.tunaround/autoarm/<sid>.json)로 SessionEnd disarm 정리 예약. → 로스터에 win-opus-boss online, 후보 패널에서 armed=True로 dedup. 보너스=boss 로스터 정식 등록으로 "boss uuid 폴링 놓침" 완화. **후속(미결)**: 미래 세션 자동무장(TUNA_AUTOARM 전역 설정은 모든 세션을 win-opus-boss로 오등록하니 보스 세션 식별법 필요 - 별도).
 - **헤드리스 스트림·윈도우 --remote §7**: 후속 항목으로 남김(급하지 않음).
+
+## 2026-07-07 세션17: E 활동 기반 로스터↔발견 구현 완료
+
+- **모델(설계 v2-41)**: 단일 축=활동 age(jsonl). 활성(age<60분)=관리자 로스터 / 유휴(60분+)=발견됨 / 총감독=활성 중 jsonl age 최소(자동)+수동 ★override. 무장/미무장 이분법 → 활동/유휴 스펙트럼.
+- **구현**: 프론트 병합(백엔드 무변경, dist 새로고침 반영). `activity.ts` mergeSessions(순수: roster+candidates를 session uuid로 병합, age 산출, active/idle 분리, autoBoss). App이 둘 다 폴→병합→active를 Roster, idle을 Candidates. Roster=SessionRow+autoBoss(override는 localStorage), Candidates=idle rows(미무장만 연결버튼, 유휴 armed는 "유휴 감독" 표식). 원격 agent(로컬 discover 커버 밖)=heartbeat 폴백(online→활성). 216KB tsc 클린.
+- **라이브 검증(시뮬)**: 로스터=mac 3감독(heartbeat)+win-opus-boss(★ age10s 자동)+mac-claude-tunaRound(미무장 활성). 유휴=없음. autoBoss=edf8c348(이 세션) 정확. 크로스머신 후보(mac discover)도 병합됨.
+- **한계/후속**: 원격은 jsonl age 못 봐 heartbeat 프록시(크로스머신 활동 정밀화=각 머신 discover 세션태그 보고, 후속). -B/-C 충돌 증분 미구현(현 데이터 충돌 없음, 후속).
