@@ -458,22 +458,13 @@ body {
   min-height: 20px;
 }
 /* 현재 총괄 지정 별표 토글. */
-.boss-toggle {
-  border: none;
-  background: none;
+/* 총감독 ★ = 자동 감지 표시만(클릭 토글 없음). */
+.boss-star {
   padding: 0 2px;
-  margin: 0;
-  cursor: pointer;
   font-size: 14px;
   line-height: 1;
-  color: var(--text-3);
-  flex: none;
-}
-.boss-toggle.on {
   color: #e3b341;
-}
-.boss-toggle:hover {
-  color: var(--accent);
+  flex: none;
 }
 /* "현재 총괄" 뱃지(대등 카드에 표식만). */
 .pill-boss {
@@ -487,6 +478,29 @@ body {
   color: var(--accent);
   background: color-mix(in srgb, var(--accent) 13%, transparent);
   border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+}
+/* 미무장(poll 미등록 = A2A 수신 불가, 발견만) / 유휴(무장됐으나 60분+ 무활동) 표식. 색조로 구분. */
+.pill-unarmed,
+.pill-idle {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+/* 미무장 = 중립 회색(수신 불가). */
+.pill-unarmed {
+  color: var(--text-dim, #8b949e);
+  background: rgba(110, 118, 129, 0.16);
+  border: 1px solid rgba(110, 118, 129, 0.28);
+}
+/* 유휴 = 노란빛(무장됐으나 자리 비움 - 회색과 한눈에 구분). */
+.pill-idle {
+  color: #d1a34a;
+  background: rgba(210, 168, 80, 0.14);
+  border: 1px solid rgba(210, 168, 80, 0.28);
 }
 .tag-row {
   display: flex;
@@ -597,6 +611,30 @@ body {
 .shield-v {
   background: #6b7280;
   font-family: var(--font-mono);
+}
+/* 라벨 없는 단독 값 뱃지(machine/runner/role/project). 모서리 전체 둥글게, 높이 낮게. */
+.shield-solo {
+  padding: 2px 7px;
+  border-radius: 3px;
+  box-shadow: 0 1px 1px rgba(0, 0, 0, 0.12);
+}
+/* session/uuid 는 길어서 별도 줄(모든 행). 값만, 모노, 또렷하게. */
+.session-row {
+  margin-top: 3px;
+}
+.shield-session {
+  display: inline-block;
+  font-size: 11px;
+  line-height: 1;
+  padding: 2px 7px;
+  border-radius: 3px;
+  color: var(--text, #c9d1d9);
+  background: rgba(110, 118, 129, 0.22);
+  font-family: var(--font-mono);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
 }
 
 /* ---------- 라이브 task 피드 ---------- */

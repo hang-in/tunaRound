@@ -112,3 +112,15 @@ P0 = `codex app-server --listen stdio://`를 파이프로 구동해 initialize->
 3. 티키타카: 총감독(별도 claude TUI, tuna-broker MCP)이 send_task 2~3회 -> 매번 codex 감독 라이브 thread가 맥락 유지하며 응답 -> broker.db로 completed 확인.
 4. HITL: `codex --remote`로 붙어 라이브 대화가 보이는지.
 5. 3-OS CI(codex 미설치 환경은 라이브 스모크 스킵, 순수부만).
+
+## 10. 관전 결정 (2026-07-07, task 48a0dbb2 스펙 개선)
+
+> 세션17에 총괄(아키텍트)+사용자가 §7 열린 질문(--remote 관전)을 대화로 매듭지었다. 원 스펙(48a0dbb2 "관전을 --remote에서 대시보드 SSE로 이동, --remote 제거")을 아래대로 개선한다.
+
+- **codex 라이브 관전 = `codex --remote` (유지, 제거 안 함).** codex 네이티브 TUI로 app-server thread에 붙어 추론을 실시간으로 본다. 이게 codex 관전의 주력 경로다(대시보드 스트림보다 낫다: 네이티브·즉시·codex 자체 기능이라 우리 유지비용 0). "--remote 제거" 스펙은 **비채택**.
+- **대시보드 task 피드 = 통합 로그(사후).** `/dashboard/events` SSE가 전 에이전트의 task 상태변이(working/completed+artifact)를 브로드캐스트 → 대시보드가 aggregate 활동 로그로 표출. 항상 지켜볼 필요 없이, 볼 때 진행 흔적이 남는다(task 이력에 저장). codex 추론을 대시보드로 "옮기지" 않는다: 대시보드는 관전 도구가 아니라 통합 로그다.
+- **라이브 스트림의 진짜 대상 = 헤드리스 워커(별건, 미래).** 붙을 TUI가 없는 헤드리스 `work` 러너는 --remote 같은 관전 수단이 없다. 그쪽 출력을 브로커 진행상태로 스트림해 대시보드에 흘리는 게 스트림의 진짜 가치다. codex 감독(app-server+--remote)엔 불필요. 착수 시 별도 설계(report_task_progress류 MCP 도구 + 러너 emit + 대시보드 렌더).
+- **취약 처리 정리**:
+  - (2) thread 스테일: **이미 self-heal됨**(codex_inject.rs, `thread/resume` 실패 → `thread/start` 자가치유). 추가 작업 없음.
+  - (3) 소켓 고아: app-server ws는 로컬 무인증(loopback)이라 --remote 관전 자체는 브로커 토큰과 무관. 고아 소켓은 별개(장수 데몬 토큰 스테일 = 로테이션=재기동 규율, [[readonly-soft-enforcement-ok]] 아닌 토큰 live-source 별도 설계).
+- **§7 열린 질문 상태**: `--remote`가 글루-소유 threadId를 선택/부착하는 UX는 **맥에서 실동작 확인, 윈도우는 미확정**(세션16 §7 실측). --remote를 codex 관전 주력으로 쓰려면 윈도우 attach를 손봐야 한다(후속 조사, 급하지 않음). 안 되면 그 머신은 대시보드 로그(사후)로 관전.

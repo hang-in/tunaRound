@@ -1,8 +1,7 @@
 // 관리자 로스터: 피드와 동일한 패널+행 레이아웃. 각 관리자 = 상태닷·머신아이콘·이름·heartbeat·태그.
 // 총괄은 별도 카드가 아니라 대등한 행에 "현재 총괄" 뱃지로 표식(클릭해 지정, 앉는 머신 따라 바뀜).
-import { useState } from 'react'
-import type { Agent } from '../api'
 import { relativeTime } from '../api'
+import type { SessionRow } from '../activity'
 
 // 태그 표시 순서. 없는 키는 뒤에 알파벳순.
 const TAG_ORDER = ['machine', 'runner', 'role', 'project']
@@ -17,7 +16,16 @@ function orderedTags(tags: Record<string, string>): Array<[string, string]> {
 }
 
 const N_DOTS = 14
-const BOSS_KEY = 'tuna_dash_boss'
+
+// 미무장(heartbeat 없는) 세션의 활동 경과 라벨. ageSecs(jsonl 활동 이후 초)에서 대략 표기.
+function agoLabel(secs: number): string {
+  if (secs < 60) return '방금'
+  const m = Math.floor(secs / 60)
+  if (m < 60) return `${m}분 전`
+  const h = Math.floor(m / 60)
+  if (h < 24) return `${h}시간 전`
+  return `${Math.floor(h / 24)}일 전`
+}
 
 // 태그 값별 색(같은 키라도 값에 따라 다르게: mac≠win, claude≠codex, supervised≠dispatcher).
 // 알려진 값은 고정 색, 나머지는 값 해시로 팔레트에서 안정적으로 배정.
@@ -70,80 +78,66 @@ function HbClockIcon() {
   )
 }
 
+// 값만 표시하는 뱃지(라벨/타이틀 없이 - 값이 자명: win/claude/supervised/프로젝트명).
+// 무엇의 값인지는 hover title로만 남긴다.
 function TagPill({ k, v }: { k: string; v: string }) {
   return (
-    <span className="shield">
-      <span className="shield-k">{k}</span>
-      <span className="shield-v" style={{ background: valueColor(v) }}>
-        {v}
-      </span>
+    <span className="shield-v shield-solo" style={{ background: valueColor(v) }} title={k}>
+      {v}
     </span>
   )
 }
 
 type Props = {
-  agents: Agent[]
+  // 활성 세션(활동 age < 60분). 이미 age 오름차순(최근 먼저)으로 정렬돼 들어온다(설계 v2-41).
+  rows: SessionRow[]
   // uuid -> 방금 heartbeat 가 갱신돼 pulse 애니를 잠깐 보여줄지 여부.
   pulses: Record<string, boolean>
+  // 자동 총감독 후보(활성 중 사람 입력 최신). 수동 ★ override가 없으면 이걸 총감독으로 표식.
+  autoBossUuid: string
 }
 
-export default function Roster({ agents, pulses }: Props) {
-  // 현재 총괄(내가 앉은 머신). 클릭해 지정, 브라우저별 localStorage 보관.
-  const [boss, setBoss] = useState<string>(() => {
-    try {
-      return localStorage.getItem(BOSS_KEY) ?? ''
-    } catch {
-      return ''
-    }
-  })
-  const toggleBoss = (uuid: string) => {
-    const next = boss === uuid ? '' : uuid
-    setBoss(next)
-    try {
-      localStorage.setItem(BOSS_KEY, next)
-    } catch {
-      // 저장 불가 환경은 무시.
-    }
-  }
+export default function Roster({ rows, pulses, autoBossUuid }: Props) {
+  // 총감독 = 순수 자동(활성 중 사람 입력 최신 = App의 autoBossUuid). 수동 override 없음(★는 표시만).
+  const effectiveBoss = autoBossUuid
 
-  // online 먼저, offline 뒤(서버는 uuid 오름차순만 보장).
-  const sorted = [...agents].sort((a, b) => Number(b.online) - Number(a.online))
-  const onlineCount = agents.filter((a) => a.online).length
+  // 정렬: 총감독 최상단 → 현재 사용 머신(=총감독 머신) 세션 → 원격 세션. 각 그룹 내 age 오름차순(최근 먼저).
+  const bossMachine = rows.find((r) => r.uuid === effectiveBoss)?.machine ?? null
+  const rank = (r: SessionRow) =>
+    r.uuid === effectiveBoss ? 0 : bossMachine !== null && r.machine === bossMachine ? 1 : 2
+  const sorted = [...rows].sort((a, b) => rank(a) - rank(b) || a.ageSecs - b.ageSecs)
 
   return (
     <section className="roster-section">
       <div className="panel-header">
         <h2 className="section-title">관리자 로스터</h2>
-        <span className="section-count">
-          {onlineCount}/{agents.length} online
-        </span>
+        <span className="section-count">{sorted.length} 활성</span>
       </div>
       <div className="roster-list">
         {sorted.length === 0 ? (
-          <div className="roster-empty">등록된 관리자 없음.</div>
+          <div className="roster-empty">활성 세션 없음.</div>
         ) : (
           sorted.map((s) => {
             const pulse = !!pulses[s.uuid]
-            const isBoss = boss === s.uuid
+            const isBoss = effectiveBoss === s.uuid
+            const name = s.label
+            const activityLabel = s.lastHeartbeat ? relativeTime(s.lastHeartbeat) : agoLabel(s.ageSecs)
             return (
-              <div className={'roster-row' + (s.online ? '' : ' offline')} key={s.uuid}>
+              <div className={'roster-row' + (s.armed && !s.online ? ' offline' : '')} key={s.uuid}>
                 <div className="card-row">
                   <span className="status-dot-wrap">
                     <span className={'status-dot' + (s.online ? ' online' : '')} />
                     {pulse ? <span className="status-ping" /> : null}
                   </span>
-                  <MachineGlyph machine={s.tags.machine} />
-                  <span className="roster-uuid">{s.display_name ?? s.uuid}</span>
-                  <button
-                    type="button"
-                    className={'boss-toggle' + (isBoss ? ' on' : '')}
-                    onClick={() => toggleBoss(s.uuid)}
-                    title={isBoss ? '현재 총괄(클릭해 해제)' : '클릭해 현재 총괄으로 지정'}
-                    aria-label="현재 총괄 지정"
-                  >
-                    {isBoss ? '★' : '☆'}
-                  </button>
+                  <MachineGlyph machine={s.machine ?? undefined} />
+                  <span className="roster-uuid">{name || s.uuid}</span>
+                  {isBoss ? (
+                    <span className="boss-star on" title="현재 총감독(자동 감지 - 사람이 입력 중인 세션)">
+                      ★
+                    </span>
+                  ) : null}
                   {isBoss ? <span className="pill-boss">현재 총괄</span> : null}
+                  {!s.armed ? <span className="pill-unarmed" title="poll 미등록 = A2A 수신 불가(발견만)">미무장</span> : null}
                   {s.online ? (
                     <span className="hb-dots">
                       {Array.from({ length: N_DOTS }, (_, i) => (
@@ -155,13 +149,20 @@ export default function Roster({ agents, pulses }: Props) {
                   <span className="dash-spacer" />
                   <span className="hb-label-group">
                     <HbClockIcon />
-                    <span className="hb-label">{relativeTime(s.last_heartbeat)}</span>
+                    <span className="hb-label">{activityLabel}</span>
                   </span>
                 </div>
                 <div className="tag-row">
-                  {orderedTags(s.tags).map(([k, v]) => (
-                    <TagPill key={k} k={k} v={v} />
-                  ))}
+                  {orderedTags(s.tags)
+                    .filter(([k]) => TAG_ORDER.includes(k))
+                    .map(([k, v]) => (
+                      <TagPill key={k} k={k} v={v} />
+                    ))}
+                </div>
+                <div className="tag-row session-row">
+                  <span className="shield-session" title="session / uuid">
+                    {s.tags.session ?? s.uuid}
+                  </span>
                 </div>
               </div>
             )

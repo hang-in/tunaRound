@@ -279,8 +279,9 @@ struct DiscoverArgs {
     /// 스캔할 projects 디렉토리(생략 시 ~/.claude/projects).
     #[arg(long)]
     projects_dir: Option<String>,
-    /// 활동 세션 판정 창(분). jsonl mtime이 이 시간 이내면 활동으로 본다(기본 10분).
-    #[arg(long, default_value_t = 10)]
+    /// 세션을 후보로 리포트할 "잊기 지평"(분). jsonl mtime이 이 시간 이내면 리포트한다. 활성/유휴 분리는
+    /// 대시보드가 age로 하므로(설계 v2-41, 활성<60분/유휴>=60분), 이 값은 유휴 창을 덮게 커야 한다(기본 240분=4시간).
+    #[arg(long, default_value_t = 240)]
     stale_mins: u64,
     /// 이 리포터의 머신 식별자(win|mac|unix 등). 생략 시 TUNA_MACHINE env 또는 빌드 타깃 OS로 추정.
     #[arg(long)]
@@ -1507,10 +1508,10 @@ fn main() {
         for l in cfg.lane.iter().filter(|l| l.is_supervised()) {
             match l.runner.as_str() {
                 "codex" => eprintln!(
-                    "[node] 감독 레인 '{}'(codex): app-server 라이브 감독으로 운용하세요(설계 v2-37).\n  \
+                    "[node] 감독 레인 '{}'(codex): app-server 라이브 감독으로 운용하세요(설계 v2-37, 관전 결정 2026-07-07).\n  \
                      1) app-server 기동(토큰 env 필수): TUNA_BROKER_TOKEN=<TOKEN> codex app-server --listen ws://127.0.0.1:<PORT>\n  \
-                     2) (선택) 사람 관전: codex --remote ws://127.0.0.1:<PORT>\n  \
-                     3) 감시+주입: tunaround poll --core {} --token <TOKEN> --agent {} --on-task 'tunaround codex-inject --ws ws://127.0.0.1:<PORT> --agent {} --text \"브로커 task {{id}}를 claim_task로 처리하고 complete_task로 보고하라\"'",
+                     2) 라이브 관전(codex 추론 실시간) = codex 네이티브 TUI 부착: codex --remote ws://127.0.0.1:<PORT>. 대시보드(/dashboard)는 전 에이전트 task 활동을 통합 로그로 보여준다(사후, 항상 켜둘 필요 없음).\n  \
+                     3) 감시+주입: tunaround poll --core {} --token <TOKEN> --agent {} --on-task 'tunaround codex-inject --ws ws://127.0.0.1:<PORT> --agent {} --text \"브로커 task {{id}}를 claim_task로 가져와 요청을 읽고, 그 요청에 직접 답하라(답변 내용을 네 메시지로 출력). claim/complete는 처리 절차일 뿐이니 절차를 설명하지 말고 요청에 대한 실제 답을 내라. 그 답변 텍스트를 result로 complete_task를 호출해 마감하라\"'",
                     l.agent, core_url, l.agent, l.agent
                 ),
                 "claude" => eprintln!(

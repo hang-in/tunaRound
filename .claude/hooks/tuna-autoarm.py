@@ -104,7 +104,9 @@ def main() -> int:
     # 낸 후보(uuid=세션 id)와 로스터가 매칭돼 armed overlay·중복제거가 성립한다. 사람이 읽는 이름은
     # display_name으로 분리한다(총감독은 TUNA_AUTOARM_AGENT로 win-opus-boss 등 지정).
     agent = session_id
-    display = os.environ.get("TUNA_AUTOARM_AGENT") or f"{host}-claude-{session_id[:8]}"
+    # 사람이 읽는 이름: OS-엔진-프로젝트(예: win-claude-tunaRound). 같은 프로젝트 충돌 시 -B/-C 증분은
+    # 로스터 표시 계층에서 결정론적으로 붙인다(여기선 base만). 총감독 등은 TUNA_AUTOARM_AGENT로 고정 지정.
+    display = os.environ.get("TUNA_AUTOARM_AGENT") or f"{machine}-claude-{project}"
     interval = os.environ.get("TUNA_AUTOARM_INTERVAL", "15")
 
     # session 태그 = 이 세션의 jsonl id. 브로커 armed overlay가 discover 후보(uuid=세션 id)를 이 태그로
