@@ -77,7 +77,7 @@ pub struct Lane {
 }
 
 impl Lane {
-    /// 자동 레인(헤드리스 데몬 대상)인가. kind 미지정 또는 "auto"면 자동, "supervised"면 감독.
+    /// 감독 레인(세션 부착 대상)인가. kind가 "supervised"면 true, 미지정 또는 "auto"면 false(자동 레인).
     pub fn is_supervised(&self) -> bool {
         self.kind.as_deref() == Some("supervised")
     }
