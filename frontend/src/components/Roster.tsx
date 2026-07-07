@@ -17,16 +17,6 @@ function orderedTags(tags: Record<string, string>): Array<[string, string]> {
 
 const N_DOTS = 14
 
-// 미무장(heartbeat 없는) 세션의 활동 경과 라벨. ageSecs(jsonl 활동 이후 초)에서 대략 표기.
-function agoLabel(secs: number): string {
-  if (secs < 60) return '방금'
-  const m = Math.floor(secs / 60)
-  if (m < 60) return `${m}분 전`
-  const h = Math.floor(m / 60)
-  if (h < 24) return `${h}시간 전`
-  return `${Math.floor(h / 24)}일 전`
-}
-
 // 태그 값별 색(같은 키라도 값에 따라 다르게: mac≠win, claude≠codex, supervised≠dispatcher).
 // 알려진 값은 고정 색, 나머지는 값 해시로 팔레트에서 안정적으로 배정.
 const VALUE_COLOR: Record<string, string> = {
@@ -105,28 +95,27 @@ export default function Roster({ rows, pulses, autoBossUuid }: Props) {
   const bossMachine = rows.find((r) => r.uuid === effectiveBoss)?.machine ?? null
   const rank = (r: SessionRow) =>
     r.uuid === effectiveBoss ? 0 : bossMachine !== null && r.machine === bossMachine ? 1 : 2
-  const sorted = [...rows].sort((a, b) => rank(a) - rank(b) || a.ageSecs - b.ageSecs)
+  const sorted = [...rows].sort((a, b) => rank(a) - rank(b) || a.label.localeCompare(b.label))
 
   return (
     <section className="roster-section">
       <div className="panel-header">
         <h2 className="section-title">관리자 로스터</h2>
-        <span className="section-count">{sorted.length} 활성</span>
+        <span className="section-count">{sorted.length} online</span>
       </div>
       <div className="roster-list">
         {sorted.length === 0 ? (
-          <div className="roster-empty">활성 세션 없음.</div>
+          <div className="roster-empty">열린 세션 없음.</div>
         ) : (
           sorted.map((s) => {
             const pulse = !!pulses[s.uuid]
             const isBoss = effectiveBoss === s.uuid
             const name = s.label
-            const activityLabel = s.lastHeartbeat ? relativeTime(s.lastHeartbeat) : agoLabel(s.ageSecs)
             return (
-              <div className={'roster-row' + (s.armed && !s.online ? ' offline' : '')} key={s.uuid}>
+              <div className="roster-row" key={s.uuid}>
                 <div className="card-row">
                   <span className="status-dot-wrap">
-                    <span className={'status-dot' + (s.online ? ' online' : '')} />
+                    <span className="status-dot online" />
                     {pulse ? <span className="status-ping" /> : null}
                   </span>
                   <MachineGlyph machine={s.machine ?? undefined} />
@@ -137,19 +126,16 @@ export default function Roster({ rows, pulses, autoBossUuid }: Props) {
                     </span>
                   ) : null}
                   {isBoss ? <span className="pill-boss">현재 총괄</span> : null}
-                  {!s.armed ? <span className="pill-unarmed" title="poll 미등록 = A2A 수신 불가(발견만)">미무장</span> : null}
-                  {s.online ? (
-                    <span className="hb-dots">
-                      {Array.from({ length: N_DOTS }, (_, i) => (
-                        <span key={i} className="hb-dot" style={{ animationDelay: (i * 0.09).toFixed(2) + 's' }} />
-                      ))}
-                      {pulse ? <span className="hb-sweep" /> : null}
-                    </span>
-                  ) : null}
+                  <span className="hb-dots">
+                    {Array.from({ length: N_DOTS }, (_, i) => (
+                      <span key={i} className="hb-dot" style={{ animationDelay: (i * 0.09).toFixed(2) + 's' }} />
+                    ))}
+                    {pulse ? <span className="hb-sweep" /> : null}
+                  </span>
                   <span className="dash-spacer" />
                   <span className="hb-label-group">
                     <HbClockIcon />
-                    <span className="hb-label">{activityLabel}</span>
+                    <span className="hb-label">{relativeTime(s.lastHeartbeat)}</span>
                   </span>
                 </div>
                 <div className="tag-row">

@@ -1,34 +1,21 @@
-// 로스터(armed+heartbeat)와 발견 후보(discover jsonl+age)를 세션 uuid로 병합해
-// 활동(age) 기준으로 활성/유휴로 나누는 순수 로직. 설계 v2-41.
-import type { Agent, Candidate } from './api'
+// 로스터 = heartbeat(online) 세션 전부. 총감독 = 사람 입력 최신. 순수 presence 모델(설계 v2-43).
+// v2-41 활동(jsonl age)·discover 병합은 제거됨: 전부 autoarm heartbeat라 discover 불필요.
+import type { Agent } from './api'
 
-// 60분. 이보다 오래 무활동이면 유휴(발견됨으로 강등).
-export const IDLE_SECS = 3600
-
-// heartbeat=presence(설계 v2-42): armed 세션은 heartbeat가 presence라 항상 표시.
-// 미무장(armed 없는) discover 세션은 jsonl mtime이 이 창 이내일 때만 표시한다. 그 이상 오래된 jsonl은
-// 닫힌 세션의 잔존(유령)이라 숨긴다(그 세션에서 타이핑하면 ping 훅이 자동 무장 → armed로 로스터 복귀).
-export const FRESH_UNARMED_SECS = 600
-
-// 병합된 세션 한 행(로스터/발견 공용 표시 모델).
+// 로스터 한 행(online armed 세션). 표시용 파생.
 export type SessionRow = {
-  uuid: string // 세션 id(있으면) 또는 agent uuid
+  uuid: string
   displayName: string | null
   tags: Record<string, string>
   machine: string | null
   runner: string | null
   project: string | null
-  armed: boolean // 로스터에 poll 등록됨 = A2A 수신 가능
-  online: boolean // heartbeat 신선(armed 세션만 의미)
-  lastHeartbeat: string | null
-  ageSecs: number // 활동 경과(작을수록 최근). jsonl age 또는 heartbeat 폴백.
-  hasJsonlAge: boolean // age가 실제 jsonl 활동에서 온 것(원격 heartbeat 폴백과 구분)
-  humanInputAt: string | null // 마지막 사람 프롬프트 시각(총감독 판정, 설계 v2-42)
-  source: 'roster' | 'candidate' | 'both'
-  label: string // 표시 이름(displayName 또는 machine-runner-project). 같은 이름 충돌 시 -B/-C 증분.
+  lastHeartbeat: string
+  humanInputAt: string | null // 마지막 사람 프롬프트 시각(총감독 판정)
+  label: string // 표시 이름(displayName 또는 machine-runner-project). 충돌 시 -B/-C.
 }
 
-// 각 행의 표시 이름을 정하고, 같은 base가 여럿이면 uuid 정렬 순으로 -B/-C를 붙인다(첫 개는 무접미).
+// 같은 base가 여럿이면 uuid 정렬 순 -B/-C(첫 개 무접미).
 function assignLabels(rows: SessionRow[]): void {
   const base = (r: SessionRow) =>
     r.displayName || [r.machine, r.runner, r.project].filter(Boolean).join('-') || r.uuid
@@ -50,97 +37,35 @@ function assignLabels(rows: SessionRow[]): void {
   }
 }
 
-// agent가 candidate(세션)와 같은 세션인지: agent uuid==세션id 또는 agent의 session 태그==세션id.
-function matchesSession(agent: Agent, sessionUuid: string): boolean {
-  return agent.uuid === sessionUuid || agent.tags?.session === sessionUuid
+export type RosterView = {
+  rows: SessionRow[]
+  autoBossUuid: string // 총감독 = online 중 human_input_at 최신. 없으면 ''.
 }
 
-export type MergeResult = {
-  active: SessionRow[]
-  idle: SessionRow[]
-  autoBossUuid: string // 자동 총감독 후보(활성+jsonl age 최소). 없으면 ''.
-}
-
-// roster + candidates를 병합해 활성/유휴로 나눈다. 총감독 자동후보(활성 중 jsonl age 최소)도 낸다.
-export function mergeSessions(agents: Agent[], candidates: Candidate[], idleSecs = IDLE_SECS): MergeResult {
-  const rows: SessionRow[] = []
-  const usedAgents = new Set<string>()
-
-  // 1) candidate(=jsonl 세션) 기준 행. 매칭되는 armed agent가 있으면 합친다.
-  for (const c of candidates) {
-    const agent = agents.find((a) => matchesSession(a, c.uuid))
-    if (agent) usedAgents.add(agent.uuid) // 매칭되면 loop 2에서 중복 처리 안 되게 사용 표시.
-    // heartbeat=presence: offline(heartbeat 만료) agent는 poll 죽음 = presence 아님 = 미무장 취급.
-    const liveAgent = agent && agent.online ? agent : undefined
-    // 미무장(live agent 없는) 후보는 최근(FRESH_UNARMED) jsonl만 표시. 오래된 것은 닫힌 세션 잔존(유령)이라
-    // 제외 - 같은 세션 옛 jsonl -B/-C 중복 + 죽은 poll 세션이 계속 뜨던 것 소멸.
-    if (!liveAgent && c.age_secs >= FRESH_UNARMED_SECS) continue
-    // 표시 이름/태그는 (offline이어도) agent 것을 우선(라벨 안정), armed/online/boss는 liveAgent만.
-    const fallbackTags: Record<string, string> = { session: c.uuid }
-    if (c.machine) fallbackTags.machine = c.machine
-    if (c.runner) fallbackTags.runner = c.runner
-    if (c.project) fallbackTags.project = c.project
-    rows.push({
-      uuid: c.uuid,
-      displayName: agent?.display_name ?? null,
-      tags: agent?.tags ?? fallbackTags,
-      machine: c.machine,
-      runner: c.runner,
-      project: c.project,
-      armed: !!liveAgent,
-      online: liveAgent?.online ?? false,
-      lastHeartbeat: liveAgent?.last_heartbeat ?? null,
-      ageSecs: c.age_secs,
-      hasJsonlAge: true,
-      humanInputAt: liveAgent?.human_input_at ?? null,
-      source: agent ? 'both' : 'candidate',
-      label: '',
-    })
-  }
-
-  // 2) candidate와 안 맞은 roster agent(원격 = 로컬 discover 커버 밖). heartbeat로 age 폴백.
-  // offline(heartbeat 만료) + candidate 없음 = poll watcher 죽음 = 세션 종료/크래시 → 죽은 좀비라 제외
-  // (idle이 아니다). candidate가 매칭된 경우는 위 1)에서 age로 배치되므로 여기서 안 걸린다.
-  for (const a of agents) {
-    if (usedAgents.has(a.uuid)) continue
-    if (!a.online) continue
-    rows.push({
+// online(heartbeat 신선) 세션만 로스터에. 총감독 = human_input_at 최신(SQL datetime=사전순).
+export function buildRoster(agents: Agent[]): RosterView {
+  const rows: SessionRow[] = agents
+    .filter((a) => a.online)
+    .map((a) => ({
       uuid: a.uuid,
       displayName: a.display_name,
       tags: a.tags ?? {},
       machine: a.tags?.machine ?? null,
       runner: a.tags?.runner ?? null,
       project: a.tags?.project ?? null,
-      armed: true,
-      online: true, // 위에서 offline은 continue로 걸렀다
       lastHeartbeat: a.last_heartbeat,
-      ageSecs: 0, // heartbeat 신선 = 활성 취급(jsonl age는 discover 커버 밖이라 폴백)
-      hasJsonlAge: false,
       humanInputAt: a.human_input_at ?? null,
-      source: 'roster',
       label: '',
-    })
-  }
-
+    }))
   assignLabels(rows)
 
-  const active = rows.filter((r) => r.ageSecs < idleSecs)
-  const idle = rows.filter((r) => r.ageSecs >= idleSecs)
-  // age 오름차순(최근 먼저) 정렬.
-  active.sort((a, b) => a.ageSecs - b.ageSecs)
-  idle.sort((a, b) => a.ageSecs - b.ageSecs)
-
-  // 총감독 자동후보 = 사람이 마지막으로 프롬프트를 넣은 **online(살아있는)** 세션(human_input_at 최신, 설계 v2-42).
-  // online 조건이 없으면 죽은(heartbeat 만료) 세션이 옛 human_input_at으로 총감독에 걸린다(실측: 껐던 astryx).
-  // jsonl mtime(resume/tool로 튐) 대신 사람 입력만 신호. 아무도 핑 없으면 총감독 없음(''). SQL datetime=사전순 비교.
   let autoBossUuid = ''
-  let bestInput = ''
-  for (const r of active) {
-    if (r.online && r.humanInputAt && r.humanInputAt > bestInput) {
-      bestInput = r.humanInputAt
+  let best = ''
+  for (const r of rows) {
+    if (r.humanInputAt && r.humanInputAt > best) {
+      best = r.humanInputAt
       autoBossUuid = r.uuid
     }
   }
-
-  return { active, idle, autoBossUuid }
+  return { rows, autoBossUuid }
 }

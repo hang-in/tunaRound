@@ -876,3 +876,12 @@
 - **검증**: 479 lib pass, frontend 217KB tsc 클린, cargo check(dashboard worker) 클린.
 - **활성화 남음**: 브로커 재빌드+재기동 필요(핑 엔드포인트·human_input_at 필드). 메시 teardown=사용자 승인.
 - **후속(2단계)**: heartbeat=presence 병합(유령=heartbeat 없는 stale jsonl 제외) + discover stale-mins 원복(작은 창, 발견됨=미무장 최근만). 크로스머신 boss-ping(loopback→토큰 인증, mac 세션도 총감독 되게).
+
+## 2026-07-08 세션17: v2-43 정본 타겟 모델 + 대시보드 단순화(재센터링)
+
+- **재센터링**: 대시보드 만들며 이미 만든 A2A 워크플로우(총괄 던짐→감독 자율수신 Monitor(poll)→complete→watch-results로 총괄 깨움→사람 브리핑)를 자꾸 재발명하려다 꼬임. 사용자 지적으로 재센터링. 워크플로우는 완성돼 있고 대시보드는 뷰일 뿐. 정본=설계 v2-43.
+- **UX 통찰**: "모든 세션 Monitor 파킹"은 이상 UX 걱정했으나, 받는 자리(감독/워커)는 자율이라 사람이 UX를 안 봄=논점 아님. 사람은 총괄에만 앉음(clean chat, watch-results로 결과).
+- **단순화(사용자 승인)**: 순수 heartbeat=presence. 로스터=online 세션 전부, 총감독=human_input_at 최신, 발견/유휴+discover+활동(jsonl age) 모델 **제거**(전부 autoarm이라 불필요). activity.ts=buildRoster(online만), Candidates.tsx 삭제, discover 프로세스 중단, api.ts Candidate 제거. 210KB(217→). 라이브: online 3개(★win-claude-tunaRound+2 codex-sup).
+- **수용기준(사용자)**: 재시작 후 발견/유휴 없음 / 로스터=win·mac 모든 열린 TUI(claude+codex) / exit→사라짐(딜레이 OK).
+- **남은 배선(새 설계 아님)**: env→설정파일(신뢰성, env 두번 물림) · 수신 배선(autoarm이 Monitor(poll) 안내) · codex arming(claude 훅 밖) · 워커 섹션.
+- **env 교훈**: 훅 no-op 원인=env가 터미널 launch에 고정(setx는 새 터미널만). 기존 세션은 재시작 필요. 근본=설정파일.

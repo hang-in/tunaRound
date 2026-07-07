@@ -1,14 +1,13 @@
 // 총괄 대시보드 루트. roster 폴링 + heartbeat 변화 감지(pulse) + feed 이벤트 취합(통계)을 소유하고
 // 헤더/통계/로스터/피드/goal 폼을 배치한다. 목업(총괄 대시보드.dc.html) 레이아웃 이식.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { Agent, Candidate, TaskEventMsg } from './api'
-import { fetchRoster, fetchCandidates } from './api'
-import { mergeSessions } from './activity'
+import type { Agent, TaskEventMsg } from './api'
+import { fetchRoster } from './api'
+import { buildRoster } from './activity'
 import Header from './components/Header'
 import StatTiles from './components/StatTiles'
 import Roster from './components/Roster'
 import Feed from './components/Feed'
-import Candidates from './components/Candidates'
 import GoalForm from './components/GoalForm'
 import ControlForm from './components/ControlForm'
 
@@ -20,7 +19,6 @@ const PULSE_MS = 750
 
 export default function App() {
   const [agents, setAgents] = useState<Agent[]>([])
-  const [candidates, setCandidates] = useState<Candidate[]>([])
   const [brokerOk, setBrokerOk] = useState(false)
   const [sseOpen, setSseOpen] = useState(false)
   // uuid -> 방금 heartbeat 가 갱신돼 짧게 pulse 를 보여줄지 여부.
@@ -37,17 +35,6 @@ export default function App() {
     const controller = new AbortController()
 
     const load = () => {
-      // 발견 후보(discover jsonl+age)도 같이 폴 - 로스터와 세션 uuid로 병합해 활동 배치(설계 v2-41).
-      fetchCandidates(controller.signal)
-        .then((list) => {
-          if (!cancelled) setCandidates(list)
-        })
-        .catch((err) => {
-          if (err instanceof DOMException && err.name === 'AbortError') return
-          // 후보 조회 실패는 치명 아님(브로커/로스터는 별도 판정).
-          console.error('[candidates] 조회 실패.', err)
-        })
-
       fetchRoster(controller.signal)
         .then((list) => {
           if (cancelled) return
@@ -125,28 +112,22 @@ export default function App() {
     return { workingCount: working, completedCount: completed, failedCount: failed }
   }, [taskLatest])
 
-  // 로스터+후보를 세션 uuid로 병합해 활동(age)으로 활성/유휴 분리(설계 v2-41).
-  const { active, idle, autoBossUuid } = useMemo(
-    () => mergeSessions(agents, candidates),
-    [agents, candidates],
-  )
-
-  const onlineCount = active.filter((r) => r.online).length
+  // 로스터 = online(heartbeat) 세션 전부. 총감독 = human_input_at 최신(설계 v2-43, 순수 presence).
+  const { rows, autoBossUuid } = useMemo(() => buildRoster(agents), [agents])
 
   return (
     <div className="dash-root">
       <Header brokerOk={brokerOk} sseOpen={sseOpen} remoteViewer={remoteViewer} />
       <main className="dash-main">
         <StatTiles
-          onlineCount={onlineCount}
-          totalSups={active.length}
+          onlineCount={rows.length}
+          totalSups={rows.length}
           workingCount={workingCount}
           completedCount={completedCount}
           failedCount={failedCount}
         />
-        <Roster rows={active} pulses={pulses} autoBossUuid={autoBossUuid} />
+        <Roster rows={rows} pulses={pulses} autoBossUuid={autoBossUuid} />
         <Feed onConnectedChange={handleConnected} onEvent={handleEvent} />
-        <Candidates rows={idle} />
         <GoalForm agents={agents} remoteViewer={remoteViewer} />
         <ControlForm remoteViewer={remoteViewer} />
       </main>
