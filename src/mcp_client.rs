@@ -106,11 +106,18 @@ impl McpHttpClient {
     /// 브로커 인증 토큰 이름. 401 자가치유 시 이 env에서 재로드한다.
     const TOKEN_ENV: &'static str = "TUNA_BROKER_TOKEN";
 
-    /// 401(인증 실패) 시 env에서 토큰을 재로드해 로테이션을 자가치유한다. 새 값이 현재와 다르면
-    /// 갱신하고 `true`(재시도 가치 있음)를, 같거나 비어 있으면 `false`(재시도 무의미)를 반환한다.
-    fn reload_token_on_auth_failure(&self) -> bool {
-        let fresh = std::env::var(Self::TOKEN_ENV).ok().filter(|t| !t.is_empty());
+    /// 401(인증 실패) 시 env에서 토큰을 재로드해 로테이션을 자가치유한다. `used_token`은 방금 401을
+    /// 받은 요청이 쓴 토큰 스냅샷이다. 저장된 토큰이 그새 바뀌었으면(동시 요청 중 다른 스레드가 이미
+    /// 재로드) 재시도 가치가 있으니 `true`, 아니면 env를 읽어 새 값이면 갱신+`true`, 옛 값 그대로/빈
+    /// 값이면 `false`(재시도 무의미). used_token 비교가 없으면 동시 401 시 뒤 스레드가 이미 갱신된
+    /// 토큰을 보고 실패하는 레이스가 난다(gemini/CodeRabbit 지적).
+    fn reload_token_on_auth_failure(&self, used_token: Option<String>) -> bool {
         let mut guard = self.token.lock().unwrap();
+        if *guard != used_token {
+            // 다른 스레드가 이미 토큰을 갱신함 -> 그 새 토큰으로 재시도.
+            return true;
+        }
+        let fresh = std::env::var(Self::TOKEN_ENV).ok().filter(|t| !t.is_empty());
         if fresh.is_some() && fresh != *guard {
             *guard = fresh;
             true
@@ -177,6 +184,8 @@ impl McpHttpClient {
     /// 재귀 호출이 아니라 순차 코드 흐름(시도 -> 실패 판단 -> 재연결 -> 재시도)이라 자연히 최대
     /// 2회(원 시도 1 + 재시도 1)로 끝나고 무한 루프가 될 수 없다.
     pub async fn call_tool(&self, name: &str, args: Value) -> Result<String, String> {
+        // 이 시도가 쓴 토큰 스냅샷. 401 자가치유가 동시 요청 레이스를 구분하는 데 쓴다(아래 참조).
+        let used_token = self.token.lock().unwrap().clone();
         match self.try_call_once(name, &args).await {
             Ok(text) => Ok(text),
             Err((status, first_err)) => {
@@ -184,7 +193,7 @@ impl McpHttpClient {
                 // 브로커 재기동 시 토큰과 세션이 동시에 무효라, 재핸드셰이크로 새 토큰 + 새 세션을 함께 얻는다.
                 // env가 옛 값 그대로거나 비어 있으면(진짜 잘못된 토큰) 재시도해도 소용없어 그대로 실패한다.
                 if status == reqwest::StatusCode::UNAUTHORIZED {
-                    if !self.reload_token_on_auth_failure() {
+                    if !self.reload_token_on_auth_failure(used_token) {
                         return Err(first_err);
                     }
                     self.rehandshake()
