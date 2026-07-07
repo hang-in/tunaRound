@@ -598,6 +598,28 @@ body {
   background: #6b7280;
   font-family: var(--font-mono);
 }
+/* 라벨 없는 단독 값 뱃지(machine/runner/role/project). 모서리 전체 둥글게. */
+.shield-solo {
+  border-radius: 3px;
+  box-shadow: 0 1px 1px rgba(0, 0, 0, 0.12);
+}
+/* session 은 길어서 별도 줄. 값만, 흐리게. */
+.session-row {
+  margin-top: 4px;
+}
+.shield-session {
+  font-size: 10.5px;
+  line-height: 1;
+  padding: 3px 7px;
+  border-radius: 3px;
+  color: var(--text-dim, #8b949e);
+  background: rgba(110, 118, 129, 0.14);
+  font-family: var(--font-mono);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
 
 /* ---------- 라이브 task 피드 ---------- */
 .feed-section {

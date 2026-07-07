@@ -70,13 +70,12 @@ function HbClockIcon() {
   )
 }
 
+// 값만 표시하는 뱃지(라벨/타이틀 없이 - 값이 자명: win/claude/supervised/프로젝트명).
+// 무엇의 값인지는 hover title로만 남긴다.
 function TagPill({ k, v }: { k: string; v: string }) {
   return (
-    <span className="shield">
-      <span className="shield-k">{k}</span>
-      <span className="shield-v" style={{ background: valueColor(v) }}>
-        {v}
-      </span>
+    <span className="shield-v shield-solo" style={{ background: valueColor(v) }} title={k}>
+      {v}
     </span>
   )
 }
@@ -159,10 +158,19 @@ export default function Roster({ agents, pulses }: Props) {
                   </span>
                 </div>
                 <div className="tag-row">
-                  {orderedTags(s.tags).map(([k, v]) => (
-                    <TagPill key={k} k={k} v={v} />
-                  ))}
+                  {orderedTags(s.tags)
+                    .filter(([k]) => TAG_ORDER.includes(k))
+                    .map(([k, v]) => (
+                      <TagPill key={k} k={k} v={v} />
+                    ))}
                 </div>
+                {s.tags.session ? (
+                  <div className="tag-row session-row">
+                    <span className="shield-session" title="session">
+                      session {s.tags.session}
+                    </span>
+                  </div>
+                ) : null}
               </div>
             )
           })

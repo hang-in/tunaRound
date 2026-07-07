@@ -1510,7 +1510,7 @@ fn main() {
                     "[node] 감독 레인 '{}'(codex): app-server 라이브 감독으로 운용하세요(설계 v2-37, 관전 결정 2026-07-07).\n  \
                      1) app-server 기동(토큰 env 필수): TUNA_BROKER_TOKEN=<TOKEN> codex app-server --listen ws://127.0.0.1:<PORT>\n  \
                      2) 라이브 관전(codex 추론 실시간) = codex 네이티브 TUI 부착: codex --remote ws://127.0.0.1:<PORT>. 대시보드(/dashboard)는 전 에이전트 task 활동을 통합 로그로 보여준다(사후, 항상 켜둘 필요 없음).\n  \
-                     3) 감시+주입: tunaround poll --core {} --token <TOKEN> --agent {} --on-task 'tunaround codex-inject --ws ws://127.0.0.1:<PORT> --agent {} --text \"브로커 task {{id}}를 claim_task로 처리하고 complete_task로 보고하라\"'",
+                     3) 감시+주입: tunaround poll --core {} --token <TOKEN> --agent {} --on-task 'tunaround codex-inject --ws ws://127.0.0.1:<PORT> --agent {} --text \"브로커 task {{id}}를 claim_task로 가져와 요청을 읽고, 그 요청에 직접 답하라(답변 내용을 네 메시지로 출력). claim/complete는 처리 절차일 뿐이니 절차를 설명하지 말고 요청에 대한 실제 답을 내라. 그 답변 텍스트를 result로 complete_task를 호출해 마감하라\"'",
                     l.agent, core_url, l.agent, l.agent
                 ),
                 "claude" => eprintln!(

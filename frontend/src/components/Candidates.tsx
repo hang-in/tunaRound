@@ -41,7 +41,8 @@ function formatAge(sec: number): string {
 // 도달 가능한" 브로커 주소여야 한다(뷰어 origin은 같은 머신일 때만 정확).
 function buildArmPrompt(c: Candidate): string {
   const core = window.location.origin + '/mcp'
-  const name = (c.machine ? c.machine + '-' : '') + c.runner + '-' + c.uuid.slice(0, 8)
+  // 사람이 읽는 이름: OS-엔진-프로젝트(예: win-claude-tunaRound). uuid 꼬리 대신 프로젝트.
+  const name = (c.machine ?? 'unknown') + '-' + c.runner + '-' + (c.project ?? 'unknown')
   const tags = [
     'machine=' + (c.machine ?? 'unknown'),
     'runner=' + c.runner,
