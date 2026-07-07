@@ -15,6 +15,9 @@ pub struct AgentEntry {
     pub tags: BTreeMap<String, String>,
     pub display_name: Option<String>,
     pub last_heartbeat: String,
+    /// 마지막 사람 프롬프트 시각(UserPromptSubmit 훅 핑). 총감독=이 값 최신 세션(설계 v2-42). None=핑 없음.
+    #[serde(default)]
+    pub human_input_at: Option<String>,
 }
 
 /// "k=v,k=v" 형식 태그 문자열을 파싱한다. `,`로 split 후 각 세그먼트를 trim, 빈 세그먼트는 건너뛴다

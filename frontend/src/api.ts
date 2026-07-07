@@ -7,6 +7,8 @@ export type Agent = {
   display_name: string | null
   last_heartbeat: string
   online: boolean
+  // 마지막 사람 프롬프트 시각(UserPromptSubmit 핑). 총감독=이 값 최신 세션(설계 v2-42). null=핑 없음.
+  human_input_at: string | null
 }
 
 // SQLite datetime('now')는 "YYYY-MM-DD HH:MM:SS" UTC 문자열이다. 사람이 읽는 상대시간으로 바꾼다

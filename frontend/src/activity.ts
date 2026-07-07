@@ -18,6 +18,7 @@ export type SessionRow = {
   lastHeartbeat: string | null
   ageSecs: number // 활동 경과(작을수록 최근). jsonl age 또는 heartbeat 폴백.
   hasJsonlAge: boolean // age가 실제 jsonl 활동에서 온 것(원격 heartbeat 폴백과 구분)
+  humanInputAt: string | null // 마지막 사람 프롬프트 시각(총감독 판정, 설계 v2-42)
   source: 'roster' | 'candidate' | 'both'
   label: string // 표시 이름(displayName 또는 machine-runner-project). 같은 이름 충돌 시 -B/-C 증분.
 }
@@ -81,6 +82,7 @@ export function mergeSessions(agents: Agent[], candidates: Candidate[], idleSecs
       lastHeartbeat: agent?.last_heartbeat ?? null,
       ageSecs: c.age_secs,
       hasJsonlAge: true,
+      humanInputAt: agent?.human_input_at ?? null,
       source: agent ? 'both' : 'candidate',
       label: '',
     })
@@ -104,6 +106,7 @@ export function mergeSessions(agents: Agent[], candidates: Candidate[], idleSecs
       lastHeartbeat: a.last_heartbeat,
       ageSecs: 0, // heartbeat 신선 = 활성 취급(jsonl age는 discover 커버 밖이라 폴백)
       hasJsonlAge: false,
+      humanInputAt: a.human_input_at ?? null,
       source: 'roster',
       label: '',
     })
@@ -117,11 +120,17 @@ export function mergeSessions(agents: Agent[], candidates: Candidate[], idleSecs
   active.sort((a, b) => a.ageSecs - b.ageSecs)
   idle.sort((a, b) => a.ageSecs - b.ageSecs)
 
-  // 총감독 자동후보 = 활성 중 실제 jsonl 활동 age 최소(사람이 지금 입력하는 로컬 세션).
-  // active는 이미 age 오름차순이라 hasJsonlAge 첫 요소가 곧 최소다. 원격 heartbeat 폴백(hasJsonlAge=false)은
-  // 입력 세션이 아니므로 boss 자동선정에서 제외된다.
-  const autoBoss = active.find((r) => r.hasJsonlAge)
-  const autoBossUuid = autoBoss ? autoBoss.uuid : ''
+  // 총감독 자동후보 = 사람이 마지막으로 프롬프트를 넣은 세션(human_input_at 최신, 설계 v2-42).
+  // jsonl mtime(resume/tool로 튐) 대신 사람 입력만 신호로 쓴다. 아무도 핑 없으면 총감독 없음('').
+  // human_input_at은 SQL datetime 문자열이라 사전순 비교=시간순.
+  let autoBossUuid = ''
+  let bestInput = ''
+  for (const r of active) {
+    if (r.humanInputAt && r.humanInputAt > bestInput) {
+      bestInput = r.humanInputAt
+      autoBossUuid = r.uuid
+    }
+  }
 
   return { active, idle, autoBossUuid }
 }
