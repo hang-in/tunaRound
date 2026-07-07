@@ -39,8 +39,8 @@ SessionStart autoarm은 유지(새 세션 즉시 무장). UserPromptSubmit가 re
 ## 5. 프론트 변경
 
 - **총감독 = armed 세션 중 `human_input_at` 최신.** jsonl age 대신 사람입력 시각. 없으면(아무도 입력 안 함) 폴백=heartbeat 최신 or 없음.
-- **로스터 = armed(heartbeat) 세션 우선.** 유령(heartbeat 없는 stale jsonl)은 로스터에서 제외. 미무장 discover 세션은 "최근(작은 창)"만 발견됨에.
-- discover `--stale-mins`는 발견됨(미무장 최근)용으로 작게(예 30분) 되돌리고, armed 세션 presence는 heartbeat가 담당.
+- **로스터 = armed(heartbeat) 세션 + 최근 미무장.** armed는 heartbeat=presence라 age 무관 항상 표시(active/idle은 discover age로). **미무장(armed 없는) discover 세션은 jsonl age < FRESH_UNARMED_SECS(600s=10분)일 때만 표시** - 그 이상 오래된 jsonl은 닫힌 세션 잔존(유령)이라 프론트에서 제외(mergeSessions). → 같은 세션 옛 jsonl -B/-C 중복 소멸.
+- **discover `--stale-mins`는 240 유지**(되돌리지 않음). armed 세션의 활동 age 커버리지(active/idle 판정)에 240분이 필요하고, 유령(미무장 old)은 위 FRESH_UNARMED 프론트 필터가 제거하므로 discover를 줄일 필요 없다. 미무장 실세션은 타이핑하면 ping 훅이 무장 → armed로 상시 표시.
 
 ## 6. 단계
 

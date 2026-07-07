@@ -5,6 +5,11 @@ import type { Agent, Candidate } from './api'
 // 60분. 이보다 오래 무활동이면 유휴(발견됨으로 강등).
 export const IDLE_SECS = 3600
 
+// heartbeat=presence(설계 v2-42): armed 세션은 heartbeat가 presence라 항상 표시.
+// 미무장(armed 없는) discover 세션은 jsonl mtime이 이 창 이내일 때만 표시한다. 그 이상 오래된 jsonl은
+// 닫힌 세션의 잔존(유령)이라 숨긴다(그 세션에서 타이핑하면 ping 훅이 자동 무장 → armed로 로스터 복귀).
+export const FRESH_UNARMED_SECS = 600
+
 // 병합된 세션 한 행(로스터/발견 공용 표시 모델).
 export type SessionRow = {
   uuid: string // 세션 id(있으면) 또는 agent uuid
@@ -65,6 +70,9 @@ export function mergeSessions(agents: Agent[], candidates: Candidate[], idleSecs
   for (const c of candidates) {
     const agent = agents.find((a) => matchesSession(a, c.uuid))
     if (agent) usedAgents.add(agent.uuid)
+    // heartbeat=presence: 미무장(armed 없는) 후보는 최근(FRESH_UNARMED) jsonl만 표시. 오래된 것은
+    // 닫힌 세션 잔존(유령)이라 제외 - 같은 세션 옛 jsonl이 -B/-C로 중복되던 것 소멸.
+    if (!agent && c.age_secs >= FRESH_UNARMED_SECS) continue
     // 미무장 후보는 agent 태그가 없으니 candidate 필드로 태그를 합성(뱃지/세션줄 렌더 통일).
     const fallbackTags: Record<string, string> = { session: c.uuid }
     if (c.machine) fallbackTags.machine = c.machine
