@@ -143,7 +143,7 @@ mod rrf_tests {
 
 use serde::{Deserialize, Serialize};
 
-use crate::orchestrator::Utterance;
+use crate::types::Utterance;
 
 /// 영속 메시지. 트리-ready: parent_id로 체인/분기 표현(v1은 선형, parent=직전).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -281,7 +281,7 @@ pub fn load_session(path: &str) -> std::io::Result<StoredSession> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::orchestrator::Utterance;
+    use crate::types::Utterance;
 
     fn utts() -> Vec<Utterance> {
         vec![

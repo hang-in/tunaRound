@@ -41,12 +41,9 @@ impl Participant {
     }
 }
 
-/// 한 발언. speaker=Participant.label(), content=응답 본문.
-#[derive(Debug, Clone, PartialEq)]
-pub struct Utterance {
-    pub speaker: String,
-    pub content: String,
-}
+/// 한 발언. 계층 중립을 위해 정의는 crate::types에 두고 여기서 재export한다(store가 orchestrator를
+/// import하지 않도록). 기존 `crate::orchestrator::Utterance` 경로는 이 재export로 그대로 유지된다.
+pub use crate::types::Utterance;
 
 /// 엔진 이름 → 러너 조회 경계. 오케스트레이터는 이 trait에만 의존한다.
 pub trait RunnerRegistry {
