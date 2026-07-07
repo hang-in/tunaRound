@@ -373,19 +373,29 @@ fn is_cross_site(headers: &axum::http::HeaderMap) -> bool {
 /// 접속하지 않게). ws://127.0.0.1[:port] / localhost / [::1] / ::1 만 허용한다.
 #[cfg(feature = "serve")]
 fn ws_target_is_loopback(ws: &str) -> bool {
-    // 스킴 제거 후 host[:port]/path에서 host만 취한다.
+    // 스킴 제거 후 authority(host[:port])만 취한다(경로/쿼리/프래그먼트 제거).
     let after = ws
         .strip_prefix("ws://")
         .or_else(|| ws.strip_prefix("wss://"))
         .unwrap_or(ws);
-    let hostport = after.split(['/', '?']).next().unwrap_or(after);
-    // IPv6 대괄호 형태 [::1]:port 처리.
+    let authority = after.split(['/', '?', '#']).next().unwrap_or(after);
+    // userinfo(user:pass@) 제거: 마지막 @ 이후가 실제 host[:port]다. `ws://127.0.0.1:80@evil.com`처럼
+    // @ 앞을 host로 오인하면 loopback을 통과시키고 실제로는 evil.com에 접속해 SSRF 우회가 된다(CodeRabbit 지적).
+    let hostport = authority.rsplit('@').next().unwrap_or(authority);
+    // IPv6 대괄호 형태 [::1]:port 처리, 아니면 host:port에서 host.
     let host = if let Some(rest) = hostport.strip_prefix('[') {
         rest.split(']').next().unwrap_or(rest)
     } else {
         hostport.split(':').next().unwrap_or(hostport)
     };
-    matches!(host, "127.0.0.1" | "localhost" | "::1") || host.starts_with("127.")
+    // FQDN 끝점(`localhost.`, `127.0.0.1.`) 제거 후 판정. 문자열 prefix(`starts_with("127.")`)는
+    // `127.0.0.1.evil.com` 같은 외부 도메인을 허용해 쓰지 않는다(gemini). localhost는 IP가 아니라 별도
+    // 허용(호스트명은 대소문자 무시). IpAddr::is_loopback은 IPv4 127.0.0.0/8 + IPv6 ::1을 모두 커버한다.
+    let host = host.trim_end_matches('.');
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    host.parse::<std::net::IpAddr>().map(|ip| ip.is_loopback()).unwrap_or(false)
 }
 
 /// POST /dashboard/goal: 로컬(loopback) 총감독이 선택한 감독들에게 목표를 던진다(대상마다 1 task).
@@ -929,6 +939,18 @@ mod tests {
         assert!(!ws_target_is_loopback("ws://192.168.1.50:8790"));
         assert!(!ws_target_is_loopback("ws://evil.example.com:8790"));
         assert!(!ws_target_is_loopback("ws://10.0.0.1"));
+        // SSRF 우회 방지: 127.로 시작하는 외부 도메인은 거부(IpAddr 파싱 실패).
+        assert!(!ws_target_is_loopback("ws://127.0.0.1.evil.com:8790"));
+        assert!(!ws_target_is_loopback("ws://127.0.0.1x:8790"));
+        // userinfo 우회 방지: @ 앞을 host로 오인하면 안 된다(실제 host는 @ 뒤).
+        assert!(!ws_target_is_loopback("ws://127.0.0.1:80@evil.com"));
+        assert!(!ws_target_is_loopback("ws://127.0.0.1@evil.com:8790"));
+        // 정상: userinfo가 붙어도 실제 host가 loopback이면 허용.
+        assert!(ws_target_is_loopback("ws://user@127.0.0.1:8790"));
+        // 대소문자 무시 + FQDN 끝점(.)도 loopback으로 인정.
+        assert!(ws_target_is_loopback("ws://LocalHost:8790"));
+        assert!(ws_target_is_loopback("ws://localhost.:8790"));
+        assert!(ws_target_is_loopback("ws://127.0.0.1.:8790"));
     }
 
     // 대시보드 전역 SSE 순수 스트림: Status/Completed 이벤트를 필터 없이 순서대로 JSON으로 내보내는지 검증한다.
