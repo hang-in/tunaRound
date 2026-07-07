@@ -117,7 +117,10 @@ export default function Roster({ rows, pulses, autoBossUuid }: Props) {
     }
   }
 
-  const sorted = rows
+  // 총감독은 항상 최상단(활동 age와 무관). 나머지는 App이 준 age 오름차순 유지.
+  const sorted = [...rows].sort(
+    (a, b) => Number(b.uuid === effectiveBoss) - Number(a.uuid === effectiveBoss),
+  )
 
   return (
     <section className="roster-section">
@@ -175,13 +178,11 @@ export default function Roster({ rows, pulses, autoBossUuid }: Props) {
                       <TagPill key={k} k={k} v={v} />
                     ))}
                 </div>
-                {s.tags.session ? (
-                  <div className="tag-row session-row">
-                    <span className="shield-session" title="session">
-                      session {s.tags.session}
-                    </span>
-                  </div>
-                ) : null}
+                <div className="tag-row session-row">
+                  <span className="shield-session" title="session / uuid">
+                    {s.tags.session ?? s.uuid}
+                  </span>
+                </div>
               </div>
             )
           })

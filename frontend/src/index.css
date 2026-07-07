@@ -612,22 +612,23 @@ body {
   background: #6b7280;
   font-family: var(--font-mono);
 }
-/* 라벨 없는 단독 값 뱃지(machine/runner/role/project). 모서리 전체 둥글게. */
+/* 라벨 없는 단독 값 뱃지(machine/runner/role/project). 모서리 전체 둥글게, 높이 낮게. */
 .shield-solo {
+  padding: 2px 7px;
   border-radius: 3px;
   box-shadow: 0 1px 1px rgba(0, 0, 0, 0.12);
 }
-/* session 은 길어서 별도 줄. 값만, 흐리게. */
+/* session/uuid 는 길어서 별도 줄(모든 행). 값만, 모노, 또렷하게. */
 .session-row {
-  margin-top: 4px;
+  margin-top: 3px;
 }
 .shield-session {
-  font-size: 10.5px;
+  font-size: 11px;
   line-height: 1;
-  padding: 3px 7px;
+  padding: 2px 7px;
   border-radius: 3px;
-  color: var(--text-dim, #8b949e);
-  background: rgba(110, 118, 129, 0.14);
+  color: var(--text, #c9d1d9);
+  background: rgba(110, 118, 129, 0.22);
   font-family: var(--font-mono);
   white-space: nowrap;
   overflow: hidden;
