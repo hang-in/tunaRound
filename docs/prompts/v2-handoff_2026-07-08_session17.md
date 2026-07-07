@@ -22,7 +22,7 @@
 
 ## 3. A2A 워크플로우 (이미 완성, 재발명 금지)
 
-```
+```text
 사람 ⟷ 총괄(아키텍트) ─①send_task/goal→ 감독/워커 ─②Monitor(poll) 자율수신→ complete_task
                           ↖──③ watch-results(총괄 인박스 SSE)로 결과가 총괄 깨움(PR #19) ──┘
        ④총괄이 사람에게 브리핑 + 다음 논의

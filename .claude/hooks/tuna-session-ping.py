@@ -34,8 +34,10 @@ def main() -> int:
     agent, core = armed
 
     # 핑: {core-base}/dashboard/human-ping {agent}. core는 .../mcp라 base로 절단.
-    base = core[:-4] if core.endswith("/mcp") else core.rstrip("/")
-    url = base.rstrip("/") + "/dashboard/human-ping"
+    # 후행 슬래시를 먼저 제거해 "http://x/mcp/"처럼 끝나도 /mcp가 정확히 잘리게 한다.
+    c = core.rstrip("/")
+    base = c[:-4] if c.endswith("/mcp") else c
+    url = base + "/dashboard/human-ping"
     token = os.environ.get("TUNA_BROKER_TOKEN", "")
     body = json.dumps({"agent": agent}).encode()
     req = urllib.request.Request(url, data=body, method="POST")
@@ -44,7 +46,8 @@ def main() -> int:
         req.add_header("Authorization", "Bearer " + token)
     try:
         # 방금 무장한 세션은 등록이 아직 안 됐을 수 있어(404) 다음 프롬프트에 반영된다. 조용히 통과.
-        urllib.request.urlopen(req, timeout=3).read()
+        # 이 훅은 매 프롬프트를 동기 블로킹하므로, 브로커 다운·네트워크 드롭 시 체감 지연을 짧게 유지한다.
+        urllib.request.urlopen(req, timeout=0.75).read()
     except Exception:
         pass
     return 0
