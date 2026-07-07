@@ -12,7 +12,7 @@ pub use sqlite_transcript::{
 mod sqlite_retriever {
     use std::collections::HashMap;
 
-    use crate::orchestrator::Utterance;
+    use crate::types::Utterance;
     use crate::store::sqlite::SqliteStore;
 
     /// 세션 다양성 cap: 한 세션이 결과를 독점하지 않도록 우선 뽑는 세션당 최대 개수.
@@ -277,7 +277,7 @@ mod sqlite_retriever {
 
 #[cfg(feature = "sqlite")]
 mod sqlite_transcript {
-    use crate::orchestrator::Utterance;
+    use crate::types::Utterance;
     use crate::store::sqlite::SqliteStore;
 
     /// 세션 전사 전체(또는 마지막 N턴)를 활성 경로(root->head)로 읽어 오는 구현.
