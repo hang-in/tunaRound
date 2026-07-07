@@ -1,6 +1,5 @@
 // 관리자 로스터: 피드와 동일한 패널+행 레이아웃. 각 관리자 = 상태닷·머신아이콘·이름·heartbeat·태그.
 // 총괄은 별도 카드가 아니라 대등한 행에 "현재 총괄" 뱃지로 표식(클릭해 지정, 앉는 머신 따라 바뀜).
-import { useState } from 'react'
 import { relativeTime } from '../api'
 import type { SessionRow } from '../activity'
 
@@ -17,7 +16,6 @@ function orderedTags(tags: Record<string, string>): Array<[string, string]> {
 }
 
 const N_DOTS = 14
-const BOSS_KEY = 'tuna_dash_boss'
 
 // 미무장(heartbeat 없는) 세션의 활동 경과 라벨. ageSecs(jsonl 활동 이후 초)에서 대략 표기.
 function agoLabel(secs: number): string {
@@ -100,29 +98,13 @@ type Props = {
 }
 
 export default function Roster({ rows, pulses, autoBossUuid }: Props) {
-  // 수동 총감독 override. 비어 있으면 autoBossUuid(자동최신)를 쓴다. 클릭 토글 = override 설정/해제.
-  const [manualBoss, setManualBoss] = useState<string>(() => {
-    try {
-      return localStorage.getItem(BOSS_KEY) ?? ''
-    } catch {
-      return ''
-    }
-  })
-  const effectiveBoss = manualBoss || autoBossUuid
-  const toggleBoss = (uuid: string) => {
-    const next = manualBoss === uuid ? '' : uuid
-    setManualBoss(next)
-    try {
-      localStorage.setItem(BOSS_KEY, next)
-    } catch {
-      // 저장 불가 환경은 무시.
-    }
-  }
+  // 총감독 = 순수 자동(활성 중 사람 입력 최신 = App의 autoBossUuid). 수동 override 없음(★는 표시만).
+  const effectiveBoss = autoBossUuid
 
-  // 총감독은 항상 최상단(활동 age와 무관). 나머지는 App이 준 age 오름차순 유지.
-  const sorted = [...rows].sort(
-    (a, b) => Number(b.uuid === effectiveBoss) - Number(a.uuid === effectiveBoss),
-  )
+  // 정렬: 총감독 최상단 → 현재 사용 머신(=총감독 머신) 세션 → 원격 세션. 각 그룹 내 age 오름차순(최근 먼저).
+  const bossMachine = rows.find((r) => r.uuid === effectiveBoss)?.machine ?? null
+  const rank = (r: SessionRow) => (r.uuid === effectiveBoss ? 0 : r.machine === bossMachine ? 1 : 2)
+  const sorted = [...rows].sort((a, b) => rank(a) - rank(b) || a.ageSecs - b.ageSecs)
 
   return (
     <section className="roster-section">
@@ -148,15 +130,11 @@ export default function Roster({ rows, pulses, autoBossUuid }: Props) {
                   </span>
                   <MachineGlyph machine={s.machine ?? undefined} />
                   <span className="roster-uuid">{name || s.uuid}</span>
-                  <button
-                    type="button"
-                    className={'boss-toggle' + (isBoss ? ' on' : '')}
-                    onClick={() => toggleBoss(s.uuid)}
-                    title={isBoss ? '현재 총괄(클릭해 해제)' : '클릭해 현재 총괄으로 지정'}
-                    aria-label="현재 총괄 지정"
-                  >
-                    {isBoss ? '★' : '☆'}
-                  </button>
+                  {isBoss ? (
+                    <span className="boss-star on" title="현재 총감독(자동 감지 - 사람이 입력 중인 세션)">
+                      ★
+                    </span>
+                  ) : null}
                   {isBoss ? <span className="pill-boss">현재 총괄</span> : null}
                   {!s.armed ? <span className="pill-unarmed" title="poll 미등록 = A2A 수신 불가(발견만)">미무장</span> : null}
                   {s.online ? (

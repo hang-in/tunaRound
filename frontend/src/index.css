@@ -458,22 +458,13 @@ body {
   min-height: 20px;
 }
 /* 현재 총괄 지정 별표 토글. */
-.boss-toggle {
-  border: none;
-  background: none;
+/* 총감독 ★ = 자동 감지 표시만(클릭 토글 없음). */
+.boss-star {
   padding: 0 2px;
-  margin: 0;
-  cursor: pointer;
   font-size: 14px;
   line-height: 1;
-  color: var(--text-3);
-  flex: none;
-}
-.boss-toggle.on {
   color: #e3b341;
-}
-.boss-toggle:hover {
-  color: var(--accent);
+  flex: none;
 }
 /* "현재 총괄" 뱃지(대등 카드에 표식만). */
 .pill-boss {
