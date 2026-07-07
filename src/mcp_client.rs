@@ -17,7 +17,10 @@ const ACCEPT_HEADER: &str = "application/json, text/event-stream";
 pub struct McpHttpClient {
     http: reqwest::Client,
     mcp_url: String,
-    token: Option<String>,
+    /// 토큰 로테이션 자가치유를 위해 Mutex로 감싼다. 401 수신 시 env(TUNA_BROKER_TOKEN)에서 재로드해
+    /// 새 값이면 갱신하고 재시도한다(장수 데몬이 기동시점 토큰을 얼려 쥔 채 로테이션 후 401을 무한히
+    /// 받는 문제를 제거). 세션 만료 재연결과 함께 &self로만 쓰인다.
+    token: Mutex<Option<String>>,
     /// 세션 만료 시 재연결로 갱신되어야 하므로 Mutex로 감싼다(구조체 자체는 &self로만 쓰임).
     session_id: Mutex<String>,
     next_id: AtomicU64,
@@ -94,14 +97,30 @@ impl McpHttpClient {
         Ok(Self {
             http,
             mcp_url,
-            token,
+            token: Mutex::new(token),
             session_id: Mutex::new(session_id),
             next_id: AtomicU64::new(2),
         })
     }
 
-    /// 세션 만료류 응답인지 판단한다. 401(인증 실패)은 토큰 자체 문제라 재연결해도 소용없으므로
-    /// 제외하고, 우선 404를 세션 만료로 취급한다(향후 다른 상태코드가 관찰되면 이 매치에 추가).
+    /// 브로커 인증 토큰 이름. 401 자가치유 시 이 env에서 재로드한다.
+    const TOKEN_ENV: &'static str = "TUNA_BROKER_TOKEN";
+
+    /// 401(인증 실패) 시 env에서 토큰을 재로드해 로테이션을 자가치유한다. 새 값이 현재와 다르면
+    /// 갱신하고 `true`(재시도 가치 있음)를, 같거나 비어 있으면 `false`(재시도 무의미)를 반환한다.
+    fn reload_token_on_auth_failure(&self) -> bool {
+        let fresh = std::env::var(Self::TOKEN_ENV).ok().filter(|t| !t.is_empty());
+        let mut guard = self.token.lock().unwrap();
+        if fresh.is_some() && fresh != *guard {
+            *guard = fresh;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// 세션 만료류 응답인지 판단한다. 우선 404를 세션 만료로 취급한다(향후 다른 상태코드가 관찰되면
+    /// 이 매치에 추가). 401(인증 실패)은 여기가 아니라 call_tool에서 env 토큰 재로드 자가치유로 처리한다.
     fn is_session_expired(status: reqwest::StatusCode) -> bool {
         matches!(status, reqwest::StatusCode::NOT_FOUND)
     }
@@ -131,7 +150,7 @@ impl McpHttpClient {
             .header("Content-Type", "application/json")
             .header("Accept", ACCEPT_HEADER)
             .header("mcp-session-id", &session_id);
-        if let Some(tok) = &self.token {
+        if let Some(tok) = self.token.lock().unwrap().as_ref() {
             req = req.header("Authorization", format!("Bearer {tok}"));
         }
         let resp = req.body(body.to_string()).send().await.map_err(|e| {
@@ -161,23 +180,38 @@ impl McpHttpClient {
         match self.try_call_once(name, &args).await {
             Ok(text) => Ok(text),
             Err((status, first_err)) => {
+                // 401 로테이션 자가치유: env 토큰 재로드가 새 값을 주면 재핸드셰이크 후 1회 재시도.
+                // 브로커 재기동 시 토큰과 세션이 동시에 무효라, 재핸드셰이크로 새 토큰 + 새 세션을 함께 얻는다.
+                // env가 옛 값 그대로거나 비어 있으면(진짜 잘못된 토큰) 재시도해도 소용없어 그대로 실패한다.
+                if status == reqwest::StatusCode::UNAUTHORIZED {
+                    if !self.reload_token_on_auth_failure() {
+                        return Err(first_err);
+                    }
+                    self.rehandshake()
+                        .await
+                        .map_err(|e| format!("{first_err} (토큰 재로드 후 재연결 실패: {e})"))?;
+                    return self.try_call_once(name, &args).await.map_err(|(_, e)| e);
+                }
+
                 if !Self::is_session_expired(status) {
                     return Err(first_err);
                 }
 
-                // 세션 만료로 판단 -> 핸드셰이크 재수행 -> 성공 시 session_id 갱신 후 1회 재시도.
-                match Self::handshake(&self.http, &self.mcp_url, &self.token).await {
-                    Ok(new_session_id) => {
-                        *self.session_id.lock().unwrap() = new_session_id;
-                    }
-                    Err(reconnect_err) => {
-                        return Err(format!("{first_err} (재연결 시도도 실패: {reconnect_err})"));
-                    }
-                }
-
+                // 세션 만료로 판단 -> 핸드셰이크 재수행 -> session_id 갱신 후 1회 재시도.
+                self.rehandshake()
+                    .await
+                    .map_err(|e| format!("{first_err} (재연결 시도도 실패: {e})"))?;
                 self.try_call_once(name, &args).await.map_err(|(_, e)| e)
             }
         }
+    }
+
+    /// 현재 토큰 스냅샷으로 핸드셰이크를 재수행하고 session_id를 갱신한다(404 세션만료·401 로테이션 공용).
+    async fn rehandshake(&self) -> Result<(), String> {
+        let token = self.token.lock().unwrap().clone();
+        let sid = Self::handshake(&self.http, &self.mcp_url, &token).await?;
+        *self.session_id.lock().unwrap() = sid;
+        Ok(())
     }
 
     /// poll_tasks(agent) 얇은 래퍼.
@@ -415,6 +449,48 @@ mod tests {
         assert_ne!(
             refreshed_session_id, stale_session_id,
             "재연결 성공 시 session_id가 새 값으로 갱신되어야 함"
+        );
+    }
+
+    /// 401 로테이션 자가치유(T1-2): 서버는 새 토큰만 받는다. 클라가 쥔 토큰을 옛 값으로 강제해
+    /// (로테이션으로 어긋난 상태 시뮬레이션) 401을 유도하고, 새 토큰을 env에 두면 call_tool이 env에서
+    /// 재로드해 재핸드셰이크 후 성공하며 토큰 필드가 새 값으로 갱신되는 것까지 확인한다. 장수 데몬이
+    /// 기동시점 토큰을 얼려 쥔 채 로테이션 후 401을 무한히 받던 문제(오늘 실측 4회)의 회귀 방지.
+    #[tokio::test]
+    async fn call_tool_reloads_token_from_env_on_401_rotation() {
+        let url = spawn_test_server(Some("rotated-tok".to_string())).await;
+        let client = McpHttpClient::connect(url, Some("rotated-tok".to_string()))
+            .await
+            .expect("정상 토큰으로 connect 성공해야 함");
+
+        // 로테이션 시뮬레이션: 클라가 쥔 토큰이 옛 값으로 어긋난 상태(Mutex라 테스트에서 직접 교체).
+        *client.token.lock().unwrap() = Some("stale-old-tok".to_string());
+
+        // 새(정상) 토큰은 env에 있다 = 자가치유가 여기서 재로드한다.
+        // 단일 스레드 가정 unsafe(config.rs 테스트 컨벤션과 동일), assert 전에 원복한다.
+        let orig = std::env::var_os("TUNA_BROKER_TOKEN");
+        unsafe {
+            std::env::set_var("TUNA_BROKER_TOKEN", "rotated-tok");
+        }
+
+        let result = client.poll_tasks("nobody").await;
+
+        unsafe {
+            match orig {
+                Some(v) => std::env::set_var("TUNA_BROKER_TOKEN", v),
+                None => std::env::remove_var("TUNA_BROKER_TOKEN"),
+            }
+        }
+
+        let text = result.expect("401 후 env 토큰 재로드 자가치유로 poll_tasks가 성공해야 함");
+        assert!(
+            text.contains("nobody 앞 열린 task 없음"),
+            "자가치유 후 결과 문구 불일치: {text}"
+        );
+        assert_eq!(
+            client.token.lock().unwrap().as_deref(),
+            Some("rotated-tok"),
+            "자가치유 후 토큰 필드가 env의 새 값으로 갱신되어야 함"
         );
     }
 
