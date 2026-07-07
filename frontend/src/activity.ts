@@ -69,11 +69,13 @@ export function mergeSessions(agents: Agent[], candidates: Candidate[], idleSecs
   // 1) candidate(=jsonl 세션) 기준 행. 매칭되는 armed agent가 있으면 합친다.
   for (const c of candidates) {
     const agent = agents.find((a) => matchesSession(a, c.uuid))
-    if (agent) usedAgents.add(agent.uuid)
-    // heartbeat=presence: 미무장(armed 없는) 후보는 최근(FRESH_UNARMED) jsonl만 표시. 오래된 것은
-    // 닫힌 세션 잔존(유령)이라 제외 - 같은 세션 옛 jsonl이 -B/-C로 중복되던 것 소멸.
-    if (!agent && c.age_secs >= FRESH_UNARMED_SECS) continue
-    // 미무장 후보는 agent 태그가 없으니 candidate 필드로 태그를 합성(뱃지/세션줄 렌더 통일).
+    if (agent) usedAgents.add(agent.uuid) // 매칭되면 loop 2에서 중복 처리 안 되게 사용 표시.
+    // heartbeat=presence: offline(heartbeat 만료) agent는 poll 죽음 = presence 아님 = 미무장 취급.
+    const liveAgent = agent && agent.online ? agent : undefined
+    // 미무장(live agent 없는) 후보는 최근(FRESH_UNARMED) jsonl만 표시. 오래된 것은 닫힌 세션 잔존(유령)이라
+    // 제외 - 같은 세션 옛 jsonl -B/-C 중복 + 죽은 poll 세션이 계속 뜨던 것 소멸.
+    if (!liveAgent && c.age_secs >= FRESH_UNARMED_SECS) continue
+    // 표시 이름/태그는 (offline이어도) agent 것을 우선(라벨 안정), armed/online/boss는 liveAgent만.
     const fallbackTags: Record<string, string> = { session: c.uuid }
     if (c.machine) fallbackTags.machine = c.machine
     if (c.runner) fallbackTags.runner = c.runner
@@ -85,12 +87,12 @@ export function mergeSessions(agents: Agent[], candidates: Candidate[], idleSecs
       machine: c.machine,
       runner: c.runner,
       project: c.project,
-      armed: !!agent,
-      online: agent?.online ?? false,
-      lastHeartbeat: agent?.last_heartbeat ?? null,
+      armed: !!liveAgent,
+      online: liveAgent?.online ?? false,
+      lastHeartbeat: liveAgent?.last_heartbeat ?? null,
       ageSecs: c.age_secs,
       hasJsonlAge: true,
-      humanInputAt: agent?.human_input_at ?? null,
+      humanInputAt: liveAgent?.human_input_at ?? null,
       source: agent ? 'both' : 'candidate',
       label: '',
     })
@@ -128,13 +130,13 @@ export function mergeSessions(agents: Agent[], candidates: Candidate[], idleSecs
   active.sort((a, b) => a.ageSecs - b.ageSecs)
   idle.sort((a, b) => a.ageSecs - b.ageSecs)
 
-  // 총감독 자동후보 = 사람이 마지막으로 프롬프트를 넣은 세션(human_input_at 최신, 설계 v2-42).
-  // jsonl mtime(resume/tool로 튐) 대신 사람 입력만 신호로 쓴다. 아무도 핑 없으면 총감독 없음('').
-  // human_input_at은 SQL datetime 문자열이라 사전순 비교=시간순.
+  // 총감독 자동후보 = 사람이 마지막으로 프롬프트를 넣은 **online(살아있는)** 세션(human_input_at 최신, 설계 v2-42).
+  // online 조건이 없으면 죽은(heartbeat 만료) 세션이 옛 human_input_at으로 총감독에 걸린다(실측: 껐던 astryx).
+  // jsonl mtime(resume/tool로 튐) 대신 사람 입력만 신호. 아무도 핑 없으면 총감독 없음(''). SQL datetime=사전순 비교.
   let autoBossUuid = ''
   let bestInput = ''
   for (const r of active) {
-    if (r.humanInputAt && r.humanInputAt > bestInput) {
+    if (r.online && r.humanInputAt && r.humanInputAt > bestInput) {
       bestInput = r.humanInputAt
       autoBossUuid = r.uuid
     }
