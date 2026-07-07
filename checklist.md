@@ -424,3 +424,14 @@
 - [x] S4a: codex_inject::run→Result<String>(최종답 반환) + POST /dashboard/control(loopback·worker게이트, in-process codex_inject::run) + route. check(worker 유무)·clippy 클린, codex_inject 23 pass.
 - [x] S4b: ControlForm.tsx(ws+지시→POST, answer pre) + api sendControl + App mount + CSS. npm build 211KB.
 - [x] S4c: 라이브 스모크 - POST /dashboard/control(loopback)→브로커→ws://8790 접속→initialize→thread→**turn/start 주입 성공**→codex 실제응답=usageLimitExceeded(win codex 사용량 초과, 외부요인)→브로커 **502+실제 codex에러 정직 반환**. **제어경로·에러처리 검증 완료**(깨끗한 응답만 quota reset 후). 브로커 재기동 PID 28348.
+
+## 세션17: codex 감독 관전 결정 + 총괄 dedup
+
+> 사용자 대화로 스펙(48a0dbb2) 개선: codex 관전=--remote 유지, 대시보드=통합 로그, 스트림=헤드리스(별건). 결정기록=설계 §10.
+
+- [x] 라이브 메시 rebuild(dashboard worker, main=fca18fb, 43s) → 4프로세스 재기동(broker 35960·discover 28884·watch-results 7324·win-codex-sup 12244), 로스터 3자 online + mac 자동재접속, 대시보드 200.
+- [x] mac 인박스 2건 수신(uuid 폴링): 566d54a3 북극성(ack 완료) / 48a0dbb2 codex 감독 스펙(처리 중).
+- [x] Point 2 총괄 dedup: 이 세션 win-opus-boss로 무장(PID 36020, session 태그) + pidfile → 후보 armed=True dedup, 로스터 online.
+- [x] item 1 codex 관전 결정: main.rs node 힌트 갱신 + 설계 §10 결정기록. 코드 로직 무변경.
+- [ ] task 48a0dbb2 A2A 종료 보고(claim+complete, 개선된 결정 요약).
+- [ ] cargo check(main.rs 힌트 변경 컴파일 확인) → 커밋 → push 승인 후 PR.

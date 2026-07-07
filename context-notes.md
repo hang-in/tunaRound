@@ -814,3 +814,24 @@
 - **S4a**: codex_inject::run을 Result<()>→**Result<String>**(PrintText 누적해 최종답 반환, CLI는 handle_incoming이 stdout 출력 유지). 브로커 POST /dashboard/control(loopback ConnectInfo·worker cfg 게이트, ApprovalPolicy::Never+WorkspaceWrite, in-process run). worker 없이 빌드시 501. ControlReq agent/timeout은 not(worker)서 dead_code라 cfg_attr allow.
 - **S4b**: ControlForm.tsx(goal 폼 미러, ws 기본 ws://127.0.0.1:8790, 응답 pre .control-answer). 원격=관전 안내.
 - **피드 관찰(사용자)**: win-codex-sup 미완료=**사용량 초과**(코드버그 아님), mac-codex-sup=모델 gpt-5.4-mini 전환 팝업 선택 후 완료. **인프라 정상, goal→codex 경로 실증.** → S4 스모크도 win codex 사용량 걸리면 경로는 검증되나 codex 응답은 외부요인.
+
+## 2026-07-07 세션17: codex 감독 하이브리드 구현 (task 48a0dbb2) - 착수 전 아키텍처 조사
+
+- **맥락**: 세션 시작 시 mac 인박스 2건 수신(uuid 폴링으로 잡음). 566d54a3=북극성 기억공유(ack-only, ack 완료), **48a0dbb2=codex 감독 하이브리드 구현 스펙**(사용자 결정, 총괄이 구현). 3→1 순서: 먼저 라이브 메시 rebuild(dashboard worker, main=fca18fb, 완료·정상) → codex 감독 구현.
+- **스펙 요지**: app-server(codex 상주)는 유지, 관전을 상주 ws(resume --remote)→대시보드 SSE로 이동, 감독 프로세스에서 상주 관전세션 상태관리 제거. 목표=취약(2)thread스테일·(3)소켓고아 제거.
+- **조사 발견 (스펙 목표 대부분 이미 충족)**:
+  - **취약(2) thread 스테일 = 이미 self-heal됨**. codex_inject.rs:336-361 resume 실패→start_thread 자가치유(리뷰 findings로 추가됨). 추가 작업 불요.
+  - **취약(3) 소켓 고아 = "resume --remote 관전세션"은 우리 코드의 상주 상태가 아님**. 사람이 수동으로 `codex --remote ws://...` 붙는 외부 codex CLI 동작. 우리 코드 참조 3곳뿐: main.rs:1512(node 힌트 "(선택)사람 관전"), codex_inject.rs:141(주석), 설계문서 v2-codex-live-supervisor §7(미해결 열린질문). **§7 실측: Windows에선 --remote가 글루 thread에 안 붙어 애초에 안 됨.** → --remote 관전을 안 쓰면(=힌트/문서에서 제거) 고아 소켓 소멸.
+  - **사후(post-hoc) 대시보드 관전 = 이미 동작**. /dashboard/events SSE가 TaskEvent(working/completed+artifact) 브로드캐스트. codex-inject가 완료 시 최종답을 artifact로 보고 → watch-results(--dispatcher dashboard)·대시보드 피드에 표출.
+  - **라이브 스트림(codex 중간 추론) = 미구현**. 워커가 task 진행 중 중간상태 push하는 MCP 도구 없음(상태전이=submitted→working→completed/failed뿐). TaskEvent::Status+statusMessage 브로드캐스트 인프라는 있음(store/a2a.rs). 스트림하려면 새 도구(report_task_progress류)+codex-inject가 codex 이벤트마다 emit = 순수 net-new 배선(중간 규모).
+- **스코프 갈림길**:
+  - **Tier A(최소, 스펙 goal 충족)**: node 힌트에서 --remote 관전 제거→"관전=대시보드 SSE", codex_inject.rs:141 주석·설계 §7 갱신. 취약(2)=self-heal 의존, (3)=--remote 미사용으로 소멸, 관전=기존 post-hoc. 소규모.
+  - **Tier B(+라이브 스트림)**: 스펙 "codex 러너/thread 출력을 스트림" 문자 그대로. 브로커 report_task_progress 도구 신설 + codex-inject 중간 emit + 대시보드 렌더. 중간 규모 net-new. 사용자가 잃은 실시간 attach의 진짜 대체.
+- **권고**: Tier A 먼저(취약 제거=목적 달성, post-hoc 이미 됨, YAGNI/북극성 정합). Tier B(라이브 스트림)는 사용자가 "codex 작업 과정을 실시간 관전" 원하면 후속. → 사용자 결정 대기.
+
+## 2026-07-07 세션17: 관전 스코프 해소 + 총괄 dedup (사용자 대화로 스펙 개선)
+
+- **스코프 갈림길 해소(사용자 재구성)**: Tier A/B(대시보드 codex 스트림) 대신 → **codex 관전=--remote 유지(네이티브 TUI가 나음), 대시보드=통합 로그(사후), 라이브 스트림의 진짜 대상=헤드리스 워커(별건 미래)**. 원 스펙 48a0dbb2 "--remote 제거→대시보드 SSE 이동"은 비채택. 취약(2)=self-heal 이미 됨, (3)=--remote 로컬 무인증이라 브로커 토큰과 무관(고아는 토큰 스테일 별개). 결정 기록=설계 v2-codex-live-supervisor §10.
+  - **구현 산출**: main.rs node codex 힌트 소폭 갱신(--remote=라이브 관전, 대시보드=통합 로그) + 설계 §10 결정기록. 코드 로직 변경 없음(스펙이 "이미 됨/유지"로 수렴).
+- **총괄 세션 dedup(Point 2)**: 발견 후보에 이 총괄 세션(edf8c348)이 뜨는 냄새 = 미무장 탓(autoarm은 TUNA_AUTOARM=1 게이트, 이 세션 미설정). dedup 로직(armed_session_ids: uuid+session태그) 자체는 정상, 충돌 아님. **조치=이 세션 수동 무장**(poll --agent edf8c348 --display-name win-opus-boss --tags "...,session=edf8c348", detached PID 36020) + pidfile(~/.tunaround/autoarm/<sid>.json)로 SessionEnd disarm 정리 예약. → 로스터에 win-opus-boss online, 후보 패널에서 armed=True로 dedup. 보너스=boss 로스터 정식 등록으로 "boss uuid 폴링 놓침" 완화. **후속(미결)**: 미래 세션 자동무장(TUNA_AUTOARM 전역 설정은 모든 세션을 win-opus-boss로 오등록하니 보스 세션 식별법 필요 - 별도).
+- **헤드리스 스트림·윈도우 --remote §7**: 후속 항목으로 남김(급하지 않음).
