@@ -214,14 +214,15 @@ pub fn merge_profile_into(mut cli: MergedSessionArgs, profile: Option<&Profile>)
 mod node;
 pub use node::*;
 
+// cargo test는 테스트를 병렬 실행하는데 set_var/remove_var는 프로세스 전역 env 블록을 비원자적으로
+// 바꿔 서로 다른 변수라도 동시 수정 시 libc 레벨 UB가 날 수 있다(gemini 지적). config.rs·config/node.rs의
+// env 만지는 테스트가 하나의 락으로 직렬화되도록 모듈 레벨 pub(crate)로 둔다(자식 node가 super::ENV_LOCK로 공유).
+#[cfg(test)]
+pub(crate) static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // cargo test는 기본적으로 테스트 함수를 여러 스레드에서 병렬 실행하는데, HOME/USERPROFILE은
-    // 프로세스 전역 상태라 두 테스트가 동시에 건드리면 레이스가 난다(session_bus.rs의 단일 env var
-    // 컨벤션과 달리 이 파일은 HOME을 건드리는 테스트가 2개 이상이라 뮤텍스로 직렬화가 필요).
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn profile_with_db(db: &str) -> Profile {
         Profile { db: Some(db.to_string()), ..Default::default() }

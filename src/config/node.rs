@@ -150,10 +150,8 @@ pub fn load_node_config(explicit: Option<&str>) -> Result<NodeConfig, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // node 토큰 테스트는 고유 env 변수(TUNAROUND_TEST_NODE_TOK_*)만 건드려 profile 테스트와 레이스가
-    // 없지만, 일관성을 위해 모듈 로컬 락으로 직렬화한다(poison 무시).
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    // 부모 모듈(config)의 공용 ENV_LOCK을 공유해 profile 테스트와 함께 직렬화한다(set_var 전역 UB 방지, gemini 지적).
+    use crate::config::ENV_LOCK;
 
     #[test]
     fn parse_node_config_full_with_lanes_and_defaults() {
