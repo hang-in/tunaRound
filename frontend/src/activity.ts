@@ -87,8 +87,11 @@ export function mergeSessions(agents: Agent[], candidates: Candidate[], idleSecs
   }
 
   // 2) candidate와 안 맞은 roster agent(원격 = 로컬 discover 커버 밖). heartbeat로 age 폴백.
+  // offline(heartbeat 만료) + candidate 없음 = poll watcher 죽음 = 세션 종료/크래시 → 죽은 좀비라 제외
+  // (idle이 아니다). candidate가 매칭된 경우는 위 1)에서 age로 배치되므로 여기서 안 걸린다.
   for (const a of agents) {
     if (usedAgents.has(a.uuid)) continue
+    if (!a.online) continue
     rows.push({
       uuid: a.uuid,
       displayName: a.display_name,
@@ -97,9 +100,9 @@ export function mergeSessions(agents: Agent[], candidates: Candidate[], idleSecs
       runner: a.tags?.runner ?? null,
       project: a.tags?.project ?? null,
       armed: true,
-      online: a.online,
+      online: true, // 위에서 offline은 continue로 걸렀다
       lastHeartbeat: a.last_heartbeat,
-      ageSecs: a.online ? 0 : idleSecs + 1, // online=활성 취급, offline=유휴
+      ageSecs: 0, // heartbeat 신선 = 활성 취급(jsonl age는 discover 커버 밖이라 폴백)
       hasJsonlAge: false,
       source: 'roster',
       label: '',
