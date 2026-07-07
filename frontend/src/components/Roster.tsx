@@ -103,7 +103,8 @@ export default function Roster({ rows, pulses, autoBossUuid }: Props) {
 
   // 정렬: 총감독 최상단 → 현재 사용 머신(=총감독 머신) 세션 → 원격 세션. 각 그룹 내 age 오름차순(최근 먼저).
   const bossMachine = rows.find((r) => r.uuid === effectiveBoss)?.machine ?? null
-  const rank = (r: SessionRow) => (r.uuid === effectiveBoss ? 0 : r.machine === bossMachine ? 1 : 2)
+  const rank = (r: SessionRow) =>
+    r.uuid === effectiveBoss ? 0 : bossMachine !== null && r.machine === bossMachine ? 1 : 2
   const sorted = [...rows].sort((a, b) => rank(a) - rank(b) || a.ageSecs - b.ageSecs)
 
   return (
