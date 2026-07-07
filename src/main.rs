@@ -279,8 +279,9 @@ struct DiscoverArgs {
     /// 스캔할 projects 디렉토리(생략 시 ~/.claude/projects).
     #[arg(long)]
     projects_dir: Option<String>,
-    /// 활동 세션 판정 창(분). jsonl mtime이 이 시간 이내면 활동으로 본다(기본 10분).
-    #[arg(long, default_value_t = 10)]
+    /// 세션을 후보로 리포트할 "잊기 지평"(분). jsonl mtime이 이 시간 이내면 리포트한다. 활성/유휴 분리는
+    /// 대시보드가 age로 하므로(설계 v2-41, 활성<60분/유휴>=60분), 이 값은 유휴 창을 덮게 커야 한다(기본 240분=4시간).
+    #[arg(long, default_value_t = 240)]
     stale_mins: u64,
     /// 이 리포터의 머신 식별자(win|mac|unix 등). 생략 시 TUNA_MACHINE env 또는 빌드 타깃 OS로 추정.
     #[arg(long)]
