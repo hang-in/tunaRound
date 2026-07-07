@@ -385,7 +385,13 @@ fn ws_target_is_loopback(ws: &str) -> bool {
     } else {
         hostport.split(':').next().unwrap_or(hostport)
     };
-    matches!(host, "127.0.0.1" | "localhost" | "::1") || host.starts_with("127.")
+    // host를 IpAddr로 파싱해 실제 loopback인지 본다. 문자열 prefix(`starts_with("127.")`)는
+    // `127.0.0.1.evil.com` 같은 외부 도메인을 허용해 SSRF 우회가 되므로 쓰지 않는다(gemini 보안 지적).
+    // localhost는 IP가 아니라 별도 허용. IpAddr::is_loopback은 IPv4 127.0.0.0/8 + IPv6 ::1을 모두 커버한다.
+    if host == "localhost" {
+        return true;
+    }
+    host.parse::<std::net::IpAddr>().map(|ip| ip.is_loopback()).unwrap_or(false)
 }
 
 /// POST /dashboard/goal: 로컬(loopback) 총감독이 선택한 감독들에게 목표를 던진다(대상마다 1 task).
@@ -929,6 +935,9 @@ mod tests {
         assert!(!ws_target_is_loopback("ws://192.168.1.50:8790"));
         assert!(!ws_target_is_loopback("ws://evil.example.com:8790"));
         assert!(!ws_target_is_loopback("ws://10.0.0.1"));
+        // SSRF 우회 방지: 127.로 시작하는 외부 도메인은 거부(IpAddr 파싱 실패).
+        assert!(!ws_target_is_loopback("ws://127.0.0.1.evil.com:8790"));
+        assert!(!ws_target_is_loopback("ws://127.0.0.1x:8790"));
     }
 
     // 대시보드 전역 SSE 순수 스트림: Status/Completed 이벤트를 필터 없이 순서대로 JSON으로 내보내는지 검증한다.
