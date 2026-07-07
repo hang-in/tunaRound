@@ -46,7 +46,7 @@ function assignLabels(rows: SessionRow[]): void {
 
 // agent가 candidate(세션)와 같은 세션인지: agent uuid==세션id 또는 agent의 session 태그==세션id.
 function matchesSession(agent: Agent, sessionUuid: string): boolean {
-  return agent.uuid === sessionUuid || agent.tags.session === sessionUuid
+  return agent.uuid === sessionUuid || agent.tags?.session === sessionUuid
 }
 
 export type MergeResult = {
@@ -92,10 +92,10 @@ export function mergeSessions(agents: Agent[], candidates: Candidate[], idleSecs
     rows.push({
       uuid: a.uuid,
       displayName: a.display_name,
-      tags: a.tags,
-      machine: a.tags.machine ?? null,
-      runner: a.tags.runner ?? null,
-      project: a.tags.project ?? null,
+      tags: a.tags ?? {},
+      machine: a.tags?.machine ?? null,
+      runner: a.tags?.runner ?? null,
+      project: a.tags?.project ?? null,
       armed: true,
       online: a.online,
       lastHeartbeat: a.last_heartbeat,
@@ -115,15 +115,10 @@ export function mergeSessions(agents: Agent[], candidates: Candidate[], idleSecs
   idle.sort((a, b) => a.ageSecs - b.ageSecs)
 
   // 총감독 자동후보 = 활성 중 실제 jsonl 활동 age 최소(사람이 지금 입력하는 로컬 세션).
-  // 원격 heartbeat 폴백(hasJsonlAge=false)은 boss 자동선정에서 제외(입력 세션이 아님).
-  let autoBossUuid = ''
-  let best = Infinity
-  for (const r of active) {
-    if (r.hasJsonlAge && r.ageSecs < best) {
-      best = r.ageSecs
-      autoBossUuid = r.uuid
-    }
-  }
+  // active는 이미 age 오름차순이라 hasJsonlAge 첫 요소가 곧 최소다. 원격 heartbeat 폴백(hasJsonlAge=false)은
+  // 입력 세션이 아니므로 boss 자동선정에서 제외된다.
+  const autoBoss = active.find((r) => r.hasJsonlAge)
+  const autoBossUuid = autoBoss ? autoBoss.uuid : ''
 
   return { active, idle, autoBossUuid }
 }

@@ -22,9 +22,11 @@ const BOSS_KEY = 'tuna_dash_boss'
 // 미무장(heartbeat 없는) 세션의 활동 경과 라벨. ageSecs(jsonl 활동 이후 초)에서 대략 표기.
 function agoLabel(secs: number): string {
   if (secs < 60) return '방금'
-  const m = Math.round(secs / 60)
+  const m = Math.floor(secs / 60)
   if (m < 60) return `${m}분 전`
-  return `${Math.round(m / 60)}시간 전`
+  const h = Math.floor(m / 60)
+  if (h < 24) return `${h}시간 전`
+  return `${Math.floor(h / 24)}일 전`
 }
 
 // 태그 값별 색(같은 키라도 값에 따라 다르게: mac≠win, claude≠codex, supervised≠dispatcher).
@@ -138,7 +140,7 @@ export default function Roster({ rows, pulses, autoBossUuid }: Props) {
             const name = s.label
             const activityLabel = s.lastHeartbeat ? relativeTime(s.lastHeartbeat) : agoLabel(s.ageSecs)
             return (
-              <div className={'roster-row' + (s.online ? '' : ' offline')} key={s.uuid}>
+              <div className={'roster-row' + (s.armed && !s.online ? ' offline' : '')} key={s.uuid}>
                 <div className="card-row">
                   <span className="status-dot-wrap">
                     <span className={'status-dot' + (s.online ? ' online' : '')} />

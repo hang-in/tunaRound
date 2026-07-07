@@ -488,7 +488,7 @@ body {
   background: color-mix(in srgb, var(--accent) 13%, transparent);
   border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
 }
-/* 미무장(poll 미등록 = A2A 수신 불가, 발견만) / 유휴(무장됐으나 60분+ 무활동) 표식. */
+/* 미무장(poll 미등록 = A2A 수신 불가, 발견만) / 유휴(무장됐으나 60분+ 무활동) 표식. 색조로 구분. */
 .pill-unarmed,
 .pill-idle {
   display: inline-flex;
@@ -498,9 +498,18 @@ body {
   font-size: 10.5px;
   font-weight: 600;
   white-space: nowrap;
+}
+/* 미무장 = 중립 회색(수신 불가). */
+.pill-unarmed {
   color: var(--text-dim, #8b949e);
   background: rgba(110, 118, 129, 0.16);
   border: 1px solid rgba(110, 118, 129, 0.28);
+}
+/* 유휴 = 노란빛(무장됐으나 자리 비움 - 회색과 한눈에 구분). */
+.pill-idle {
+  color: #d1a34a;
+  background: rgba(210, 168, 80, 0.14);
+  border: 1px solid rgba(210, 168, 80, 0.28);
 }
 .tag-row {
   display: flex;
@@ -623,6 +632,7 @@ body {
   margin-top: 3px;
 }
 .shield-session {
+  display: inline-block;
   font-size: 11px;
   line-height: 1;
   padding: 2px 7px;
