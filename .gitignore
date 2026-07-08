@@ -10,6 +10,10 @@
 # 사설 백엔드 접속 실값(호스트/IP/계정/포트/터널). tracked 문서엔 placeholder만.
 /docs/reference/backend-private.md
 
+# Python(훅 컴파일 캐시)
+__pycache__/
+*.pyc
+
 # OS
 .DS_Store
 
