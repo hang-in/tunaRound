@@ -40,7 +40,12 @@ def load_config() -> dict:
             k, v = line.split("=", 1)
             v = v.strip()
             if len(v) >= 2 and v[0] == v[-1] and v[0] in ("'", '"'):
-                v = v[1:-1]
+                v = v[1:-1]  # 따옴표 값은 리터럴(인라인 주석·공백 그대로 보존).
+            else:
+                # 따옴표 없는 값: " #" 이후를 인라인 주석으로 제거(TOKEN=abc # 메모 → abc).
+                hidx = v.find(" #")
+                if hidx != -1:
+                    v = v[:hidx].rstrip()
             out[k.strip()] = v
     except Exception:
         pass
