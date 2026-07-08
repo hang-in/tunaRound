@@ -192,20 +192,30 @@ def main() -> int:
         "session_id": session_id,
     }), encoding="utf-8")
 
+    # 받아오기(pull) 수신 명령: 이 세션이 자기 detached poll의 로그를 Monitor로 감시한다.
+    # poll이 `TASK <id> :: ..`를 로그에 쓰면 Monitor가 세션을 깨운다. claude엔 codex 같은 외부
+    # 주입 소켓이 없어(설계상 codex=넣기/claude=받아오기), 세션이 스스로 당겨야 한다(v2-43 §수신).
+    recv_cmd = f"tail -f -n 0 \"{log_path}\" | grep --line-buffered '^TASK '"
+    base_core = core[:-4] if core.rstrip("/").endswith("/mcp") else core  # watch-results는 base URL.
     emit_context(
         f"[tuna-autoarm] 이 세션이 브로커 로스터에 자동 등록되었습니다(online).\n"
-        f"  uuid={agent}(세션 id)  display={display}\n"
-        f"  core={core}  poll pid={pid}  log={log_path}\n"
+        f"  uuid={agent}(세션 id)  display={display}  core={core}  poll pid={pid}\n"
         f"\n"
-        f"[A2A 수신법 - 설계 v2-43]\n"
-        f"  · 감독/워커(받는 자리)로 일하려면 = 이 세션 앞 task를 자율 수신:\n"
-        f"      Monitor 도구로 poll 로그({log_path})를 감시 → task 도착 시 깨어나 "
-        f"`claim_task`→처리→`complete_task`(실패=`fail_task`).\n"
-        f"      (poll이 이미 register+heartbeat 중 = 0토큰 대기/파킹. uuid={agent})\n"
-        f"  · 총괄(사람 자리)로 일하려면 = 던진 task 결과만 받기:\n"
-        f"      `watch-results --dispatcher <나> --core {core}`를 Monitor로 감싸면 "
-        f"자리를 떠도 완료가 총괄 세션을 깨운다(PR #19).\n"
-        f"세션 종료 시 SessionEnd 훅이 poll을 정리하고 로스터는 TTL로 소멸합니다."
+        f"[A2A 감독 수신 - claude=받아오기(pull), 설계 v2-43]\n"
+        f"이 세션은 A2A 감독(받는 자리)입니다. 아래 Monitor를 실행해 수신 루프에 진입하세요"
+        f"(비블로킹 = 세션은 계속 대화·작업 가능, task 도착 시에만 깨어남):\n"
+        f"\n"
+        f"  ① 지금 대기 중인 task부터 처리: `poll_tasks`(tuna-broker MCP) 호출 → 있으면 각각 claim→답변→complete.\n"
+        f"  ② 이후 자동 수신: Monitor(command=\"{recv_cmd}\", description=\"A2A 수신 {display}\", persistent=true)\n"
+        f"\n"
+        f"poll이 `TASK <id> :: <미리보기>`를 로그에 쓰면 Monitor가 이 세션을 깨웁니다. 그때:\n"
+        f"  1) `claim_task`(task_id=<id>)  2) `get_task`로 요청 확인  3) 요청에 직접 답 생성\n"
+        f"  4) `complete_task`(task_id=<id>, result=<답변 텍스트>)  (처리 불가 시 `fail_task`)\n"
+        f"→ claim_task/get_task/complete_task/poll_tasks 는 tuna-broker MCP 네이티브 도구입니다.\n"
+        f"\n"
+        f"[총괄(사람 자리)로 쓸 때] 내가 던진 task의 결과만 받으려면:\n"
+        f"  Monitor(command=\"{tuna_bin} watch-results --core {base_core} --dispatcher dashboard\", persistent=true)\n"
+        f"세션 종료 시 SessionEnd 훅이 poll·등록을 정리합니다."
     )
     return 0
 
