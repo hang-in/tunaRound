@@ -14,6 +14,51 @@ from pathlib import Path
 # session_id를 파일명으로 쓸 때 경로 이탈(../, 절대경로, 구분자)을 막는 허용 문자 집합.
 _SAFE_SESSION_RE = re.compile(r"[^A-Za-z0-9._-]")
 
+_CONFIG_CACHE = None  # 훅은 이벤트마다 새 프로세스라 프로세스 내 캐시로 충분(스테일 없음).
+
+
+def config_path() -> Path:
+    """무장 설정파일 경로. env TUNA_CONFIG로 재정의 가능(기본=~/.tunaround/config)."""
+    override = os.environ.get("TUNA_CONFIG")
+    if override:
+        return Path(override)
+    return Path.home() / ".tunaround" / "config"
+
+
+def load_config() -> dict:
+    """~/.tunaround/config를 KEY=VALUE(dotenv 유사)로 읽는다. 없거나 오류면 빈 dict.
+
+    빈 줄·`#` 주석·`=` 없는 줄은 무시. 값의 앞뒤 따옴표는 벗긴다.
+    """
+    out = {}
+    try:
+        for raw in config_path().read_text(encoding="utf-8").splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            v = v.strip()
+            if len(v) >= 2 and v[0] == v[-1] and v[0] in ("'", '"'):
+                v = v[1:-1]
+            out[k.strip()] = v
+    except Exception:
+        pass
+    return out
+
+
+def cfg(key: str, default=None):
+    """설정값 조회: ~/.tunaround/config(파일) 우선 → 환경변수 → default.
+
+    파일 우선인 이유(설계 v2-43 §5-1): env는 터미널 launch 시점에 고정돼, setx/토큰
+    로테이션이 이미 열린 터미널에 반영되지 않아 훅이 no-op한다. 파일은 런타임에 읽어 신선도 무관.
+    """
+    global _CONFIG_CACHE
+    if _CONFIG_CACHE is None:
+        _CONFIG_CACHE = load_config()
+    if key in _CONFIG_CACHE and _CONFIG_CACHE[key] != "":
+        return _CONFIG_CACHE[key]
+    return os.environ.get(key, default)
+
 
 def sanitize_session_id(session_id: str) -> str:
     """session_id를 안전한 파일명 조각으로 정규화한다(허용 외 문자→'_', 경로 이탈 차단).
@@ -47,26 +92,41 @@ def pid_alive(pid: int) -> bool:
         return False
 
 
-def launch_detached(cmd: list, log_path: Path) -> int:
+def child_env() -> dict:
+    """detached poll 자식에 넘길 env. 설정파일 값(토큰 등)을 env로 승격해,
+    부모 터미널 env가 stale/미설정이어도 poll이 브로커 인증에 성공하게 한다.
+
+    토큰은 --token(argv 노출) 대신 env로만 전달한다(로테이션 교훈). core는 --core로 넘기지만
+    default_machine 등 다른 참조를 위해 TUNA_MACHINE도 승격한다.
+    """
+    env = dict(os.environ)
+    for key in ("TUNA_BROKER_TOKEN", "TUNA_BROKER_CORE", "TUNA_MACHINE"):
+        val = cfg(key)
+        if val:
+            env[key] = val
+    return env
+
+
+def launch_detached(cmd: list, log_path: Path, env: dict = None) -> int:
     """세션·하네스 수명과 무관하게 상주하도록 완전 분리된 프로세스로 기동한다."""
     with open(log_path, "ab") as log:
         if os.name == "nt":
             flags = 0x00000008 | 0x00000200  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
             proc = subprocess.Popen(
                 cmd, stdout=log, stderr=log, stdin=subprocess.DEVNULL,
-                creationflags=flags, close_fds=True,
+                creationflags=flags, close_fds=True, env=env,
             )
         else:
             proc = subprocess.Popen(
                 cmd, stdout=log, stderr=log, stdin=subprocess.DEVNULL,
-                start_new_session=True, close_fds=True,
+                start_new_session=True, close_fds=True, env=env,
             )
     return proc.pid
 
 
 def broker_core() -> str:
     """브로커 MCP 코어 URL(핑용 base 도출에도 씀)."""
-    return os.environ.get("TUNA_BROKER_CORE", "http://127.0.0.1:8770/mcp")
+    return cfg("TUNA_BROKER_CORE", "http://127.0.0.1:8770/mcp")
 
 
 def ensure_armed(session_id: str, cwd: str):
@@ -74,24 +134,24 @@ def ensure_armed(session_id: str, cwd: str):
 
     opt-in(TUNA_AUTOARM=1) + 토큰 필요. 이미 무장(pidfile 살아있음)이면 재기동 없이 (agent, core) 반환.
     """
-    if os.environ.get("TUNA_AUTOARM") != "1":
+    if cfg("TUNA_AUTOARM") != "1":
         return None
     session_id = str(session_id or "").strip()
     if not session_id:
         return None
-    if not os.environ.get("TUNA_BROKER_TOKEN"):
+    if not cfg("TUNA_BROKER_TOKEN"):
         return None
 
     core = broker_core()
-    tuna_bin = os.environ.get("TUNA_BIN", "tunaround")
+    tuna_bin = cfg("TUNA_BIN", "tunaround")
     host = os.environ.get("COMPUTERNAME") or os.environ.get("HOSTNAME") or "host"
     user = os.environ.get("USERNAME") or os.environ.get("USER") or "user"
-    machine = os.environ.get("TUNA_MACHINE") or ("win" if os.name == "nt" else "unix")
-    project = os.environ.get("TUNA_AUTOARM_PROJECT") or Path(cwd).name or "unknown"
-    role = os.environ.get("TUNA_AUTOARM_ROLE", "session")
+    machine = cfg("TUNA_MACHINE") or ("win" if os.name == "nt" else "unix")
+    project = cfg("TUNA_AUTOARM_PROJECT") or Path(cwd).name or "unknown"
+    role = cfg("TUNA_AUTOARM_ROLE", "session")
     agent = session_id  # uuid=세션 id(라우팅·discover overlay 키, 설계 §2.1)
-    display = os.environ.get("TUNA_AUTOARM_AGENT") or f"{machine}-claude-{project}"
-    interval = os.environ.get("TUNA_AUTOARM_INTERVAL", "15")
+    display = cfg("TUNA_AUTOARM_AGENT") or f"{machine}-claude-{project}"
+    interval = cfg("TUNA_AUTOARM_INTERVAL", "15")
     tags = (
         f"machine={machine},runner=claude,role={role},project={project},"
         f"user={user},host={host},session={session_id}"
@@ -118,7 +178,7 @@ def ensure_armed(session_id: str, cwd: str):
         "--display-name", display, "--tags", tags, "--interval", str(interval),
     ]
     try:
-        pid = launch_detached(cmd, log_path)
+        pid = launch_detached(cmd, log_path, env=child_env())
     except Exception:
         return None
 

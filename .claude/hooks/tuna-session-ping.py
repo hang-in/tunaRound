@@ -17,7 +17,7 @@ except Exception:
 
 
 def main() -> int:
-    if os.environ.get("TUNA_AUTOARM") != "1":
+    if tuna_arm.cfg("TUNA_AUTOARM") != "1":  # 설정파일 우선(env 신선도 무관, 설계 v2-43 §5-1).
         return 0
     try:
         payload = json.load(sys.stdin) if not sys.stdin.isatty() else {}
@@ -38,7 +38,7 @@ def main() -> int:
     c = core.rstrip("/")
     base = c[:-4] if c.endswith("/mcp") else c
     url = base + "/dashboard/human-ping"
-    token = os.environ.get("TUNA_BROKER_TOKEN", "")
+    token = tuna_arm.cfg("TUNA_BROKER_TOKEN", "")
     body = json.dumps({"agent": agent}).encode()
     req = urllib.request.Request(url, data=body, method="POST")
     req.add_header("Content-Type", "application/json")
