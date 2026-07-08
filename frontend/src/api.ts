@@ -7,6 +7,8 @@ export type Agent = {
   display_name: string | null
   last_heartbeat: string
   online: boolean
+  // 마지막 사람 프롬프트 시각(UserPromptSubmit 핑). 총감독=이 값 최신 세션(설계 v2-42). null=핑 없음.
+  human_input_at: string | null
 }
 
 // SQLite datetime('now')는 "YYYY-MM-DD HH:MM:SS" UTC 문자열이다. 사람이 읽는 상대시간으로 바꾼다
@@ -64,27 +66,6 @@ export async function fetchRoster(signal?: AbortSignal): Promise<Agent[]> {
   return (await res.json()) as Agent[]
 }
 
-// GET /dashboard/candidates 응답 요소(발견 리포터가 보고한 미무장 세션 후보).
-// armed 는 저장값이 아니라 브로커가 online roster 소속으로 계산한 overlay(무장되면 자동 true).
-export type Candidate = {
-  uuid: string
-  runner: string
-  project: string | null
-  machine: string | null
-  source: string
-  age_secs: number
-  reported_at: string
-  armed: boolean
-}
-
-// 발견된 세션 후보 목록을 가져온다(v2-40 S2). 실패는 던져서 호출부가 콘솔 로깅만 하도록 한다.
-export async function fetchCandidates(signal?: AbortSignal): Promise<Candidate[]> {
-  const res = await fetch('/dashboard/candidates', { signal })
-  if (!res.ok) {
-    throw new Error('candidates 조회 실패: ' + res.status)
-  }
-  return (await res.json()) as Candidate[]
-}
 
 // POST /dashboard/goal 성공 응답: 대상별로 생성된 task 를 알려준다.
 export type GoalCreated = { taskId: string; toAgent: string }

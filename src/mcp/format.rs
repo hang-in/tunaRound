@@ -542,6 +542,7 @@ mod tests {
             tags,
             display_name: Some("win-claude".to_string()),
             last_heartbeat: "2026-07-04 10:00:00".to_string(),
+            human_input_at: None,
         }];
         let text = format_agents(&agents);
         assert!(text.contains("uuid-1"));

@@ -6,6 +6,7 @@ use super::*;
 
 impl SqliteStore {
     /// 에이전트를 로스터에 등록(있으면 교체). now는 last_heartbeat 초기값.
+    /// 재등록(재기동) 시 기존 human_input_at(총감독 신호)은 보존한다(설계 v2-42).
     pub fn register_agent(
         &self,
         uuid: &str,
@@ -13,9 +14,17 @@ impl SqliteStore {
         display_name: Option<String>,
         now: &str,
     ) {
-        self.agent_roster.borrow_mut().insert(
+        let mut roster = self.agent_roster.borrow_mut();
+        let human_input_at = roster.get(uuid).and_then(|e| e.human_input_at.clone());
+        roster.insert(
             uuid.to_string(),
-            AgentEntry { uuid: uuid.to_string(), tags, display_name, last_heartbeat: now.to_string() },
+            AgentEntry {
+                uuid: uuid.to_string(),
+                tags,
+                display_name,
+                last_heartbeat: now.to_string(),
+                human_input_at,
+            },
         );
     }
 
@@ -24,6 +33,18 @@ impl SqliteStore {
         match self.agent_roster.borrow_mut().get_mut(uuid) {
             Some(entry) => {
                 entry.last_heartbeat = now.to_string();
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// 사람 프롬프트 핑: 해당 agent의 human_input_at을 now로 갱신(총감독=이 값 최신 세션, 설계 v2-42).
+    /// 미등록 uuid면 false(무장=등록 선행 필요).
+    pub fn mark_human_input(&self, uuid: &str, now: &str) -> bool {
+        match self.agent_roster.borrow_mut().get_mut(uuid) {
+            Some(entry) => {
+                entry.human_input_at = Some(now.to_string());
                 true
             }
             None => false,

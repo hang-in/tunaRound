@@ -8,10 +8,19 @@ deregister MCP 도구가 없으므로 heartbeat가 끊기면 브로커 로스터
 """
 import json
 import os
+import re
 import signal
 import subprocess
 import sys
 from pathlib import Path
+
+# tuna_arm.sanitize_session_id와 동일 규칙: autoarm이 쓴 pidfile 이름과 반드시 일치해야 한다.
+_SAFE_SESSION_RE = re.compile(r"[^A-Za-z0-9._-]")
+
+
+def sanitize_session_id(session_id: str) -> str:
+    s = _SAFE_SESSION_RE.sub("_", str(session_id or "").strip())
+    return s.strip(".") or ""
 
 
 def is_tunaround_pid(pid: int) -> bool:
@@ -68,7 +77,10 @@ def main() -> int:
     if not session_id:
         return 0
 
-    pidfile = Path.home() / ".tunaround" / "autoarm" / f"{session_id}.json"
+    safe_id = sanitize_session_id(session_id)
+    if not safe_id:
+        return 0
+    pidfile = Path.home() / ".tunaround" / "autoarm" / f"{safe_id}.json"
     if not pidfile.exists():
         return 0
 

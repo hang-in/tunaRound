@@ -854,3 +854,34 @@
   - **-B/-C 충돌**: activity.ts assignLabels(같은 base면 uuid정렬 순 -B/-C, 첫개 무접미) + Roster/Candidates가 s.label 사용. casing은 autoarm project=cwd basename 일관화로 해소.
 - **라이브 검증**: 로스터=win-claude-tunaRound(boss)+3감독, 후보=win-claude-secall(미무장 활성)+병합된 자기. mac 중복은 mac 후보 TTL소멸로 현재 안 보임.
 - **mac 남음(A2A)**: mac에 TUNA_AUTOARM=1+TUNA_BIN(mac 새 바이너리)+전역훅(settings 공유면 이미 있음, 아니면 추가) → mac 감독들 autoarm 재무장(uuid=세션id+세션태그)해 후보와 병합(중복 소멸).
+
+## 2026-07-07 세션17: "유휴 세션 안 뜸" 조사 + mac 온보딩 특이사항
+
+- **원인(win)**: discover `--stale-mins 10`이 10분+ 유휴 세션을 아예 리포트 안 함(discover.rs stale 스킵). E 모델(60분+ 유휴 표시)과 커플링 위반. **수정: 기본 10→240분(main.rs) + win discover 재기동(PID 15696)** → win-claude-secall 복귀(age 36분=활성). 설계 v2-41 §3.1에 커플링 명시.
+- **원인(mac)**: mac-claude-sup가 autoarm setup 완료(heartbeat=presence는 됨)했으나 **mac discover 미기동** → mac 세션 jsonl age 없음 → 항상 online=활성으로만 뜨고 idle 배치 불가. **A2A task 7b2cbd18로 mac discover --stale-mins 240 --machine mac 위임.**
+- **버그 수정**: offline 좀비 에이전트(죽은 mac-claude-sup·hooktest-verify 등)가 병합에서 idle로 발견/유휴 패널에 뜸. offline agent-only 행 제외(185d0cd).
+- **mac 온보딩 특이사항(mac-claude-sup 규명, 온보딩 문서 반영 권고)**:
+  1. **mac은 브로커가 원격** → `TUNA_BROKER_CORE=http://<win-LAN>:8770/mcp` 필수(autoarm 훅 기본 127.0.0.1은 mac서 실패). `TUNA_MACHINE=mac` 필수(없으면 machine=unix 등록). win 레시피엔 없던 mac 전용.
+  2. **mac엔 `python` 없음(python3만)** → 훅 명령을 python3 단일로(win의 python+python3 dual은 mac서 python 미존재 에러).
+  3. **dashboard 피처는 frontend/dist(RustEmbed) 요구** → mac은 대시보드 비호스팅이라 **worker 피처만 빌드**(dashboard=win 몫).
+  4. mac settings.json은 win과 비공유(절대경로 /Users/d9ng, 별도 파일). 각자 편집.
+
+## 2026-07-08 세션17: v2-42 heartbeat=presence + 사람입력 기반 총감독 (재설계 1단계=boss)
+
+- **동기**: v2-41 라이브 도그푸딩 결함 3개(총감독이 resume한 secall로 튐=jsonl mtime≠사람입력 / 유령 -B/-C=stale 240분이 닫힌 jsonl까지 / resume 미무장=SessionStart 미포착). 뿌리=presence·boss를 전부 jsonl로 잡는 노이즈. 설계 v2-42.
+- **1단계 구현(boss)**: 총감독 = **마지막 사람 프롬프트 세션**(jsonl mtime 대신). UserPromptSubmit 훅이 열쇠(resume 포함 사람 입력마다 발동).
+  - 브로커: AgentEntry.human_input_at + mark_human_input(재등록 시 보존) + POST /dashboard/human-ping(loopback) + roster JSON 노출.
+  - 훅: 공유 tuna_arm.py(ensure_armed idempotent) + tuna-session-ping.py(UserPromptSubmit: 무장보장+핑). 레포·전역 settings.json 등록(win python·mac python3 순차블록). 전역 ~/.claude/hooks 복사.
+  - 프론트: api Agent.human_input_at + activity SessionRow.humanInputAt + autoBoss=human_input_at 최신(사전순=시간순). 아무도 핑 없으면 총감독 없음.
+- **검증**: 479 lib pass, frontend 217KB tsc 클린, cargo check(dashboard worker) 클린.
+- **활성화 남음**: 브로커 재빌드+재기동 필요(핑 엔드포인트·human_input_at 필드). 메시 teardown=사용자 승인.
+- **후속(2단계)**: heartbeat=presence 병합(유령=heartbeat 없는 stale jsonl 제외) + discover stale-mins 원복(작은 창, 발견됨=미무장 최근만). 크로스머신 boss-ping(loopback→토큰 인증, mac 세션도 총감독 되게).
+
+## 2026-07-08 세션17: v2-43 정본 타겟 모델 + 대시보드 단순화(재센터링)
+
+- **재센터링**: 대시보드 만들며 이미 만든 A2A 워크플로우(총괄 던짐→감독 자율수신 Monitor(poll)→complete→watch-results로 총괄 깨움→사람 브리핑)를 자꾸 재발명하려다 꼬임. 사용자 지적으로 재센터링. 워크플로우는 완성돼 있고 대시보드는 뷰일 뿐. 정본=설계 v2-43.
+- **UX 통찰**: "모든 세션 Monitor 파킹"은 이상 UX 걱정했으나, 받는 자리(감독/워커)는 자율이라 사람이 UX를 안 봄=논점 아님. 사람은 총괄에만 앉음(clean chat, watch-results로 결과).
+- **단순화(사용자 승인)**: 순수 heartbeat=presence. 로스터=online 세션 전부, 총감독=human_input_at 최신, 발견/유휴+discover+활동(jsonl age) 모델 **제거**(전부 autoarm이라 불필요). activity.ts=buildRoster(online만), Candidates.tsx 삭제, discover 프로세스 중단, api.ts Candidate 제거. 210KB(217→). 라이브: online 3개(★win-claude-tunaRound+2 codex-sup).
+- **수용기준(사용자)**: 재시작 후 발견/유휴 없음 / 로스터=win·mac 모든 열린 TUI(claude+codex) / exit→사라짐(딜레이 OK).
+- **남은 배선(새 설계 아님)**: env→설정파일(신뢰성, env 두번 물림) · 수신 배선(autoarm이 Monitor(poll) 안내) · codex arming(claude 훅 밖) · 워커 섹션.
+- **env 교훈**: 훅 no-op 원인=env가 터미널 launch에 고정(setx는 새 터미널만). 기존 세션은 재시작 필요. 근본=설정파일.

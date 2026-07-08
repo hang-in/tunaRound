@@ -113,6 +113,7 @@ pub async fn serve_http_mcp_on_listener(
         .route("/dashboard/roster", get(dashboard_roster_handler))
         .route("/dashboard/candidates", get(dashboard_candidates_handler))
         .route("/dashboard/goal", axum::routing::post(dashboard_goal_handler))
+        .route("/dashboard/human-ping", axum::routing::post(dashboard_human_ping_handler))
         .route("/dashboard/control", axum::routing::post(dashboard_control_handler));
     #[cfg(feature = "dashboard")]
     {
@@ -276,6 +277,7 @@ async fn dashboard_roster_handler(
         display_name: Option<String>,
         last_heartbeat: String,
         online: bool,
+        human_input_at: Option<String>,
     }
     let agents: Vec<DashAgent> = tokio::task::spawn_blocking(move || {
         let store = store.lock().unwrap_or_else(|e| e.into_inner());
@@ -292,6 +294,7 @@ async fn dashboard_roster_handler(
                     display_name: a.display_name,
                     last_heartbeat: a.last_heartbeat,
                     online,
+                    human_input_at: a.human_input_at,
                 }
             })
             .collect()
@@ -396,6 +399,46 @@ fn ws_target_is_loopback(ws: &str) -> bool {
         return true;
     }
     host.parse::<std::net::IpAddr>().map(|ip| ip.is_loopback()).unwrap_or(false)
+}
+
+/// POST /dashboard/human-ping: 세션의 UserPromptSubmit 훅이 "이 세션이 방금 사람 프롬프트를 받았다"를
+/// 보고한다(총감독=human_input_at 최신 세션, 설계 v2-42). body = {"agent": "<세션 uuid>"}. loopback만 허용
+/// (원격은 read-only). 무인증이지만 loopback 신뢰. 미등록 uuid(무장 전)면 404.
+#[cfg(feature = "serve")]
+async fn dashboard_human_ping_handler(
+    axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    axum::extract::State(store): axum::extract::State<Arc<Mutex<crate::store::sqlite::SqliteStore>>>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    if !peer.ip().is_loopback() {
+        return (axum::http::StatusCode::FORBIDDEN, "원격 관전 모드: 핑은 로컬(loopback)에서만.").into_response();
+    }
+    if is_cross_site(&headers) {
+        return (axum::http::StatusCode::FORBIDDEN, "cross-site 요청 거부(local CSRF 방어).").into_response();
+    }
+    #[derive(serde::Deserialize)]
+    struct PingReq {
+        agent: String,
+    }
+    let req: PingReq = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(e) => return (axum::http::StatusCode::BAD_REQUEST, format!("잘못된 요청: {e}")).into_response(),
+    };
+    let ok = tokio::task::spawn_blocking(move || {
+        let store = store.lock().unwrap_or_else(|e| e.into_inner());
+        let now = store.now().unwrap_or_default();
+        store.mark_human_input(&req.agent, &now)
+    })
+    .await
+    .unwrap_or(false);
+    if ok {
+        (axum::http::StatusCode::OK, "ok").into_response()
+    } else {
+        // 미등록(아직 무장 안 됨). 훅이 무장 후 재핑하면 된다.
+        (axum::http::StatusCode::NOT_FOUND, "미등록 세션(무장 선행 필요)").into_response()
+    }
 }
 
 /// POST /dashboard/goal: 로컬(loopback) 총감독이 선택한 감독들에게 목표를 던진다(대상마다 1 task).
