@@ -17,6 +17,19 @@ import subprocess
 import sys
 from pathlib import Path
 
+# 설정파일(config-first) 로직은 tuna_arm 단일 소스에서 가져온다(env 신선도 무관, 설계 v2-43 §5-1).
+# import 실패 시 env-only로 안전 강등(훅은 절대 세션을 막지 않는다).
+try:
+    # __file__은 zipapp/임베디드 등에서 미정의(NameError)일 수 있어 sys.path 조작도 try 안에 둔다.
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from tuna_arm import cfg, child_env
+except Exception:
+    def cfg(key, default=None):
+        return os.environ.get(key, default)
+
+    def child_env():
+        return None  # None → Popen이 부모 env를 그대로 상속(기존 동작).
+
 
 def emit_context(text: str) -> None:
     """SessionStart 훅 출력 계약: hookSpecificOutput.additionalContext로 세션에 문자열 주입."""
@@ -61,7 +74,7 @@ def pid_alive(pid: int) -> bool:
         return False
 
 
-def launch_detached(cmd: list, log_path: Path) -> int:
+def launch_detached(cmd: list, log_path: Path, env: dict = None) -> int:
     """세션·하네스 수명과 무관하게 상주하도록 완전 분리된 프로세스로 기동한다."""
     # with로 부모의 파일 핸들을 즉시 닫는다(자식은 자기 복제본을 유지 = FD 누수 방지).
     with open(log_path, "ab") as log:
@@ -70,19 +83,19 @@ def launch_detached(cmd: list, log_path: Path) -> int:
             flags = 0x00000008 | 0x00000200
             proc = subprocess.Popen(
                 cmd, stdout=log, stderr=log, stdin=subprocess.DEVNULL,
-                creationflags=flags, close_fds=True,
+                creationflags=flags, close_fds=True, env=env,
             )
         else:
             proc = subprocess.Popen(
                 cmd, stdout=log, stderr=log, stdin=subprocess.DEVNULL,
-                start_new_session=True, close_fds=True,
+                start_new_session=True, close_fds=True, env=env,
             )
     return proc.pid
 
 
 def main() -> int:
-    # opt-in이 아니면 즉시 no-op(출력 없음 = 컨텍스트 오염 없음).
-    if os.environ.get("TUNA_AUTOARM") != "1":
+    # opt-in이 아니면 즉시 no-op(출력 없음 = 컨텍스트 오염 없음). 설정파일 우선(env 신선도 무관).
+    if cfg("TUNA_AUTOARM") != "1":
         return 0
 
     # 대화형 터미널에서 stdin 없이 실행하면 json.load가 EOF를 무한 대기하므로 isatty로 가드.
@@ -98,29 +111,29 @@ def main() -> int:
         return 0
     cwd = payload.get("cwd") or os.getcwd()
 
-    token = os.environ.get("TUNA_BROKER_TOKEN")
+    token = cfg("TUNA_BROKER_TOKEN")
     if not token:
         emit_context(
             "[tuna-autoarm] TUNA_AUTOARM=1이나 TUNA_BROKER_TOKEN 미설정이라 무장하지 않았습니다. "
-            "토큰 env를 설정하면 이 세션이 브로커 로스터에 자동 등록됩니다."
+            "~/.tunaround/config 또는 env에 토큰을 설정하면 이 세션이 브로커 로스터에 자동 등록됩니다."
         )
         return 0
 
-    core = os.environ.get("TUNA_BROKER_CORE", "http://127.0.0.1:8770/mcp")
-    tuna_bin = os.environ.get("TUNA_BIN", "tunaround")
+    core = cfg("TUNA_BROKER_CORE", "http://127.0.0.1:8770/mcp")
+    tuna_bin = cfg("TUNA_BIN", "tunaround")
     host = os.environ.get("COMPUTERNAME") or os.environ.get("HOSTNAME") or "host"
     user = os.environ.get("USERNAME") or os.environ.get("USER") or "user"
-    machine = os.environ.get("TUNA_MACHINE") or ("win" if os.name == "nt" else "unix")
-    project = os.environ.get("TUNA_AUTOARM_PROJECT") or Path(cwd).name or "unknown"
-    role = os.environ.get("TUNA_AUTOARM_ROLE", "session")
+    machine = cfg("TUNA_MACHINE") or ("win" if os.name == "nt" else "unix")
+    project = cfg("TUNA_AUTOARM_PROJECT") or Path(cwd).name or "unknown"
+    role = cfg("TUNA_AUTOARM_ROLE", "session")
     # uuid는 라우팅·발견 overlay 키라 세션 id를 쓴다(설계 §2.1: uuid=세션 id). 그래야 discover가
     # 낸 후보(uuid=세션 id)와 로스터가 매칭돼 armed overlay·중복제거가 성립한다. 사람이 읽는 이름은
     # display_name으로 분리한다(총감독은 TUNA_AUTOARM_AGENT로 win-opus-boss 등 지정).
     agent = session_id
     # 사람이 읽는 이름: OS-엔진-프로젝트(예: win-claude-tunaRound). 같은 프로젝트 충돌 시 -B/-C 증분은
     # 로스터 표시 계층에서 결정론적으로 붙인다(여기선 base만). 총감독 등은 TUNA_AUTOARM_AGENT로 고정 지정.
-    display = os.environ.get("TUNA_AUTOARM_AGENT") or f"{machine}-claude-{project}"
-    interval = os.environ.get("TUNA_AUTOARM_INTERVAL", "15")
+    display = cfg("TUNA_AUTOARM_AGENT") or f"{machine}-claude-{project}"
+    interval = cfg("TUNA_AUTOARM_INTERVAL", "15")
 
     # session 태그 = 이 세션의 jsonl id. 브로커 armed overlay가 discover 후보(uuid=세션 id)를 이 태그로
     # 대조해, 고정 이름으로 무장해도(uuid≠세션 id) 그 세션을 후보에서 정확히 제외한다(이중 표시 방지).
@@ -147,8 +160,8 @@ def main() -> int:
         except Exception:
             pass  # 손상된 pidfile은 무시하고 새로 기동.
 
-    # 토큰은 --token(argv) 대신 자식이 상속하는 TUNA_BROKER_TOKEN env로 전달한다(프로세스 목록 노출 방지).
-    # poll이 --token 없으면 이 env를 폴백으로 읽는다. token 존재는 위에서 이미 확인했다.
+    # 토큰은 --token(argv) 대신 자식 env(TUNA_BROKER_TOKEN)로 전달한다(프로세스 목록 노출 방지).
+    # child_env()가 설정파일 토큰을 env로 승격하므로, 부모 터미널 env가 stale/미설정이어도 poll이 인증된다.
     cmd = [
         tuna_bin, "poll",
         "--core", core,
@@ -159,7 +172,7 @@ def main() -> int:
     ]
 
     try:
-        pid = launch_detached(cmd, log_path)
+        pid = launch_detached(cmd, log_path, env=child_env())
     except FileNotFoundError:
         emit_context(
             f"[tuna-autoarm] '{tuna_bin}' 실행 실패(PATH에 없음). TUNA_BIN으로 tunaround 경로를 지정하세요."
@@ -180,12 +193,18 @@ def main() -> int:
     }), encoding="utf-8")
 
     emit_context(
-        f"[tuna-autoarm] 이 세션이 브로커 로스터에 자동 등록되었습니다.\n"
-        f"  uuid={agent}(세션 id)  display={display}  tags={tags}\n"
+        f"[tuna-autoarm] 이 세션이 브로커 로스터에 자동 등록되었습니다(online).\n"
+        f"  uuid={agent}(세션 id)  display={display}\n"
         f"  core={core}  poll pid={pid}  log={log_path}\n"
-        f"이제 총감독 대시보드(/dashboard/roster)에 online으로 나타납니다. "
-        f"이 세션 앞으로 온 A2A task를 받으려면 poll 로그를 Monitor로 감시하거나 "
-        f"`poll_tasks`/`claim_task`/`complete_task`로 처리하세요. "
+        f"\n"
+        f"[A2A 수신법 - 설계 v2-43]\n"
+        f"  · 감독/워커(받는 자리)로 일하려면 = 이 세션 앞 task를 자율 수신:\n"
+        f"      Monitor 도구로 poll 로그({log_path})를 감시 → task 도착 시 깨어나 "
+        f"`claim_task`→처리→`complete_task`(실패=`fail_task`).\n"
+        f"      (poll이 이미 register+heartbeat 중 = 0토큰 대기/파킹. uuid={agent})\n"
+        f"  · 총괄(사람 자리)로 일하려면 = 던진 task 결과만 받기:\n"
+        f"      `watch-results --dispatcher <나> --core {core}`를 Monitor로 감싸면 "
+        f"자리를 떠도 완료가 총괄 세션을 깨운다(PR #19).\n"
         f"세션 종료 시 SessionEnd 훅이 poll을 정리하고 로스터는 TTL로 소멸합니다."
     )
     return 0

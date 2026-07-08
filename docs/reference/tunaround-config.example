@@ -1,0 +1,34 @@
+# tunaRound autoarm 설정 예시. 이 파일을 ~/.tunaround/config 로 복사해서 값을 채운다(레포 밖, home dir).
+#
+# 훅(tuna-autoarm=SessionStart / tuna-session-ping=UserPromptSubmit / tuna-disarm=SessionEnd)이
+# 런타임에 이 파일을 읽는다. 값 우선순위 = 설정파일 > 환경변수 > 기본값(config-first, 설계 v2-43 §5-1).
+#
+# 왜 파일인가: env는 터미널 launch 시점에 고정돼, setx/토큰 로테이션이 "이미 열린 터미널"에는
+# 반영되지 않아 훅이 조용히 no-op 한다(세션16 토큰로테이션·세션17 ping 미작동의 근본). 파일은
+# 매 훅 호출마다 새로 읽으므로 터미널 신선도와 무관하게 신뢰성 있게 무장한다.
+#
+# 형식: KEY=VALUE (dotenv 유사). 빈 줄·`#` 주석·`=` 없는 줄은 무시. 값 앞뒤 따옴표는 벗겨진다.
+# 빈 값(KEY=)은 "미설정"으로 보고 env/기본값으로 폴백한다.
+# 인라인 주석: 따옴표 없는 값은 " #"(공백+#) 뒤가 주석으로 잘린다. 값에 " #"가 필요하면 따옴표로 감싼다.
+
+# opt-in 스위치. 1이어야 무장한다.
+TUNA_AUTOARM=1
+
+# tunaround 바이너리 경로. Windows 예시(절대경로). mac/linux는 PATH에 있으면 `tunaround`만도 됨.
+TUNA_BIN=D:\privateProject\tunaRound\target\debug\tunaround.exe
+
+# 브로커 MCP 코어 URL. 로컬 브로커 기본값.
+TUNA_BROKER_CORE=http://127.0.0.1:8770/mcp
+
+# 이 머신 태그(로스터 machine 뱃지·정렬용). win / mac / unix.
+TUNA_MACHINE=win
+
+# 브로커 인증 토큰(평문). poll 자식 프로세스에 --token(argv 노출) 대신 env로 전달된다.
+# 파일 권한을 본인만 R/W로 제한 권장: Windows=icacls <file> /inheritance:r /grant:r "%USERNAME%:(R,W)" / mac·linux=chmod 600
+TUNA_BROKER_TOKEN=여기에-실제-토큰-넣기
+
+# (선택) 표시 이름·역할·프로젝트·간격 재정의. 비우면 자동 도출({machine}-claude-{project}, role=session, 15초).
+# TUNA_AUTOARM_AGENT=win-opus-boss
+# TUNA_AUTOARM_ROLE=session
+# TUNA_AUTOARM_PROJECT=tunaRound
+# TUNA_AUTOARM_INTERVAL=15

@@ -9,15 +9,16 @@ import os
 import sys
 import urllib.request
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 try:
+    # __file__은 zipapp/임베디드 등에서 미정의(NameError)일 수 있어 sys.path 조작도 try 안에 둔다.
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import tuna_arm
 except Exception:
     sys.exit(0)  # 모듈 없으면 조용히 통과.
 
 
 def main() -> int:
-    if os.environ.get("TUNA_AUTOARM") != "1":
+    if tuna_arm.cfg("TUNA_AUTOARM") != "1":  # 설정파일 우선(env 신선도 무관, 설계 v2-43 §5-1).
         return 0
     try:
         payload = json.load(sys.stdin) if not sys.stdin.isatty() else {}
@@ -38,7 +39,7 @@ def main() -> int:
     c = core.rstrip("/")
     base = c[:-4] if c.endswith("/mcp") else c
     url = base + "/dashboard/human-ping"
-    token = os.environ.get("TUNA_BROKER_TOKEN", "")
+    token = tuna_arm.cfg("TUNA_BROKER_TOKEN", "")
     body = json.dumps({"agent": agent}).encode()
     req = urllib.request.Request(url, data=body, method="POST")
     req.add_header("Content-Type", "application/json")

@@ -14,6 +14,15 @@ import subprocess
 import sys
 from pathlib import Path
 
+# 설정파일(config-first) 게이트는 tuna_arm 단일 소스에서. import 실패 시 env-only로 안전 강등.
+try:
+    # __file__은 zipapp/임베디드 등에서 미정의(NameError)일 수 있어 sys.path 조작도 try 안에 둔다.
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from tuna_arm import cfg
+except Exception:
+    def cfg(key, default=None):
+        return os.environ.get(key, default)
+
 # tuna_arm.sanitize_session_id와 동일 규칙: autoarm이 쓴 pidfile 이름과 반드시 일치해야 한다.
 _SAFE_SESSION_RE = re.compile(r"[^A-Za-z0-9._-]")
 
@@ -64,7 +73,7 @@ def kill_pid(pid: int) -> bool:
 
 
 def main() -> int:
-    if os.environ.get("TUNA_AUTOARM") != "1":
+    if cfg("TUNA_AUTOARM") != "1":  # 설정파일 우선(env 신선도 무관, 설계 v2-43 §5-1).
         return 0
 
     # 대화형 터미널에서 stdin 없이 실행하면 json.load가 무한 대기하므로 isatty로 가드.
