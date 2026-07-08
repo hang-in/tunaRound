@@ -32,7 +32,8 @@ def load_config() -> dict:
     """
     out = {}
     try:
-        for raw in config_path().read_text(encoding="utf-8").splitlines():
+        # utf-8-sig: Windows 편집기가 넣는 BOM을 벗겨 첫 키가 '﻿TUNA_...'로 깨지지 않게 한다.
+        for raw in config_path().read_text(encoding="utf-8-sig").splitlines():
             line = raw.strip()
             if not line or line.startswith("#") or "=" not in line:
                 continue

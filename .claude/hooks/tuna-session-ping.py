@@ -9,8 +9,9 @@ import os
 import sys
 import urllib.request
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 try:
+    # __file__은 zipapp/임베디드 등에서 미정의(NameError)일 수 있어 sys.path 조작도 try 안에 둔다.
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import tuna_arm
 except Exception:
     sys.exit(0)  # 모듈 없으면 조용히 통과.

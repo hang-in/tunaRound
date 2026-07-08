@@ -15,8 +15,9 @@ import sys
 from pathlib import Path
 
 # 설정파일(config-first) 게이트는 tuna_arm 단일 소스에서. import 실패 시 env-only로 안전 강등.
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 try:
+    # __file__은 zipapp/임베디드 등에서 미정의(NameError)일 수 있어 sys.path 조작도 try 안에 둔다.
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from tuna_arm import cfg
 except Exception:
     def cfg(key, default=None):
