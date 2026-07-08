@@ -9,6 +9,7 @@ import json
 import os
 import re
 import subprocess
+import urllib.request
 from pathlib import Path
 
 # session_id를 파일명으로 쓸 때 경로 이탈(../, 절대경로, 구분자)을 막는 허용 문자 집합.
@@ -96,6 +97,117 @@ def pid_alive(pid: int) -> bool:
         return True
     except Exception:
         return False
+
+
+def proc_map() -> dict:
+    """{pid: (ppid, name_lower)} 스냅샷. 한 번만 떠서 owner 탐색·리핑에 재사용한다.
+    실패하면 빈 dict(호출부가 폴백). 프로세스 조회는 SessionStart에서만(핑 지연 경로 아님)."""
+    m = {}
+    try:
+        if os.name == "nt":
+            # PowerShell CIM: Win11에서 wmic가 제거될 수 있어 항상 있는 CIM을 쓴다.
+            out = subprocess.run(
+                ["powershell", "-NoProfile", "-Command",
+                 "Get-CimInstance Win32_Process | ForEach-Object "
+                 "{ \"$($_.ProcessId),$($_.ParentProcessId),$($_.Name)\" }"],
+                capture_output=True, text=True, timeout=10,
+            ).stdout
+            for line in out.splitlines():
+                parts = line.strip().split(",", 2)
+                if len(parts) == 3 and parts[0].isdigit() and parts[1].isdigit():
+                    m[int(parts[0])] = (int(parts[1]), parts[2].lower())
+        else:
+            out = subprocess.run(
+                ["ps", "-eo", "pid=,ppid=,comm="],
+                capture_output=True, text=True, timeout=10,
+            ).stdout
+            for line in out.splitlines():
+                f = line.split(None, 2)
+                if len(f) >= 3 and f[0].isdigit() and f[1].isdigit():
+                    m[int(f[0])] = (int(f[1]), f[2].lower())
+    except Exception:
+        return {}
+    return m
+
+
+def find_owner_pid(pmap: dict = None) -> int:
+    """이 훅을 낳은 세션(claude 프로세스)의 PID. getpid부터 조상을 올라가며 이름에 'claude'가
+    든 첫 프로세스를 owner로 본다. 못 찾으면 getppid 폴백(0이면 미지정)."""
+    m = pmap if pmap is not None else proc_map()
+    if not m:
+        return os.getppid()
+    pid = os.getpid()
+    for _ in range(16):  # 조상 체인 상한(순환 방지)
+        entry = m.get(pid)
+        if not entry:
+            break
+        ppid, name = entry
+        if "claude" in name:
+            return pid
+        if ppid <= 0 or ppid == pid:
+            break
+        pid = ppid
+    return os.getppid()
+
+
+def _deregister(agent: str, core: str, token: str) -> None:
+    """브로커 로스터에서 즉시 등록해제(loopback POST). 실패는 조용히 통과."""
+    if not agent or not core:
+        return
+    c = str(core).rstrip("/")
+    base = c[:-4] if c.endswith("/mcp") else c
+    body = json.dumps({"agent": agent}).encode()
+    req = urllib.request.Request(base + "/dashboard/deregister", data=body, method="POST")
+    req.add_header("Content-Type", "application/json")
+    if token:
+        req.add_header("Authorization", "Bearer " + token)
+    try:
+        urllib.request.urlopen(req, timeout=0.75).read()
+    except Exception:
+        pass
+
+
+def reap_orphans(pmap: dict, current_session_id: str = "") -> int:
+    """owner 세션이 죽은 orphan poll을 청소한다(창 X·크래시로 SessionEnd 미발화 대비).
+
+    각 pidfile의 owner_pid(=세션 claude 프로세스)가 proc_map에 없으면 = 세션 죽음 →
+    그 poll을 kill + deregister + pidfile 삭제. 자기 자신(current_session_id)과 owner_pid
+    미기록(레거시) pidfile은 건드리지 않는다. 반환=청소 개수. 실패는 조용히 무시."""
+    token = cfg("TUNA_BROKER_TOKEN")
+    reaped = 0
+    try:
+        for pf in state_dir().glob("*.json"):
+            try:
+                info = json.loads(pf.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if info.get("session_id") == current_session_id:
+                continue
+            owner = info.get("owner_pid")
+            if not owner:
+                continue  # owner 미기록(레거시)은 판단 불가 → 보존
+            if int(owner) in pmap:
+                continue  # 세션(owner) 살아있음
+            # orphan: poll kill → deregister → pidfile 제거
+            pollpid = info.get("pid")
+            if pollpid and int(pollpid) in pmap:
+                try:
+                    if os.name == "nt":
+                        subprocess.run(["taskkill", "/PID", str(pollpid), "/F"],
+                                       capture_output=True, timeout=5)
+                    else:
+                        os.kill(int(pollpid), 9)
+                except Exception:
+                    pass
+            _deregister(info.get("agent"), info.get("core") or broker_core(), token)
+            try:
+                pf.unlink()
+            except Exception:
+                pass
+            reaped += 1
+    except Exception:
+        pass
+    return reaped
 
 
 def child_env() -> dict:
@@ -188,8 +300,12 @@ def ensure_armed(session_id: str, cwd: str):
     except Exception:
         return None
 
+    # owner_pid = 이 세션의 claude 프로세스. 실제 launch할 때만 조회(핑 no-op 경로엔 지연 없음).
+    # 창 X·크래시로 SessionEnd가 안 돌아도 autoarm 리퍼가 owner 죽음을 보고 이 poll을 청소한다.
+    owner_pid = find_owner_pid()
     pidfile.write_text(json.dumps({
         "pid": pid, "agent": agent, "display_name": display, "core": core,
         "tags": tags, "log": str(log_path), "session_id": session_id,
+        "owner_pid": owner_pid,
     }), encoding="utf-8")
     return (agent, core)
