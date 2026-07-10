@@ -315,3 +315,125 @@ def ensure_armed(session_id: str, cwd: str):
         "owner_pid": owner_pid,
     }), encoding="utf-8")
     return (agent, core)
+
+
+def ensure_codex_armed(session_id: str, cwd: str, display_name=None, project=None, owner_pid: int = 0):
+    """Codex 세션을 무장(idempotent)한다(v2-43 §5-3, scripts/codex_wrapper.py가 호출).
+
+    codex는 claude 훅이 안 잡으므로 래퍼가 세션 id를 만들어 넘긴다. TUNA_AUTOARM=1 +
+    토큰 있을 때만 동작. owner_pid=래퍼 프로세스(codex 수명과 동일 = 리퍼 orphan 판정 기준).
+    """
+    if cfg("TUNA_AUTOARM") != "1":
+        return None
+    session_id = str(session_id or "").strip()
+    if not session_id:
+        return None
+    if not cfg("TUNA_BROKER_TOKEN"):
+        return None
+
+    core = broker_core()
+    tuna_bin = cfg("TUNA_BIN", "tunaround")
+    host = os.environ.get("COMPUTERNAME") or os.environ.get("HOSTNAME") or "host"
+    user = os.environ.get("USERNAME") or os.environ.get("USER") or "user"
+    machine = cfg("TUNA_MACHINE") or ("win" if os.name == "nt" else "unix")
+
+    proj = project or cfg("TUNA_AUTOARM_PROJECT") or Path(cwd).name or "unknown"
+    role = cfg("TUNA_AUTOARM_ROLE", "supervised")
+    agent = session_id
+    display = display_name or cfg("TUNA_AUTOARM_AGENT") or f"{machine}-codex-{proj}"
+    interval = cfg("TUNA_AUTOARM_INTERVAL", "15")
+    tags = (
+        f"machine={machine},runner=codex,role={role},project={proj},"
+        f"user={user},host={host},session={session_id}"
+    )
+
+    sdir = state_dir()
+    safe_id = sanitize_session_id(session_id)
+    if not safe_id:
+        return None
+    pidfile = sdir / f"{safe_id}.json"
+    log_path = sdir / f"{safe_id}.log"
+
+    if pidfile.exists():
+        try:
+            prev = json.loads(pidfile.read_text(encoding="utf-8"))
+            if pid_alive(int(prev.get("pid", -1))):
+                return (agent, core)
+        except Exception:
+            pass
+
+    cmd = [
+        tuna_bin, "poll", "--core", core, "--agent", agent,
+        "--display-name", display, "--tags", tags, "--interval", str(interval),
+    ]
+    try:
+        pid = launch_detached(cmd, log_path, env=child_env())
+    except Exception:
+        return None
+
+    if not owner_pid or owner_pid <= 0:
+        owner_pid = os.getppid()
+
+    pidfile.write_text(json.dumps({
+        "pid": pid, "agent": agent, "display_name": display, "core": core,
+        "tags": tags, "log": str(log_path), "session_id": session_id,
+        "owner_pid": owner_pid,
+    }), encoding="utf-8")
+    return (agent, core)
+
+
+def disarm_session(session_id: str) -> str:
+    """세션 poll 종료 + 즉시 deregister + pidfile 삭제. 반환="DISARMED"|"NOT_FOUND".
+
+    codex 래퍼와 __main__ stop이 공유한다. poll이 이미 죽어 있어도(kill 실패)
+    deregister와 pidfile 정리는 계속 진행한다.
+    """
+    safe_id = sanitize_session_id(session_id)
+    if not safe_id:
+        return "NOT_FOUND"
+    pidfile = state_dir() / f"{safe_id}.json"
+    if not pidfile.exists():
+        return "NOT_FOUND"
+    try:
+        info = json.loads(pidfile.read_text(encoding="utf-8"))
+    except Exception:
+        info = {}
+    pollpid = info.get("pid")
+    try:
+        # 양수 가드: 음수/0 pid는 Unix os.kill에서 프로세스 그룹 전체로 번질 수 있다.
+        if pollpid and int(pollpid) > 0:
+            if os.name == "nt":
+                subprocess.run(["taskkill", "/PID", str(pollpid), "/F"],
+                               capture_output=True, timeout=5, check=False)
+            else:
+                os.kill(int(pollpid), 9)
+    except Exception:
+        pass  # 이미 종료된 poll(ProcessLookupError 등)이어도 아래 정리는 계속.
+    _deregister(info.get("agent"), info.get("core") or broker_core(), cfg("TUNA_BROKER_TOKEN"))
+    try:
+        pidfile.unlink()
+    except Exception:
+        pass
+    return "DISARMED"
+
+
+if __name__ == "__main__":
+    import sys
+    if len(sys.argv) >= 2:
+        if sys.argv[1] == "start" and len(sys.argv) >= 3:
+            try:
+                res = ensure_codex_armed(
+                    sys.argv[2], os.getcwd(),
+                    sys.argv[3] if len(sys.argv) >= 4 else None,
+                    sys.argv[4] if len(sys.argv) >= 5 else None,
+                    int(sys.argv[5]) if len(sys.argv) >= 6 and sys.argv[5].isdigit() else 0,
+                )
+                print(f"ARMED:{res[0]}:{res[1]}" if res else "FAILED")
+            except Exception as e:
+                print(f"ERROR:{e}")
+        elif sys.argv[1] == "stop" and len(sys.argv) >= 3:
+            try:
+                print(disarm_session(sys.argv[2]))
+            except Exception as e:
+                print(f"ERROR:{e}")
+

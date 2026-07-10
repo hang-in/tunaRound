@@ -1,0 +1,3 @@
+#!/bin/sh
+# codex 자동무장 래퍼 진입점(POSIX) - PATH 앞에 두면 codex 호출을 가로챈다.
+exec python3 "$(dirname "$0")/codex_wrapper.py" "$@"

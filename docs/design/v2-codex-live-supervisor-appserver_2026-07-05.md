@@ -124,3 +124,19 @@ P0 = `codex app-server --listen stdio://`를 파이프로 구동해 initialize->
   - (2) thread 스테일: **이미 self-heal됨**(codex_inject.rs, `thread/resume` 실패 → `thread/start` 자가치유). 추가 작업 없음.
   - (3) 소켓 고아: app-server ws는 로컬 무인증(loopback)이라 --remote 관전 자체는 브로커 토큰과 무관. 고아 소켓은 별개(장수 데몬 토큰 스테일 = 로테이션=재기동 규율, [[readonly-soft-enforcement-ok]] 아닌 토큰 live-source 별도 설계).
 - **§7 열린 질문 상태**: `--remote`가 글루-소유 threadId를 선택/부착하는 UX는 **맥에서 실동작 확인, 윈도우는 미확정**(세션16 §7 실측). --remote를 codex 관전 주력으로 쓰려면 윈도우 attach를 손봐야 한다(후속 조사, 급하지 않음). 안 되면 그 머신은 대시보드 로그(사후)로 관전.
+
+## 11. 회귀 (2026-07-10, codex 0.143.0): --remote ↔ app-server thread 분리
+
+> 2026-07-10 저녁 세션 실측 기록(세션 메모 19:18~19:28). §10의 "codex 라이브 관전 = `codex --remote`" 전제가 현 버전에서 깨졌다.
+
+- **실측(확실)**: marker inject 테스트(thread 019f412c)로 확인. codex-inject가 app-server thread에 turn을 주입해도 `codex --remote` TUI에 나타나지 않는다. TUI thread와 글루(app-server) thread가 분리되어 있다.
+- **근본원인(실측 기반 추정)**: codex 0.143.0에서 `--remote`가 app-server에 접속하지 않는다(thread 분리). 이전에 성립하던 attach 경로의 업스트림 회귀로 본다.
+- **영향**은 세 갈래다.
+  - §10 결정(라이브 관전 주력 = --remote)이 현 버전에서 무효. 관전은 §10의 대비책(대시보드 통합 로그 = 사후)으로 후퇴.
+  - codex-inject 감독(글루 주입·turn 왕복) 자체는 app-server 경로라 영향 없음. 깨진 것은 "사람이 --remote로 그 thread를 라이브로 보는" 관전 UX다.
+  - codex arming(presence 등록, v2-43 §5-3)도 poll 기반이라 무관.
+- **대응 선택지**는 셋이다.
+  1. codex 버전 pin(회귀 이전 버전으로 고정) - 즉효이나 업스트림 추적 비용.
+  2. 관전 = 대시보드 통합 로그(사후)로 운용(§10 대비책) - 유지비 0, 라이브성 상실.
+  3. upstream 회귀 추적(codex 릴리스 노트/이슈) 후 복귀 - 관찰 대기.
+- **상태**: 회귀 추적 중. 패키지 업데이트 검증 수행(2026-07-10). 결론 전까지 관전은 선택지 2로 운용한다.
