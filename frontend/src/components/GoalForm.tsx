@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import type { Agent } from '../api'
 import { relativeTime, sendGoal } from '../api'
+import { RunnerIcon } from './runnerIcons'
 
 type Props = {
   agents: Agent[]
@@ -21,12 +22,6 @@ function WarnIcon() {
   )
 }
 
-const RUNNER_COLOR: Record<string, string> = { claude: '#c15f3c', codex: '#10a37f', gemini: '#4285f4' }
-
-function runnerColor(runner: string | undefined): string {
-  return RUNNER_COLOR[runner ?? ''] ?? '#8791a3'
-}
-
 // 칩·드롭다운의 표시 이름 = project(로스터 타이틀과 동일 규약). 같은 project·runner 충돌은 uuid로 식별.
 function agentTitle(a: Agent): string {
   return a.tags?.project ?? a.display_name ?? a.uuid.slice(0, 8)
@@ -38,7 +33,8 @@ export default function GoalForm({ agents, remoteViewer, selected, onChangeSelec
   const [status, setStatus] = useState('')
   const [pickerOpen, setPickerOpen] = useState(false)
 
-  const online = agents.filter((a) => a.online)
+  // 헤드리스 워커(role=worker)는 목표 대상에서 제외(로스터와 동일 분리, work 데몬이 별도 소비).
+  const online = agents.filter((a) => a.online && a.tags?.role !== 'worker')
 
   if (remoteViewer) {
     return (
@@ -81,7 +77,7 @@ export default function GoalForm({ agents, remoteViewer, selected, onChangeSelec
       const outcome = await sendGoal(text, targets)
       if (outcome.kind === 'ok') {
         setGoal('')
-        setStatus(outcome.created.length + '개 task 생성됨.')
+        setStatus(`${outcome.created.length}개 task 생성됨.`)
       } else if (outcome.kind === 'forbidden') {
         setStatus('원격 세션에서는 목표를 제출할 수 없습니다(403).')
       } else {
@@ -105,8 +101,6 @@ export default function GoalForm({ agents, remoteViewer, selected, onChangeSelec
       <div className="goal-head">
         <h2 className="section-title">목표 제출</h2>
         <span className="goal-hint">선택한 대상 각각에게 독립 task로 전달됩니다</span>
-      </div>
-      <div className="goal-body">
         <div className="gf-presets">
           <span className="gf-preset-label">빠른 선택</span>
           <button type="button" className="gf-preset" onClick={() => applyPreset(() => true)}>
@@ -127,12 +121,13 @@ export default function GoalForm({ agents, remoteViewer, selected, onChangeSelec
             </button>
           ) : null}
         </div>
-
+      </div>
+      <div className="goal-body">
         <div className="gf-targets">
           {picked.length === 0 ? <span className="gf-empty">대상 없음 — 프리셋이나 + 대상 추가로 선택하세요</span> : null}
           {picked.map((a) => (
             <span className="gf-chip" key={a.uuid}>
-              <span className="gf-rd" style={{ background: runnerColor(a.tags?.runner) }} />
+              <RunnerIcon runner={a.tags?.runner ?? null} size={12} />
               {agentTitle(a)}
               <span className="gf-chip-sub">{a.tags?.machine ?? '?'}</span>
               <button type="button" className="gf-chip-x" aria-label="대상 제거" onClick={() => toggleOne(a.uuid)}>
@@ -153,11 +148,11 @@ export default function GoalForm({ agents, remoteViewer, selected, onChangeSelec
                 {online
                   .filter((a) => (a.tags?.machine ?? '기타') === m)
                   .map((a) => {
-                    const isSel = !!selected[a.uuid]
+                    const isSel = Boolean(selected[a.uuid])
                     return (
                       <div
                         key={a.uuid}
-                        className={'gf-picker-item' + (isSel ? ' checked' : '')}
+                        className={`gf-picker-item${isSel ? ' checked' : ''}`}
                         role="option"
                         aria-selected={isSel}
                         tabIndex={0}
@@ -169,7 +164,7 @@ export default function GoalForm({ agents, remoteViewer, selected, onChangeSelec
                           }
                         }}
                       >
-                        <span className="gf-rd" style={{ background: runnerColor(a.tags?.runner) }} />
+                        <RunnerIcon runner={a.tags?.runner ?? null} size={12} />
                         {agentTitle(a)}
                         {a.tags?.runner === 'codex' ? <span className="gf-item-runner">· codex</span> : null}
                         <span className="gf-item-sub">{isSel ? '선택됨 ✓' : relativeTime(a.last_heartbeat)}</span>
@@ -178,7 +173,7 @@ export default function GoalForm({ agents, remoteViewer, selected, onChangeSelec
                   })}
               </div>
             ))}
-            <div className="gf-picker-note">오프라인 세션은 제외됩니다. 로스터 행의 "이 세션에 목표"로도 추가할 수 있습니다.</div>
+            <div className="gf-picker-note">오프라인 세션은 제외됩니다. 로스터 행의 &quot;이 세션에 목표&quot;로도 추가할 수 있습니다.</div>
           </div>
         ) : null}
 
@@ -191,16 +186,16 @@ export default function GoalForm({ agents, remoteViewer, selected, onChangeSelec
         />
         <div className="goal-submit-row">
           <span className="goal-summary">
-            {picked.length > 0 ? picked.length + '개 대상 선택됨 — 각각 독립 task로 생성됩니다' : '대상을 선택하세요'}
+            {picked.length > 0 ? `${picked.length}개 대상 선택됨 — 각각 독립 task로 생성됩니다` : '대상을 선택하세요'}
           </span>
           <span className="dash-spacer" />
           <button
             type="button"
-            className={'goal-submit-btn' + (canSubmit && !submitting ? ' enabled' : '')}
+            className={`goal-submit-btn${canSubmit && !submitting ? ' enabled' : ''}`}
             disabled={!canSubmit || submitting}
             onClick={onSubmit}
           >
-            {picked.length > 0 ? picked.length + '개 대상에게 목표 전달' : '목표 전달'}
+            {picked.length > 0 ? `${picked.length}개 대상에게 목표 전달` : '목표 전달'}
           </button>
         </div>
         {status ? <span className="goal-status">{status}</span> : null}

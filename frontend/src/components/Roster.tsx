@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import { relativeTime } from '../api'
 import type { SessionRow } from '../activity'
+import { RunnerIcon } from './runnerIcons'
 
 // 태그 값별 색(워커 섹션 TagPill 재사용분). 알려진 값은 고정, 나머지는 해시 팔레트.
 const VALUE_COLOR: Record<string, string> = {
@@ -54,17 +55,6 @@ export function TagPill({ k, v }: { k: string; v: string }) {
   )
 }
 
-// 러너 색점(이니셜). 알려진 러너는 고정 색, 그 외는 해시 팔레트.
-function RunnerDot({ runner }: { runner: string | null }) {
-  const r = runner || '?'
-  const initial = r === 'claude' ? 'C' : r === 'codex' ? 'X' : r.charAt(0).toUpperCase()
-  return (
-    <span className="rst-runner" style={{ background: valueColor(r) }} title={r} aria-label={r}>
-      {initial}
-    </span>
-  )
-}
-
 type Props = {
   rows: SessionRow[]
   // uuid -> 방금 heartbeat 가 갱신돼 pulse 링을 잠깐 보여줄지 여부.
@@ -79,9 +69,10 @@ type Props = {
 function titleSuffixes(rows: SessionRow[]): Map<string, string> {
   const groups = new Map<string, SessionRow[]>()
   rows.forEach((r) => {
-    const k = `${r.runner ?? '?'}|${r.project ?? r.label}`
-    if (!groups.has(k)) groups.set(k, [])
-    groups.get(k)!.push(r)
+    const key = `${r.runner ?? '?'}|${r.project ?? r.label}`
+    const bucket = groups.get(key)
+    if (bucket) bucket.push(r)
+    else groups.set(key, [r])
   })
   const out = new Map<string, string>()
   for (const group of groups.values()) {
@@ -89,7 +80,7 @@ function titleSuffixes(rows: SessionRow[]): Map<string, string> {
     ;[...group]
       .sort((a, b) => a.uuid.localeCompare(b.uuid))
       .forEach((r, i) => {
-        if (i > 0) out.set(r.uuid, ' ·' + String.fromCharCode(65 + i)) // ·B, ·C ...
+        if (i > 0) out.set(r.uuid, ` ·${String.fromCharCode(65 + i)}`) // ·B, ·C ...
       })
   }
   return out
@@ -147,15 +138,15 @@ export default function Roster({ rows, pulses, autoBossUuid, onAddTarget }: Prop
                 </div>
                 {sorted.map((s) => {
                   const isBoss = s.uuid === autoBossUuid
-                  const pulse = !!pulses[s.uuid]
-                  const open = !!expanded[s.uuid]
+                  const pulse = Boolean(pulses[s.uuid])
+                  const open = Boolean(expanded[s.uuid])
                   const role = s.tags.role
                   const title = (s.project ?? s.label) + (suffix.get(s.uuid) ?? '')
                   const sessionId = s.tags.session ?? s.uuid
                   return (
                     <div key={s.uuid}>
                       <div
-                        className={'rst-row' + (isBoss ? ' boss' : '') + (pulse ? ' fresh' : '')}
+                        className={`rst-row${isBoss ? ' boss' : ''}${pulse ? ' fresh' : ''}`}
                         role="button"
                         tabIndex={0}
                         aria-expanded={open}
@@ -171,7 +162,7 @@ export default function Roster({ rows, pulses, autoBossUuid, onAddTarget }: Prop
                           <span className="rst-dot" />
                           {pulse ? <span className="rst-ping" /> : null}
                         </span>
-                        <RunnerDot runner={s.runner} />
+                        <RunnerIcon runner={s.runner} />
                         <span className="rst-title">{title}</span>
                         <span className="rst-runner-name">{s.runner ?? '?'}</span>
                         {isBoss ? (
@@ -183,7 +174,7 @@ export default function Roster({ rows, pulses, autoBossUuid, onAddTarget }: Prop
                           </>
                         ) : null}
                         {role && role !== 'session' ? (
-                          <span className={'rst-chip role-' + role}>{role}</span>
+                          <span className={`rst-chip role-${role}`}>{role}</span>
                         ) : null}
                         <span className="dash-spacer" />
                         <span className="rst-hb">{relativeTime(s.lastHeartbeat)}</span>
@@ -201,7 +192,7 @@ export default function Roster({ rows, pulses, autoBossUuid, onAddTarget }: Prop
                             className="rst-detail-btn"
                             onClick={(e) => {
                               e.stopPropagation()
-                              void copyUuid(s.uuid)
+                              copyUuid(s.uuid) // 내부에서 실패를 삼키는 fire-and-forget.
                             }}
                           >
                             {copied === s.uuid ? '복사됨 ✓' : 'uuid 복사'}

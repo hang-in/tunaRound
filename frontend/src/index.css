@@ -1100,3 +1100,6 @@ body {
 .gf-item-runner { color: var(--text-3); font-size: 11px; }
 .gf-item-sub { color: var(--text-3); font-size: 11px; margin-left: auto; font-family: var(--font-mono); }
 .gf-picker-note { font-size: 10.5px; color: var(--text-3); padding: 6px 13px 9px; border-top: 1px solid var(--border); }
+
+/* 프리셋을 목표 제출 타이틀 라인 우측으로. */
+.goal-head .gf-presets { margin-left: auto; }
