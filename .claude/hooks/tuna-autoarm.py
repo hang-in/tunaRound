@@ -213,7 +213,8 @@ def main() -> int:
     # Monitor는 Git Bash에서 돈다: 경로는 forward-slash로, 작은따옴표로 감싼다(백슬래시·중첩 큰따옴표 회피).
     log_posix = str(log_path).replace("\\", "/")
     recv_cmd = f"tail -f -n 0 '{log_posix}' | grep --line-buffered '^TASK '"
-    base_core = core[:-4] if core.rstrip("/").endswith("/mcp") else core  # watch-results는 base URL.
+    c_clean = core.rstrip("/")
+    base_core = c_clean[:-4] if c_clean.endswith("/mcp") else c_clean  # watch-results는 base URL.
     emit_context(
         f"[tuna-autoarm] 이 세션이 브로커 로스터에 자동 등록되었습니다(online).\n"
         f"  uuid={agent}(세션 id)  display={display}  core={core}  poll pid={pid}\n"

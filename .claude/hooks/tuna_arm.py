@@ -172,15 +172,19 @@ def reap_orphans(pmap: dict, current_session_id: str = "") -> int:
 
     각 pidfile의 owner_pid(=세션 claude 프로세스)가 proc_map에 없으면 = 세션 죽음 →
     그 poll을 kill + deregister + pidfile 삭제. 자기 자신(current_session_id)과 owner_pid
-    미기록(레거시) pidfile은 건드리지 않는다. 반환=청소 개수. 실패는 조용히 무시."""
+    미기록(레거시) pidfile은 건드리지 않는다. pmap이 비면(프로세스 조회 실패) 살아있는
+    세션까지 전량 오판되므로 아무것도 하지 않는다. 반환=청소 개수. 실패는 조용히 무시."""
+    if not pmap:
+        return 0  # 스냅샷 실패 = 판단 불가 → 보존(전량 리핑 방지)
     token = cfg("TUNA_BROKER_TOKEN")
     reaped = 0
     try:
-        for pf in state_dir().glob("*.json"):
-            try:
-                info = json.loads(pf.read_text(encoding="utf-8"))
-            except Exception:
-                continue
+        pidfiles = list(state_dir().glob("*.json"))  # 순회 중 unlink하므로 리스트화
+    except Exception:
+        return 0
+    for pf in pidfiles:
+        try:
+            info = json.loads(pf.read_text(encoding="utf-8"))
             if info.get("session_id") == current_session_id:
                 continue
             owner = info.get("owner_pid")
@@ -205,8 +209,8 @@ def reap_orphans(pmap: dict, current_session_id: str = "") -> int:
             except Exception:
                 pass
             reaped += 1
-    except Exception:
-        pass
+        except Exception:
+            continue  # 손상 pidfile 하나가 나머지 청소를 막지 않게 파일 단위 격리
     return reaped
 
 
