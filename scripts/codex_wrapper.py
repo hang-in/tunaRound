@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 # codex CLI를 가로채 세션을 자동 무장(poll 등록)·해제하는 PATH shim 래퍼 (v2-43 §5-3 codex arming).
-import json
 import os
 import sys
 import uuid
@@ -25,9 +24,11 @@ except ImportError:
 
 def find_real_codex():
     """래퍼 자신을 제외한 시스템 PATH 상의 진짜 codex 명령어의 경로를 반환합니다."""
-    wrapper_dir = os.path.dirname(os.path.abspath(__file__))
+    # normcase: 대소문자 무구분 파일시스템(Windows/macOS)에서 자기 디렉터리 필터가 새면
+    # 래퍼가 자기 자신을 재실행하는 무한 루프에 빠진다.
+    wrapper_dir = os.path.normcase(os.path.dirname(os.path.abspath(__file__)))
     paths = os.environ.get("PATH", "").split(os.pathsep)
-    filtered_paths = [p for p in paths if os.path.abspath(p) != os.path.abspath(wrapper_dir)]
+    filtered_paths = [p for p in paths if os.path.normcase(os.path.abspath(p)) != wrapper_dir]
 
     # 윈도우의 경우 codex.cmd, codex.bat, codex.exe 탐색
     # Unix의 경우 codex 탐색
@@ -41,7 +42,7 @@ def find_real_codex():
 
     # fallback: shutil.which
     which_res = shutil.which("codex")
-    if which_res and os.path.dirname(os.path.abspath(which_res)) != wrapper_dir:
+    if which_res and os.path.normcase(os.path.dirname(os.path.abspath(which_res))) != wrapper_dir:
         return which_res
 
     return None
@@ -116,27 +117,9 @@ def main():
 
 
 def disarm_session(agent_id: str):
-    """지정된 세션 ID의 poll을 강제 종료하고 브로커 등록 해제 요청을 수행합니다."""
+    """지정된 세션 ID의 poll을 종료하고 브로커 등록을 해제한다(tuna_arm 공용 로직 위임)."""
     try:
-        safe_id = tuna_arm.sanitize_session_id(agent_id)
-        pidfile = tuna_arm.state_dir() / f"{safe_id}.json"
-        if pidfile.exists():
-            info = json.loads(pidfile.read_text(encoding="utf-8"))
-            pollpid = info.get("pid")
-            if pollpid:
-                try:
-                    if os.name == "nt":
-                        subprocess.run(["taskkill", "/PID", str(pollpid), "/F"],
-                                       capture_output=True, timeout=5, check=False)
-                    else:
-                        os.kill(int(pollpid), 9)
-                except Exception:
-                    pass
-            tuna_arm._deregister(info.get("agent"), info.get("core") or tuna_arm.broker_core(), tuna_arm.cfg("TUNA_BROKER_TOKEN"))
-            try:
-                pidfile.unlink()
-            except Exception:
-                pass
+        if tuna_arm.disarm_session(agent_id) == "DISARMED":
             print("[codex-wrapper] Codex 세션 무장이 해제되었습니다.")
     except Exception as e:
         print(f"[codex-wrapper] 무장 해제 중 에러 발생: {e}", file=sys.stderr)

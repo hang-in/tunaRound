@@ -382,39 +382,58 @@ def ensure_codex_armed(session_id: str, cwd: str, display_name=None, project=Non
     return (agent, core)
 
 
+def disarm_session(session_id: str) -> str:
+    """세션 poll 종료 + 즉시 deregister + pidfile 삭제. 반환="DISARMED"|"NOT_FOUND".
+
+    codex 래퍼와 __main__ stop이 공유한다. poll이 이미 죽어 있어도(kill 실패)
+    deregister와 pidfile 정리는 계속 진행한다.
+    """
+    safe_id = sanitize_session_id(session_id)
+    if not safe_id:
+        return "NOT_FOUND"
+    pidfile = state_dir() / f"{safe_id}.json"
+    if not pidfile.exists():
+        return "NOT_FOUND"
+    try:
+        info = json.loads(pidfile.read_text(encoding="utf-8"))
+    except Exception:
+        info = {}
+    pollpid = info.get("pid")
+    try:
+        # 양수 가드: 음수/0 pid는 Unix os.kill에서 프로세스 그룹 전체로 번질 수 있다.
+        if pollpid and int(pollpid) > 0:
+            if os.name == "nt":
+                subprocess.run(["taskkill", "/PID", str(pollpid), "/F"],
+                               capture_output=True, timeout=5, check=False)
+            else:
+                os.kill(int(pollpid), 9)
+    except Exception:
+        pass  # 이미 종료된 poll(ProcessLookupError 등)이어도 아래 정리는 계속.
+    _deregister(info.get("agent"), info.get("core") or broker_core(), cfg("TUNA_BROKER_TOKEN"))
+    try:
+        pidfile.unlink()
+    except Exception:
+        pass
+    return "DISARMED"
+
+
 if __name__ == "__main__":
     import sys
     if len(sys.argv) >= 2:
-        action = sys.argv[1]
-        if action == "start" and len(sys.argv) >= 3:
-            sess_id = sys.argv[2]
-            disp = sys.argv[3] if len(sys.argv) >= 4 else None
-            proj = sys.argv[4] if len(sys.argv) >= 5 else None
-            owner = int(sys.argv[5]) if len(sys.argv) >= 6 and sys.argv[5].isdigit() else 0
-            res = ensure_codex_armed(sess_id, os.getcwd(), disp, proj, owner)
-            if res:
-                print(f"ARMED:{res[0]}:{res[1]}")
-            else:
-                print("FAILED")
-        elif action == "stop" and len(sys.argv) >= 3:
-            sess_id = sys.argv[2]
-            safe_id = sanitize_session_id(sess_id)
-            pidfile = state_dir() / f"{safe_id}.json"
-            if pidfile.exists():
-                try:
-                    info = json.loads(pidfile.read_text(encoding="utf-8"))
-                    pollpid = info.get("pid")
-                    if pollpid:
-                        if os.name == "nt":
-                            subprocess.run(["taskkill", "/PID", str(pollpid), "/F"],
-                                           capture_output=True, timeout=5, check=False)
-                        else:
-                            os.kill(int(pollpid), 9)
-                    _deregister(info.get("agent"), info.get("core") or broker_core(), cfg("TUNA_BROKER_TOKEN"))
-                    pidfile.unlink()
-                    print("DISARMED")
-                except Exception as e:
-                    print(f"ERROR:{e}")
-            else:
-                print("NOT_FOUND")
+        if sys.argv[1] == "start" and len(sys.argv) >= 3:
+            try:
+                res = ensure_codex_armed(
+                    sys.argv[2], os.getcwd(),
+                    sys.argv[3] if len(sys.argv) >= 4 else None,
+                    sys.argv[4] if len(sys.argv) >= 5 else None,
+                    int(sys.argv[5]) if len(sys.argv) >= 6 and sys.argv[5].isdigit() else 0,
+                )
+                print(f"ARMED:{res[0]}:{res[1]}" if res else "FAILED")
+            except Exception as e:
+                print(f"ERROR:{e}")
+        elif sys.argv[1] == "stop" and len(sys.argv) >= 3:
+            try:
+                print(disarm_session(sys.argv[2]))
+            except Exception as e:
+                print(f"ERROR:{e}")
 

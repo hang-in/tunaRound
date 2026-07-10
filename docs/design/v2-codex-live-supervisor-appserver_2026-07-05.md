@@ -131,11 +131,11 @@ P0 = `codex app-server --listen stdio://`를 파이프로 구동해 initialize->
 
 - **실측(확실)**: marker inject 테스트(thread 019f412c)로 확인. codex-inject가 app-server thread에 turn을 주입해도 `codex --remote` TUI에 나타나지 않는다. TUI thread와 글루(app-server) thread가 분리되어 있다.
 - **근본원인(실측 기반 추정)**: codex 0.143.0에서 `--remote`가 app-server에 접속하지 않는다(thread 분리). 이전에 성립하던 attach 경로의 업스트림 회귀로 본다.
-- **영향**:
+- **영향**은 세 갈래다.
   - §10 결정(라이브 관전 주력 = --remote)이 현 버전에서 무효. 관전은 §10의 대비책(대시보드 통합 로그 = 사후)으로 후퇴.
   - codex-inject 감독(글루 주입·turn 왕복) 자체는 app-server 경로라 영향 없음. 깨진 것은 "사람이 --remote로 그 thread를 라이브로 보는" 관전 UX다.
   - codex arming(presence 등록, v2-43 §5-3)도 poll 기반이라 무관.
-- **대응 선택지**:
+- **대응 선택지**는 셋이다.
   1. codex 버전 pin(회귀 이전 버전으로 고정) - 즉효이나 업스트림 추적 비용.
   2. 관전 = 대시보드 통합 로그(사후)로 운용(§10 대비책) - 유지비 0, 라이브성 상실.
   3. upstream 회귀 추적(codex 릴리스 노트/이슈) 후 복귀 - 관찰 대기.
