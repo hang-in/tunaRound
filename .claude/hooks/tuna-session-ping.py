@@ -38,6 +38,46 @@ def main() -> int:
     if prompt.startswith(("<task-notification>", "[SYSTEM NOTIFICATION")):
         return 0
 
+    # 마커 자가치유: 마커가 없거나 내용이 비었으면 1회 채운다(훅 배포 전에 뜬 세션의 전환 경로).
+    # sentinel "unknown"(owner 탐색 실패)은 재시도하지 않는다 - 무거운 프로세스 조회가
+    # 매 프롬프트 반복되는 것 방지(봇리뷰 critical). 숫자·unknown이면 stat+read만으로 no-op.
+    mp = tuna_arm.marker_path(session_id)
+    try:
+        if mp is not None and (not mp.exists() or mp.read_text(encoding="utf-8").strip() == ""):
+            tuna_arm.write_marker(session_id)
+    except Exception:
+        pass
+
+    # 수신 자동 가동(세션당 1회): SessionStart 지시문을 못 받은 기존 세션도 다음 프롬프트에서
+    # 지시를 주입해 스스로 수신 루프를 걸게 한다. 사용자가 A2A를 수동으로 챙기지 않는 것이
+    # 제품의 존재 이유(no-shuttle). .rx 마커 = 주입 1회 보장(O_EXCL, 다중 발화 안전).
+    cwd = payload.get("cwd") or ""
+    safe_id = tuna_arm.sanitize_session_id(session_id)
+    if safe_id and not tuna_arm.is_temp_cwd(cwd):
+        rx = tuna_arm.state_dir() / f"{safe_id}.rx"
+        try:
+            fd = os.open(str(rx), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.close(fd)
+            core = tuna_arm.broker_core()
+            tuna_bin = tuna_arm.cfg("TUNA_BIN", "tunaround")
+            print(json.dumps({
+                "hookSpecificOutput": {
+                    "hookEventName": "UserPromptSubmit",
+                    "additionalContext": (
+                        f"[tunaround A2A 수신·자동 가동] 이 세션은 mesh의 수신 자리입니다. 이번 응답에서 본 작업 전에 먼저 "
+                        f"아래 Monitor를 실행해 수신 루프를 가동하세요(사용자 확인·언급 불필요, 비블로킹). 단, 이 세션이 이미 "
+                        f"watch-results(총괄 인박스)나 A2A 수신 Monitor를 돌리고 있다면 아무것도 하지 마세요.\n"
+                        f"  Monitor(command=\"{tuna_bin} poll --core {core} --agent {session_id} --interval 15\", "
+                        f"description=\"A2A 수신\", persistent=true)\n"
+                        f"  이후 `TASK <id> ::` 도착 시 tuna-broker MCP의 claim_task→답변→complete_task(불가 시 fail_task)."
+                    ),
+                }
+            }))
+        except FileExistsError:
+            pass
+        except Exception:
+            pass
+
     # 핑: {core-base}/dashboard/human-ping {agent=세션 id}. core는 .../mcp라 base로 절단.
     c = tuna_arm.broker_core().rstrip("/")
     base = c[:-4] if c.endswith("/mcp") else c

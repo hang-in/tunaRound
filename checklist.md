@@ -452,3 +452,4 @@
 - [ ] T5 정리: alias 제거·report_candidates 제거·문서 일괄 갱신(a2a-usage §9·§10 + infra watcher 태그 규약 명문화).
 - [ ] v2-45 후보(백로그, 사용자 승인 2026-07-11): **mesh 기억화** = task 종결 시 결과를 messages/FTS로 색인(search_context로 위임 이력 검색) + 종결 task retention(아카이브=색인 후 슬림화). 부수 = **Redis 서서히 폐기**(사용자 확정 2026-07-11: tunaSalon에선 유용했으나 여기선 SSE·SQLite가 자리를 대체 - observe 스냅샷도 SQLite로 흡수해 완전 opt-out). T5 뒤 설계.
 - [ ] 백로그(사용자 승인 2026-07-11): **watch-results 재구독 시 미통지 terminal task 재생**(SQLite 기반) - 인박스 다운 중 완료된 task 통지 유실 창 제거(Redis Streams 검토에서 발견된 실질 갭, 재생은 브로커 DB로 충분). v2-45와 묶기 좋음.
+- [ ] 백로그(사용자 승인 2026-07-11, 별도 후속 PR): **마커 생존 유지 확장** = 마커 pid가 살아 있으면 mtime 창과 무관하게 로스터 유지(유휴-열림 세션이 4시간 후 끊기는 것 해소). **순진 버전 금지, 3중 가드 필수**: ① pid 살아있음+그 프로세스가 claude/codex(이름 검증) ② 같은 살아있는 pid를 여러 마커가 가리키면 mtime 최신 세션만 인정(/clear 훅 실패 유령의 구조적 해소) ③ 마커 없음=현행 창 폴백. 근거 논의=2026-07-11 세션(영구 유령·PID 재사용 벡터 분석).

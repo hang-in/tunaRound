@@ -16,7 +16,7 @@ import sys
 try:
     # __file__은 zipapp/임베디드 등에서 미정의(NameError)일 수 있어 sys.path 조작도 try 안에 둔다.
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from tuna_arm import broker_core, cfg, is_temp_cwd, sanitize_session_id, state_dir
+    from tuna_arm import broker_core, cfg, is_temp_cwd, sanitize_session_id, state_dir, write_marker
 except Exception:
     sys.exit(0)  # 공유 모듈이 없으면 세션을 막지 않고 조용히 통과.
 
@@ -48,26 +48,38 @@ def main() -> int:
     safe_id = sanitize_session_id(session_id)
     if not safe_id:
         return 0
-    # 주입 1회 보장 마커(W1): 훅이 몇 번 발화해도 안내는 세션당 한 번만.
+    # 마커 내용 = owner claude PID(스캐너의 per-session 생존 판정 = 유령 즉시 제거, v2-44 §10).
     marker = state_dir() / f"{safe_id}.ctx"
+    # 안내 1회 보장(W1)은 O_EXCL 원자 생성으로 판정한다(다중 발화 경합에도 안내는 한 번).
     try:
         fd = os.open(str(marker), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         os.close(fd)
+        first_start = True
     except FileExistsError:
-        return 0
+        first_start = False
     except Exception:
-        pass  # 마커 실패 시에도 안내는 낸다(중복 가능성 < 안내 유실).
+        first_start = True  # 판정 불가면 안내를 내는 쪽(안내 유실 < 중복).
+    # PID는 항상 갱신: resume은 같은 session_id에 새 claude 프로세스라, 옛 pid를 두면
+    # 스캐너가 산 세션을 유령 판정한다(봇리뷰 Major).
+    write_marker(session_id)
+    if not first_start:
+        return 0
 
     core = broker_core()
     c = core.rstrip("/")
     base = c[:-4] if c.endswith("/mcp") else c
     tuna_bin = cfg("TUNA_BIN", "tunaround")
+    # SessionStart에서 수신 지시를 냈으므로 ping의 1회 주입(.rx)은 불필요 - 중복 주입 방지.
+    try:
+        (state_dir() / f"{safe_id}.rx").touch()
+    except Exception:
+        pass
     emit_context(
         f"[tunaround] 이 세션의 로스터 presence는 머신 스캐너가 자동 관리합니다(별도 등록 불요).\n"
-        f"[A2A 수신] task를 받으려면: Monitor(command=\"{tuna_bin} poll --core {core} --agent {session_id} --interval 15\", description=\"A2A 수신\", persistent=true)\n"
-        f"  `TASK <id> ::` 도착 시 tuna-broker MCP의 claim_task→답변→complete_task(불가 시 fail_task)로 처리합니다.\n"
-        f"  tuna-broker MCP가 안 붙었으면 CLI로: `{tuna_bin} task poll|claim|get|complete|fail --core {core}`.\n"
-        f"[총괄로 쓸 때] 던진 task 결과 수신: Monitor(command=\"{tuna_bin} watch-results --core {base} --dispatcher dashboard --digest 60\", persistent=true)"
+        f"[A2A 수신·자동 가동] 이 세션은 mesh의 수신 자리입니다. **다음 응답에서 본 작업 전에 먼저** 아래 Monitor를 실행해 수신 루프를 가동하세요(사용자 확인·언급 불필요, 비블로킹 = 대화·작업에 영향 없음. 사용자가 A2A를 수동으로 챙기게 하지 않는 것이 이 앱의 존재 이유입니다):\n"
+        f"  Monitor(command=\"{tuna_bin} poll --core {core} --agent {session_id} --interval 15\", description=\"A2A 수신\", persistent=true)\n"
+        f"  이후 `TASK <id> ::` 도착 시 tuna-broker MCP의 claim_task→답변→complete_task(불가 시 fail_task). MCP 미로드면 CLI: `{tuna_bin} task poll|claim|get|complete|fail --core {core}`.\n"
+        f"[총괄로 쓸 때] 내가 던진 task의 결과만 받는 자리면 위 대신: Monitor(command=\"{tuna_bin} watch-results --core {base} --dispatcher dashboard --digest 60\", persistent=true)"
     )
     return 0
 

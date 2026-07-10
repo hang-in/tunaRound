@@ -36,13 +36,15 @@ def main() -> int:
     if tuna_arm.disarm_session(session_id) == "NOT_FOUND":
         tuna_arm.deregister(session_id, tuna_arm.broker_core(), tuna_arm.cfg("TUNA_BROKER_TOKEN"))
 
-    # 안내 1회 마커(autoarm)가 남아 있으면 정리(세션 종료 = 다음 같은 id resume 시 재안내 허용).
+    # 세션 마커 정리: .ctx(pid·안내 1회) + .rx(수신 지시 1회). 같은 id resume 시 재주입을 허용하고,
+    # 죽은 세션의 마커가 남아 유령 판정을 흐리지 않게 한다.
     safe_id = tuna_arm.sanitize_session_id(session_id)
     if safe_id:
-        try:
-            (tuna_arm.state_dir() / f"{safe_id}.ctx").unlink()
-        except Exception:
-            pass
+        for ext in ("ctx", "rx"):
+            try:
+                (tuna_arm.state_dir() / f"{safe_id}.{ext}").unlink()
+            except Exception:
+                pass
     return 0
 
 

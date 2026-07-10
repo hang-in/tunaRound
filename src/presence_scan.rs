@@ -134,28 +134,29 @@ pub fn enumerate_claude_live(
         .collect()
 }
 
-/// 러너 프로세스 수를 센다(win=tasklist CSV, unix=ps args). 조회 실패는 None(판단 불가 = 게이트 안 함).
-/// per-session 매핑이 아니라 러너 단위 러프 체크다: 0개면 그 러너 세션 전부 죽음(재부팅·전원 종료 즉시 반영).
-pub fn count_runner_processes(name: &str) -> Option<usize> {
+/// 프로세스 목록 원문을 한 번 뜬다(win=tasklist CSV, unix=`ps -ax -o pid=,args=`).
+/// 러너 카운트 게이트와 마커 생존 판정(parse_pids)이 같은 스냅샷을 공유한다.
+/// 조회 실패는 None(판단 불가 = 게이트·마커 필터 모두 건너뜀 = 보수적 유지).
+pub fn process_list_text() -> Option<(String, bool)> {
     let windows = cfg!(target_os = "windows");
     let out = if windows {
         std::process::Command::new("tasklist").args(["/FO", "CSV", "/NH"]).output()
     } else {
         // `-c`(comm 축약)는 procps/busybox 미이식 + comm은 node 래퍼로 뜨는 러너를 놓친다
-        // (놓치면 Some(0) → 게이트가 산 세션을 전부 제거, 봇리뷰 Major). 전체 argv로 판정한다.
-        std::process::Command::new("ps").args(["-ax", "-o", "args="]).output()
+        // (놓치면 게이트가 산 세션을 전부 제거, 봇리뷰 Major). pid + 전체 argv로 뜬다.
+        std::process::Command::new("ps").args(["-ax", "-o", "pid=,args="]).output()
     }
     .ok()?;
     if !out.status.success() {
         return None;
     }
-    Some(count_matching_lines(&String::from_utf8_lossy(&out.stdout), name, windows))
+    Some((String::from_utf8_lossy(&out.stdout).into_owned(), windows))
 }
 
-/// 프로세스 목록 텍스트에서 러너 라인을 센다(순수부, count_runner_processes에서 분리).
-/// win = CSV 첫 필드(이미지명) / unix = argv 앞 3개 토큰의 **basename** 매칭(경로·`node /path/claude`
-/// 인터프리터 래퍼 커버). 뒤쪽 인자의 우연 매칭(`--runner claude` 등)은 게이트 미발동 방향 오차라
-/// 허용하되, 3토큰 상한으로 과확장을 막는다.
+/// 프로세스 목록 텍스트에서 러너 라인을 센다(순수부). win = CSV 첫 필드(이미지명) /
+/// unix = pid 토큰 다음 argv 앞 3개 토큰의 **basename** 매칭(경로·`node /path/claude` 인터프리터
+/// 래퍼 커버). 뒤쪽 인자의 우연 매칭(`--runner claude` 등)은 게이트 미발동 방향 오차라 허용하되,
+/// 3토큰 상한으로 과확장을 막는다.
 pub fn count_matching_lines(text: &str, name: &str, windows: bool) -> usize {
     let text = text.to_lowercase();
     let needle = name.to_lowercase();
@@ -170,10 +171,71 @@ pub fn count_matching_lines(text: &str, name: &str, windows: bool) -> usize {
             if windows {
                 l.split(',').next().is_some_and(matches_token)
             } else {
-                l.split_whitespace().take(3).any(matches_token)
+                // 첫 토큰은 pid(ps -o pid=,args=) → 건너뛰고 argv 앞 3개만 본다.
+                l.split_whitespace().skip(1).take(3).any(matches_token)
             }
         })
         .count()
+}
+
+/// 프로세스 목록 텍스트에서 살아있는 PID 집합을 뽑는다(마커 생존 판정용).
+/// win CSV = 둘째 필드, unix = 첫 토큰.
+pub fn parse_pids(text: &str, windows: bool) -> std::collections::HashSet<u32> {
+    text.lines()
+        .filter_map(|l| {
+            let tok = if windows {
+                l.split(',').nth(1).map(|s| s.trim_matches('"').trim())
+            } else {
+                l.split_whitespace().next()
+            };
+            tok.and_then(|t| t.parse::<u32>().ok())
+        })
+        .collect()
+}
+
+/// 세션 마커(.ctx)의 판독 결과. 훅(tuna_arm.write_marker)이 owner claude PID를 기록한다.
+#[derive(Debug, Clone, PartialEq)]
+pub enum MarkerState {
+    /// 마커 파일 없음(훅 배포 전 세션·codex) → 판단 불가, 신선도 창으로 폴백(유지).
+    NoMarker,
+    /// owner PID 기록됨 → 프로세스 스냅샷과 대조해 생존 판정.
+    Pid(u32),
+    /// 마커는 있으나 PID 미상(owner 탐색 실패 등) → 보수적으로 유지.
+    Unknown,
+}
+
+/// 세션 uuid의 마커를 읽는다(마커 디렉토리 = ~/.tunaround/autoarm, 훅과 같은 sanitize 규약 전제 -
+/// uuid는 hex+하이픈이라 파일명 그대로).
+pub fn read_marker(dir: &Path, uuid: &str) -> MarkerState {
+    let path = dir.join(format!("{uuid}.ctx"));
+    match std::fs::read_to_string(&path) {
+        Err(_) => MarkerState::NoMarker,
+        Ok(s) => match s.trim().parse::<u32>() {
+            Ok(pid) => MarkerState::Pid(pid),
+            Err(_) => MarkerState::Unknown,
+        },
+    }
+}
+
+/// 마커 생존 판정(순수부): owner PID가 기록돼 있고 스냅샷에 없으면 죽은 세션(유령) → 제외.
+/// 미기록·미상은 유지(오판으로 산 세션을 지우는 것보다 유령이 창 만료로 늦게 죽는 쪽이 안전).
+pub fn is_session_live(marker: &MarkerState, alive: &std::collections::HashSet<u32>) -> bool {
+    match marker {
+        MarkerState::Pid(pid) => alive.contains(pid),
+        MarkerState::NoMarker | MarkerState::Unknown => true,
+    }
+}
+
+/// 세션 목록에 마커 생존 필터를 적용한다(v2-44 §10: /clear·창닫기·크래시 유령 즉시 제거).
+pub fn filter_dead_sessions(
+    sessions: Vec<LiveSession>,
+    marker_dir: &Path,
+    alive: &std::collections::HashSet<u32>,
+) -> Vec<LiveSession> {
+    sessions
+        .into_iter()
+        .filter(|s| is_session_live(&read_marker(marker_dir, &s.uuid), alive))
+        .collect()
 }
 
 /// 프로세스 게이트: 해당 러너 프로세스가 확실히 0개면(count=Some(0)) 그 러너 세션을 전부 제외한다.
@@ -232,15 +294,50 @@ mod tests {
 
     #[test]
     fn count_matching_lines_covers_paths_wrappers_and_csv() {
-        // unix: 단독 실행 / 전체 경로 comm / node 인터프리터 래퍼 / 뒤쪽 인자 매칭(3토큰 밖)은 제외.
-        let unix = "claude --resume abc\n/usr/local/bin/claude\nnode /home/u/.npm/bin/claude --flag\nps -ax\ntunaround poll --tags a b runner=claude\n";
+        // unix(`ps -o pid=,args=`): pid 토큰 뒤 argv에서 단독 실행 / 전체 경로 / node 인터프리터
+        // 래퍼를 잡고, 뒤쪽 인자 매칭(3토큰 밖)은 제외.
+        let unix = "  11 claude --resume abc\n  22 /usr/local/bin/claude\n  33 node /home/u/.npm/bin/claude --flag\n  44 ps -ax\n  55 tunaround poll --tags a b runner=claude\n";
         assert_eq!(count_matching_lines(unix, "claude", false), 3);
-        // node 래퍼가 2번째 토큰이 아니라도 3토큰 안이면 잡힌다.
-        assert_eq!(count_matching_lines("env FOO=1 /opt/claude serve\n", "claude", false), 1);
+        // node 래퍼가 2번째 토큰이 아니라도 argv 3토큰 안이면 잡힌다.
+        assert_eq!(count_matching_lines("77 env FOO=1 /opt/claude serve\n", "claude", false), 1);
         // win CSV: 이미지명 필드만 본다.
         let win = "\"claude.exe\",\"123\",\"Console\"\n\"notepad.exe\",\"9\",\"Console\"\n\"x.exe\",\"1\",\"claude\"\n";
         assert_eq!(count_matching_lines(win, "claude", true), 1);
         assert_eq!(count_matching_lines(win, "codex", true), 0);
+    }
+
+    #[test]
+    fn parse_pids_extracts_from_both_formats() {
+        let unix = "  11 claude\n  22 /bin/ps\nbadline\n";
+        let pids = parse_pids(unix, false);
+        assert!(pids.contains(&11) && pids.contains(&22) && pids.len() == 2);
+        let win = "\"claude.exe\",\"123\",\"Console\"\n\"x.exe\",\"9\",\"c\"\n";
+        let pids = parse_pids(win, true);
+        assert!(pids.contains(&123) && pids.contains(&9) && pids.len() == 2);
+    }
+
+    #[test]
+    fn marker_liveness_drops_only_dead_pid_sessions() {
+        use std::collections::HashSet;
+        let alive: HashSet<u32> = [100u32, 200].into_iter().collect();
+        // PID 기록 + 스냅샷에 있음 → 유지 / 없음 → 유령 제거.
+        assert!(is_session_live(&MarkerState::Pid(100), &alive));
+        assert!(!is_session_live(&MarkerState::Pid(999), &alive));
+        // 마커 없음·PID 미상 → 보수적 유지(신선도 창 폴백).
+        assert!(is_session_live(&MarkerState::NoMarker, &alive));
+        assert!(is_session_live(&MarkerState::Unknown, &alive));
+    }
+
+    #[test]
+    fn read_marker_parses_pid_empty_and_missing() {
+        let dir = std::env::temp_dir().join(format!("tuna-marker-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("s1.ctx"), "4242\n").unwrap();
+        std::fs::write(dir.join("s2.ctx"), "").unwrap();
+        assert_eq!(read_marker(&dir, "s1"), MarkerState::Pid(4242));
+        assert_eq!(read_marker(&dir, "s2"), MarkerState::Unknown);
+        assert_eq!(read_marker(&dir, "none"), MarkerState::NoMarker);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
