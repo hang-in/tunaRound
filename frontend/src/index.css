@@ -466,6 +466,19 @@ body {
   color: #e3b341;
   flex: none;
 }
+/* 워커 "작업 중" 뱃지(워커 섹션, 설계 v2-43 §5-4). */
+.pill-working {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+  color: var(--ok);
+  background: color-mix(in srgb, var(--ok) 13%, transparent);
+  border: 1px solid color-mix(in srgb, var(--ok) 30%, transparent);
+}
 /* "현재 총괄" 뱃지(대등 카드에 표식만). */
 .pill-boss {
   display: inline-flex;

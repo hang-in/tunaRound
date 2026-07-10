@@ -38,13 +38,15 @@ function assignLabels(rows: SessionRow[]): void {
 }
 
 export type RosterView = {
-  rows: SessionRow[]
+  rows: SessionRow[] // 관리자(감독) 세션 = role!=worker
+  workers: SessionRow[] // 헤드리스 워커 = role=worker(별 섹션, 설계 v2-43 §5-4)
   autoBossUuid: string // 총감독 = online 중 human_input_at 최신. 없으면 ''.
 }
 
 // online(heartbeat 신선) 세션만 로스터에. 총감독 = human_input_at 최신(SQL datetime=사전순).
+// role=worker(헤드리스)는 관리자 로스터가 아니라 워커 섹션으로 분리한다.
 export function buildRoster(agents: Agent[]): RosterView {
-  const rows: SessionRow[] = agents
+  const all: SessionRow[] = agents
     .filter((a) => a.online)
     .map((a) => ({
       uuid: a.uuid,
@@ -57,15 +59,18 @@ export function buildRoster(agents: Agent[]): RosterView {
       humanInputAt: a.human_input_at ?? null,
       label: '',
     }))
-  assignLabels(rows)
+  assignLabels(all) // 라벨 -B/-C 증분은 관리자·워커 통틀어 유일해야 한다.
+  const rows = all.filter((r) => r.tags.role !== 'worker')
+  const workers = all.filter((r) => r.tags.role === 'worker')
 
   let autoBossUuid = ''
   let best = ''
   for (const r of rows) {
+    // 총감독은 사람 자리라 관리자 세션에서만 찾는다(워커는 헤드리스 = 사람 입력 없음).
     if (r.humanInputAt && r.humanInputAt > best) {
       best = r.humanInputAt
       autoBossUuid = r.uuid
     }
   }
-  return { rows, autoBossUuid }
+  return { rows, workers, autoBossUuid }
 }

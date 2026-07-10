@@ -1,12 +1,13 @@
 // 총괄 대시보드 루트. roster 폴링 + heartbeat 변화 감지(pulse) + feed 이벤트 취합(통계)을 소유하고
 // 헤더/통계/로스터/피드/goal 폼을 배치한다. 목업(총괄 대시보드.dc.html) 레이아웃 이식.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { Agent, TaskEventMsg } from './api'
+import type { Agent, Task, TaskEventMsg } from './api'
 import { fetchRoster } from './api'
 import { buildRoster } from './activity'
 import Header from './components/Header'
 import StatTiles from './components/StatTiles'
 import Roster from './components/Roster'
+import WorkerSection from './components/WorkerSection'
 import Feed from './components/Feed'
 import GoalForm from './components/GoalForm'
 import ControlForm from './components/ControlForm'
@@ -112,8 +113,21 @@ export default function App() {
     return { workingCount: working, completedCount: completed, failedCount: failed }
   }, [taskLatest])
 
-  // 로스터 = online(heartbeat) 세션 전부. 총감독 = human_input_at 최신(설계 v2-43, 순수 presence).
-  const { rows, autoBossUuid } = useMemo(() => buildRoster(agents), [agents])
+  // uuid -> 진행 중(submitted/working) 최신 task. 워커 섹션 "작업 중" 판정용(uuid 지목 task만 매칭).
+  // 같은 워커에 진행 task가 여럿이면 updatedAt 최신을 남긴다(SQLite datetime=사전순 비교 가능).
+  const activeByAgent = useMemo(() => {
+    const byAgent: Record<string, Task> = {}
+    Object.values(taskLatest).forEach((msg) => {
+      const state = msg.task.state
+      if (state !== 'submitted' && state !== 'working') return
+      const prev = byAgent[msg.task.toAgent]
+      if (!prev || msg.task.updatedAt > prev.updatedAt) byAgent[msg.task.toAgent] = msg.task
+    })
+    return byAgent
+  }, [taskLatest])
+
+  // 로스터 = online(heartbeat) 세션 전부(관리자·워커 분리). 총감독 = human_input_at 최신(설계 v2-43).
+  const { rows, workers, autoBossUuid } = useMemo(() => buildRoster(agents), [agents])
 
   return (
     <div className="dash-root">
@@ -127,6 +141,7 @@ export default function App() {
           failedCount={failedCount}
         />
         <Roster rows={rows} pulses={pulses} autoBossUuid={autoBossUuid} />
+        <WorkerSection workers={workers} activeByAgent={activeByAgent} />
         <Feed onConnectedChange={handleConnected} onEvent={handleEvent} />
         <GoalForm agents={agents} remoteViewer={remoteViewer} />
         <ControlForm remoteViewer={remoteViewer} />
