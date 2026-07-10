@@ -22,7 +22,7 @@ from pathlib import Path
 try:
     # __file__은 zipapp/임베디드 등에서 미정의(NameError)일 수 있어 sys.path 조작도 try 안에 둔다.
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from tuna_arm import cfg, child_env, proc_map, find_owner_pid, reap_orphans
+    from tuna_arm import cfg, child_env, proc_map, find_owner_pid, reap_orphans, project_from_cwd
 except Exception:
     def cfg(key, default=None):
         return os.environ.get(key, default)
@@ -38,6 +38,9 @@ except Exception:
 
     def reap_orphans(_pmap, _current_session_id=""):
         return 0
+
+    def project_from_cwd(cwd):
+        return Path(cwd or "").name or "unknown"
 
 
 def emit_context(text: str) -> None:
@@ -138,7 +141,7 @@ def main() -> int:
     host = os.environ.get("COMPUTERNAME") or os.environ.get("HOSTNAME") or "host"
     user = os.environ.get("USERNAME") or os.environ.get("USER") or "user"
     machine = cfg("TUNA_MACHINE") or ("win" if os.name == "nt" else "unix")
-    project = cfg("TUNA_AUTOARM_PROJECT") or Path(cwd).name or "unknown"
+    project = cfg("TUNA_AUTOARM_PROJECT") or project_from_cwd(cwd)
     role = cfg("TUNA_AUTOARM_ROLE", "session")
     # uuid는 라우팅·발견 overlay 키라 세션 id를 쓴다(설계 §2.1: uuid=세션 id). 그래야 discover가
     # 낸 후보(uuid=세션 id)와 로스터가 매칭돼 armed overlay·중복제거가 성립한다. 사람이 읽는 이름은

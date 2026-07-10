@@ -12,6 +12,7 @@ import re
 import signal
 import subprocess
 import sys
+import time
 import urllib.request
 from pathlib import Path
 
@@ -96,14 +97,27 @@ def main() -> int:
 
     try:
         info = json.loads(pidfile.read_text(encoding="utf-8"))
-        pid = int(info.get("pid", -1))
+    except Exception:
+        info = None  # 손상 pidfile = 죽일 대상 불명 → 파일만 정리.
+
+    poll_dead = True
+    if info:
+        try:
+            pid = int(info.get("pid", -1))
+        except Exception:
+            pid = -1
         if pid > 0:
             kill_pid(pid)
-        # 브로커에 즉시 등록해제 통보 → TTL(90초) 자연소멸 대기 없이 로스터에서 바로 제거(설계 v2-43).
-        deregister(info.get("agent"), info.get("core"))
-    except Exception:
-        pass
-    finally:
+            if is_tunaround_pid(pid):
+                time.sleep(0.3)  # taskkill 반영 지연 재확인.
+                poll_dead = not is_tunaround_pid(pid)
+        if poll_dead:
+            # 브로커에 즉시 등록해제 통보 → TTL(90초) 자연소멸 대기 없이 로스터에서 바로 제거(설계 v2-43).
+            deregister(info.get("agent"), info.get("core"))
+
+    # 사망 미확인이면 pidfile 보존: pidfile만 지우면 살아남은 poll이 heartbeat "미등록"
+    # 응답에 자가 재등록해 유령이 된다(2026-07-10 실측). 다음 리핑/disarm에서 재시도.
+    if poll_dead:
         try:
             pidfile.unlink()
         except Exception:

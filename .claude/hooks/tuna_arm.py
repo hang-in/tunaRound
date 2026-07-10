@@ -9,6 +9,7 @@ import json
 import os
 import re
 import subprocess
+import time
 import urllib.request
 from pathlib import Path
 
@@ -81,6 +82,44 @@ def state_dir() -> Path:
     d = Path.home() / ".tunaround" / "autoarm"
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+def project_from_cwd(cwd) -> str:
+    """cwd 폴더명 → project 태그. home에서 띄운 세션은 개인 폴더명(사용자명) 대신 'home'."""
+    try:
+        p = Path(cwd or "").resolve()
+        if p == Path.home().resolve():
+            return "home"
+        return p.name or "unknown"
+    except Exception:
+        return "unknown"
+
+
+def kill_poll(pollpid) -> bool:
+    """poll 프로세스를 종료하고 실제로 죽었는지 확인한다. 반환=사망 확인 여부.
+
+    kill이 실패했는데 pidfile만 지우면, 살아남은 poll이 heartbeat "미등록" 응답에
+    자가 재등록해 유령이 된다(2026-07-10 실측: win-claude-Temp·luckyCAD 중복).
+    호출부는 False면 pidfile을 보존해 다음 disarm/리핑에서 재시도해야 한다.
+    """
+    try:
+        pollpid = int(pollpid)
+    except (TypeError, ValueError):
+        return True  # pid 기록이 없거나 손상 = 죽일 대상 없음(사망 취급).
+    if pollpid <= 0:
+        return True  # 음수/0은 Unix os.kill에서 프로세스 그룹으로 번지므로 시도하지 않는다.
+    try:
+        if os.name == "nt":
+            subprocess.run(["taskkill", "/PID", str(pollpid), "/F"],
+                           capture_output=True, timeout=5, check=False)
+        else:
+            os.kill(pollpid, 9)
+    except Exception:
+        pass  # 이미 죽은 프로세스(ProcessLookupError 등)면 아래 확인에서 사망으로 판정된다.
+    if not pid_alive(pollpid):
+        return True
+    time.sleep(0.3)  # taskkill 반영 지연 재확인.
+    return not pid_alive(pollpid)
 
 
 def pid_alive(pid: int) -> bool:
@@ -194,17 +233,10 @@ def reap_orphans(pmap: dict, current_session_id: str = "") -> int:
                 continue  # owner 미기록(레거시)은 판단 불가 → 보존
             if int(owner) in pmap:
                 continue  # 세션(owner) 살아있음
-            # orphan: poll kill → deregister → pidfile 제거
-            pollpid = info.get("pid")
-            if pollpid and int(pollpid) in pmap:
-                try:
-                    if os.name == "nt":
-                        subprocess.run(["taskkill", "/PID", str(pollpid), "/F"],
-                                       capture_output=True, timeout=5, check=False)
-                    else:
-                        os.kill(int(pollpid), 9)
-                except Exception:
-                    pass
+            # orphan: poll kill(사망 확인) → deregister → pidfile 제거.
+            # 사망 미확인이면 pidfile 보존(다음 리핑에 재시도) - deregister만 하면 poll이 자가 재등록해 유령이 된다.
+            if not kill_poll(info.get("pid")):
+                continue
             _deregister(info.get("agent"), info.get("core") or broker_core(), token)
             try:
                 pf.unlink()
@@ -271,7 +303,7 @@ def ensure_armed(session_id: str, cwd: str):
     host = os.environ.get("COMPUTERNAME") or os.environ.get("HOSTNAME") or "host"
     user = os.environ.get("USERNAME") or os.environ.get("USER") or "user"
     machine = cfg("TUNA_MACHINE") or ("win" if os.name == "nt" else "unix")
-    project = cfg("TUNA_AUTOARM_PROJECT") or Path(cwd).name or "unknown"
+    project = cfg("TUNA_AUTOARM_PROJECT") or project_from_cwd(cwd)
     role = cfg("TUNA_AUTOARM_ROLE", "session")
     agent = session_id  # uuid=세션 id(라우팅·discover overlay 키, 설계 §2.1)
     display = cfg("TUNA_AUTOARM_AGENT") or f"{machine}-claude-{project}"
@@ -337,7 +369,7 @@ def ensure_codex_armed(session_id: str, cwd: str, display_name=None, project=Non
     user = os.environ.get("USERNAME") or os.environ.get("USER") or "user"
     machine = cfg("TUNA_MACHINE") or ("win" if os.name == "nt" else "unix")
 
-    proj = project or cfg("TUNA_AUTOARM_PROJECT") or Path(cwd).name or "unknown"
+    proj = project or cfg("TUNA_AUTOARM_PROJECT") or project_from_cwd(cwd)
     role = cfg("TUNA_AUTOARM_ROLE", "supervised")
     agent = session_id
     display = display_name or cfg("TUNA_AUTOARM_AGENT") or f"{machine}-codex-{proj}"
@@ -383,10 +415,11 @@ def ensure_codex_armed(session_id: str, cwd: str, display_name=None, project=Non
 
 
 def disarm_session(session_id: str) -> str:
-    """세션 poll 종료 + 즉시 deregister + pidfile 삭제. 반환="DISARMED"|"NOT_FOUND".
+    """세션 poll 종료(사망 확인) + 즉시 deregister + pidfile 삭제.
 
-    codex 래퍼와 __main__ stop이 공유한다. poll이 이미 죽어 있어도(kill 실패)
-    deregister와 pidfile 정리는 계속 진행한다.
+    반환="DISARMED"|"NOT_FOUND"|"KILL_FAILED". codex 래퍼와 __main__ stop이 공유한다.
+    poll이 이미 죽어 있으면 사망 확인으로 통과해 정리를 계속한다. kill이 실패해 poll이
+    살아 있으면 pidfile을 보존하고 KILL_FAILED를 반환한다(유령 방지 - 다음 disarm/리핑에서 재시도).
     """
     safe_id = sanitize_session_id(session_id)
     if not safe_id:
@@ -398,17 +431,8 @@ def disarm_session(session_id: str) -> str:
         info = json.loads(pidfile.read_text(encoding="utf-8"))
     except Exception:
         info = {}
-    pollpid = info.get("pid")
-    try:
-        # 양수 가드: 음수/0 pid는 Unix os.kill에서 프로세스 그룹 전체로 번질 수 있다.
-        if pollpid and int(pollpid) > 0:
-            if os.name == "nt":
-                subprocess.run(["taskkill", "/PID", str(pollpid), "/F"],
-                               capture_output=True, timeout=5, check=False)
-            else:
-                os.kill(int(pollpid), 9)
-    except Exception:
-        pass  # 이미 종료된 poll(ProcessLookupError 등)이어도 아래 정리는 계속.
+    if not kill_poll(info.get("pid")):
+        return "KILL_FAILED"
     _deregister(info.get("agent"), info.get("core") or broker_core(), cfg("TUNA_BROKER_TOKEN"))
     try:
         pidfile.unlink()

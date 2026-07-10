@@ -79,7 +79,8 @@ def main():
 
     # 무장 대상인 경우: 세션 기동
     machine = tuna_arm.cfg("TUNA_MACHINE") or ("win" if os.name == "nt" else "unix")
-    project = tuna_arm.cfg("TUNA_AUTOARM_PROJECT") or os.path.basename(os.getcwd()) or "unknown"
+    # home에서 띄운 codex는 개인 폴더명 대신 'home'으로(codex는 프로젝트 개념이 없어 cwd 폴더명이 유일 단서).
+    project = tuna_arm.cfg("TUNA_AUTOARM_PROJECT") or tuna_arm.project_from_cwd(os.getcwd())
     
     # 세션 ID 생성: TUNA_AUTOARM_AGENT 우선, 없으면 고유 식별자 생성
     # 이 ID가 세션 uuid이자 pidfile 키가 됨
