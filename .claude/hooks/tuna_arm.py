@@ -315,3 +315,106 @@ def ensure_armed(session_id: str, cwd: str):
         "owner_pid": owner_pid,
     }), encoding="utf-8")
     return (agent, core)
+
+
+def ensure_codex_armed(session_id: str, cwd: str, display_name=None, project=None, owner_pid: int = 0):
+    """Codex 세션을 무장(idempotent)한다(v2-43 §5-3, scripts/codex_wrapper.py가 호출).
+
+    codex는 claude 훅이 안 잡으므로 래퍼가 세션 id를 만들어 넘긴다. TUNA_AUTOARM=1 +
+    토큰 있을 때만 동작. owner_pid=래퍼 프로세스(codex 수명과 동일 = 리퍼 orphan 판정 기준).
+    """
+    if cfg("TUNA_AUTOARM") != "1":
+        return None
+    session_id = str(session_id or "").strip()
+    if not session_id:
+        return None
+    if not cfg("TUNA_BROKER_TOKEN"):
+        return None
+
+    core = broker_core()
+    tuna_bin = cfg("TUNA_BIN", "tunaround")
+    host = os.environ.get("COMPUTERNAME") or os.environ.get("HOSTNAME") or "host"
+    user = os.environ.get("USERNAME") or os.environ.get("USER") or "user"
+    machine = cfg("TUNA_MACHINE") or ("win" if os.name == "nt" else "unix")
+
+    proj = project or cfg("TUNA_AUTOARM_PROJECT") or Path(cwd).name or "unknown"
+    role = cfg("TUNA_AUTOARM_ROLE", "supervised")
+    agent = session_id
+    display = display_name or cfg("TUNA_AUTOARM_AGENT") or f"{machine}-codex-{proj}"
+    interval = cfg("TUNA_AUTOARM_INTERVAL", "15")
+    tags = (
+        f"machine={machine},runner=codex,role={role},project={proj},"
+        f"user={user},host={host},session={session_id}"
+    )
+
+    sdir = state_dir()
+    safe_id = sanitize_session_id(session_id)
+    if not safe_id:
+        return None
+    pidfile = sdir / f"{safe_id}.json"
+    log_path = sdir / f"{safe_id}.log"
+
+    if pidfile.exists():
+        try:
+            prev = json.loads(pidfile.read_text(encoding="utf-8"))
+            if pid_alive(int(prev.get("pid", -1))):
+                return (agent, core)
+        except Exception:
+            pass
+
+    cmd = [
+        tuna_bin, "poll", "--core", core, "--agent", agent,
+        "--display-name", display, "--tags", tags, "--interval", str(interval),
+    ]
+    try:
+        pid = launch_detached(cmd, log_path, env=child_env())
+    except Exception:
+        return None
+
+    if not owner_pid or owner_pid <= 0:
+        owner_pid = os.getppid()
+
+    pidfile.write_text(json.dumps({
+        "pid": pid, "agent": agent, "display_name": display, "core": core,
+        "tags": tags, "log": str(log_path), "session_id": session_id,
+        "owner_pid": owner_pid,
+    }), encoding="utf-8")
+    return (agent, core)
+
+
+if __name__ == "__main__":
+    import sys
+    if len(sys.argv) >= 2:
+        action = sys.argv[1]
+        if action == "start" and len(sys.argv) >= 3:
+            sess_id = sys.argv[2]
+            disp = sys.argv[3] if len(sys.argv) >= 4 else None
+            proj = sys.argv[4] if len(sys.argv) >= 5 else None
+            owner = int(sys.argv[5]) if len(sys.argv) >= 6 and sys.argv[5].isdigit() else 0
+            res = ensure_codex_armed(sess_id, os.getcwd(), disp, proj, owner)
+            if res:
+                print(f"ARMED:{res[0]}:{res[1]}")
+            else:
+                print("FAILED")
+        elif action == "stop" and len(sys.argv) >= 3:
+            sess_id = sys.argv[2]
+            safe_id = sanitize_session_id(sess_id)
+            pidfile = state_dir() / f"{safe_id}.json"
+            if pidfile.exists():
+                try:
+                    info = json.loads(pidfile.read_text(encoding="utf-8"))
+                    pollpid = info.get("pid")
+                    if pollpid:
+                        if os.name == "nt":
+                            subprocess.run(["taskkill", "/PID", str(pollpid), "/F"],
+                                           capture_output=True, timeout=5, check=False)
+                        else:
+                            os.kill(int(pollpid), 9)
+                    _deregister(info.get("agent"), info.get("core") or broker_core(), cfg("TUNA_BROKER_TOKEN"))
+                    pidfile.unlink()
+                    print("DISARMED")
+                except Exception as e:
+                    print(f"ERROR:{e}")
+            else:
+                print("NOT_FOUND")
+
