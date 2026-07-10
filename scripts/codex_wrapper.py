@@ -22,13 +22,23 @@ except ImportError:
         tuna_arm = None
 
 
+def _is_wrapper_dir(path: str, wrapper_dir: str) -> bool:
+    """PATH 항목이 래퍼 자신의 디렉터리인지(디바이스+아이노드 비교 = 표기·대소문자 무관).
+
+    normcase는 macOS에서 no-op이라(POSIX) 대소문자 무구분 FS의 자기재귀를 못 막는다.
+    samefile이면 심볼릭 링크·표기 차이까지 커버된다. 존재하지 않는 PATH 항목은 False.
+    """
+    try:
+        return os.path.samefile(path, wrapper_dir)
+    except OSError:
+        return False
+
+
 def find_real_codex():
     """래퍼 자신을 제외한 시스템 PATH 상의 진짜 codex 명령어의 경로를 반환합니다."""
-    # normcase: 대소문자 무구분 파일시스템(Windows/macOS)에서 자기 디렉터리 필터가 새면
-    # 래퍼가 자기 자신을 재실행하는 무한 루프에 빠진다.
-    wrapper_dir = os.path.normcase(os.path.dirname(os.path.abspath(__file__)))
+    wrapper_dir = os.path.dirname(os.path.abspath(__file__))
     paths = os.environ.get("PATH", "").split(os.pathsep)
-    filtered_paths = [p for p in paths if os.path.normcase(os.path.abspath(p)) != wrapper_dir]
+    filtered_paths = [p for p in paths if p and not _is_wrapper_dir(p, wrapper_dir)]
 
     # 윈도우의 경우 codex.cmd, codex.bat, codex.exe 탐색
     # Unix의 경우 codex 탐색
@@ -42,7 +52,7 @@ def find_real_codex():
 
     # fallback: shutil.which
     which_res = shutil.which("codex")
-    if which_res and os.path.normcase(os.path.dirname(os.path.abspath(which_res))) != wrapper_dir:
+    if which_res and not _is_wrapper_dir(os.path.dirname(os.path.abspath(which_res)), wrapper_dir):
         return which_res
 
     return None
