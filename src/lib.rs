@@ -24,3 +24,5 @@ pub mod codex_inject;
 pub mod discover;
 #[cfg(feature = "worker")]
 pub mod watch_results;
+#[cfg(feature = "worker")]
+pub mod presence_scan;

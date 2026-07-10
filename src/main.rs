@@ -51,6 +51,12 @@ enum Commands {
     /// 총괄 결과 인박스: 내가 던진 task의 완료/실패를 브로커 SSE로 받아 알린다(책임의 이전, worker 피처).
     #[cfg(feature = "worker")]
     WatchResults(WatchResultsArgs),
+    /// 머신당 presence 스캐너 데몬: 라이브 세션(claude·codex)을 스캔해 브로커 로스터에 일괄 동기화(v2-44, worker 피처).
+    #[cfg(feature = "worker")]
+    PresenceScan(PresenceScanArgs),
+    /// A2A task 수동 조작 CLI: poll/claim/get/complete/fail(MCP 미로드 세션의 0토큰 경로, worker 피처).
+    #[cfg(feature = "worker")]
+    Task(TaskArgs),
     /// 워커 노드 상주: node.toml대로 브로커(self)+자동 워커 레인들을 한 프로세스로(serve+worker 피처).
     #[cfg(all(feature = "serve", feature = "worker"))]
     Node(NodeArgs),
@@ -306,6 +312,99 @@ struct WatchResultsArgs {
     /// 생략/빈 값이면 모든 완료를 관측한다.
     #[arg(long, default_value = "dashboard")]
     dispatcher: String,
+    /// completed 묶음 구간(초, 기본 0=즉시). >0이면 completed는 구간 내 묶어 한 번에 알리고
+    /// failed는 즉시 알린다(총괄 wake 절약, v2-44 W5).
+    #[arg(long, default_value_t = 0)]
+    digest: u64,
+}
+
+/// `presence-scan` 서브커맨드(worker 피처 전용): 머신당 1개 상주하며 로컬 라이브 세션 전집합을
+/// 브로커에 일괄 동기화한다(설계 v2-44 §3). poll·훅·래퍼 비의존 = 유령·소멸 원천 차단.
+#[cfg(feature = "worker")]
+#[derive(Args, Debug)]
+struct PresenceScanArgs {
+    /// 코어 `/mcp` 절대 URL(예: http://127.0.0.1:8770/mcp). 생략 시 TUNA_BROKER_CORE env.
+    #[arg(long)]
+    core: Option<String>,
+    /// bearer 토큰(생략 시 TUNA_BROKER_TOKEN env 폴백. argv 노출 회피 권장).
+    #[arg(long)]
+    token: Option<String>,
+    /// 이 스캐너의 머신 식별자(win|mac|unix). 생략 시 TUNA_MACHINE env 또는 빌드 타깃 OS.
+    #[arg(long)]
+    machine: Option<String>,
+    /// 스캔할 Claude projects 디렉토리(생략 시 ~/.claude/projects).
+    #[arg(long)]
+    projects_dir: Option<String>,
+    /// 스캔할 codex sessions 디렉토리(생략 시 ~/.codex/sessions).
+    #[arg(long)]
+    codex_dir: Option<String>,
+    /// 라이브로 간주할 활동 신선도 창(분, 기본 240). 개별 크래시 유령의 상한이기도 하다.
+    #[arg(long, default_value_t = 240)]
+    stale_mins: u64,
+    /// 스캔·보고 간격(초, 기본 15 = heartbeat 간격과 동일).
+    #[arg(long, default_value_t = 15)]
+    interval: u64,
+    /// 한 번만 스캔·보고하고 종료(테스트·수동 실행용).
+    #[arg(long)]
+    once: bool,
+}
+
+/// `task` 서브커맨드(worker 피처 전용): A2A task를 CLI로 조작한다(v2-44 W3). tuna-broker MCP가
+/// 안 붙은 세션(브로커 사후 기동 등)이 raw curl 대신 쓰는 0토큰 전송 경로.
+#[cfg(feature = "worker")]
+#[derive(Args, Debug)]
+struct TaskArgs {
+    /// 코어 `/mcp` 절대 URL(예: http://127.0.0.1:8770/mcp). 생략 시 TUNA_BROKER_CORE env.
+    #[arg(long)]
+    core: Option<String>,
+    /// bearer 토큰(생략 시 TUNA_BROKER_TOKEN env 폴백).
+    #[arg(long)]
+    token: Option<String>,
+    #[command(subcommand)]
+    action: TaskAction,
+}
+
+/// task CLI 동작: 수신 워크플로우(poll→claim→get→complete|fail)의 각 단계.
+#[cfg(feature = "worker")]
+#[derive(Subcommand, Debug)]
+enum TaskAction {
+    /// 이 agent 앞에 대기 중인 task 목록을 본다.
+    Poll {
+        /// 확인할 agent id(보통 세션 id).
+        agent: String,
+    },
+    /// task를 선점한다(작업 착수 선언).
+    Claim {
+        /// 선점할 task id.
+        task_id: String,
+        /// 선점하는 agent id.
+        agent: String,
+    },
+    /// task의 상태·본문·결과를 본다.
+    Get {
+        /// 조회할 task id.
+        task_id: String,
+    },
+    /// task를 완료 보고한다.
+    Complete {
+        /// 완료할 task id.
+        task_id: String,
+        /// 결과 텍스트. `-`면 stdin에서 읽는다(긴 결과의 argv 한도 회피).
+        result: String,
+        /// 보고하는 agent id(claim한 agent와 동일해야 함).
+        #[arg(long)]
+        agent: Option<String>,
+    },
+    /// task를 실패 보고한다(처리 불가 사유 명시).
+    Fail {
+        /// 실패 처리할 task id.
+        task_id: String,
+        /// 실패 사유. `-`면 stdin에서 읽는다.
+        reason: String,
+        /// 보고하는 agent id.
+        #[arg(long)]
+        agent: Option<String>,
+    },
 }
 
 /// `codex-inject` 서브커맨드(worker 피처 전용) 옵션: codex app-server 라이브 thread에 turn/start로
@@ -838,6 +937,12 @@ fn main() {
     // watch-results <...>: 총괄 결과 인박스 옵션(worker 피처 전용).
     #[cfg(feature = "worker")]
     let mut watch_results_args: Option<WatchResultsArgs> = None;
+    // presence-scan <...>: 머신당 presence 스캐너 옵션(worker 피처 전용, v2-44).
+    #[cfg(feature = "worker")]
+    let mut presence_scan_args: Option<PresenceScanArgs> = None;
+    // task <...>: A2A task 수동 조작 CLI 옵션(worker 피처 전용, v2-44 W3).
+    #[cfg(feature = "worker")]
+    let mut task_cli_args: Option<TaskArgs> = None;
     // node <...>: 워커 노드 상주 옵션(serve+worker 피처 전용).
     #[cfg(all(feature = "serve", feature = "worker"))]
     let mut node_args: Option<NodeArgs> = None;
@@ -955,6 +1060,22 @@ fn main() {
                 db_path = None;
             }
             watch_results_args = Some(a);
+        }
+        #[cfg(feature = "worker")]
+        Commands::PresenceScan(a) => {
+            #[cfg(feature = "sqlite")]
+            {
+                db_path = None;
+            }
+            presence_scan_args = Some(a);
+        }
+        #[cfg(feature = "worker")]
+        Commands::Task(a) => {
+            #[cfg(feature = "sqlite")]
+            {
+                db_path = None;
+            }
+            task_cli_args = Some(a);
         }
         #[cfg(all(feature = "serve", feature = "worker"))]
         Commands::Node(a) => {
@@ -1403,9 +1524,121 @@ fn main() {
     // watch-results <...>: 총괄이 던진 task의 완료/실패를 브로커 SSE로 받아 stdout으로 알린다(worker 피처).
     #[cfg(feature = "worker")]
     if let Some(a) = watch_results_args {
-        let result = rt.block_on(tunaround::watch_results::run(&a.core, &a.dispatcher));
+        let result = rt.block_on(tunaround::watch_results::run(&a.core, &a.dispatcher, a.digest));
         if let Err(e) = result {
             eprintln!("[watch-results] 오류: {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
+    // presence-scan <...>: 머신당 스캐너 데몬 = 라이브 세션 전집합을 브로커에 일괄 동기화(v2-44).
+    #[cfg(feature = "worker")]
+    if let Some(a) = presence_scan_args {
+        let result = rt.block_on(async {
+            let core = a
+                .core
+                .clone()
+                .or_else(|| std::env::var("TUNA_BROKER_CORE").ok())
+                .ok_or_else(|| "--core 또는 TUNA_BROKER_CORE가 필요합니다".to_string())?;
+            let token = a.token.clone().or_else(|| std::env::var("TUNA_BROKER_TOKEN").ok());
+            let client = tunaround::mcp_client::McpHttpClient::connect(core, token).await?;
+            let machine = a.machine.clone().unwrap_or_else(tunaround::discover::default_machine);
+            let projects_dir = match a.projects_dir.clone() {
+                Some(p) => Some(std::path::PathBuf::from(tunaround::config::expand_home(&p))),
+                None => tunaround::discover::default_projects_dir(),
+            };
+            let codex_dir = match a.codex_dir.clone() {
+                Some(p) => Some(std::path::PathBuf::from(tunaround::config::expand_home(&p))),
+                None => tunaround::presence_scan::default_codex_sessions_dir(),
+            };
+            let home = std::env::var("USERPROFILE")
+                .or_else(|_| std::env::var("HOME"))
+                .ok()
+                .map(std::path::PathBuf::from);
+            let stale = std::time::Duration::from_secs(a.stale_mins.saturating_mul(60));
+            let interval = a.interval.max(1);
+            let mut last_report = String::new();
+            loop {
+                let now = std::time::SystemTime::now();
+                let mut sessions = Vec::new();
+                if let Some(dir) = &projects_dir {
+                    sessions.extend(tunaround::presence_scan::enumerate_claude_live(dir, now, stale, home.as_deref()));
+                }
+                if let Some(dir) = &codex_dir {
+                    sessions.extend(tunaround::presence_scan::enumerate_codex_sessions(dir, now, stale, home.as_deref()));
+                }
+                // 프로세스 게이트: 러너 프로세스가 확실히 0개면 그 러너 세션 전부 죽음(재부팅 즉시 반영).
+                for runner in ["claude", "codex"] {
+                    let count = tunaround::presence_scan::count_runner_processes(runner);
+                    sessions = tunaround::presence_scan::apply_process_gate(sessions, runner, count);
+                }
+                let payload = tunaround::presence_scan::to_report_json(&machine, &sessions);
+                match client.report_presence(&machine, payload).await {
+                    Ok(resp) => {
+                        // 매 15초 같은 로그는 노이즈: 결과가 달라졌을 때만 stdout에 남긴다.
+                        if resp != last_report {
+                            println!("[presence-scan] {resp}");
+                            last_report = resp;
+                        }
+                    }
+                    Err(e) => eprintln!("[presence-scan] 보고 실패(무시, 다음 주기 재시도): {e}"),
+                }
+                if a.once {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(interval)).await;
+            }
+            Ok::<(), String>(())
+        });
+        if let Err(e) = result {
+            eprintln!("[presence-scan] 오류: {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
+    // task <...>: A2A task 수동 조작 CLI(v2-44 W3). 결과 텍스트를 그대로 stdout에 낸다(컴팩트).
+    #[cfg(feature = "worker")]
+    if let Some(a) = task_cli_args {
+        // `-` 자리엔 stdin 본문을 채운다(긴 결과의 argv 한도 회피).
+        fn arg_or_stdin(v: &str) -> Result<String, String> {
+            if v != "-" {
+                return Ok(v.to_string());
+            }
+            let mut buf = String::new();
+            std::io::Read::read_to_string(&mut std::io::stdin(), &mut buf)
+                .map_err(|e| format!("stdin 읽기 실패: {e}"))?;
+            Ok(buf.trim_end().to_string())
+        }
+        let result = rt.block_on(async {
+            let core = a
+                .core
+                .clone()
+                .or_else(|| std::env::var("TUNA_BROKER_CORE").ok())
+                .ok_or_else(|| "--core 또는 TUNA_BROKER_CORE가 필요합니다".to_string())?;
+            let token = a.token.clone().or_else(|| std::env::var("TUNA_BROKER_TOKEN").ok());
+            let client = tunaround::mcp_client::McpHttpClient::connect(core, token).await?;
+            let out = match &a.action {
+                TaskAction::Poll { agent } => client.poll_tasks(agent).await?,
+                TaskAction::Claim { task_id, agent } => {
+                    client.claim_task(task_id, Some(agent), None).await?
+                }
+                TaskAction::Get { task_id } => client.get_task(task_id).await?,
+                TaskAction::Complete { task_id, result, agent } => {
+                    let text = arg_or_stdin(result)?;
+                    client.complete_task(task_id, &text, agent.as_deref()).await?
+                }
+                TaskAction::Fail { task_id, reason, agent } => {
+                    let text = arg_or_stdin(reason)?;
+                    client.fail_task(task_id, &text, agent.as_deref()).await?
+                }
+            };
+            println!("{out}");
+            Ok::<(), String>(())
+        });
+        if let Err(e) = result {
+            eprintln!("[task] 오류: {e}");
             std::process::exit(1);
         }
         return;
