@@ -14,6 +14,9 @@
 __pycache__/
 *.pyc
 
+# 테스트 잔여물(SQLite WAL 사이드카 포함)
+/test.db*
+
 # OS
 .DS_Store
 
