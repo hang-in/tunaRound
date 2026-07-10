@@ -2,6 +2,13 @@
 
 > 작업 중 결정과 근거. 계속 append. (규율 #7) 다음 세션이 결정을 재유도하지 않게.
 
+## 2026-07-11 세션18 후속: v2-44 승인 + sup 재정의 + role 개편 (설계 정본 확정)
+
+- **경위**: 사용자가 맥의 mac-codex-sup watcher 실행 문의 → sup의 로스터 노출을 논의하다 두 결정 도출. (a) **sup은 사람이 직접 관리하는 감독이 아니라 "그 머신에 A2A 전달이 되는가" 확인용 인프라 인디케이터**(project=tunaRound 태그·대등 카드 노출은 오염). (b) **role 명칭 전체 정리 필요**(세션15 백로그였던 것).
+- **승인**: 세션18 §6 v2-44 제안(presence=머신당 스캐너 데몬, 수신과 분리)과 위 두 건을 **한 문서로 합쳐 승인**("따로 가면 로스터 개념 두 번 갈아엎음"). PR #46은 기존 스코프대로 머지, sup 뷰 분리는 v2-44 T4에서.
+- **확정 내용**(정본 docs/design/v2-44-presence-scanner-and-roles_2026-07-11.md): role 3값 = session(스캐너 보고)/worker(현행)/**infra(supervised 개명, project 태그 제거, purpose= 추가)**. sup=role=infra,purpose=codex-inject, 어드레싱 불변(뷰만 머신 헤더 도트로). 스캐너=discover.rs 용도 변경, report_presence 일괄 보고(전집합 diff 제거=유령 원천 차단), 스캐너 heartbeat=머신 도달성. supervised→infra는 브로커 alias로 유예 후 T5 제거.
+- **부수 관찰**: win-codex-home-fbd90acb poll(PID 37296)이 돌지만 로스터에 없음 → 고아 poll 의심, orphan reaper(#36) 동작 확인 필요(백로그).
+
 ## 2026-07-05 세션12후속: codex 라이브 감독(app-server ws) 설계 (Plan v2-37)
 
 - **경위**: 감독 A2A 자율 수신 테스트 중 codex 감독을 `poll --on-task 'codex exec resume --last'`로 우회 -> 사용자 지적: exec는 **별개 프로세스(워커)**라 감독 티키타카 스코프 위반. 게다가 watcher가 spawn한 codex exec가 **TUNA_BROKER_TOKEN 미상속**(setx User레벨은 이미 뜬 셸에 전파 안 됨) -> tuna-broker MCP 401 미로드 -> codex가 raw HTTP로 자가구조하며 **186k 토큰 낭비**(3회 시도 끝 session-id 헤더 고쳐 성공). task 84f67cb6은 completed 됐으나 잘못된 레일.

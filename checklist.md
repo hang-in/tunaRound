@@ -435,3 +435,14 @@
 - [x] item 1 codex 관전 결정: main.rs node 힌트 갱신 + 설계 §10 결정기록. 코드 로직 무변경.
 - [ ] task 48a0dbb2 A2A 종료 보고(claim+complete, 개선된 결정 요약).
 - [ ] cargo check(main.rs 힌트 변경 컴파일 확인) → 커밋 → push 승인 후 PR.
+
+## Plan v2-44: presence 스캐너 + role 체계 개편 (docs/design/v2-44-presence-scanner-and-roles_2026-07-11.md)
+
+> 2026-07-11 사용자 승인(세션18 §6 제안 + sup=인프라 인디케이터 재정의 + role 명칭 정리). PR #46 머지 후 T4.
+
+- [x] 설계 정본 작성(v2-44 문서: 스캐너·role 개편·sup 재정의·마이그레이션 5단계).
+- [ ] T1 브로커: report_presence + machine 동기화 + supervised→infra alias + 스캐너 순수부(discover.rs 용도 변경).
+- [ ] T2 win 라이브: presence-scan 데몬 + autoarm 훅 간소화 + codex 래퍼 제거 + win-codex-sup infra 재태깅.
+- [ ] T3 mac 배포(A2A task 위임, 로컬 운영자 게이트).
+- [ ] T4 대시보드 뷰: 머신 헤더 인프라 도트 + infra 카드 제거(+선택 수신중 뱃지). PR #46 머지 후.
+- [ ] T5 정리: alias 제거·report_candidates 제거·문서 일괄 갱신(a2a-usage §9·§10 등).
