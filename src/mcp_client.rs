@@ -88,7 +88,14 @@ impl McpHttpClient {
     /// 핸드셰이크를 수행해 클라이언트를 구성한다.
     pub async fn connect(mcp_url: impl Into<String>, token: Option<String>) -> Result<Self, String> {
         let mcp_url = mcp_url.into();
-        let http = reqwest::Client::new();
+        // 타임아웃 없는 기본 클라이언트는 응답이 멎은 코어(방화벽 drop 등)에 무기한 대기해
+        // 상주 데몬(presence-scan·poll) 전체를 정지시킨다(봇리뷰 Major). MCP 툴 호출은 단문이라
+        // 60초면 충분히 관대하고, 연결 수립은 10초로 짧게 끊어 재시도 루프가 살아 있게 한다.
+        let http = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(10))
+            .timeout(std::time::Duration::from_secs(60))
+            .build()
+            .map_err(|e| format!("HTTP 클라이언트 구성 실패: {e}"))?;
         let session_id = Self::handshake(&http, &mcp_url, &token).await?;
 
         Ok(Self {
