@@ -82,6 +82,10 @@ pub async fn serve_http_mcp_on_listener(
     // MCP(/mcp)와 A2A(/a2a, /.well-known/agent-card.json)를 같은 axum app으로 병합한다.
     let merged = Router::new().nest_service("/mcp", service).merge(a2a_router);
 
+    // 대시보드 쓰기 게이트(human-ping·deregister)용 토큰 사본: 원격 훅이 Bearer로 인증한다
+    // (크로스머신 총감독, v2-43 비범위 해제 2026-07-10).
+    let dash_token: Arc<Option<String>> = Arc::new(token.clone());
+
     let authed: Router = if let Some(tok) = token {
         let tok = Arc::new(tok);
         let bearer = middleware::from_fn(move |request: Request, next: Next| {
@@ -128,7 +132,10 @@ pub async fn serve_http_mcp_on_listener(
     {
         dashboard = dashboard.route("/dashboard", get(dashboard_fallback_page));
     }
-    let app = dashboard.with_state(a2a_store_for_dash).merge(authed);
+    let app = dashboard
+        .with_state(a2a_store_for_dash)
+        .layer(axum::Extension(dash_token))
+        .merge(authed);
 
     #[cfg(feature = "dashboard")]
     eprintln!("[serve-mcp] HTTP MCP 서버 기동: {bound_addr} (대시보드 SPA: /dashboard)");
@@ -402,19 +409,46 @@ fn ws_target_is_loopback(ws: &str) -> bool {
     host.parse::<std::net::IpAddr>().map(|ip| ip.is_loopback()).unwrap_or(false)
 }
 
+/// 대시보드 쓰기 게이트(human-ping·deregister): loopback은 기존대로 무조건 신뢰,
+/// 원격은 Bearer 토큰 일치 시 허용(크로스머신 총감독 = 맥 세션 핑도 유효, v2-43 비범위 해제).
+/// 훅(session-ping·disarm)은 이미 Authorization 헤더를 보내므로 클라이언트 변경 없음.
+/// 코어가 무토큰이면 /mcp 전체가 무인증(동일 계약)이므로 원격 쓰기도 게이트하지 않는다.
+#[cfg(feature = "serve")]
+fn dashboard_write_allowed(
+    peer_ip: std::net::IpAddr,
+    headers: &axum::http::HeaderMap,
+    expected_token: &Option<String>,
+) -> bool {
+    if peer_ip.is_loopback() {
+        return true;
+    }
+    match expected_token {
+        None => true,
+        Some(tok) => headers
+            .get(axum::http::header::AUTHORIZATION)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|a| a == format!("Bearer {tok}")),
+    }
+}
+
 /// POST /dashboard/human-ping: 세션의 UserPromptSubmit 훅이 "이 세션이 방금 사람 프롬프트를 받았다"를
-/// 보고한다(총감독=human_input_at 최신 세션, 설계 v2-42). body = {"agent": "<세션 uuid>"}. loopback만 허용
-/// (원격은 read-only). 무인증이지만 loopback 신뢰. 미등록 uuid(무장 전)면 404.
+/// 보고한다(총감독=human_input_at 최신 세션, 설계 v2-42). body = {"agent": "<세션 uuid>"}.
+/// loopback 무조건 허용 + 원격은 Bearer 토큰 필요(dashboard_write_allowed). 미등록 uuid(무장 전)면 404.
 #[cfg(feature = "serve")]
 async fn dashboard_human_ping_handler(
     axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<std::net::SocketAddr>,
     axum::extract::State(store): axum::extract::State<Arc<Mutex<crate::store::sqlite::SqliteStore>>>,
+    axum::Extension(dash_token): axum::Extension<Arc<Option<String>>>,
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> axum::response::Response {
     use axum::response::IntoResponse;
-    if !peer.ip().is_loopback() {
-        return (axum::http::StatusCode::FORBIDDEN, "원격 관전 모드: 핑은 로컬(loopback)에서만.").into_response();
+    if !dashboard_write_allowed(peer.ip(), &headers, &dash_token) {
+        return (
+            axum::http::StatusCode::FORBIDDEN,
+            "원격 핑은 Bearer 토큰이 필요합니다(무토큰 원격 = 관전 전용).",
+        )
+            .into_response();
     }
     if is_cross_site(&headers) {
         return (axum::http::StatusCode::FORBIDDEN, "cross-site 요청 거부(local CSRF 방어).").into_response();
@@ -444,17 +478,23 @@ async fn dashboard_human_ping_handler(
 
 /// POST /dashboard/deregister: 세션의 SessionEnd 훅(disarm)이 "이 세션이 닫혔다"를 보고한다.
 /// 로스터에서 즉시 제거해 TTL(90초) 자연소멸을 기다리지 않는다(설계 v2-43 잔존구간 제거).
-/// body = {"agent": "<세션 uuid>"}. loopback만 허용(원격은 read-only). 미등록 uuid면 404(멱등).
+/// body = {"agent": "<세션 uuid>"}. loopback 무조건 허용 + 원격은 Bearer 토큰 필요
+/// (맥 세션 종료도 즉시 등록해제, dashboard_write_allowed). 미등록 uuid면 404(멱등).
 #[cfg(feature = "serve")]
 async fn dashboard_deregister_handler(
     axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<std::net::SocketAddr>,
     axum::extract::State(store): axum::extract::State<Arc<Mutex<crate::store::sqlite::SqliteStore>>>,
+    axum::Extension(dash_token): axum::Extension<Arc<Option<String>>>,
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> axum::response::Response {
     use axum::response::IntoResponse;
-    if !peer.ip().is_loopback() {
-        return (axum::http::StatusCode::FORBIDDEN, "원격 관전 모드: 등록해제는 로컬(loopback)에서만.").into_response();
+    if !dashboard_write_allowed(peer.ip(), &headers, &dash_token) {
+        return (
+            axum::http::StatusCode::FORBIDDEN,
+            "원격 등록해제는 Bearer 토큰이 필요합니다(무토큰 원격 = 관전 전용).",
+        )
+            .into_response();
     }
     if is_cross_site(&headers) {
         return (axum::http::StatusCode::FORBIDDEN, "cross-site 요청 거부(local CSRF 방어).").into_response();
@@ -650,6 +690,47 @@ async fn dashboard_control_handler(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // 대시보드 쓰기 게이트 순수 함수 테스트(원격 peer는 리스너 통합테스트로 재현 불가라 함수 단위로 검증).
+    #[cfg(feature = "serve")]
+    mod dashboard_write_gate {
+        use super::super::*;
+
+        fn headers_with_auth(v: Option<&str>) -> axum::http::HeaderMap {
+            let mut h = axum::http::HeaderMap::new();
+            if let Some(v) = v {
+                h.insert(axum::http::header::AUTHORIZATION, v.parse().unwrap());
+            }
+            h
+        }
+
+        #[test]
+        fn loopback_always_allowed_without_token() {
+            let ip: std::net::IpAddr = "127.0.0.1".parse().unwrap();
+            assert!(dashboard_write_allowed(ip, &headers_with_auth(None), &Some("tok".into())));
+        }
+
+        #[test]
+        fn remote_with_matching_bearer_allowed() {
+            let ip: std::net::IpAddr = "192.168.0.9".parse().unwrap();
+            let h = headers_with_auth(Some("Bearer tok"));
+            assert!(dashboard_write_allowed(ip, &h, &Some("tok".into())));
+        }
+
+        #[test]
+        fn remote_with_wrong_or_missing_bearer_denied() {
+            let ip: std::net::IpAddr = "192.168.0.9".parse().unwrap();
+            assert!(!dashboard_write_allowed(ip, &headers_with_auth(Some("Bearer nope")), &Some("tok".into())));
+            assert!(!dashboard_write_allowed(ip, &headers_with_auth(None), &Some("tok".into())));
+        }
+
+        #[test]
+        fn remote_allowed_when_core_has_no_token() {
+            // 무토큰 코어는 /mcp 전체가 무인증(동일 계약)이라 대시보드 쓰기도 게이트하지 않는다.
+            let ip: std::net::IpAddr = "192.168.0.9".parse().unwrap();
+            assert!(dashboard_write_allowed(ip, &headers_with_auth(None), &None));
+        }
+    }
 
     // HTTP MCP 서버 통합 테스트: serve 피처 전용.
     #[cfg(feature = "serve")]
