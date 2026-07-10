@@ -114,13 +114,16 @@ export default function App() {
   }, [taskLatest])
 
   // uuid -> 진행 중(submitted/working) 최신 task. 워커 섹션 "작업 중" 판정용(uuid 지목 task만 매칭).
+  // 같은 워커에 진행 task가 여럿이면 updatedAt 최신을 남긴다(SQLite datetime=사전순 비교 가능).
   const activeByAgent = useMemo(() => {
-    const m: Record<string, Task> = {}
+    const byAgent: Record<string, Task> = {}
     Object.values(taskLatest).forEach((msg) => {
-      const s = msg.task.state
-      if (s === 'submitted' || s === 'working') m[msg.task.toAgent] = msg.task
+      const state = msg.task.state
+      if (state !== 'submitted' && state !== 'working') return
+      const prev = byAgent[msg.task.toAgent]
+      if (!prev || msg.task.updatedAt > prev.updatedAt) byAgent[msg.task.toAgent] = msg.task
     })
-    return m
+    return byAgent
   }, [taskLatest])
 
   // 로스터 = online(heartbeat) 세션 전부(관리자·워커 분리). 총감독 = human_input_at 최신(설계 v2-43).
