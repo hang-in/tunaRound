@@ -8,6 +8,7 @@
 - **승인**: 세션18 §6 v2-44 제안(presence=머신당 스캐너 데몬, 수신과 분리)과 위 두 건을 **한 문서로 합쳐 승인**("따로 가면 로스터 개념 두 번 갈아엎음"). PR #46은 기존 스코프대로 머지, sup 뷰 분리는 v2-44 T4에서.
 - **확정 내용**(정본 docs/design/v2-44-presence-scanner-and-roles_2026-07-11.md): role 3값 = session(스캐너 보고)/worker(현행)/**infra(supervised 개명, project 태그 제거, purpose= 추가)**. sup=role=infra,purpose=codex-inject, 어드레싱 불변(뷰만 머신 헤더 도트로). 스캐너=discover.rs 용도 변경, report_presence 일괄 보고(전집합 diff 제거=유령 원천 차단), 스캐너 heartbeat=머신 도달성. supervised→infra는 브로커 alias로 유예 후 T5 제거.
 - **부수 관찰**: win-codex-home-fbd90acb poll(PID 37296)이 돌지만 로스터에 없음 → 고아 poll 의심, orphan reaper(#36) 동작 확인 필요(백로그).
+- **토큰 위생 감사(같은 날, 사용자 지시로 v2-44 §7 통합)**: 추론 외 낭비 6건 = W1 SessionStart 안내 중복 주입(실측 3회 발화, already 선판정↔락 경합) / W2 안내 전문 과다(레시피는 src/mcp.rs:533 MCP instructions가 이미 상시 제공 = 이중, 문서 포인터 대체는 doc 읽기가 더 비싸 기각 → 세션 고유값 ~5줄) / W3 raw curl 폴백(186k 사고 계열) → `tunaround task` CLI 백로그를 T1 승격 / W4 codex sup thread 무한 성장 → 요약 시드 로테이션 / W5 watch-results wake 비캐시 재독 → --digest opt-in(기본 즉시 유지, "책임의 이전" 보존) / W6 전역 훅(G1/G2·GREP-FALLBACK) 프롬프트당 2회 발화(tunaRound 밖, ops 점검). 부수 결정=SessionEnd disarm 훅 제거(스캐너 15초 감지=v2-43 "TTL 딜레이 OK"), 훅은 SessionStart 안내+human-ping만 잔존.
 
 ## 2026-07-05 세션12후속: codex 라이브 감독(app-server ws) 설계 (Plan v2-37)
 

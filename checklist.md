@@ -441,8 +441,9 @@
 > 2026-07-11 사용자 승인(세션18 §6 제안 + sup=인프라 인디케이터 재정의 + role 명칭 정리). PR #46 머지 후 T4.
 
 - [x] 설계 정본 작성(v2-44 문서: 스캐너·role 개편·sup 재정의·마이그레이션 5단계).
-- [ ] T1 브로커: report_presence + machine 동기화 + supervised→infra alias + 스캐너 순수부(discover.rs 용도 변경).
-- [ ] T2 win 라이브: presence-scan 데몬 + autoarm 훅 간소화 + codex 래퍼 제거 + win-codex-sup infra 재태깅.
-- [ ] T3 mac 배포(A2A task 위임, 로컬 운영자 게이트).
+- [x] 토큰 위생 감사 W1~W6 통합(§7: 주입 중복·안내 다이어트·task CLI·thread 로테이션·digest·전역 훅 진단).
+- [ ] T1 브로커·코어: report_presence + machine 동기화 + supervised→infra alias + 스캐너 순수부 + `tunaround task` CLI(W3) + watch-results --digest(W5).
+- [ ] T2 win 라이브+토큰 위생: presence-scan 데몬 + 훅 다이어트(W1·W2, 마커 1회 주입·~5줄) + SessionEnd 훅 제거 + codex 래퍼 제거 + win-codex-sup infra 재태깅·thread 로테이션(W4) + 전역 훅 이중 등록 해소(W6).
+- [ ] T3 mac 배포(A2A task 위임, 로컬 운영자 게이트, 훅·로테이션·전역 훅 점검 포함).
 - [ ] T4 대시보드 뷰: 머신 헤더 인프라 도트 + infra 카드 제거(+선택 수신중 뱃지). PR #46 머지 후.
 - [ ] T5 정리: alias 제거·report_candidates 제거·문서 일괄 갱신(a2a-usage §9·§10 등).
