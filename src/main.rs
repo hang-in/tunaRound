@@ -355,10 +355,10 @@ struct PresenceScanArgs {
 #[derive(Args, Debug)]
 struct TaskArgs {
     /// 코어 `/mcp` 절대 URL(예: http://127.0.0.1:8770/mcp). 생략 시 TUNA_BROKER_CORE env.
-    #[arg(long)]
+    #[arg(long, global = true)]
     core: Option<String>,
     /// bearer 토큰(생략 시 TUNA_BROKER_TOKEN env 폴백).
-    #[arg(long)]
+    #[arg(long, global = true)]
     token: Option<String>,
     #[command(subcommand)]
     action: TaskAction,

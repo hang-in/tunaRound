@@ -367,41 +367,40 @@ tunaround poll --core <core-url> --token <TOKEN> --agent <agent-id> \
 
 관리형 `remote-control`/`app-server daemon`은 Unix 전용이지만, raw `codex app-server --listen ws://`는 **크로스플랫폼**(Windows 포함)으로 확인됐습니다. Windows 감독 머신도 이 경로를 그대로 씁니다.
 
-## 11. 세션 자동무장 훅 (v2-40 S1)
+## 11. presence 스캐너 (v2-44, 세션별 자동무장 훅 대체)
 
-Claude Code **SessionStart 훅**으로 세션을 브로커 로스터에 자동 등록한다. 그러면 그 세션(예: 총감독)이 대시보드 로스터에 online으로 뜬다. 수동 `register` + watcher 기동을 매번 안 해도 된다. 정본 [v2-40 설계](../design/v2-40-universal-session-bus_2026-07-06.md).
+**머신당 스캐너 데몬 1개**가 로컬 라이브 세션(claude jsonl + codex rollout)을 스캔해 브로커 로스터에 **일괄 동기화**한다(`report_presence`). v2-40 S1의 세션별 detached poll 무장·codex 래퍼는 폐지됐다(유령 poll·무장 경합·PATH 의존의 근원). 정본 [v2-44 설계](../design/v2-44-presence-scanner-and-roles_2026-07-11.md).
 
-### 켜기 (opt-in)
-
-훅은 `.claude/settings.json`에 배선돼 있으나 **`TUNA_AUTOARM=1`일 때만 동작**한다(안 켜면 조용히 no-op). `TUNA_AUTOARM=1`이라도 토큰이 없으면 무장하지 않고 안내 컨텍스트만 남긴다. 필요한 env는 다음과 같다.
+### 기동 (머신당 1개)
 
 ```bash
-TUNA_AUTOARM=1                 # 마스터 스위치(필수)
-TUNA_BROKER_TOKEN=<TOKEN>      # bearer 토큰(필수. 없으면 무장 skip + 경고만)
-TUNA_BROKER_CORE=http://127.0.0.1:8770/mcp   # 코어 /mcp URL(기본값)
-TUNA_BIN=tunaround            # 실행 경로(기본 PATH의 tunaround; 미설치면 target/debug/tunaround.exe 등 지정)
-TUNA_AUTOARM_AGENT=win-opus-boss   # 로스터 id(기본 <host>-claude-<session8>). 총감독은 고정 지정 권장
-TUNA_AUTOARM_ROLE=boss        # role 태그(기본 session)
-TUNA_AUTOARM_PROJECT=tunaround # project 태그(기본 cwd basename)
+# 토큰은 env로(argv 노출 금지). core 생략 시 TUNA_BROKER_CORE.
+tunaround presence-scan --core http://127.0.0.1:8770/mcp --machine win
+# 옵션: --stale-mins 240(활동 신선도 창) --interval 15 --once(테스트)
 ```
 
-env는 셸/사용자 환경에 두고 **커밋 금지**(레포 PUBLIC). `.claude/settings.json`엔 커맨드만 있고 값은 없다.
+- claude = `~/.claude/projects/*/*.jsonl`, codex = `~/.codex/sessions/**/rollout-*.jsonl`(originator=codex-tui만, exec 헤드리스 제외). temp cwd·자동화 세션은 필터.
+- **일괄 보고 = 전집합 diff**: 스캔에 없는 스캐너 소유(src=scan) 항목은 즉시 제거(유령 원천 차단). 수동 register(워커·infra) 항목은 건드리지 않는다.
+- 러너 프로세스가 확실히 0개면 그 러너 세션 전부 제거(재부팅·전원 종료 즉시 반영). per-session 프로세스 매핑은 후속.
 
-### 동작
+### 훅 (레포 `.claude/hooks/`, 전역 배포해 사용)
 
-1. 세션 시작 → `tuna-autoarm.py`가 `TUNA_AUTOARM=1`을 확인(아니면 즉시 no-op).
-2. detached로 `tunaround poll --core .. --token .. --agent .. --tags "machine,runner=claude,role,project,user,host" --interval 15`를 기동. `poll`이 내부적으로 `register_agent` + 주기 `heartbeat`를 돈다(세션·하네스 수명과 무관하게 상주).
-3. `~/.tunaround/autoarm/<session_id>.json`에 pid를 기록(토큰은 저장 안 함).
-4. `additionalContext`로 세션에 "무장됨 + 수신법(Monitor로 poll 로그 감시 또는 poll_tasks/claim/complete)"을 주입.
-5. 세션 종료 → `tuna-disarm.py`(SessionEnd)가 그 poll 프로세스를 kill. deregister 도구가 없으므로 로스터는 heartbeat 중단 후 **TTL 90초**로 offline 처리된다.
+| 훅 | 역할 |
+|---|---|
+| SessionStart `tuna-autoarm.py` | **안내 ~5줄을 세션당 1회** 주입(마커 파일 보장). 무장 안 함. |
+| UserPromptSubmit `tuna-session-ping.py` | human-ping(총감독 ★ = 최신 사람입력 세션). 자동 이벤트 wake는 제외. |
+| SessionEnd `tuna-disarm.py` | deregister 핑(깨끗한 종료 즉시 반영) + 구식 detached poll 전환기 정리. |
 
-### 발견 ≠ 제어 (한계)
+훅 등록은 **전역(`~/.claude/settings.json`) 한 곳만**. 프로젝트 settings에 중복 등록하면 안내가 다중 주입된다(2026-07-11 3중 발화 실측). `TUNA_AUTOARM=1` + `~/.tunaround/config`(TOKEN·CORE·MACHINE)는 기존과 동일.
 
-자동무장은 **등록·가시성**(로스터 등장)까지다. claude 세션은 외부 제어 소켓이 없어, 이 세션 앞으로 온 task를 **자동 수신**하려면 세션이 스스로 poll 로그를 Monitor로 감시해야 한다(대화형 opt-in). codex는 app-server ws(§10)로 외부 주입이 되므로 다르다. 완전 자동 수신 배선은 후속 단계다.
+### 수신 (presence와 분리)
+
+로스터에 뜨는 것(presence)과 task를 받는 것(수신)은 별개다. 받으려면 세션이 직접:
+`Monitor(command="tunaround poll --core <core> --agent <세션id> --interval 15", persistent=true)` → `TASK <id> ::` 도착 시 claim→답변→complete. MCP 미로드 세션은 `tunaround task poll|claim|get|complete|fail`(CLI, 0토큰 경로).
 
 ### LAN 복제
 
-각 머신이 같은 훅(공유 `TUNA_BROKER_CORE` 지정)을 돌리면 로스터 = 전 머신 라이브 세션이 된다. 원격은 core URL을 브로커 LAN 주소로, 토큰을 동일 값으로 둔다.
+각 머신이 자기 스캐너를 공유 브로커(`--core` = 브로커 LAN 주소, 같은 토큰)로 돌리면 로스터 = 전 머신 라이브 세션. 스캐너 heartbeat 자체가 "그 머신에 A2A가 닿는가"의 도달성 신호다.
 
 ## 12. 위임 행동 규약 (배정을 위임으로 - 책임의 이전)
 

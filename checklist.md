@@ -442,8 +442,9 @@
 
 - [x] 설계 정본 작성(v2-44 문서: 스캐너·role 개편·sup 재정의·마이그레이션 5단계).
 - [x] 토큰 위생 감사 W1~W6 통합(§7: 주입 중복·안내 다이어트·task CLI·thread 로테이션·digest·전역 훅 진단).
-- [ ] T1 브로커·코어: report_presence + machine 동기화 + supervised→infra alias + 스캐너 순수부 + `tunaround task` CLI(W3) + watch-results --digest(W5).
-- [ ] T2 win 라이브+토큰 위생: presence-scan 데몬 + 훅 다이어트(W1·W2, 마커 1회 주입·~5줄) + SessionEnd 훅 제거 + codex 래퍼 제거 + win-codex-sup infra 재태깅·thread 로테이션(W4) + 전역 훅 이중 등록 해소(W6).
+- [x] T1 브로커·코어: report_presence + machine 동기화 + supervised→infra alias + 스캐너 순수부·presence-scan 서브커맨드 + `tunaround task` CLI(W3) + watch-results --digest(W5). (브랜치 feat/v2-44-presence-scanner)
+- [x] T2 코드분: 훅 다이어트(W1·W2, 마커 1회·안내 5줄, 무장 로직 전삭제) + SessionEnd=deregister 핑만 + codex 래퍼 3종 삭제 + 프로젝트 settings 훅 등록 제거. **W1 근본 실측 확정**=전역 settings의 python·python3 이중 엔트리 + 프로젝트 등록(3중 발화).
+- [ ] T2 ops(머지 후): 안정 바이너리 재배포 → presence-scan 데몬 기동 → 구 detached poll 전량 정리 → 전역 훅 재배포+이중 엔트리 정리(W6 포함) → win-codex-sup infra 재태깅·thread 로테이션(W4).
 - [ ] T3 mac 배포(A2A task 위임, 로컬 운영자 게이트, 훅·로테이션·전역 훅 점검 포함).
 - [ ] T4 대시보드 뷰: 머신 헤더 인프라 도트 + infra 카드 제거(+선택 수신중 뱃지). PR #46 머지 후.
 - [ ] T5 정리: alias 제거·report_candidates 제거·문서 일괄 갱신(a2a-usage §9·§10 등).
