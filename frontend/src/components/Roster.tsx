@@ -2,18 +2,7 @@
 // 총괄은 별도 카드가 아니라 대등한 행에 "현재 총괄" 뱃지로 표식(클릭해 지정, 앉는 머신 따라 바뀜).
 import { relativeTime } from '../api'
 import type { SessionRow } from '../activity'
-
-// 태그 표시 순서. 없는 키는 뒤에 알파벳순.
-const TAG_ORDER = ['machine', 'runner', 'role', 'project']
-
-function orderedTags(tags: Record<string, string>): Array<[string, string]> {
-  const known = TAG_ORDER.filter((k) => k in tags).map((k) => [k, tags[k]] as [string, string])
-  const rest = Object.keys(tags)
-    .filter((k) => !TAG_ORDER.includes(k))
-    .sort()
-    .map((k) => [k, tags[k]] as [string, string])
-  return [...known, ...rest]
-}
+import { TAG_ORDER, orderedTags } from './tags'
 
 const N_DOTS = 14
 
@@ -40,8 +29,8 @@ function valueColor(v: string): string {
   return PALETTE[h % PALETTE.length]
 }
 
-// 머신 브랜드 글리프(박스 없이 인라인, 일관 크기).
-function MachineGlyph({ machine }: { machine: string | undefined }) {
+// 머신 브랜드 글리프(박스 없이 인라인, 일관 크기). 워커 섹션도 재사용한다.
+export function MachineGlyph({ machine }: { machine: string | undefined }) {
   if (machine === 'mac') {
     return (
       <svg className="machine-glyph" width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-label="mac">
@@ -69,8 +58,8 @@ function HbClockIcon() {
 }
 
 // 값만 표시하는 뱃지(라벨/타이틀 없이 - 값이 자명: win/claude/supervised/프로젝트명).
-// 무엇의 값인지는 hover title로만 남긴다.
-function TagPill({ k, v }: { k: string; v: string }) {
+// 무엇의 값인지는 hover title로만 남긴다. 워커 섹션도 재사용한다.
+export function TagPill({ k, v }: { k: string; v: string }) {
   return (
     <span className="shield-v shield-solo" style={{ background: valueColor(v) }} title={k}>
       {v}
