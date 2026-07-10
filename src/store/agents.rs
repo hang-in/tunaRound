@@ -50,6 +50,30 @@ pub fn selector_matches(tags: &BTreeMap<String, String>, selector: &BTreeMap<Str
     selector.iter().all(|(k, v)| tags.get(k) == Some(v))
 }
 
+/// 레거시 role 태그값 정규화(설계 v2-44 §4): `supervised`(v2-37 감독 데몬) → `infra`.
+/// 등록(태그)과 발견(셀렉터) 양쪽에 적용해, 구 값으로 뜬 watcher와 구 셀렉터를 쓰는 dispatcher가
+/// 유예 기간 동안 신 값과 같은 결과를 얻게 한다(T5에서 alias 제거 예정).
+pub fn normalize_legacy_tags(tags: &mut BTreeMap<String, String>) {
+    if let Some(role) = tags.get_mut("role")
+        && role == "supervised"
+    {
+        *role = "infra".to_string();
+    }
+}
+
+/// presence 스캐너가 보고하는 라이브 세션 한 건(설계 v2-44 §6). 브로커 sync_presence의 입력.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PresenceUpsert {
+    /// 세션 id(claude=jsonl stem, codex=rollout 파일의 uuid). roster uuid와 같은 공간.
+    pub uuid: String,
+    /// 러너 종류(claude | codex).
+    pub runner: String,
+    /// 추정 프로젝트(불명이면 None).
+    pub project: Option<String>,
+    /// 로스터 가독용 표시 이름(예: win-claude-tunaRound).
+    pub display_name: Option<String>,
+}
+
 /// last_heartbeat가 now 기준 ttl_secs 이내면 online으로 판정한다. age_secs 파싱 실패(포맷 불량)는
 /// 검증 불가로 간주해 보수적으로 offline 처리한다.
 pub fn is_online(last_heartbeat: &str, now: &str, ttl_secs: i64) -> bool {

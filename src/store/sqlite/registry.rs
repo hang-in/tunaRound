@@ -10,10 +10,11 @@ impl SqliteStore {
     pub fn register_agent(
         &self,
         uuid: &str,
-        tags: BTreeMap<String, String>,
+        mut tags: BTreeMap<String, String>,
         display_name: Option<String>,
         now: &str,
     ) {
+        crate::store::agents::normalize_legacy_tags(&mut tags); // supervised→infra alias(v2-44 §7)
         let mut roster = self.agent_roster.borrow_mut();
         let human_input_at = roster.get(uuid).and_then(|e| e.human_input_at.clone());
         roster.insert(
@@ -26,6 +27,57 @@ impl SqliteStore {
                 human_input_at,
             },
         );
+    }
+
+    /// presence 스캐너 일괄 동기화(설계 v2-44 §6): 보고된 세션은 upsert(human_input_at 보존),
+    /// 같은 machine의 스캐너 소유(`src=scan`) 항목 중 보고에 없는 것은 제거한다(유령 원천 차단).
+    /// 소유 태그로 격리하므로 수동 register(워커·infra·수신 poll) 항목은 건드리지 않는다.
+    /// 반환=(upsert 수, 제거 수).
+    pub fn sync_presence(
+        &self,
+        machine: &str,
+        sessions: &[crate::store::agents::PresenceUpsert],
+        now: &str,
+    ) -> (usize, usize) {
+        let mut roster = self.agent_roster.borrow_mut();
+        let reported: std::collections::HashSet<&str> =
+            sessions.iter().map(|s| s.uuid.as_str()).collect();
+        let stale: Vec<String> = roster
+            .values()
+            .filter(|e| {
+                e.tags.get("machine").map(String::as_str) == Some(machine)
+                    && e.tags.get("src").map(String::as_str) == Some("scan")
+                    && !reported.contains(e.uuid.as_str())
+            })
+            .map(|e| e.uuid.clone())
+            .collect();
+        let removed = stale.len();
+        for uuid in stale {
+            roster.remove(&uuid);
+        }
+        for s in sessions {
+            let human_input_at = roster.get(&s.uuid).and_then(|e| e.human_input_at.clone());
+            let mut tags = BTreeMap::new();
+            tags.insert("machine".to_string(), machine.to_string());
+            tags.insert("runner".to_string(), s.runner.clone());
+            tags.insert("role".to_string(), "session".to_string());
+            tags.insert("session".to_string(), s.uuid.clone());
+            tags.insert("src".to_string(), "scan".to_string());
+            if let Some(p) = &s.project {
+                tags.insert("project".to_string(), p.clone());
+            }
+            roster.insert(
+                s.uuid.clone(),
+                AgentEntry {
+                    uuid: s.uuid.clone(),
+                    tags,
+                    display_name: s.display_name.clone(),
+                    last_heartbeat: now.to_string(),
+                    human_input_at,
+                },
+            );
+        }
+        (sessions.len(), removed)
     }
 
     /// heartbeat: 존재하면 last_heartbeat 갱신 후 true, 미등록 uuid면 false(등록 선행 필요).
@@ -64,12 +116,15 @@ impl SqliteStore {
         now: &str,
         ttl_secs: i64,
     ) -> Vec<AgentEntry> {
+        // 셀렉터에도 레거시 alias 적용(구 role=supervised 셀렉터가 신 infra 항목을 찾게, v2-44 §7).
+        let mut selector = selector.clone();
+        crate::store::agents::normalize_legacy_tags(&mut selector);
         let mut out: Vec<AgentEntry> = self
             .agent_roster
             .borrow()
             .values()
             .filter(|entry| {
-                crate::store::agents::selector_matches(&entry.tags, selector)
+                crate::store::agents::selector_matches(&entry.tags, &selector)
                     && crate::store::agents::is_online(&entry.last_heartbeat, now, ttl_secs)
             })
             .cloned()
@@ -253,6 +308,67 @@ mod tests {
         // now 기준 1시간 경과, ttl 180초 -> stale이라 제외되어야 함.
         let found = db.list_candidates("2026-07-06 10:00:00", 180);
         assert!(found.is_empty(), "stale 후보는 list_candidates에서 제외되어야 함");
+    }
+
+    #[test]
+    fn register_normalizes_supervised_to_infra_and_selector_alias_matches() {
+        let db = SqliteStore::open_memory().unwrap();
+        // 구식 watcher 등록(role=supervised) → infra로 정규화 저장.
+        db.register_agent("win-codex-sup", tags(&[("role", "supervised"), ("machine", "win")]), None, "2026-07-11 10:00:00");
+        let now = "2026-07-11 10:00:10";
+        let all = db.list_agents(&BTreeMap::new(), now, 90);
+        assert_eq!(all[0].tags.get("role").map(String::as_str), Some("infra"));
+        // 구 셀렉터(supervised)와 신 셀렉터(infra)가 같은 결과(유예 기간 계약).
+        let legacy = db.resolve_selector(&tags(&[("role", "supervised")]), now, 90);
+        let new = db.resolve_selector(&tags(&[("role", "infra")]), now, 90);
+        assert_eq!(legacy, vec!["win-codex-sup".to_string()]);
+        assert_eq!(legacy, new);
+    }
+
+    fn presence(uuid: &str, runner: &str, project: Option<&str>) -> crate::store::agents::PresenceUpsert {
+        crate::store::agents::PresenceUpsert {
+            uuid: uuid.to_string(),
+            runner: runner.to_string(),
+            project: project.map(str::to_string),
+            display_name: project.map(|p| format!("win-{runner}-{p}")),
+        }
+    }
+
+    #[test]
+    fn sync_presence_upserts_and_removes_only_scan_owned() {
+        let db = SqliteStore::open_memory().unwrap();
+        let t0 = "2026-07-11 10:00:00";
+        // 수동 등록 항목(스캐너 소유 아님): infra watcher + 타 머신 세션.
+        db.register_agent("win-codex-sup", tags(&[("machine", "win"), ("role", "infra")]), None, t0);
+        db.register_agent("mac-sess", tags(&[("machine", "mac"), ("role", "session"), ("src", "scan")]), None, t0);
+        // 1차 스캔 보고: s1, s2.
+        let (up, rm) = db.sync_presence("win", &[presence("s1", "claude", Some("tunaRound")), presence("s2", "codex", None)], t0);
+        assert_eq!((up, rm), (2, 0));
+        let all = db.list_agents(&BTreeMap::new(), "2026-07-11 10:00:05", 90);
+        assert_eq!(all.len(), 4);
+        let s1 = all.iter().find(|e| e.uuid == "s1").unwrap();
+        assert_eq!(s1.tags.get("role").map(String::as_str), Some("session"));
+        assert_eq!(s1.tags.get("src").map(String::as_str), Some("scan"));
+        assert_eq!(s1.tags.get("project").map(String::as_str), Some("tunaRound"));
+        assert_eq!(s1.display_name.as_deref(), Some("win-claude-tunaRound"));
+        // 2차 스캔: s2가 사라짐(exit) → 제거. 수동 등록(win-codex-sup)·타 머신(mac-sess)은 불변.
+        let (up2, rm2) = db.sync_presence("win", &[presence("s1", "claude", Some("tunaRound"))], "2026-07-11 10:00:15");
+        assert_eq!((up2, rm2), (1, 1));
+        let after: Vec<String> = db.list_agents(&BTreeMap::new(), "2026-07-11 10:00:20", 90).into_iter().map(|e| e.uuid).collect();
+        assert_eq!(after, vec!["mac-sess".to_string(), "s1".to_string(), "win-codex-sup".to_string()]);
+    }
+
+    #[test]
+    fn sync_presence_preserves_human_input_at() {
+        let db = SqliteStore::open_memory().unwrap();
+        let t0 = "2026-07-11 10:00:00";
+        db.sync_presence("win", &[presence("s1", "claude", None)], t0);
+        assert!(db.mark_human_input("s1", "2026-07-11 10:00:03"));
+        // 다음 스캔 upsert가 총감독 신호를 지우면 ★가 튄다(v2-42 계약과 동일하게 보존).
+        db.sync_presence("win", &[presence("s1", "claude", None)], "2026-07-11 10:00:15");
+        let e = &db.list_agents(&BTreeMap::new(), "2026-07-11 10:00:20", 90)[0];
+        assert_eq!(e.human_input_at.as_deref(), Some("2026-07-11 10:00:03"));
+        assert_eq!(e.last_heartbeat, "2026-07-11 10:00:15");
     }
 
     #[test]

@@ -1,34 +1,3 @@
 {
-  "hooks": {
-    "SessionStart": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python \"${CLAUDE_PROJECT_DIR}/.claude/hooks/tuna-autoarm.py\" || python3 \"${CLAUDE_PROJECT_DIR}/.claude/hooks/tuna-autoarm.py\""
-          }
-        ]
-      }
-    ],
-    "SessionEnd": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python \"${CLAUDE_PROJECT_DIR}/.claude/hooks/tuna-disarm.py\" || python3 \"${CLAUDE_PROJECT_DIR}/.claude/hooks/tuna-disarm.py\""
-          }
-        ]
-      }
-    ],
-    "UserPromptSubmit": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python \"${CLAUDE_PROJECT_DIR}/.claude/hooks/tuna-session-ping.py\" || python3 \"${CLAUDE_PROJECT_DIR}/.claude/hooks/tuna-session-ping.py\""
-          }
-        ]
-      }
-    ]
-  }
+  "hooks": {}
 }

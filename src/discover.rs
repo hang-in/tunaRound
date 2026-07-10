@@ -12,6 +12,8 @@ pub struct DiscoveredSession {
     pub project: Option<String>,
     /// jsonl mtime 경과 초(세션 활동 신선도).
     pub age_secs: i64,
+    /// 세션의 원본 cwd(jsonl에서 추출, 불명이면 None). presence 스캐너의 home/temp 정규화용(v2-44).
+    pub cwd: Option<String>,
 }
 
 /// cwd 문자열에서 프로젝트명(마지막 경로 세그먼트)을 뽑는다. `/`·`\` 모두 분리자로 보고 후행 분리자·
@@ -151,7 +153,7 @@ pub fn enumerate_claude_sessions(
                 continue;
             }
             let project = cwd.as_deref().and_then(project_from_cwd);
-            out.push(DiscoveredSession { uuid: uuid.to_string(), project, age_secs: age });
+            out.push(DiscoveredSession { uuid: uuid.to_string(), project, age_secs: age, cwd });
         }
     }
     out.sort_by(|a, b| a.uuid.cmp(&b.uuid));
@@ -307,8 +309,8 @@ mod tests {
     #[test]
     fn sessions_to_candidates_json_shapes_array() {
         let sessions = vec![
-            DiscoveredSession { uuid: "s1".into(), project: Some("tunaround".into()), age_secs: 5 },
-            DiscoveredSession { uuid: "s2".into(), project: None, age_secs: 9 },
+            DiscoveredSession { uuid: "s1".into(), project: Some("tunaround".into()), age_secs: 5, cwd: None },
+            DiscoveredSession { uuid: "s2".into(), project: None, age_secs: 9, cwd: None },
         ];
         let json = sessions_to_candidates_json(&sessions, "win");
         let arr = json.as_array().unwrap();

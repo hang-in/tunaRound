@@ -450,6 +450,41 @@ impl TunaSearchServer {
         }
     }
 
+    #[tool(description = "머신당 presence 스캐너가 라이브 세션 전집합을 일괄 보고한다(upsert+소유분 제거, v2-44).")]
+    async fn report_presence(
+        &self,
+        Parameters(p): Parameters<ReportPresenceParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let Some(store) = self.a2a_store.clone() else {
+            return Ok(CallToolResult::success(vec![Content::text(
+                "A2A task 저장소 미구성(report_presence 비활성)".to_string(),
+            )]));
+        };
+        let ReportPresenceParams { machine, sessions } = p;
+        let outcome = tokio::task::spawn_blocking(move || {
+            let store = store.lock().unwrap_or_else(|e| e.into_inner());
+            let now = store.now()?;
+            let entries: Vec<crate::store::agents::PresenceUpsert> = sessions
+                .into_iter()
+                .map(|s| crate::store::agents::PresenceUpsert {
+                    uuid: s.uuid,
+                    runner: s.runner,
+                    project: s.project,
+                    display_name: s.display_name,
+                })
+                .collect();
+            let (upserted, removed) = store.sync_presence(&machine, &entries, &now);
+            Ok::<String, String>(format!("presence 동기화(machine={machine}): upsert {upserted}건, 제거 {removed}건"))
+        })
+        .await
+        .unwrap_or_else(|e| Err(format!("작업 실패: {e}")));
+        // 동기화 실패(now 오류)를 success로 위장하지 않는다(R1 계약과 동일).
+        match outcome {
+            Ok(t) => Ok(CallToolResult::success(vec![Content::text(t)])),
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!("presence 동기화 실패: {e}"))])),
+        }
+    }
+
     #[tool(description = "발견된(미무장) 세션 후보를 조회한다(armed overlay: online roster 소속이면 armed).")]
     async fn list_candidates(
         &self,
@@ -534,6 +569,7 @@ impl ServerHandler for TunaSearchServer {
                  워커/세션은 register_agent(uuid, tags?, display_name?)로 로스터에 등록하고 heartbeat(uuid)로 주기 갱신하며, \
                  dispatcher는 list_agents(selector?)로 online 에이전트를 발견합니다. \
                  발견 리포터는 report_candidates(candidates)로 미무장 세션 후보를 보고하고 list_candidates()로 후보를 조회합니다(armed=online roster 소속). \
+                 머신당 presence 스캐너는 report_presence(machine, sessions)로 라이브 세션 전집합을 일괄 동기화합니다(v2-44). \
                  브로커 운영자는 tasks()로 전체 열린 task를 미배달(no-consumer?)/고착(stuck?) 주석과 함께 조망할 수 있습니다."
                     .to_string(),
             )
