@@ -450,3 +450,4 @@
 - [ ] T4 대시보드 뷰: 머신 헤더 인프라 도트 + infra 카드 제거(+선택 수신중 뱃지). PR #46 머지 후.
 - [ ] T4.5 main.rs 분할 refactor(사용자 확정 2026-07-11, T5 전): fn main() ~1,330줄의 서브커맨드 인라인 루프를 각 도메인 모듈 run()으로 이동(watch_results::run 패턴 답습) + 인자 구조체 src/cli/ 분리. 별도 PR, 기계적 이동만(동작 불변).
 - [ ] T5 정리: alias 제거·report_candidates 제거·문서 일괄 갱신(a2a-usage §9·§10 등).
+- [ ] v2-45 후보(백로그, 사용자 승인 2026-07-11): **mesh 기억화** = task 종결 시 결과를 messages/FTS로 색인(search_context로 위임 이력 검색) + 종결 task retention(아카이브=색인 후 슬림화). 부수 = **Redis 의존 단순화**(적극 활용 비권고 확정: observe 스냅샷도 SQLite로 흡수해 Redis 완전 opt-out 가능하게). T5 뒤 설계.
