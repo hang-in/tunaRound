@@ -447,4 +447,5 @@
 - [ ] T2 ops(머지 후): 안정 바이너리 재배포 → presence-scan 데몬 기동 → 구 detached poll 전량 정리 → 전역 훅 재배포+이중 엔트리 정리(W6 포함) → win-codex-sup infra 재태깅·thread 로테이션(W4).
 - [ ] T3 mac 배포(A2A task 위임, 로컬 운영자 게이트, 훅·로테이션·전역 훅 점검 포함).
 - [ ] T4 대시보드 뷰: 머신 헤더 인프라 도트 + infra 카드 제거(+선택 수신중 뱃지). PR #46 머지 후.
+- [ ] T4.5 main.rs 분할 refactor(사용자 확정 2026-07-11, T5 전): fn main() ~1,330줄의 서브커맨드 인라인 루프를 각 도메인 모듈 run()으로 이동(watch_results::run 패턴 답습) + 인자 구조체 src/cli/ 분리. 별도 PR, 기계적 이동만(동작 불변).
 - [ ] T5 정리: alias 제거·report_candidates 제거·문서 일괄 갱신(a2a-usage §9·§10 등).
