@@ -468,7 +468,8 @@ def ensure_codex_armed(session_id: str, cwd: str, display_name=None, project=Non
     machine = cfg("TUNA_MACHINE") or ("win" if os.name == "nt" else "unix")
 
     proj = project or cfg("TUNA_AUTOARM_PROJECT") or project_from_cwd(cwd)
-    role = cfg("TUNA_AUTOARM_ROLE", "supervised")
+    # 기본 role=session(claude TUI와 통일). 감독 watcher(win-codex-sup류)는 --tags로 supervised 명시.
+    role = cfg("TUNA_AUTOARM_ROLE", "session")
     agent = session_id
     display = display_name or cfg("TUNA_AUTOARM_AGENT") or f"{machine}-codex-{proj}"
     interval = cfg("TUNA_AUTOARM_INTERVAL", "15")
