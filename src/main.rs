@@ -8,6 +8,12 @@ use tunaround::repl::{parse_command, Session, StepOutcome};
 use tunaround::runner::claude::ClaudeRunner;
 use tunaround::runner::codex::CodexRunner;
 
+// env 키 상수: 문자열 리터럴 직접 조회는 오타가 컴파일 타임에 안 잡힌다(DeepSource RS-E1011).
+const ENV_BROKER_CORE: &str = "TUNA_BROKER_CORE";
+const ENV_BROKER_TOKEN: &str = "TUNA_BROKER_TOKEN";
+const ENV_USERPROFILE: &str = "USERPROFILE";
+const ENV_HOME: &str = "HOME";
+
 /// tunaRound CLI. 서브커맨드 없이 실행하면 기본 REPL(chat)로 동작한다(하위호환: 인자 없는 `tunaround` = 지금처럼 REPL).
 #[derive(Parser)]
 #[command(name = "tunaround", version, about = "tunaRound - 2-에이전트 설계 토론 REPL")]
@@ -999,7 +1005,7 @@ fn main() {
             profile_name = a.common.profile;
             profile_capable = true;
             // 토큰은 --token 우선, 없으면 TUNA_BROKER_TOKEN env 폴백(argv 노출 회피).
-            serve_token = a.token.or_else(|| std::env::var("TUNA_BROKER_TOKEN").ok());
+            serve_token = a.token.or_else(|| std::env::var(ENV_BROKER_TOKEN).ok());
             core_addr = Some(a.addr);
             db_path = a.common.db;
         }
@@ -1007,7 +1013,7 @@ fn main() {
         Commands::Serve(a) => {
             serve_mcp_addr = Some(a.addr);
             // 토큰은 --token 우선, 없으면 TUNA_BROKER_TOKEN env 폴백(argv 노출 회피).
-            serve_token = a.token.or_else(|| std::env::var("TUNA_BROKER_TOKEN").ok());
+            serve_token = a.token.or_else(|| std::env::var(ENV_BROKER_TOKEN).ok());
             db_path = a.db;
         }
         #[cfg(feature = "mcp")]
@@ -1429,7 +1435,7 @@ fn main() {
 
         let result = rt.block_on(async {
             // 브로커 토큰은 --token 우선, 없으면 TUNA_BROKER_TOKEN env 폴백(argv 노출 회피, serve/poll과 동일 계약).
-            let broker_token = a.token.clone().or_else(|| std::env::var("TUNA_BROKER_TOKEN").ok());
+            let broker_token = a.token.clone().or_else(|| std::env::var(ENV_BROKER_TOKEN).ok());
             let client = tunaround::mcp_client::McpHttpClient::connect(a.core.clone(), broker_token).await?;
             tunaround::worker::run_worker_loop(
                 &client,
@@ -1458,7 +1464,7 @@ fn main() {
     if let Some(a) = poll_args {
         let result = rt.block_on(async {
             // 토큰은 --token 우선, 없으면 TUNA_BROKER_TOKEN env 폴백(argv 노출 회피용).
-            let token = a.token.clone().or_else(|| std::env::var("TUNA_BROKER_TOKEN").ok());
+            let token = a.token.clone().or_else(|| std::env::var(ENV_BROKER_TOKEN).ok());
             let client = tunaround::mcp_client::McpHttpClient::connect(a.core.clone(), token).await?;
             tunaround::worker::run_poll_loop(
                 &client,
@@ -1483,7 +1489,7 @@ fn main() {
     if let Some(a) = discover_args {
         let result = rt.block_on(async {
             // 토큰은 --token 우선, 없으면 TUNA_BROKER_TOKEN env 폴백(argv 노출 회피용).
-            let token = a.token.clone().or_else(|| std::env::var("TUNA_BROKER_TOKEN").ok());
+            let token = a.token.clone().or_else(|| std::env::var(ENV_BROKER_TOKEN).ok());
             let client = tunaround::mcp_client::McpHttpClient::connect(a.core.clone(), token).await?;
             let projects_dir = match a.projects_dir.clone() {
                 Some(p) => std::path::PathBuf::from(tunaround::config::expand_home(&p)),
@@ -1539,9 +1545,9 @@ fn main() {
             let core = a
                 .core
                 .clone()
-                .or_else(|| std::env::var("TUNA_BROKER_CORE").ok())
+                .or_else(|| std::env::var(ENV_BROKER_CORE).ok())
                 .ok_or_else(|| "--core 또는 TUNA_BROKER_CORE가 필요합니다".to_string())?;
-            let token = a.token.clone().or_else(|| std::env::var("TUNA_BROKER_TOKEN").ok());
+            let token = a.token.clone().or_else(|| std::env::var(ENV_BROKER_TOKEN).ok());
             let client = tunaround::mcp_client::McpHttpClient::connect(core, token).await?;
             let machine = a.machine.clone().unwrap_or_else(tunaround::discover::default_machine);
             let projects_dir = match a.projects_dir.clone() {
@@ -1552,8 +1558,8 @@ fn main() {
                 Some(p) => Some(std::path::PathBuf::from(tunaround::config::expand_home(&p))),
                 None => tunaround::presence_scan::default_codex_sessions_dir(),
             };
-            let home = std::env::var("USERPROFILE")
-                .or_else(|_| std::env::var("HOME"))
+            let home = std::env::var(ENV_USERPROFILE)
+                .or_else(|_| std::env::var(ENV_HOME))
                 .ok()
                 .map(std::path::PathBuf::from);
             let stale = std::time::Duration::from_secs(a.stale_mins.saturating_mul(60));
@@ -1615,9 +1621,9 @@ fn main() {
             let core = a
                 .core
                 .clone()
-                .or_else(|| std::env::var("TUNA_BROKER_CORE").ok())
+                .or_else(|| std::env::var(ENV_BROKER_CORE).ok())
                 .ok_or_else(|| "--core 또는 TUNA_BROKER_CORE가 필요합니다".to_string())?;
-            let token = a.token.clone().or_else(|| std::env::var("TUNA_BROKER_TOKEN").ok());
+            let token = a.token.clone().or_else(|| std::env::var(ENV_BROKER_TOKEN).ok());
             let client = tunaround::mcp_client::McpHttpClient::connect(core, token).await?;
             let out = match &a.action {
                 TaskAction::Poll { agent } => client.poll_tasks(agent).await?,

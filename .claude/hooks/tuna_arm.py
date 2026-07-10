@@ -128,7 +128,7 @@ def pid_alive(pid: int) -> bool:
         if os.name == "nt":
             out = subprocess.run(
                 ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
-                capture_output=True, text=True, timeout=5,
+                capture_output=True, text=True, timeout=5, check=False,
             )
             return str(pid) in out.stdout.split()
         os.kill(pid, 0)

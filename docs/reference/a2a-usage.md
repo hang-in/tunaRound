@@ -374,9 +374,9 @@ tunaround poll --core <core-url> --token <TOKEN> --agent <agent-id> \
 ### 기동 (머신당 1개)
 
 ```bash
-# 토큰은 env로(argv 노출 금지). core 생략 시 TUNA_BROKER_CORE.
-tunaround presence-scan --core http://127.0.0.1:8770/mcp --machine win
-# 옵션: --stale-mins 240(활동 신선도 창) --interval 15 --once(테스트)
+# 코어 주소·토큰은 env로(TUNA_BROKER_CORE·TUNA_BROKER_TOKEN, argv 노출 금지).
+tunaround presence-scan --machine win
+# 옵션: --core <broker-mcp-url>(env 대신 명시) --stale-mins 240(활동 신선도 창) --interval 15 --once(테스트)
 ```
 
 - claude = `~/.claude/projects/*/*.jsonl`, codex = `~/.codex/sessions/**/rollout-*.jsonl`(originator=codex-tui만, exec 헤드리스 제외). temp cwd·자동화 세션은 필터.

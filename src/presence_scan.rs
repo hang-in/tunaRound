@@ -134,29 +134,46 @@ pub fn enumerate_claude_live(
         .collect()
 }
 
-/// 러너 프로세스 수를 센다(win=tasklist CSV, unix=ps comm). 조회 실패는 None(판단 불가 = 게이트 안 함).
+/// 러너 프로세스 수를 센다(win=tasklist CSV, unix=ps args). 조회 실패는 None(판단 불가 = 게이트 안 함).
 /// per-session 매핑이 아니라 러너 단위 러프 체크다: 0개면 그 러너 세션 전부 죽음(재부팅·전원 종료 즉시 반영).
 pub fn count_runner_processes(name: &str) -> Option<usize> {
-    let out = if cfg!(target_os = "windows") {
+    let windows = cfg!(target_os = "windows");
+    let out = if windows {
         std::process::Command::new("tasklist").args(["/FO", "CSV", "/NH"]).output()
     } else {
-        std::process::Command::new("ps").args(["-axco", "comm="]).output()
+        // `-c`(comm 축약)는 procps/busybox 미이식 + comm은 node 래퍼로 뜨는 러너를 놓친다
+        // (놓치면 Some(0) → 게이트가 산 세션을 전부 제거, 봇리뷰 Major). 전체 argv로 판정한다.
+        std::process::Command::new("ps").args(["-ax", "-o", "args="]).output()
     }
     .ok()?;
     if !out.status.success() {
         return None;
     }
-    let text = String::from_utf8_lossy(&out.stdout).to_lowercase();
+    Some(count_matching_lines(&String::from_utf8_lossy(&out.stdout), name, windows))
+}
+
+/// 프로세스 목록 텍스트에서 러너 라인을 센다(순수부, count_runner_processes에서 분리).
+/// win = CSV 첫 필드(이미지명) / unix = argv 앞 3개 토큰의 **basename** 매칭(경로·`node /path/claude`
+/// 인터프리터 래퍼 커버). 뒤쪽 인자의 우연 매칭(`--runner claude` 등)은 게이트 미발동 방향 오차라
+/// 허용하되, 3토큰 상한으로 과확장을 막는다.
+pub fn count_matching_lines(text: &str, name: &str, windows: bool) -> usize {
+    let text = text.to_lowercase();
     let needle = name.to_lowercase();
-    Some(
-        text.lines()
-            .filter(|l| {
-                // win CSV 첫 필드("claude.exe") / unix comm 라인("claude")에서 이름 매칭.
-                let head = l.split(',').next().unwrap_or(l).trim_matches('"').trim();
-                head == needle || head == format!("{needle}.exe")
-            })
-            .count(),
-    )
+    let exe = format!("{needle}.exe");
+    let matches_token = |tok: &str| {
+        let tok = tok.trim_matches('"').trim();
+        let base = std::path::Path::new(tok).file_name().and_then(|f| f.to_str()).unwrap_or(tok);
+        base == needle || base == exe
+    };
+    text.lines()
+        .filter(|l| {
+            if windows {
+                l.split(',').next().is_some_and(matches_token)
+            } else {
+                l.split_whitespace().take(3).any(matches_token)
+            }
+        })
+        .count()
 }
 
 /// 프로세스 게이트: 해당 러너 프로세스가 확실히 0개면(count=Some(0)) 그 러너 세션을 전부 제외한다.
@@ -211,6 +228,19 @@ mod tests {
             Some("tunaRound".to_string())
         );
         assert_eq!(project_from_cwd_normalized(None, Some(home)), None);
+    }
+
+    #[test]
+    fn count_matching_lines_covers_paths_wrappers_and_csv() {
+        // unix: 단독 실행 / 전체 경로 comm / node 인터프리터 래퍼 / 뒤쪽 인자 매칭(3토큰 밖)은 제외.
+        let unix = "claude --resume abc\n/usr/local/bin/claude\nnode /home/u/.npm/bin/claude --flag\nps -ax\ntunaround poll --tags a b runner=claude\n";
+        assert_eq!(count_matching_lines(unix, "claude", false), 3);
+        // node 래퍼가 2번째 토큰이 아니라도 3토큰 안이면 잡힌다.
+        assert_eq!(count_matching_lines("env FOO=1 /opt/claude serve\n", "claude", false), 1);
+        // win CSV: 이미지명 필드만 본다.
+        let win = "\"claude.exe\",\"123\",\"Console\"\n\"notepad.exe\",\"9\",\"Console\"\n\"x.exe\",\"1\",\"claude\"\n";
+        assert_eq!(count_matching_lines(win, "claude", true), 1);
+        assert_eq!(count_matching_lines(win, "codex", true), 0);
     }
 
     #[test]
