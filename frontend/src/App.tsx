@@ -126,8 +126,8 @@ export default function App() {
     return byAgent
   }, [taskLatest])
 
-  // 로스터 = online(heartbeat) 세션 전부(관리자·워커 분리). 총감독 = human_input_at 최신(설계 v2-43).
-  const { rows, workers, autoBossUuid } = useMemo(() => buildRoster(agents), [agents])
+  // 로스터 = online(heartbeat) 세션 전부(세션·워커·infra 분리). 총감독 = human_input_at 최신(설계 v2-43).
+  const { rows, workers, infra, autoBossUuid } = useMemo(() => buildRoster(agents), [agents])
 
   // 목표 제출 대상 선택(App 소유): 로스터 상세의 "이 세션에 목표"와 GoalForm이 공유한다.
   const [goalTargets, setGoalTargets] = useState<Record<string, boolean>>({})
@@ -146,7 +146,7 @@ export default function App() {
           completedCount={completedCount}
           failedCount={failedCount}
         />
-        <Roster rows={rows} pulses={pulses} autoBossUuid={autoBossUuid} onAddTarget={addGoalTarget} />
+        <Roster rows={rows} infra={infra} pulses={pulses} autoBossUuid={autoBossUuid} onAddTarget={addGoalTarget} />
         <WorkerSection workers={workers} activeByAgent={activeByAgent} />
         <Feed onConnectedChange={handleConnected} onEvent={handleEvent} />
         <GoalForm

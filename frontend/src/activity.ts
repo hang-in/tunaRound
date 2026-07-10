@@ -38,8 +38,9 @@ function assignLabels(rows: SessionRow[]): void {
 }
 
 export type RosterView = {
-  rows: SessionRow[] // 관리자(감독) 세션 = role!=worker
+  rows: SessionRow[] // 세션 카드 = role=session(+미지정)
   workers: SessionRow[] // 헤드리스 워커 = role=worker(별 섹션, 설계 v2-43 §5-4)
+  infra: SessionRow[] // 머신 상주 데몬 = role=infra(카드 없음, 머신 헤더 도트로. 설계 v2-44 §5)
   autoBossUuid: string // 총감독 = online 중 human_input_at 최신. 없으면 ''.
 }
 
@@ -60,8 +61,9 @@ export function buildRoster(agents: Agent[]): RosterView {
       label: '',
     }))
   assignLabels(all) // 라벨 -B/-C 증분은 관리자·워커 통틀어 유일해야 한다.
-  const rows = all.filter((r) => r.tags.role !== 'worker')
+  const rows = all.filter((r) => r.tags.role !== 'worker' && r.tags.role !== 'infra')
   const workers = all.filter((r) => r.tags.role === 'worker')
+  const infra = all.filter((r) => r.tags.role === 'infra')
 
   let autoBossUuid = ''
   let best = ''
@@ -72,5 +74,5 @@ export function buildRoster(agents: Agent[]): RosterView {
       autoBossUuid = r.uuid
     }
   }
-  return { rows, workers, autoBossUuid }
+  return { rows, workers, infra, autoBossUuid }
 }
