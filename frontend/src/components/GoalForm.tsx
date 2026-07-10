@@ -39,14 +39,13 @@ export default function GoalForm({ agents, remoteViewer, selected, onChangeSelec
 
   // 목표 대상 = claude 세션 + codex 주입 infra. 제외 3종(전부 no-consumer 방지):
   //   워커(work 데몬이 별도 소비) / presence 스캐너(task 처리 자리 아님) /
-  //   codex 세션 카드(자기 poll이 없어 수신 불가 - codex로 던지는 경로는 codex-inject watcher가 claim).
-  const online = agents.filter(
-    (a) =>
-      a.online &&
-      a.tags?.role !== 'worker' &&
-      (a.tags?.role !== 'infra' || a.tags?.purpose === 'codex-inject') &&
-      !(a.tags?.role === 'session' && a.tags?.runner === 'codex'),
-  )
+  //   codex 세션·role 미지정 codex(자기 poll이 없어 수신 불가 - codex 경로는 codex-inject watcher만).
+  const online = agents.filter((a) => {
+    if (!a.online || a.tags?.role === 'worker') return false
+    if (a.tags?.role === 'infra') return a.tags?.purpose === 'codex-inject'
+    // role 미지정도 세션 취급이므로 runner 기준으로 codex를 막는다(봇리뷰: undefined role 누락).
+    return a.tags?.runner !== 'codex'
+  })
 
   if (remoteViewer) {
     return (
