@@ -40,6 +40,8 @@ def main() -> int:
     # 후행 슬래시를 먼저 제거해 "http://x/mcp/"처럼 끝나도 /mcp가 정확히 잘리게 한다.
     c = core.rstrip("/")
     base = c[:-4] if c.endswith("/mcp") else c
+    if not base.startswith(("http://", "https://")):
+        return 0  # loopback HTTP 전용(file: 등 비정상 스킴 차단)
     url = base + "/dashboard/human-ping"
     token = tuna_arm.cfg("TUNA_BROKER_TOKEN", "")
     body = json.dumps({"agent": agent}).encode()

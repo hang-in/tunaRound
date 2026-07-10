@@ -85,14 +85,40 @@ def state_dir() -> Path:
 
 
 def project_from_cwd(cwd) -> str:
-    """cwd 폴더명 → project 태그. home에서 띄운 세션은 개인 폴더명(사용자명) 대신 'home'."""
+    """cwd 폴더명 → project 태그. home에서 띄운 세션은 개인 폴더명(사용자명) 대신 'home'.
+
+    cwd가 비면 'unknown'(빈 문자열이 Path 해석으로 훅 프로세스의 CWD로 둔갑하는 것 방지)."""
     try:
-        p = Path(cwd or "").resolve()
+        if not cwd:
+            return "unknown"
+        p = Path(cwd).resolve()
         if p == Path.home().resolve():
             return "home"
         return p.name or "unknown"
     except Exception:
         return "unknown"
+
+
+def is_tunaround_pid(pid: int) -> bool:
+    """해당 PID가 실제 tunaround 프로세스인지 확인한다(PID 재사용으로 엉뚱한 프로세스를 죽이지 않게)."""
+    try:
+        if os.name == "nt":
+            out = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+                capture_output=True, text=True, timeout=5, check=False,
+            )
+            return "tunaround" in out.stdout.lower()
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as f:
+                return b"tunaround" in f.read().lower()
+        except OSError:
+            out = subprocess.run(
+                ["ps", "-p", str(pid), "-o", "command="],
+                capture_output=True, text=True, timeout=5, check=False,
+            )
+            return "tunaround" in out.stdout.lower()
+    except Exception:
+        return False
 
 
 def kill_poll(pollpid) -> bool:
@@ -108,9 +134,12 @@ def kill_poll(pollpid) -> bool:
         return True  # pid 기록이 없거나 손상 = 죽일 대상 없음(사망 취급).
     if pollpid <= 0:
         return True  # 음수/0은 Unix os.kill에서 프로세스 그룹으로 번지므로 시도하지 않는다.
+    if not is_tunaround_pid(pollpid):
+        return True  # 이미 죽었거나 PID 재사용(다른 프로세스) = poll 없음. 남의 프로세스를 죽이지 않는다.
     try:
         if os.name == "nt":
-            subprocess.run(["taskkill", "/PID", str(pollpid), "/F"],
+            # /T: poll이 --on-task로 낳은 자식(codex-inject 등)까지 트리로 정리(고아 방지).
+            subprocess.run(["taskkill", "/PID", str(pollpid), "/F", "/T"],
                            capture_output=True, timeout=5, check=False)
         else:
             os.kill(pollpid, 9)
