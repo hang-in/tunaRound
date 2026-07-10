@@ -128,7 +128,11 @@ def _acquire_arm_lock(sdir: Path, safe_id: str):
         try:
             if time.time() - lock.stat().st_mtime > 15:
                 lock.unlink()
-        except OSError:
+                # stale(크래시 잔재) 정리 후 즉시 1회 재시도 - 양보하면 이번 세션이 무장 없이 남는다.
+                fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                os.close(fd)
+                return lock
+        except (FileExistsError, OSError):
             pass
         return None
     except Exception:
@@ -421,11 +425,15 @@ def ensure_armed(session_id: str, cwd: str, pmap=None):
         # owner_pid = 이 세션의 claude 프로세스. 실제 launch할 때만 조회(핑 no-op 경로엔 지연 없음).
         # 창 X·크래시로 SessionEnd가 안 돌아도 autoarm 리퍼가 owner 죽음을 보고 이 poll을 청소한다.
         owner_pid = find_owner_pid(pmap)
-        pidfile.write_text(json.dumps({
-            "pid": pid, "agent": agent, "display_name": display, "core": core,
-            "tags": tags, "log": str(log_path), "session_id": session_id,
-            "owner_pid": owner_pid,
-        }), encoding="utf-8")
+        try:
+            pidfile.write_text(json.dumps({
+                "pid": pid, "agent": agent, "display_name": display, "core": core,
+                "tags": tags, "log": str(log_path), "session_id": session_id,
+                "owner_pid": owner_pid,
+            }), encoding="utf-8")
+        except Exception:
+            kill_poll(pid)  # pidfile 없는 poll = 리퍼 사각지대 유령 → 방금 띄운 poll을 회수.
+            return None
         return (agent, core)
     finally:
         try:
@@ -503,11 +511,15 @@ def ensure_codex_armed(session_id: str, cwd: str, display_name=None, project=Non
         if not owner_pid or owner_pid <= 0:
             owner_pid = os.getppid()
 
-        pidfile.write_text(json.dumps({
-            "pid": pid, "agent": agent, "display_name": display, "core": core,
-            "tags": tags, "log": str(log_path), "session_id": session_id,
-            "owner_pid": owner_pid,
-        }), encoding="utf-8")
+        try:
+            pidfile.write_text(json.dumps({
+                "pid": pid, "agent": agent, "display_name": display, "core": core,
+                "tags": tags, "log": str(log_path), "session_id": session_id,
+                "owner_pid": owner_pid,
+            }), encoding="utf-8")
+        except Exception:
+            kill_poll(pid)  # pidfile 없는 poll = 리퍼 사각지대 유령 → 방금 띄운 poll을 회수.
+            return None
         return (agent, core)
     finally:
         try:

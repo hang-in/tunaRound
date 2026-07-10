@@ -69,6 +69,13 @@ def main():
         except Exception:
             pass
 
+    # 시스템 temp에서의 codex 실행(자동화 headless 추정)은 로스터 노이즈라 무장 없이 투명 통과
+    # (claude 훅의 temp 제외와 동일 정책, TUNA_AUTOARM_PROJECT 명시 시 예외).
+    if is_autoarm:
+        is_temp = getattr(tuna_arm, "is_temp_cwd", lambda _c: False)
+        if is_temp(os.getcwd()) and not tuna_arm.cfg("TUNA_AUTOARM_PROJECT"):
+            is_autoarm = False
+
     # 무장 비대상일 경우 원본 codex만 조용히 구동하고 통과
     if not is_autoarm:
         real_codex = find_real_codex()
