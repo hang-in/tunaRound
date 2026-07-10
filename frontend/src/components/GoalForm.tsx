@@ -1,12 +1,16 @@
-// 목표 텍스트 + online 관리자 멀티선택으로 POST /dashboard/goal 을 호출하는 폼.
-// 목업 "목표 제출" 섹션 이식(토큰 입력칸 없음, loopback 무인증).
-import { useEffect, useState } from 'react'
+// 목표 제출: 선택된 대상 칩 + "+ 대상 추가" 드롭다운(머신별 그룹) + 프리셋(전체/win만/mac만/codex만).
+// 체크박스 나열 제거 리디자인. 선택 상태는 App이 소유(로스터 상세의 "이 세션에 목표"와 공유).
+import { useState } from 'react'
 import type { Agent } from '../api'
-import { sendGoal } from '../api'
+import { relativeTime, sendGoal } from '../api'
+import { RunnerIcon } from './runnerIcons'
 
 type Props = {
   agents: Agent[]
   remoteViewer: boolean
+  // 선택 상태(App 소유): uuid -> 선택 여부.
+  selected: Record<string, boolean>
+  onChangeSelected: (next: Record<string, boolean>) => void
 }
 
 function WarnIcon() {
@@ -18,38 +22,26 @@ function WarnIcon() {
   )
 }
 
-export default function GoalForm({ agents, remoteViewer }: Props) {
-  const [selected, setSelected] = useState<Record<string, boolean>>({})
+// 칩·드롭다운의 표시 이름 = project(로스터 타이틀과 동일 규약). 같은 project·runner 충돌은 uuid로 식별.
+function agentTitle(a: Agent): string {
+  return a.tags?.project ?? a.display_name ?? a.uuid.slice(0, 8)
+}
+
+export default function GoalForm({ agents, remoteViewer, selected, onChangeSelected }: Props) {
   const [goal, setGoal] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [status, setStatus] = useState('')
+  const [pickerOpen, setPickerOpen] = useState(false)
 
-  const online = agents.filter((a) => a.online)
-
-  // 새로 나타난 online 관리자은 기본 선택 상태로 추가한다(기존 선택은 보존).
-  useEffect(() => {
-    setSelected((prev) => {
-      let changed = false
-      const next = { ...prev }
-      online.forEach((a) => {
-        if (!(a.uuid in next)) {
-          next[a.uuid] = true
-          changed = true
-        }
-      })
-      return changed ? next : prev
-    })
-    // eslint 계열 룰이 없어도 online 목록 변화에만 반응하면 충분하다.
-    // (agents 전체가 아니라 uuid 조합이 바뀔 때만 실행되도록 join 을 의존성으로 쓴다.)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [online.map((a) => a.uuid).join(',')])
+  // 헤드리스 워커(role=worker)는 목표 대상에서 제외(로스터와 동일 분리, work 데몬이 별도 소비).
+  const online = agents.filter((a) => a.online && a.tags?.role !== 'worker')
 
   if (remoteViewer) {
     return (
       <section className="goal-section">
         <div className="goal-head">
           <h2 className="section-title">목표 제출</h2>
-          <span className="goal-hint">선택한 관리자 각각에게 목표가 전달됩니다</span>
+          <span className="goal-hint">선택한 대상 각각에게 목표가 전달됩니다</span>
         </div>
         <div className="goal-warning">
           <WarnIcon />
@@ -59,33 +51,25 @@ export default function GoalForm({ agents, remoteViewer }: Props) {
     )
   }
 
-  const selCount = online.filter((a) => selected[a.uuid]).length
-  const allSelected = selCount === online.length && online.length > 0
-  const canSubmit = goal.trim().length > 0 && selCount > 0
+  const picked = online.filter((a) => selected[a.uuid])
+  const canSubmit = goal.trim().length > 0 && picked.length > 0
 
-  const toggleAll = () => {
-    if (allSelected) {
-      const next: Record<string, boolean> = {}
-      online.forEach((a) => {
-        next[a.uuid] = false
-      })
-      setSelected((prev) => ({ ...prev, ...next }))
-    } else {
-      const next: Record<string, boolean> = {}
-      online.forEach((a) => {
-        next[a.uuid] = true
-      })
-      setSelected((prev) => ({ ...prev, ...next }))
-    }
+  // 프리셋: online 중 조건에 맞는 대상으로 선택을 통째로 교체한다.
+  const applyPreset = (pred: (a: Agent) => boolean) => {
+    const next: Record<string, boolean> = {}
+    online.forEach((a) => {
+      if (pred(a)) next[a.uuid] = true
+    })
+    onChangeSelected(next)
   }
 
   const toggleOne = (uuid: string) => {
-    setSelected((prev) => ({ ...prev, [uuid]: !prev[uuid] }))
+    onChangeSelected({ ...selected, [uuid]: !selected[uuid] })
   }
 
   const onSubmit = async () => {
     const text = goal.trim()
-    const targets = online.filter((a) => selected[a.uuid]).map((a) => a.uuid)
+    const targets = picked.map((a) => a.uuid)
     if (!text || targets.length === 0) return
     setSubmitting(true)
     setStatus('')
@@ -93,7 +77,7 @@ export default function GoalForm({ agents, remoteViewer }: Props) {
       const outcome = await sendGoal(text, targets)
       if (outcome.kind === 'ok') {
         setGoal('')
-        setStatus(outcome.created.length + '개 task 생성됨.')
+        setStatus(`${outcome.created.length}개 task 생성됨.`)
       } else if (outcome.kind === 'forbidden') {
         setStatus('원격 세션에서는 목표를 제출할 수 없습니다(403).')
       } else {
@@ -107,39 +91,92 @@ export default function GoalForm({ agents, remoteViewer }: Props) {
     }
   }
 
+  // 드롭다운도 로스터와 같은 머신 그룹으로.
+  const machines = [...new Set(online.map((a) => a.tags?.machine ?? '기타'))].sort(
+    (a, b) => (a === 'win' ? 0 : a === 'mac' ? 1 : 2) - (b === 'win' ? 0 : b === 'mac' ? 1 : 2) || a.localeCompare(b),
+  )
+
   return (
     <section className="goal-section">
       <div className="goal-head">
         <h2 className="section-title">목표 제출</h2>
-        <span className="goal-hint">선택한 관리자 각각에게 목표가 전달됩니다</span>
+        <span className="goal-hint">선택한 대상 각각에게 독립 task로 전달됩니다</span>
+        <div className="gf-presets">
+          <span className="gf-preset-label">빠른 선택</span>
+          <button type="button" className="gf-preset" onClick={() => applyPreset(() => true)}>
+            전체
+          </button>
+          <button type="button" className="gf-preset" onClick={() => applyPreset((a) => a.tags?.machine === 'win')}>
+            win만
+          </button>
+          <button type="button" className="gf-preset" onClick={() => applyPreset((a) => a.tags?.machine === 'mac')}>
+            mac만
+          </button>
+          <button type="button" className="gf-preset" onClick={() => applyPreset((a) => a.tags?.runner === 'codex')}>
+            codex만
+          </button>
+          {picked.length > 0 ? (
+            <button type="button" className="gf-preset clear" onClick={() => onChangeSelected({})}>
+              비우기
+            </button>
+          ) : null}
+        </div>
       </div>
       <div className="goal-body">
-        <div className="goal-targets">
-          <label className="goal-chip-all">
-            <input type="checkbox" checked={allSelected} onChange={toggleAll} />
-            <span>전체 선택</span>
-          </label>
-          <span className="dash-divider" />
-          {agents.map((a) => {
-            // 대상 체크는 online 만 유효하나, offline 도 목록엔 노출하고 비활성화한다(목업 그대로).
-            const isSel = a.online && !!selected[a.uuid]
-            return (
-              <label
-                className={'goal-chip' + (isSel ? ' selected' : '') + (a.online ? '' : ' offline')}
-                key={a.uuid}
-              >
-                <input
-                  type="checkbox"
-                  checked={isSel}
-                  disabled={!a.online}
-                  onChange={() => toggleOne(a.uuid)}
-                />
-                <span className="goal-chip-uuid">{a.display_name ?? a.uuid}</span>
-                {!a.online ? <span className="goal-chip-offline-label">오프라인</span> : null}
-              </label>
-            )
-          })}
+        <div className="gf-targets">
+          {picked.length === 0 ? <span className="gf-empty">대상 없음 — 프리셋이나 + 대상 추가로 선택하세요</span> : null}
+          {picked.map((a) => (
+            <span className="gf-chip" key={a.uuid}>
+              <RunnerIcon runner={a.tags?.runner ?? null} size={12} />
+              {agentTitle(a)}
+              <span className="gf-chip-sub">{a.tags?.machine ?? '?'}</span>
+              <button type="button" className="gf-chip-x" aria-label="대상 제거" onClick={() => toggleOne(a.uuid)}>
+                ×
+              </button>
+            </span>
+          ))}
+          <button type="button" className="gf-add" onClick={() => setPickerOpen((o) => !o)} aria-expanded={pickerOpen}>
+            + 대상 추가
+          </button>
         </div>
+
+        {pickerOpen ? (
+          <div className="gf-picker" role="listbox" aria-label="대상 선택">
+            {machines.map((m) => (
+              <div key={m}>
+                <div className="gf-picker-group">{m}</div>
+                {online
+                  .filter((a) => (a.tags?.machine ?? '기타') === m)
+                  .map((a) => {
+                    const isSel = Boolean(selected[a.uuid])
+                    return (
+                      <div
+                        key={a.uuid}
+                        className={`gf-picker-item${isSel ? ' checked' : ''}`}
+                        role="option"
+                        aria-selected={isSel}
+                        tabIndex={0}
+                        onClick={() => toggleOne(a.uuid)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault()
+                            toggleOne(a.uuid)
+                          }
+                        }}
+                      >
+                        <RunnerIcon runner={a.tags?.runner ?? null} size={12} />
+                        {agentTitle(a)}
+                        {a.tags?.runner === 'codex' ? <span className="gf-item-runner">· codex</span> : null}
+                        <span className="gf-item-sub">{isSel ? '선택됨 ✓' : relativeTime(a.last_heartbeat)}</span>
+                      </div>
+                    )
+                  })}
+              </div>
+            ))}
+            <div className="gf-picker-note">오프라인 세션은 제외됩니다. 로스터 행의 &quot;이 세션에 목표&quot;로도 추가할 수 있습니다.</div>
+          </div>
+        ) : null}
+
         <textarea
           className="goal-textarea"
           rows={3}
@@ -149,18 +186,16 @@ export default function GoalForm({ agents, remoteViewer }: Props) {
         />
         <div className="goal-submit-row">
           <span className="goal-summary">
-            {selCount > 0
-              ? selCount + '명의 관리자 선택됨 — 각각 독립 task로 생성됩니다'
-              : '대상 관리자을 선택하세요'}
+            {picked.length > 0 ? `${picked.length}개 대상 선택됨 — 각각 독립 task로 생성됩니다` : '대상을 선택하세요'}
           </span>
           <span className="dash-spacer" />
           <button
             type="button"
-            className={'goal-submit-btn' + (canSubmit && !submitting ? ' enabled' : '')}
+            className={`goal-submit-btn${canSubmit && !submitting ? ' enabled' : ''}`}
             disabled={!canSubmit || submitting}
             onClick={onSubmit}
           >
-            {selCount > 0 ? selCount + '명의 관리자에게 목표 전달' : '목표 전달'}
+            {picked.length > 0 ? `${picked.length}개 대상에게 목표 전달` : '목표 전달'}
           </button>
         </div>
         {status ? <span className="goal-status">{status}</span> : null}
