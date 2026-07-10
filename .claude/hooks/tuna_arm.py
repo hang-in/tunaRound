@@ -171,13 +171,30 @@ def broker_core() -> str:
     return cfg("TUNA_BROKER_CORE", "http://127.0.0.1:8770/mcp")
 
 
+def _is_claude_argv(argv: str) -> bool:
+    """argv 앞 3개 토큰의 basename이 claude인지(node 래퍼 `node /path/claude` 커버, 봇리뷰).
+
+    args 전체 부분문자열 매칭은 금물: 훅 커맨드 경로에 `.claude/hooks/...`가 들어가 부모 셸
+    (일회성, 즉시 사망)이 owner로 오매칭된다 → 스캐너가 산 세션을 유령 판정. basename만 본다.
+    """
+    for tok in argv.split()[:3]:
+        base = tok.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1].strip('"').lower()
+        if base in ("claude", "claude.exe"):
+            return True
+    return False
+
+
 def _proc_map() -> dict:
-    """{pid: (ppid, name_lower)} 스냅샷(owner 탐색용). 실패하면 빈 dict."""
+    """{pid: (ppid, is_claude)} 스냅샷(owner 탐색용). 실패하면 빈 dict.
+
+    win = CIM 이미지명(claude.exe 네이티브) / unix = args의 basename 매칭(comm은 node 래퍼를
+    놓쳐 owner=0 → 마커 무력화, 봇리뷰 Major).
+    """
     m = {}
     try:
         if os.name == "nt":
             out = subprocess.run(
-                ["powershell", "-NoProfile", "-Command",
+                ["powershell", "-NoProfile", "-NonInteractive", "-Command",
                  "Get-CimInstance Win32_Process | ForEach-Object "
                  "{ \"$($_.ProcessId),$($_.ParentProcessId),$($_.Name)\" }"],
                 capture_output=True, text=True, timeout=10, check=False,
@@ -185,23 +202,23 @@ def _proc_map() -> dict:
             for line in out.splitlines():
                 parts = line.strip().split(",", 2)
                 if len(parts) == 3 and parts[0].isdigit() and parts[1].isdigit():
-                    m[int(parts[0])] = (int(parts[1]), parts[2].lower())
+                    m[int(parts[0])] = (int(parts[1]), "claude" in parts[2].lower())
         else:
             out = subprocess.run(
-                ["ps", "-eo", "pid=,ppid=,comm="],
+                ["ps", "-eo", "pid=,ppid=,args="],
                 capture_output=True, text=True, timeout=10, check=False,
             ).stdout
             for line in out.splitlines():
                 f = line.split(None, 2)
                 if len(f) >= 3 and f[0].isdigit() and f[1].isdigit():
-                    m[int(f[0])] = (int(f[1]), f[2].lower())
+                    m[int(f[0])] = (int(f[1]), _is_claude_argv(f[2]))
     except Exception:
         return {}
     return m
 
 
 def find_owner_pid() -> int:
-    """이 훅을 낳은 세션(claude 프로세스)의 PID. 조상 체인에서 이름에 'claude'가 든 첫 프로세스.
+    """이 훅을 낳은 세션(claude 프로세스)의 PID. 조상 체인에서 첫 claude 프로세스.
 
     못 찾으면 0(미상). getppid 폴백은 쓰지 않는다 - 훅 부모(셸)는 즉시 죽는 일회성 프로세스라
     그 pid를 마커에 적으면 스캐너가 산 세션을 죽은 것으로 오판한다(v2-44 §10 마커 안전 규칙).
@@ -214,8 +231,8 @@ def find_owner_pid() -> int:
         entry = m.get(pid)
         if not entry:
             return 0
-        ppid, name = entry
-        if "claude" in name:
+        ppid, is_claude = entry
+        if is_claude:
             return pid
         if ppid <= 0 or ppid == pid:
             return 0
@@ -233,13 +250,17 @@ def marker_path(session_id: str):
 
 
 def write_marker(session_id: str) -> None:
-    """마커에 owner PID를 기록한다. owner 미상(0)이면 빈 파일로 둔다(스캐너는 미상=보수적 유지)."""
+    """마커에 owner PID를 기록한다. owner 미상(0)이면 sentinel "unknown"을 남긴다.
+
+    빈 파일을 남기면 ping 자가치유 조건이 매 프롬프트 참이 되어 무거운 프로세스 조회가
+    반복된다(봇리뷰 critical). "unknown"은 스캐너에서 MarkerState::Unknown=보수적 유지.
+    """
     p = marker_path(session_id)
     if p is None:
         return
     try:
         owner = find_owner_pid()
-        p.write_text(str(owner) if owner > 0 else "", encoding="utf-8")
+        p.write_text(str(owner) if owner > 0 else "unknown", encoding="utf-8")
     except Exception:
         pass
 

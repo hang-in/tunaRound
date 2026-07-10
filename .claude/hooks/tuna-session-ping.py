@@ -38,11 +38,12 @@ def main() -> int:
     if prompt.startswith(("<task-notification>", "[SYSTEM NOTIFICATION")):
         return 0
 
-    # 마커 자가치유: 마커가 없거나 PID 미기록이면 채운다(훅 배포 전에 뜬 세션의 전환 경로).
-    # 있으면 no-op(stat만) - 조상 체인 조회(무거움)를 매 프롬프트 반복하지 않는다.
+    # 마커 자가치유: 마커가 없거나 내용이 비었으면 1회 채운다(훅 배포 전에 뜬 세션의 전환 경로).
+    # sentinel "unknown"(owner 탐색 실패)은 재시도하지 않는다 - 무거운 프로세스 조회가
+    # 매 프롬프트 반복되는 것 방지(봇리뷰 critical). 숫자·unknown이면 stat+read만으로 no-op.
     mp = tuna_arm.marker_path(session_id)
     try:
-        if mp is not None and (not mp.exists() or not mp.read_text(encoding="utf-8").strip().isdigit()):
+        if mp is not None and (not mp.exists() or mp.read_text(encoding="utf-8").strip() == ""):
             tuna_arm.write_marker(session_id)
     except Exception:
         pass

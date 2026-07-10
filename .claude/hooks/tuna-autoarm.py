@@ -48,17 +48,22 @@ def main() -> int:
     safe_id = sanitize_session_id(session_id)
     if not safe_id:
         return 0
-    # 주입 1회 보장 마커(W1): 훅이 몇 번 발화해도 안내는 세션당 한 번만.
     # 마커 내용 = owner claude PID(스캐너의 per-session 생존 판정 = 유령 즉시 제거, v2-44 §10).
     marker = state_dir() / f"{safe_id}.ctx"
+    # 안내 1회 보장(W1)은 O_EXCL 원자 생성으로 판정한다(다중 발화 경합에도 안내는 한 번).
     try:
         fd = os.open(str(marker), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         os.close(fd)
-        write_marker(session_id)
+        first_start = True
     except FileExistsError:
-        return 0
+        first_start = False
     except Exception:
-        pass  # 마커 실패 시에도 안내는 낸다(중복 가능성 < 안내 유실).
+        first_start = True  # 판정 불가면 안내를 내는 쪽(안내 유실 < 중복).
+    # PID는 항상 갱신: resume은 같은 session_id에 새 claude 프로세스라, 옛 pid를 두면
+    # 스캐너가 산 세션을 유령 판정한다(봇리뷰 Major).
+    write_marker(session_id)
+    if not first_start:
+        return 0
 
     core = broker_core()
     c = core.rstrip("/")
