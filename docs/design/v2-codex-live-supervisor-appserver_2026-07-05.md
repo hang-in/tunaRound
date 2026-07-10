@@ -117,7 +117,7 @@ P0 = `codex app-server --listen stdio://`를 파이프로 구동해 initialize->
 
 > 세션17에 총괄(아키텍트)+사용자가 §7 열린 질문(--remote 관전)을 대화로 매듭지었다. 원 스펙(48a0dbb2 "관전을 --remote에서 대시보드 SSE로 이동, --remote 제거")을 아래대로 개선한다.
 
-- **codex 라이브 관전 = `codex --remote` (유지, 제거 안 함).** codex 네이티브 TUI로 app-server thread에 붙어 추론을 실시간으로 본다. 이게 codex 관전의 주력 경로다(대시보드 스트림보다 낫다: 네이티브·즉시·codex 자체 기능이라 우리 유지비용 0). "--remote 제거" 스펙은 **비채택**.
+- **codex 라이브 관전 = `codex resume <threadId> --remote` (유지, 제거 안 함).** codex 네이티브 TUI로 app-server의 글루-소유 thread에 붙어 추론을 실시간으로 본다. 이게 codex 관전의 주력 경로다(대시보드 스트림보다 낫다: 네이티브·즉시·codex 자체 기능이라 우리 유지비용 0). "--remote 제거" 스펙은 **비채택**. (정정 2026-07-10: plain `codex --remote`는 새 thread를 만들므로 관전 커맨드는 resume 계열이어야 한다 - §11.)
 - **대시보드 task 피드 = 통합 로그(사후).** `/dashboard/events` SSE가 전 에이전트의 task 상태변이(working/completed+artifact)를 브로드캐스트 → 대시보드가 aggregate 활동 로그로 표출. 항상 지켜볼 필요 없이, 볼 때 진행 흔적이 남는다(task 이력에 저장). codex 추론을 대시보드로 "옮기지" 않는다: 대시보드는 관전 도구가 아니라 통합 로그다.
 - **라이브 스트림의 진짜 대상 = 헤드리스 워커(별건, 미래).** 붙을 TUI가 없는 헤드리스 `work` 러너는 --remote 같은 관전 수단이 없다. 그쪽 출력을 브로커 진행상태로 스트림해 대시보드에 흘리는 게 스트림의 진짜 가치다. codex 감독(app-server+--remote)엔 불필요. 착수 시 별도 설계(report_task_progress류 MCP 도구 + 러너 emit + 대시보드 렌더).
 - **취약 처리 정리**:
@@ -125,18 +125,12 @@ P0 = `codex app-server --listen stdio://`를 파이프로 구동해 initialize->
   - (3) 소켓 고아: app-server ws는 로컬 무인증(loopback)이라 --remote 관전 자체는 브로커 토큰과 무관. 고아 소켓은 별개(장수 데몬 토큰 스테일 = 로테이션=재기동 규율, [[readonly-soft-enforcement-ok]] 아닌 토큰 live-source 별도 설계).
 - **§7 열린 질문 상태**: `--remote`가 글루-소유 threadId를 선택/부착하는 UX는 **맥에서 실동작 확인, 윈도우는 미확정**(세션16 §7 실측). --remote를 codex 관전 주력으로 쓰려면 윈도우 attach를 손봐야 한다(후속 조사, 급하지 않음). 안 되면 그 머신은 대시보드 로그(사후)로 관전.
 
-## 11. 회귀 (2026-07-10, codex 0.143.0): --remote ↔ app-server thread 분리
+## 11. 관전 커맨드 정정 (2026-07-10): "0.143.0 회귀"는 회귀가 아니었다
 
-> 2026-07-10 저녁 세션 실측 기록(세션 메모 19:18~19:28). §10의 "codex 라이브 관전 = `codex --remote`" 전제가 현 버전에서 깨졌다.
+> 처음 기록(2026-07-10 저녁 실측): 0.143.0에서 marker inject(thread 019f412c)가 `codex --remote` TUI에 안 보여 "TUI↔글루 thread 분리 = 업스트림 회귀"로 추정했다. 같은 날 openai/codex 소스 대조(rust-v0.142.5 / 0.143.0 / 0.144.1 / main)로 아래와 같이 정정한다.
 
-- **실측(확실)**: marker inject 테스트(thread 019f412c)로 확인. codex-inject가 app-server thread에 turn을 주입해도 `codex --remote` TUI에 나타나지 않는다. TUI thread와 글루(app-server) thread가 분리되어 있다.
-- **근본원인(실측 기반 추정)**: codex 0.143.0에서 `--remote`가 app-server에 접속하지 않는다(thread 분리). 이전에 성립하던 attach 경로의 업스트림 회귀로 본다.
-- **영향**은 세 갈래다.
-  - §10 결정(라이브 관전 주력 = --remote)이 현 버전에서 무효. 관전은 §10의 대비책(대시보드 통합 로그 = 사후)으로 후퇴.
-  - codex-inject 감독(글루 주입·turn 왕복) 자체는 app-server 경로라 영향 없음. 깨진 것은 "사람이 --remote로 그 thread를 라이브로 보는" 관전 UX다.
-  - codex arming(presence 등록, v2-43 §5-3)도 poll 기반이라 무관.
-- **대응 선택지**는 셋이다.
-  1. codex 버전 pin(회귀 이전 버전으로 고정) - 즉효이나 업스트림 추적 비용.
-  2. 관전 = 대시보드 통합 로그(사후)로 운용(§10 대비책) - 유지비 0, 라이브성 상실.
-  3. upstream 회귀 추적(codex 릴리스 노트/이슈) 후 복귀 - 관찰 대기.
-- **상태**: 회귀 추적 중. 패키지 업데이트 검증 수행(2026-07-10). 결론 전까지 관전은 선택지 2로 운용한다.
+- **회귀 아님(소스 대조로 확실)**: plain `codex --remote`는 네 시점 모두 **항상 새 thread를 만든다**(resume/fork 플래그 없으면 StartFresh → `thread/start`, `codex-rs/tui/src/lib.rs`). 기존 thread 자동부착·목록 UX는 원래 없다. 0.142.5→0.143.0 사이 remote 접속·thread 선택·알림 라우팅 코드는 실질 무변경이고, 0.144.1과 main도 동일하다.
+- **알림 = thread별 구독(확실)**: app-server는 thread마다 구독 커넥션 집합을 두고(`thread_state.rs`의 `connection_ids`) `thread/start`·`thread/resume`한 커넥션에만 이벤트를 보낸다(브로드캐스트 아님). 구독 안 한 thread의 turn은 절대 안 보인다 → marker가 안 보인 것은 예상된 동작이다.
+- **올바른 관전 커맨드**: `codex resume <글루-threadId> --remote ws://127.0.0.1:PORT`. threadId는 글루가 `~/.tunaround/codex-sup-<agent>.thread`에 영속한다. id를 모르면 `codex resume --remote ws://...`(picker, 원격은 cwd 필터 없음) / `codex resume --last --remote ...`(최신 자동) / 세션 중 `/resume`. 다중 클라이언트 동시 부착은 정식 지원(이벤트마다 구독자 재조회 = 달리는 턴 중간 부착도 이후 이벤트 수신).
+- **과거 기록 해석**: 맥 0.142.5 성공(§10·세션16)은 resume 경로였던 것으로 보인다(mac 핸드오프에 "resume --remote" 표기). §7의 "윈도우 미확정"은 코드상 플랫폼 특이사항이 없으므로, resume 커맨드로 윈도우 실측 1회만 남았다.
+- **대응**: 버전 pin·업스트림 이슈 제기 불필요. 0.144.1 그대로 쓴다. 관전 레시피는 resume 계열로 문서화했다([a2a-usage §10](../reference/a2a-usage.md)).

@@ -319,7 +319,7 @@ list_agents selector="runner=claude"   # 태그로 필터(부분집합 매칭)
 
 ### 개념
 
-codex 감독을 헤드리스 `exec`가 아니라 **`codex app-server`가 띄운 라이브 thread**로 둡니다. 브로커에 작업이 도착하면 `poll --on-task`가 그 thread에 ws로 `turn/start`를 주입해 깨우고, codex는 그 턴 안에서 tuna-broker MCP 도구(`claim_task`→처리→`complete_task`)를 직접 호출합니다. 사람은 `codex --remote`로 그 라이브 thread에 붙어 대화를 관전(HITL)할 수 있으며, 붙어 있지 않아도 감독은 동작합니다.
+codex 감독을 헤드리스 `exec`가 아니라 **`codex app-server`가 띄운 라이브 thread**로 둡니다. 브로커에 작업이 도착하면 `poll --on-task`가 그 thread에 ws로 `turn/start`를 주입해 깨우고, codex는 그 턴 안에서 tuna-broker MCP 도구(`claim_task`→처리→`complete_task`)를 직접 호출합니다. 사람은 `codex resume <threadId> --remote`로 그 라이브 thread에 붙어 대화를 관전(HITL)할 수 있으며, 붙어 있지 않아도 감독은 동작합니다. **주의: plain `codex --remote`(resume 없이)는 항상 새 thread를 만들어 글루 thread가 안 보입니다**(소스 확인 2026-07-10, 설계 §11).
 
 - **워커와의 구분**: 워커(`tunaround work`)는 맥락 없는 헤드리스 프로세스입니다. 감독은 맥락을 누적하는 라이브 thread + 사람 관전(선택)입니다. 같은 `poll` 골격을 쓰되 `--on-task` 대상만 다릅니다(워커=`work`류, 감독=`codex-inject`).
 - 정본 설계: [docs/design/v2-codex-live-supervisor-appserver_2026-07-05.md](../design/v2-codex-live-supervisor-appserver_2026-07-05.md).
@@ -331,8 +331,11 @@ codex 감독을 헤드리스 `exec`가 아니라 **`codex app-server`가 띄운 
 #    로드 안 돼 codex가 raw HTTP로 자가구조하며 토큰을 낭비합니다(설계 §5.3).
 TUNA_BROKER_TOKEN=<TOKEN> codex app-server --listen ws://127.0.0.1:<PORT>
 
-# 2) (선택, HITL 관전) 사람이 라이브 thread에 붙어 대화를 지켜봄
-codex --remote ws://127.0.0.1:<PORT>
+# 2) (선택, HITL 관전) 사람이 글루-소유 라이브 thread에 붙어 대화를 지켜봄.
+#    threadId는 글루가 ~/.tunaround/codex-sup-<agent-id>.thread 에 영속해 둠.
+#    plain `codex --remote`는 새 thread를 만들어 관전이 안 되니 반드시 resume으로.
+codex resume <threadId> --remote ws://127.0.0.1:<PORT>
+#    id를 모르면: `codex resume --remote ws://...`(목록 picker) / `codex resume --last --remote ...`(최신)
 
 # 3) 감독 등록: codex(또는 app-server thread)가 register_agent로 로스터에 광고
 #    (uuid=<agent-id>, tags="machine=<win|mac>,runner=codex,role=supervised,project=tunaround")
@@ -348,7 +351,7 @@ tunaround poll --core <core-url> --token <TOKEN> --agent <agent-id> \
 1. 브로커에 작업이 도착 → `poll`이 감지 → `--on-task`로 `codex-inject`를 실행.
 2. `codex-inject`가 ws로 접속해 (영속된 threadId가 있으면 `thread/resume`, 없으면 `thread/start` 후) `turn/start`를 주입.
 3. 라이브 thread(codex)가 그 턴 안에서 tuna-broker MCP의 `claim_task`→처리→`complete_task`를 native 호출.
-4. 사람이 `codex --remote`로 붙어 있으면 이 과정이 실시간으로 보입니다. 붙어 있지 않아도 완료됩니다.
+4. 사람이 `codex resume <threadId> --remote`로 붙어 있으면 이 과정이 실시간으로 보입니다(알림은 thread별 구독이라, resume으로 그 thread에 구독한 클라이언트에만 옵니다). 붙어 있지 않아도 완료됩니다.
 
 사람 릴레이는 0입니다 - task 도착부터 완료 보고까지 사람 개입 없이 기계가 돕니다(감독 스코프는 no-shuttle).
 
