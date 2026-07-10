@@ -60,6 +60,7 @@
 - ~~크로스머신 boss-ping 토큰 인증(현재 loopback = win boss만). 사용자 win 구동이라 급하지 않음.~~
   **해제(2026-07-10 구현)**: human-ping·deregister가 loopback 무조건 허용 + 원격은 Bearer 토큰으로 허용.
   사람이 맥에 앉아 입력하면 맥 세션이 총감독 ★가 되고, 맥 세션 종료도 즉시 등록해제된다
-  ("총감독 = 사람이 지금 입력하는 자리"의 머신 독립성 복원). goal/control은 loopback 전용 유지
+  ("총감독 = 사람이 지금 입력하는 자리"의 머신 독립성 복원). 무토큰 코어는 /mcp 전체가 무인증인
+  기존 계약 그대로 원격 쓰기도 게이트하지 않는다. goal/control은 loopback 전용 유지
   (원격 대시보드 = 관전, 원격 디스패치는 MCP send_task 경로).
 - 모든 세션 강제 Monitor(사람 앉은 총괄은 clean chat, watch-results로 결과 수신).

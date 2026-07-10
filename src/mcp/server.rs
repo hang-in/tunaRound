@@ -419,7 +419,9 @@ fn dashboard_write_allowed(
     headers: &axum::http::HeaderMap,
     expected_token: &Option<String>,
 ) -> bool {
-    if peer_ip.is_loopback() {
+    // to_canonical: dual-stack 소켓에서 IPv4 루프백이 ::ffff:127.0.0.1로 잡히면
+    // is_loopback()이 false가 되는 것 교정(IPv4-mapped IPv6).
+    if peer_ip.to_canonical().is_loopback() {
         return true;
     }
     match expected_token {
@@ -708,6 +710,11 @@ mod tests {
         fn loopback_always_allowed_without_token() {
             let ip: std::net::IpAddr = "127.0.0.1".parse().unwrap();
             assert!(dashboard_write_allowed(ip, &headers_with_auth(None), &Some("tok".into())));
+            // dual-stack 소켓의 IPv4-mapped IPv6 루프백도 로컬로 인정해야 한다.
+            let mapped: std::net::IpAddr = "::ffff:127.0.0.1".parse().unwrap();
+            assert!(dashboard_write_allowed(mapped, &headers_with_auth(None), &Some("tok".into())));
+            let v6: std::net::IpAddr = "::1".parse().unwrap();
+            assert!(dashboard_write_allowed(v6, &headers_with_auth(None), &Some("tok".into())));
         }
 
         #[test]
