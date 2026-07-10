@@ -9,6 +9,7 @@ import json
 import os
 import re
 import subprocess
+import tempfile
 import time
 import urllib.request
 from pathlib import Path
@@ -97,6 +98,41 @@ def project_from_cwd(cwd) -> str:
         return p.name or "unknown"
     except Exception:
         return "unknown"
+
+
+def is_temp_cwd(cwd) -> bool:
+    """cwd가 시스템 temp 아래인지. 자동화가 %TEMP%에서 돌리는 headless 세션은 로스터 노이즈라
+    무장에서 제외한다(v2-40 discover의 노이즈 필터 역할을 presence 모델에서 재현, 2026-07-10 실측)."""
+    try:
+        if not cwd:
+            return False
+        p = Path(cwd).resolve()
+        t = Path(tempfile.gettempdir()).resolve()
+        return p == t or t in p.parents
+    except Exception:
+        return False
+
+
+def _acquire_arm_lock(sdir: Path, safe_id: str):
+    """세션별 무장 락을 원자적으로 생성한다. 반환=락 Path 또는 None(다른 훅이 무장 중).
+
+    SessionStart(autoarm)와 첫 프롬프트(session-ping)가 동시에 무장을 시도하면 poll이 2개 떠서
+    한쪽이 pidfile 없는 유령이 된다(2026-07-10 실측: Temp·luckyCAD). 크래시 잔재(stale) 락은
+    15초 지나면 치우되 이번 호출은 양보한다(다음 이벤트가 무장)."""
+    lock = sdir / f"{safe_id}.lock"
+    try:
+        fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.close(fd)
+        return lock
+    except FileExistsError:
+        try:
+            if time.time() - lock.stat().st_mtime > 15:
+                lock.unlink()
+        except OSError:
+            pass
+        return None
+    except Exception:
+        return None
 
 
 def is_tunaround_pid(pid: int) -> bool:
@@ -314,10 +350,12 @@ def broker_core() -> str:
     return cfg("TUNA_BROKER_CORE", "http://127.0.0.1:8770/mcp")
 
 
-def ensure_armed(session_id: str, cwd: str):
+def ensure_armed(session_id: str, cwd: str, pmap=None):
     """이 세션을 무장(idempotent)한다. 반환=(agent, core) 또는 None.
 
     opt-in(TUNA_AUTOARM=1) + 토큰 필요. 이미 무장(pidfile 살아있음)이면 재기동 없이 (agent, core) 반환.
+    동시 무장은 세션별 락으로 직렬화(양보 측도 (agent, core) 반환 - 상대가 무장을 끝낸다).
+    pmap=proc_map() 스냅샷 재사용(옵션, autoarm이 리퍼와 공유해 스냅샷 중복 방지).
     """
     if cfg("TUNA_AUTOARM") != "1":
         return None
@@ -326,6 +364,8 @@ def ensure_armed(session_id: str, cwd: str):
         return None
     if not cfg("TUNA_BROKER_TOKEN"):
         return None
+    if is_temp_cwd(cwd) and not cfg("TUNA_AUTOARM_PROJECT"):
+        return None  # 시스템 temp의 자동화 headless 세션 = 로스터 노이즈(명시 프로젝트 지정 시 예외).
 
     core = broker_core()
     tuna_bin = cfg("TUNA_BIN", "tunaround")
@@ -349,33 +389,49 @@ def ensure_armed(session_id: str, cwd: str):
     pidfile = sdir / f"{safe_id}.json"
     log_path = sdir / f"{safe_id}.log"
 
-    # 이미 무장(살아있음)이면 재기동 없이 반환.
-    if pidfile.exists():
+    def _already_alive() -> bool:
+        if not pidfile.exists():
+            return False
         try:
             prev = json.loads(pidfile.read_text(encoding="utf-8"))
-            if pid_alive(int(prev.get("pid", -1))):
-                return (agent, core)
+            return pid_alive(int(prev.get("pid", -1)))
         except Exception:
-            pass  # 손상된 pidfile은 무시하고 새로 기동.
+            return False  # 손상된 pidfile은 무시하고 새로 기동.
 
-    cmd = [
-        tuna_bin, "poll", "--core", core, "--agent", agent,
-        "--display-name", display, "--tags", tags, "--interval", str(interval),
-    ]
+    # 이미 무장(살아있음)이면 재기동 없이 반환(락 불필요 빠른 경로).
+    if _already_alive():
+        return (agent, core)
+
+    # 무장 경합 방지 락: 획득 실패 = 다른 훅(autoarm↔ping)이 무장 중 → 그쪽에 맡긴다.
+    lock = _acquire_arm_lock(sdir, safe_id)
+    if lock is None:
+        return (agent, core)
     try:
-        pid = launch_detached(cmd, log_path, env=child_env())
-    except Exception:
-        return None
+        if _already_alive():  # 락 획득 사이에 상대가 무장을 끝냈을 수 있다(double-checked).
+            return (agent, core)
+        cmd = [
+            tuna_bin, "poll", "--core", core, "--agent", agent,
+            "--display-name", display, "--tags", tags, "--interval", str(interval),
+        ]
+        try:
+            pid = launch_detached(cmd, log_path, env=child_env())
+        except Exception:
+            return None
 
-    # owner_pid = 이 세션의 claude 프로세스. 실제 launch할 때만 조회(핑 no-op 경로엔 지연 없음).
-    # 창 X·크래시로 SessionEnd가 안 돌아도 autoarm 리퍼가 owner 죽음을 보고 이 poll을 청소한다.
-    owner_pid = find_owner_pid()
-    pidfile.write_text(json.dumps({
-        "pid": pid, "agent": agent, "display_name": display, "core": core,
-        "tags": tags, "log": str(log_path), "session_id": session_id,
-        "owner_pid": owner_pid,
-    }), encoding="utf-8")
-    return (agent, core)
+        # owner_pid = 이 세션의 claude 프로세스. 실제 launch할 때만 조회(핑 no-op 경로엔 지연 없음).
+        # 창 X·크래시로 SessionEnd가 안 돌아도 autoarm 리퍼가 owner 죽음을 보고 이 poll을 청소한다.
+        owner_pid = find_owner_pid(pmap)
+        pidfile.write_text(json.dumps({
+            "pid": pid, "agent": agent, "display_name": display, "core": core,
+            "tags": tags, "log": str(log_path), "session_id": session_id,
+            "owner_pid": owner_pid,
+        }), encoding="utf-8")
+        return (agent, core)
+    finally:
+        try:
+            lock.unlink()
+        except Exception:
+            pass
 
 
 def ensure_codex_armed(session_id: str, cwd: str, display_name=None, project=None, owner_pid: int = 0):
@@ -391,6 +447,8 @@ def ensure_codex_armed(session_id: str, cwd: str, display_name=None, project=Non
         return None
     if not cfg("TUNA_BROKER_TOKEN"):
         return None
+    if is_temp_cwd(cwd) and not (project or cfg("TUNA_AUTOARM_PROJECT")):
+        return None  # 시스템 temp의 자동화 headless 세션 = 로스터 노이즈(명시 프로젝트 지정 시 예외).
 
     core = broker_core()
     tuna_bin = cfg("TUNA_BIN", "tunaround")
@@ -415,32 +473,47 @@ def ensure_codex_armed(session_id: str, cwd: str, display_name=None, project=Non
     pidfile = sdir / f"{safe_id}.json"
     log_path = sdir / f"{safe_id}.log"
 
-    if pidfile.exists():
+    def _already_alive() -> bool:
+        if not pidfile.exists():
+            return False
         try:
             prev = json.loads(pidfile.read_text(encoding="utf-8"))
-            if pid_alive(int(prev.get("pid", -1))):
-                return (agent, core)
+            return pid_alive(int(prev.get("pid", -1)))
+        except Exception:
+            return False
+
+    if _already_alive():
+        return (agent, core)
+
+    lock = _acquire_arm_lock(sdir, safe_id)  # 무장 경합 방지(ensure_armed와 동일).
+    if lock is None:
+        return (agent, core)
+    try:
+        if _already_alive():
+            return (agent, core)
+        cmd = [
+            tuna_bin, "poll", "--core", core, "--agent", agent,
+            "--display-name", display, "--tags", tags, "--interval", str(interval),
+        ]
+        try:
+            pid = launch_detached(cmd, log_path, env=child_env())
+        except Exception:
+            return None
+
+        if not owner_pid or owner_pid <= 0:
+            owner_pid = os.getppid()
+
+        pidfile.write_text(json.dumps({
+            "pid": pid, "agent": agent, "display_name": display, "core": core,
+            "tags": tags, "log": str(log_path), "session_id": session_id,
+            "owner_pid": owner_pid,
+        }), encoding="utf-8")
+        return (agent, core)
+    finally:
+        try:
+            lock.unlink()
         except Exception:
             pass
-
-    cmd = [
-        tuna_bin, "poll", "--core", core, "--agent", agent,
-        "--display-name", display, "--tags", tags, "--interval", str(interval),
-    ]
-    try:
-        pid = launch_detached(cmd, log_path, env=child_env())
-    except Exception:
-        return None
-
-    if not owner_pid or owner_pid <= 0:
-        owner_pid = os.getppid()
-
-    pidfile.write_text(json.dumps({
-        "pid": pid, "agent": agent, "display_name": display, "core": core,
-        "tags": tags, "log": str(log_path), "session_id": session_id,
-        "owner_pid": owner_pid,
-    }), encoding="utf-8")
-    return (agent, core)
 
 
 def disarm_session(session_id: str) -> str:
