@@ -16,7 +16,7 @@ import sys
 try:
     # __file__은 zipapp/임베디드 등에서 미정의(NameError)일 수 있어 sys.path 조작도 try 안에 둔다.
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from tuna_arm import broker_core, cfg, is_temp_cwd, sanitize_session_id, state_dir
+    from tuna_arm import broker_core, cfg, is_temp_cwd, sanitize_session_id, state_dir, write_marker
 except Exception:
     sys.exit(0)  # 공유 모듈이 없으면 세션을 막지 않고 조용히 통과.
 
@@ -49,10 +49,12 @@ def main() -> int:
     if not safe_id:
         return 0
     # 주입 1회 보장 마커(W1): 훅이 몇 번 발화해도 안내는 세션당 한 번만.
+    # 마커 내용 = owner claude PID(스캐너의 per-session 생존 판정 = 유령 즉시 제거, v2-44 §10).
     marker = state_dir() / f"{safe_id}.ctx"
     try:
         fd = os.open(str(marker), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         os.close(fd)
+        write_marker(session_id)
     except FileExistsError:
         return 0
     except Exception:

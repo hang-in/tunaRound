@@ -1585,10 +1585,19 @@ fn main() {
                 if let Some(dir) = &codex_dir {
                     sessions.extend(tunaround::presence_scan::enumerate_codex_sessions(dir, now, stale, home.as_deref()));
                 }
-                // 프로세스 게이트: 러너 프로세스가 확실히 0개면 그 러너 세션 전부 죽음(재부팅 즉시 반영).
-                for runner in ["claude", "codex"] {
-                    let count = tunaround::presence_scan::count_runner_processes(runner);
-                    sessions = tunaround::presence_scan::apply_process_gate(sessions, runner, count);
+                // 프로세스 스냅샷 1회: 러너 카운트 게이트 + 마커 생존 판정이 공유한다.
+                if let Some((proc_text, is_win)) = tunaround::presence_scan::process_list_text() {
+                    // 게이트: 러너 프로세스가 확실히 0개면 그 러너 세션 전부 죽음(재부팅 즉시 반영).
+                    for runner in ["claude", "codex"] {
+                        let count = tunaround::presence_scan::count_matching_lines(&proc_text, runner, is_win);
+                        sessions = tunaround::presence_scan::apply_process_gate(sessions, runner, Some(count));
+                    }
+                    // 마커 생존: 훅이 기록한 owner PID가 죽었으면 유령(/clear·창닫기·크래시) → 즉시 제외.
+                    if let Some(h) = &home {
+                        let marker_dir = h.join(".tunaround").join("autoarm");
+                        let alive = tunaround::presence_scan::parse_pids(&proc_text, is_win);
+                        sessions = tunaround::presence_scan::filter_dead_sessions(sessions, &marker_dir, &alive);
+                    }
                 }
                 // 스캐너 자신도 로스터에 등록(설계 v2-44 §3: 스캐너 heartbeat = 머신 도달성 신호).
                 // register는 last_heartbeat를 now로 덮으므로 매 주기 호출 = heartbeat 겸용.

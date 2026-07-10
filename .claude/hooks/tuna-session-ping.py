@@ -38,6 +38,15 @@ def main() -> int:
     if prompt.startswith(("<task-notification>", "[SYSTEM NOTIFICATION")):
         return 0
 
+    # 마커 자가치유: 마커가 없거나 PID 미기록이면 채운다(훅 배포 전에 뜬 세션의 전환 경로).
+    # 있으면 no-op(stat만) - 조상 체인 조회(무거움)를 매 프롬프트 반복하지 않는다.
+    mp = tuna_arm.marker_path(session_id)
+    try:
+        if mp is not None and (not mp.exists() or not mp.read_text(encoding="utf-8").strip().isdigit()):
+            tuna_arm.write_marker(session_id)
+    except Exception:
+        pass
+
     # 핑: {core-base}/dashboard/human-ping {agent=세션 id}. core는 .../mcp라 base로 절단.
     c = tuna_arm.broker_core().rstrip("/")
     base = c[:-4] if c.endswith("/mcp") else c
