@@ -444,8 +444,9 @@
 - [x] 토큰 위생 감사 W1~W6 통합(§7: 주입 중복·안내 다이어트·task CLI·thread 로테이션·digest·전역 훅 진단).
 - [x] T1 브로커·코어: report_presence + machine 동기화 + supervised→infra alias + 스캐너 순수부·presence-scan 서브커맨드 + `tunaround task` CLI(W3) + watch-results --digest(W5). (브랜치 feat/v2-44-presence-scanner)
 - [x] T2 코드분: 훅 다이어트(W1·W2, 마커 1회·안내 5줄, 무장 로직 전삭제) + SessionEnd=deregister 핑만 + codex 래퍼 3종 삭제 + 프로젝트 settings 훅 등록 제거. **W1 근본 실측 확정**=전역 settings의 python·python3 이중 엔트리 + 프로젝트 등록(3중 발화).
-- [ ] T2 ops(머지 후): 안정 바이너리 재배포 → presence-scan 데몬 기동 → 구 detached poll 전량 정리 → 전역 훅 재배포+이중 엔트리 정리(W6 포함) → win-codex-sup infra 재태깅·thread 로테이션(W4).
-- [ ] T3 mac 배포(A2A task 위임, 로컬 운영자 게이트, 훅·로테이션·전역 훅 점검 포함).
+- [x] T2 ops(2026-07-11 라이브 완료): PR #47 머지(2ad7c7d) → 풀피처(dashboard) 재빌드·안정 경로 배포 → 구 스택 6프로세스 전량 종료+pidfile 정리 → 새 스택 기동(브로커 33372·presence-scan 6704·win-codex-sup infra 38548·watch-results --digest 60 46836) → 로스터에 win 세션 7건 src=scan 확인 + **mac-codex-sup가 alias로 role=infra 라이브 실증** → 전역 훅 재배포+python3 이중 엔트리 3건 제거(W6, 백업=settings.json.bak-v2-44).
+- [ ] W4 thread 로테이션: **codex-inject에 로테이션 기능 자체가 미구현**(T2 ops 중 발견, 설정만으론 불가) → 후속 코드 task(요약 turn→새 thread 시드 옵션).
+- [ ] T3 mac 배포: A2A task **526f402c** 발행됨(2026-07-11, 스캐너 기동·훅 재배포·poll 정리·mac-codex-sup infra 재태깅·restart-mac-mesh.sh 갱신. 로컬 운영자 게이트). watch-results 인박스 대기 중.
 - [ ] T4 대시보드 뷰: 머신 헤더 인프라 도트 + infra 카드 제거(+선택 수신중 뱃지). PR #46 머지 후.
 - [ ] T4.5 main.rs 분할 refactor(사용자 확정 2026-07-11, T5 전): fn main() ~1,330줄의 서브커맨드 인라인 루프를 각 도메인 모듈 run()으로 이동(watch_results::run 패턴 답습) + 인자 구조체 src/cli/ 분리. 별도 PR, 기계적 이동만(동작 불변).
 - [ ] T5 정리: alias 제거·report_candidates 제거·문서 일괄 갱신(a2a-usage §9·§10 등).
