@@ -447,7 +447,8 @@
 - [x] T2 ops(2026-07-11 라이브 완료): PR #47 머지(2ad7c7d) → 풀피처(dashboard) 재빌드·안정 경로 배포 → 구 스택 6프로세스 전량 종료+pidfile 정리 → 새 스택 기동(브로커 33372·presence-scan 6704·win-codex-sup infra 38548·watch-results --digest 60 46836) → 로스터에 win 세션 7건 src=scan 확인 + **mac-codex-sup가 alias로 role=infra 라이브 실증** → 전역 훅 재배포+python3 이중 엔트리 3건 제거(W6, 백업=settings.json.bak-v2-44).
 - [ ] W4 thread 로테이션: **codex-inject에 로테이션 기능 자체가 미구현**(T2 ops 중 발견, 설정만으론 불가) → 후속 코드 task(요약 turn→새 thread 시드 옵션).
 - [x] T3 mac 배포 완료(task 526f402c, 운영자 승인 하 mac 자율 수행): 스캐너 pid 94847(mac 세션 3건 src=scan) + mac-codex-sup infra 재태깅(pid 96522) + 훅 v2-44판 재배포 + 구 poll·pidfile 정리 + codex 래퍼 PATH 원복 + restart-mac-mesh.sh 신구성. **mac 발견: 실행 중 바이너리 in-place cp는 macOS 코드서명 무효화로 프로세스 SIGKILL** → 원자적 재배포(cp .new → codesign → mv)로 해결(win 안정경로 분리와 동근 교훈). digest 인박스(60s) wake 실증.
-- [ ] T4 대시보드 뷰: 머신 헤더 인프라 도트 + infra 카드 제거(+선택 수신중 뱃지). PR #46 머지 후.
+- [x] T4 대시보드 뷰 완료(PR #48=fe289bb): 머신 헤더 인프라 도트(presence·codex주입) + infra 카드 분리 + GoalForm no-consumer 3종 제외(워커/스캐너/codex 세션) + **스캐너 자기등록**({machine}-presence-scan=머신 도달성 신호) + **스캐너 견고화**(기동순서 무관 재시도·브로커 재시작 시 MCP 재접속 - 라이브 즉사 실측 후 수정) + **mcp_client 타임아웃**(connect 10s·요청 60s, CodeRabbit Major). 수신중 뱃지(선택)는 미착수.
 - [ ] T4.5 main.rs 분할 refactor(사용자 확정 2026-07-11, T5 전): fn main() ~1,330줄의 서브커맨드 인라인 루프를 각 도메인 모듈 run()으로 이동(watch_results::run 패턴 답습) + 인자 구조체 src/cli/ 분리. 별도 PR, 기계적 이동만(동작 불변).
-- [ ] T5 정리: alias 제거·report_candidates 제거·문서 일괄 갱신(a2a-usage §9·§10 등).
-- [ ] v2-45 후보(백로그, 사용자 승인 2026-07-11): **mesh 기억화** = task 종결 시 결과를 messages/FTS로 색인(search_context로 위임 이력 검색) + 종결 task retention(아카이브=색인 후 슬림화). 부수 = **Redis 의존 단순화**(적극 활용 비권고 확정: observe 스냅샷도 SQLite로 흡수해 Redis 완전 opt-out 가능하게). T5 뒤 설계.
+- [ ] T5 정리: alias 제거·report_candidates 제거·문서 일괄 갱신(a2a-usage §9·§10 + infra watcher 태그 규약 명문화).
+- [ ] v2-45 후보(백로그, 사용자 승인 2026-07-11): **mesh 기억화** = task 종결 시 결과를 messages/FTS로 색인(search_context로 위임 이력 검색) + 종결 task retention(아카이브=색인 후 슬림화). 부수 = **Redis 서서히 폐기**(사용자 확정 2026-07-11: tunaSalon에선 유용했으나 여기선 SSE·SQLite가 자리를 대체 - observe 스냅샷도 SQLite로 흡수해 완전 opt-out). T5 뒤 설계.
+- [ ] 백로그(사용자 승인 2026-07-11): **watch-results 재구독 시 미통지 terminal task 재생**(SQLite 기반) - 인박스 다운 중 완료된 task 통지 유실 창 제거(Redis Streams 검토에서 발견된 실질 갭, 재생은 브로커 DB로 충분). v2-45와 묶기 좋음.
