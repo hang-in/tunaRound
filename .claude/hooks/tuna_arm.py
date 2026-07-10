@@ -336,7 +336,10 @@ def launch_detached(cmd: list, log_path: Path, env: dict = None) -> int:
     """세션·하네스 수명과 무관하게 상주하도록 완전 분리된 프로세스로 기동한다."""
     with open(log_path, "ab") as log:
         if os.name == "nt":
-            flags = 0x00000008 | 0x00000200  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+            # DETACHED_PROCESS는 콘솔이 필요한 자식(.cmd → cmd.exe, codex app-server 등)이
+            # 보이는 콘솔 창을 새로 할당해 터미널 창이 튀어나온다(2026-07-11 실측). NO_WINDOW는
+            # 보이지 않는 콘솔을 부여해 창 없이 상주한다(부모 분리·생존 특성은 동일).
+            flags = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
             proc = subprocess.Popen(
                 cmd, stdout=log, stderr=log, stdin=subprocess.DEVNULL,
                 creationflags=flags, close_fds=True, env=env,
@@ -465,7 +468,8 @@ def ensure_codex_armed(session_id: str, cwd: str, display_name=None, project=Non
     machine = cfg("TUNA_MACHINE") or ("win" if os.name == "nt" else "unix")
 
     proj = project or cfg("TUNA_AUTOARM_PROJECT") or project_from_cwd(cwd)
-    role = cfg("TUNA_AUTOARM_ROLE", "supervised")
+    # 기본 role=session(claude TUI와 통일). 감독 watcher(win-codex-sup류)는 --tags로 supervised 명시.
+    role = cfg("TUNA_AUTOARM_ROLE", "session")
     agent = session_id
     display = display_name or cfg("TUNA_AUTOARM_AGENT") or f"{machine}-codex-{proj}"
     interval = cfg("TUNA_AUTOARM_INTERVAL", "15")
