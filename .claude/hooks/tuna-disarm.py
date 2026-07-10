@@ -12,6 +12,7 @@ import re
 import signal
 import subprocess
 import sys
+import urllib.request
 from pathlib import Path
 
 # 설정파일(config-first) 게이트는 tuna_arm 단일 소스에서. import 실패 시 env-only로 안전 강등.
@@ -98,6 +99,8 @@ def main() -> int:
         pid = int(info.get("pid", -1))
         if pid > 0:
             kill_pid(pid)
+        # 브로커에 즉시 등록해제 통보 → TTL(90초) 자연소멸 대기 없이 로스터에서 바로 제거(설계 v2-43).
+        deregister(info.get("agent"), info.get("core"))
     except Exception:
         pass
     finally:
@@ -106,6 +109,29 @@ def main() -> int:
         except Exception:
             pass
     return 0
+
+
+def deregister(agent, core) -> None:
+    """SessionEnd 시 브로커 로스터에서 이 세션을 즉시 제거한다(loopback POST). 실패는 조용히 통과.
+
+    등록해제가 안 돼도 heartbeat 끊김으로 90초 내 자연소멸하므로 best-effort로만 시도한다.
+    """
+    if not agent or not core:
+        return
+    c = str(core).rstrip("/")
+    base = c[:-4] if c.endswith("/mcp") else c  # ".../mcp"를 base로 절단.
+    if not base.startswith(("http://", "https://")):
+        return  # loopback HTTP 전용(file: 등 비정상 스킴 차단)
+    token = cfg("TUNA_BROKER_TOKEN", "")
+    body = json.dumps({"agent": agent}).encode()
+    req = urllib.request.Request(base + "/dashboard/deregister", data=body, method="POST")
+    req.add_header("Content-Type", "application/json")
+    if token:
+        req.add_header("Authorization", "Bearer " + token)
+    try:
+        urllib.request.urlopen(req, timeout=0.75).read()
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":

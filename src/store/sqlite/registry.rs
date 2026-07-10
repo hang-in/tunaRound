@@ -51,6 +51,12 @@ impl SqliteStore {
         }
     }
 
+    /// 로스터에서 에이전트를 즉시 제거(세션 종료 시 disarm이 호출, 설계 v2-43 잔존구간 제거).
+    /// 존재했으면 true, 미등록이면 false. TTL(90초) 자연소멸을 기다리지 않고 닫힌 세션을 바로 없앤다.
+    pub fn deregister_agent(&self, uuid: &str) -> bool {
+        self.agent_roster.borrow_mut().remove(uuid).is_some()
+    }
+
     /// selector에 매칭되며 online인 에이전트를 uuid 오름차순으로 반환(clone).
     pub fn list_agents(
         &self,
@@ -159,6 +165,18 @@ mod tests {
         // now 기준 1시간 경과, ttl 90초 -> offline이라 제외되어야 함.
         let found = db.list_agents(&BTreeMap::new(), "2026-07-04 10:00:00", 90);
         assert!(found.is_empty(), "offline 에이전트는 list_agents에서 제외되어야 함");
+    }
+
+    #[test]
+    fn deregister_agent_removes_and_reports_presence() {
+        let db = SqliteStore::open_memory().unwrap();
+        db.register_agent("u1", BTreeMap::new(), None, "2026-07-04 10:00:00");
+        // 등록된 세션 제거 = true, 이후 online 목록에서 즉시 사라짐(TTL 대기 없이).
+        assert!(db.deregister_agent("u1"));
+        assert!(db.list_agents(&BTreeMap::new(), "2026-07-04 10:00:05", 90).is_empty());
+        // 미등록/이미 제거된 uuid는 false(멱등).
+        assert!(!db.deregister_agent("u1"));
+        assert!(!db.deregister_agent("unknown"));
     }
 
     #[test]

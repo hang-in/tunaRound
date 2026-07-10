@@ -114,6 +114,7 @@ pub async fn serve_http_mcp_on_listener(
         .route("/dashboard/candidates", get(dashboard_candidates_handler))
         .route("/dashboard/goal", axum::routing::post(dashboard_goal_handler))
         .route("/dashboard/human-ping", axum::routing::post(dashboard_human_ping_handler))
+        .route("/dashboard/deregister", axum::routing::post(dashboard_deregister_handler))
         .route("/dashboard/control", axum::routing::post(dashboard_control_handler));
     #[cfg(feature = "dashboard")]
     {
@@ -438,6 +439,45 @@ async fn dashboard_human_ping_handler(
     } else {
         // 미등록(아직 무장 안 됨). 훅이 무장 후 재핑하면 된다.
         (axum::http::StatusCode::NOT_FOUND, "미등록 세션(무장 선행 필요)").into_response()
+    }
+}
+
+/// POST /dashboard/deregister: 세션의 SessionEnd 훅(disarm)이 "이 세션이 닫혔다"를 보고한다.
+/// 로스터에서 즉시 제거해 TTL(90초) 자연소멸을 기다리지 않는다(설계 v2-43 잔존구간 제거).
+/// body = {"agent": "<세션 uuid>"}. loopback만 허용(원격은 read-only). 미등록 uuid면 404(멱등).
+#[cfg(feature = "serve")]
+async fn dashboard_deregister_handler(
+    axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    axum::extract::State(store): axum::extract::State<Arc<Mutex<crate::store::sqlite::SqliteStore>>>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    if !peer.ip().is_loopback() {
+        return (axum::http::StatusCode::FORBIDDEN, "원격 관전 모드: 등록해제는 로컬(loopback)에서만.").into_response();
+    }
+    if is_cross_site(&headers) {
+        return (axum::http::StatusCode::FORBIDDEN, "cross-site 요청 거부(local CSRF 방어).").into_response();
+    }
+    #[derive(serde::Deserialize)]
+    struct DeregReq {
+        agent: String,
+    }
+    let req: DeregReq = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(e) => return (axum::http::StatusCode::BAD_REQUEST, format!("잘못된 요청: {e}")).into_response(),
+    };
+    let ok = tokio::task::spawn_blocking(move || {
+        let store = store.lock().unwrap_or_else(|e| e.into_inner());
+        store.deregister_agent(&req.agent)
+    })
+    .await
+    .unwrap_or(false);
+    if ok {
+        (axum::http::StatusCode::OK, "ok").into_response()
+    } else {
+        // 미등록(이미 제거됐거나 무장 안 됨). 훅은 성패에 무관하게 통과한다.
+        (axum::http::StatusCode::NOT_FOUND, "미등록 세션(이미 제거됨)").into_response()
     }
 }
 

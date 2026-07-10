@@ -22,13 +22,22 @@ from pathlib import Path
 try:
     # __file__은 zipapp/임베디드 등에서 미정의(NameError)일 수 있어 sys.path 조작도 try 안에 둔다.
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from tuna_arm import cfg, child_env
+    from tuna_arm import cfg, child_env, proc_map, find_owner_pid, reap_orphans
 except Exception:
     def cfg(key, default=None):
         return os.environ.get(key, default)
 
     def child_env():
         return None  # None → Popen이 부모 env를 그대로 상속(기존 동작).
+
+    def proc_map():
+        return {}
+
+    def find_owner_pid(_pmap=None):
+        return 0
+
+    def reap_orphans(_pmap, _current_session_id=""):
+        return 0
 
 
 def emit_context(text: str) -> None:
@@ -119,6 +128,11 @@ def main() -> int:
         )
         return 0
 
+    # 프로세스 스냅샷 1회(owner 탐색 + orphan 리핑에 재사용). SessionStart에서만 = 핑 지연 무관.
+    pmap = proc_map()
+    # orphan 리핑: 창 X·크래시로 SessionEnd(disarm)가 안 돈 죽은 세션의 poll을 청소한다.
+    reap_orphans(pmap, session_id)
+
     core = cfg("TUNA_BROKER_CORE", "http://127.0.0.1:8770/mcp")
     tuna_bin = cfg("TUNA_BIN", "tunaround")
     host = os.environ.get("COMPUTERNAME") or os.environ.get("HOSTNAME") or "host"
@@ -190,22 +204,36 @@ def main() -> int:
         "tags": tags,
         "log": str(log_path),
         "session_id": session_id,
+        "owner_pid": find_owner_pid(pmap),  # 세션 claude 프로세스(리퍼가 orphan 판정에 씀).
     }), encoding="utf-8")
 
+    # 받아오기(pull) 수신 명령: 이 세션이 자기 detached poll의 로그를 Monitor로 감시한다.
+    # poll이 `TASK <id> :: ..`를 로그에 쓰면 Monitor가 세션을 깨운다. claude엔 codex 같은 외부
+    # 주입 소켓이 없어(설계상 codex=넣기/claude=받아오기), 세션이 스스로 당겨야 한다(v2-43 §수신).
+    # Monitor는 Git Bash에서 돈다: 경로는 forward-slash로, 작은따옴표로 감싼다(백슬래시·중첩 큰따옴표 회피).
+    log_posix = str(log_path).replace("\\", "/")
+    recv_cmd = f"tail -f -n 0 '{log_posix}' | grep --line-buffered '^TASK '"
+    c_clean = core.rstrip("/")
+    base_core = c_clean[:-4] if c_clean.endswith("/mcp") else c_clean  # watch-results는 base URL.
     emit_context(
         f"[tuna-autoarm] 이 세션이 브로커 로스터에 자동 등록되었습니다(online).\n"
-        f"  uuid={agent}(세션 id)  display={display}\n"
-        f"  core={core}  poll pid={pid}  log={log_path}\n"
+        f"  uuid={agent}(세션 id)  display={display}  core={core}  poll pid={pid}\n"
         f"\n"
-        f"[A2A 수신법 - 설계 v2-43]\n"
-        f"  · 감독/워커(받는 자리)로 일하려면 = 이 세션 앞 task를 자율 수신:\n"
-        f"      Monitor 도구로 poll 로그({log_path})를 감시 → task 도착 시 깨어나 "
-        f"`claim_task`→처리→`complete_task`(실패=`fail_task`).\n"
-        f"      (poll이 이미 register+heartbeat 중 = 0토큰 대기/파킹. uuid={agent})\n"
-        f"  · 총괄(사람 자리)로 일하려면 = 던진 task 결과만 받기:\n"
-        f"      `watch-results --dispatcher <나> --core {core}`를 Monitor로 감싸면 "
-        f"자리를 떠도 완료가 총괄 세션을 깨운다(PR #19).\n"
-        f"세션 종료 시 SessionEnd 훅이 poll을 정리하고 로스터는 TTL로 소멸합니다."
+        f"[A2A 감독 수신 - claude=받아오기(pull), 설계 v2-43]\n"
+        f"이 세션은 A2A 감독(받는 자리)입니다. 아래 Monitor를 실행해 수신 루프에 진입하세요"
+        f"(비블로킹 = 세션은 계속 대화·작업 가능, task 도착 시에만 깨어남):\n"
+        f"\n"
+        f"  ① 지금 대기 중인 task부터 처리: `poll_tasks`(tuna-broker MCP) 호출 → 있으면 각각 claim→답변→complete.\n"
+        f"  ② 이후 자동 수신: Monitor(command=\"{recv_cmd}\", description=\"A2A 수신 {display}\", persistent=true)\n"
+        f"\n"
+        f"poll이 `TASK <id> :: <미리보기>`를 로그에 쓰면 Monitor가 이 세션을 깨웁니다. 그때:\n"
+        f"  1) `claim_task`(task_id=<id>)  2) `get_task`로 요청 확인  3) 요청에 직접 답 생성\n"
+        f"  4) `complete_task`(task_id=<id>, result=<답변 텍스트>)  (처리 불가 시 `fail_task`)\n"
+        f"→ claim_task/get_task/complete_task/poll_tasks 는 tuna-broker MCP 네이티브 도구입니다.\n"
+        f"\n"
+        f"[총괄(사람 자리)로 쓸 때] 내가 던진 task의 결과만 받으려면:\n"
+        f"  Monitor(command=\"{tuna_bin} watch-results --core {base_core} --dispatcher dashboard\", persistent=true)\n"
+        f"세션 종료 시 SessionEnd 훅이 poll·등록을 정리합니다."
     )
     return 0
 
