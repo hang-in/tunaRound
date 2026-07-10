@@ -1307,7 +1307,9 @@ fn main() {
         };
 
         let result = rt.block_on(async {
-            let client = tunaround::mcp_client::McpHttpClient::connect(a.core.clone(), a.token.clone()).await?;
+            // 브로커 토큰은 --token 우선, 없으면 TUNA_BROKER_TOKEN env 폴백(argv 노출 회피, serve/poll과 동일 계약).
+            let broker_token = a.token.clone().or_else(|| std::env::var("TUNA_BROKER_TOKEN").ok());
+            let client = tunaround::mcp_client::McpHttpClient::connect(a.core.clone(), broker_token).await?;
             tunaround::worker::run_worker_loop(
                 &client,
                 runner,
