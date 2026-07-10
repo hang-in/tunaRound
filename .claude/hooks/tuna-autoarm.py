@@ -3,44 +3,34 @@
 """tunaRound v2-40 S1 자동무장 훅.
 
 TUNA_AUTOARM=1일 때만 동작한다. Claude Code 세션이 시작되면:
-  1. `tunaround poll`을 detached로 기동(내부적으로 register_agent + heartbeat).
-  2. pidfile을 남겨 SessionEnd 훅(tuna-disarm.py)이 정리할 수 있게 한다.
+  1. orphan 리핑(창 X·크래시로 SessionEnd가 못 정리한 poll 청소).
+  2. `tuna_arm.ensure_armed`로 detached poll 기동(register_agent + heartbeat).
+     실제 무장 로직은 session-ping 훅과 tuna_arm 단일 소스를 공유한다(중복 구현이
+     무장 경합→유령 poll의 근원이었음, 2026-07-10 실측 후 일원화).
   3. additionalContext로 세션에 "무장됨 + 수신법"을 주입한다.
 
-deregister MCP 도구는 없으므로 로스터 정리는 heartbeat 중단 후 TTL(90초) 소멸에 맡긴다.
 opt-in이 아니거나 토큰이 없으면 조용히 no-op(exit 0)한다 - 세션 시작을 절대 막지 않는다.
+tuna_arm 모듈이 없으면(설치 손상) 무장 없이 조용히 통과한다.
 """
 import json
 import os
-import re
-import subprocess
 import sys
-from pathlib import Path
 
-# 설정파일(config-first) 로직은 tuna_arm 단일 소스에서 가져온다(env 신선도 무관, 설계 v2-43 §5-1).
-# import 실패 시 env-only로 안전 강등(훅은 절대 세션을 막지 않는다).
 try:
     # __file__은 zipapp/임베디드 등에서 미정의(NameError)일 수 있어 sys.path 조작도 try 안에 둔다.
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from tuna_arm import cfg, child_env, proc_map, find_owner_pid, reap_orphans, project_from_cwd
+    from tuna_arm import (
+        cfg,
+        ensure_armed,
+        is_temp_cwd,
+        pid_alive,
+        proc_map,
+        reap_orphans,
+        sanitize_session_id,
+        state_dir,
+    )
 except Exception:
-    def cfg(key, default=None):
-        return os.environ.get(key, default)
-
-    def child_env():
-        return None  # None → Popen이 부모 env를 그대로 상속(기존 동작).
-
-    def proc_map():
-        return {}
-
-    def find_owner_pid(_pmap=None):
-        return 0
-
-    def reap_orphans(_pmap, _current_session_id=""):
-        return 0
-
-    def project_from_cwd(cwd):
-        return Path(cwd or "").name or "unknown"
+    sys.exit(0)  # 무장 코어가 없으면 세션을 막지 않고 조용히 통과.
 
 
 def emit_context(text: str) -> None:
@@ -51,58 +41,6 @@ def emit_context(text: str) -> None:
             "additionalContext": text,
         }
     }))
-
-
-def state_dir() -> Path:
-    d = Path.home() / ".tunaround" / "autoarm"
-    d.mkdir(parents=True, exist_ok=True)
-    return d
-
-
-# session_id를 파일명으로 쓸 때 경로 이탈(../, 절대경로, 구분자)을 막는 허용 문자 집합.
-# tuna_arm.sanitize_session_id와 동일 규칙(세 훅이 같은 pidfile을 가리켜야 함).
-_SAFE_SESSION_RE = re.compile(r"[^A-Za-z0-9._-]")
-
-
-def sanitize_session_id(session_id: str) -> str:
-    s = _SAFE_SESSION_RE.sub("_", str(session_id or "").strip())
-    return s.strip(".") or ""
-
-
-def pid_alive(pid: int) -> bool:
-    try:
-        if pid <= 0:  # 손상된 pidfile(-1 등)이 os.kill(-1,0) 특수동작으로 살아있다 오판되는 것 차단.
-            return False
-        if os.name == "nt":
-            out = subprocess.run(
-                ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
-                capture_output=True, text=True, timeout=5,
-            )
-            # 부분 문자열이 아니라 공백 분리 토큰으로 정확히 매칭(메모리 열의 숫자 오탐 방지).
-            return str(pid) in out.stdout.split()
-        os.kill(pid, 0)
-        return True
-    except Exception:
-        return False
-
-
-def launch_detached(cmd: list, log_path: Path, env: dict = None) -> int:
-    """세션·하네스 수명과 무관하게 상주하도록 완전 분리된 프로세스로 기동한다."""
-    # with로 부모의 파일 핸들을 즉시 닫는다(자식은 자기 복제본을 유지 = FD 누수 방지).
-    with open(log_path, "ab") as log:
-        if os.name == "nt":
-            # DETACHED_PROCESS(0x08) | CREATE_NEW_PROCESS_GROUP(0x200): 콘솔·그룹 분리.
-            flags = 0x00000008 | 0x00000200
-            proc = subprocess.Popen(
-                cmd, stdout=log, stderr=log, stdin=subprocess.DEVNULL,
-                creationflags=flags, close_fds=True, env=env,
-            )
-        else:
-            proc = subprocess.Popen(
-                cmd, stdout=log, stderr=log, stdin=subprocess.DEVNULL,
-                start_new_session=True, close_fds=True, env=env,
-            )
-    return proc.pid
 
 
 def main() -> int:
@@ -116,104 +54,71 @@ def main() -> int:
     except Exception:
         payload = {}
     # session_id가 없으면 여러 세션이 unknown.json을 공유해 SessionEnd가 남의 poll을 죽일 수 있다.
-    # pidfile 키가 세션별로 유일해야 안전하므로, 없으면 무장하지 않는다.
     session_id = str(payload.get("session_id") or "").strip()
     if not session_id:
         emit_context("[tuna-autoarm] session_id가 없어 무장하지 않았습니다(세션별 pidfile 충돌 방지).")
         return 0
     cwd = payload.get("cwd") or os.getcwd()
 
-    token = cfg("TUNA_BROKER_TOKEN")
-    if not token:
+    if not cfg("TUNA_BROKER_TOKEN"):
         emit_context(
             "[tuna-autoarm] TUNA_AUTOARM=1이나 TUNA_BROKER_TOKEN 미설정이라 무장하지 않았습니다. "
             "~/.tunaround/config 또는 env에 토큰을 설정하면 이 세션이 브로커 로스터에 자동 등록됩니다."
         )
         return 0
 
-    # 프로세스 스냅샷 1회(owner 탐색 + orphan 리핑에 재사용). SessionStart에서만 = 핑 지연 무관.
+    # 프로세스 스냅샷 1회(orphan 리핑 + ensure_armed의 owner 탐색에 재사용). SessionStart에서만.
     pmap = proc_map()
-    # orphan 리핑: 창 X·크래시로 SessionEnd(disarm)가 안 돈 죽은 세션의 poll을 청소한다.
     reap_orphans(pmap, session_id)
 
-    core = cfg("TUNA_BROKER_CORE", "http://127.0.0.1:8770/mcp")
-    tuna_bin = cfg("TUNA_BIN", "tunaround")
-    host = os.environ.get("COMPUTERNAME") or os.environ.get("HOSTNAME") or "host"
-    user = os.environ.get("USERNAME") or os.environ.get("USER") or "user"
-    machine = cfg("TUNA_MACHINE") or ("win" if os.name == "nt" else "unix")
-    project = cfg("TUNA_AUTOARM_PROJECT") or project_from_cwd(cwd)
-    role = cfg("TUNA_AUTOARM_ROLE", "session")
-    # uuid는 라우팅·발견 overlay 키라 세션 id를 쓴다(설계 §2.1: uuid=세션 id). 그래야 discover가
-    # 낸 후보(uuid=세션 id)와 로스터가 매칭돼 armed overlay·중복제거가 성립한다. 사람이 읽는 이름은
-    # display_name으로 분리한다(총감독은 TUNA_AUTOARM_AGENT로 win-opus-boss 등 지정).
-    agent = session_id
-    # 사람이 읽는 이름: OS-엔진-프로젝트(예: win-claude-tunaRound). 같은 프로젝트 충돌 시 -B/-C 증분은
-    # 로스터 표시 계층에서 결정론적으로 붙인다(여기선 base만). 총감독 등은 TUNA_AUTOARM_AGENT로 고정 지정.
-    display = cfg("TUNA_AUTOARM_AGENT") or f"{machine}-claude-{project}"
-    interval = cfg("TUNA_AUTOARM_INTERVAL", "15")
+    # 시스템 temp의 자동화 headless 세션은 조용히 제외(로스터 노이즈·컨텍스트 주입 모두 생략).
+    if is_temp_cwd(cwd) and not cfg("TUNA_AUTOARM_PROJECT"):
+        return 0
 
-    # session 태그 = 이 세션의 jsonl id. 브로커 armed overlay가 discover 후보(uuid=세션 id)를 이 태그로
-    # 대조해, 고정 이름으로 무장해도(uuid≠세션 id) 그 세션을 후보에서 정확히 제외한다(이중 표시 방지).
-    tags = f"machine={machine},runner=claude,role={role},project={project},user={user},host={host},session={session_id}"
-
-    sdir = state_dir()
     safe_id = sanitize_session_id(session_id)
     if not safe_id:
         emit_context("[tuna-autoarm] session_id가 안전한 파일명으로 정규화되지 않아 무장하지 않았습니다.")
         return 0
-    pidfile = sdir / f"{safe_id}.json"
-    log_path = sdir / f"{safe_id}.log"
+    pidfile = state_dir() / f"{safe_id}.json"
 
-    # 중복 무장 가드: 같은 세션의 poll이 이미 살아있으면 재기동하지 않는다.
-    if pidfile.exists():
-        try:
-            prev = json.loads(pidfile.read_text(encoding="utf-8"))
-            if pid_alive(int(prev.get("pid", -1))):
-                emit_context(
-                    f"[tuna-autoarm] 이미 무장됨: {prev.get('display_name') or prev.get('agent', agent)} "
-                    f"(poll pid={prev.get('pid')}). 로스터에서 online 상태입니다."
-                )
-                return 0
-        except Exception:
-            pass  # 손상된 pidfile은 무시하고 새로 기동.
-
-    # 토큰은 --token(argv) 대신 자식 env(TUNA_BROKER_TOKEN)로 전달한다(프로세스 목록 노출 방지).
-    # child_env()가 설정파일 토큰을 env로 승격하므로, 부모 터미널 env가 stale/미설정이어도 poll이 인증된다.
-    cmd = [
-        tuna_bin, "poll",
-        "--core", core,
-        "--agent", agent,
-        "--display-name", display,
-        "--tags", tags,
-        "--interval", str(interval),
-    ]
-
+    # 이미 무장돼 있었는지(메시지 분기용). 실제 무장·경합 직렬화는 ensure_armed가 담당한다.
+    already = False
     try:
-        pid = launch_detached(cmd, log_path, env=child_env())
-    except FileNotFoundError:
+        prev = json.loads(pidfile.read_text(encoding="utf-8"))
+        already = pid_alive(int(prev.get("pid", -1)))
+    except Exception:
+        pass
+
+    res = ensure_armed(session_id, cwd, pmap=pmap)
+    if not res:
+        tuna_bin = cfg("TUNA_BIN", "tunaround")
         emit_context(
-            f"[tuna-autoarm] '{tuna_bin}' 실행 실패(PATH에 없음). TUNA_BIN으로 tunaround 경로를 지정하세요."
+            f"[tuna-autoarm] 무장 실패(poll 기동 실패). '{tuna_bin}' 경로(TUNA_BIN)를 확인하세요. "
+            "다음 프롬프트에서 자동 재시도됩니다."
         )
         return 0
-    except Exception as e:
-        emit_context(f"[tuna-autoarm] 무장 실패: {e}")
-        return 0
+    agent, core = res
 
-    pidfile.write_text(json.dumps({
-        "pid": pid,
-        "agent": agent,
-        "display_name": display,
-        "core": core,
-        "tags": tags,
-        "log": str(log_path),
-        "session_id": session_id,
-        "owner_pid": find_owner_pid(pmap),  # 세션 claude 프로세스(리퍼가 orphan 판정에 씀).
-    }), encoding="utf-8")
+    # 표시 정보는 최종 pidfile에서 읽는다(경합 시 다른 훅이 무장했어도 실제 상태 반영).
+    try:
+        info = json.loads(pidfile.read_text(encoding="utf-8"))
+    except Exception:
+        info = {}
+    display = info.get("display_name") or agent
+    pid = info.get("pid", "?")
+    log_path = info.get("log") or str(state_dir() / f"{safe_id}.log")
+
+    if already:
+        emit_context(
+            f"[tuna-autoarm] 이미 무장됨: {display} (poll pid={pid}). 로스터에서 online 상태입니다."
+        )
+        return 0
 
     # 받아오기(pull) 수신 명령: 이 세션이 자기 detached poll의 로그를 Monitor로 감시한다.
     # poll이 `TASK <id> :: ..`를 로그에 쓰면 Monitor가 세션을 깨운다. claude엔 codex 같은 외부
     # 주입 소켓이 없어(설계상 codex=넣기/claude=받아오기), 세션이 스스로 당겨야 한다(v2-43 §수신).
     # Monitor는 Git Bash에서 돈다: 경로는 forward-slash로, 작은따옴표로 감싼다(백슬래시·중첩 큰따옴표 회피).
+    tuna_bin = cfg("TUNA_BIN", "tunaround")
     log_posix = str(log_path).replace("\\", "/")
     recv_cmd = f"tail -f -n 0 '{log_posix}' | grep --line-buffered '^TASK '"
     c_clean = core.rstrip("/")
