@@ -1548,7 +1548,18 @@ fn main() {
                 .or_else(|| std::env::var(ENV_BROKER_CORE).ok())
                 .ok_or_else(|| "--core 또는 TUNA_BROKER_CORE가 필요합니다".to_string())?;
             let token = a.token.clone().or_else(|| std::env::var(ENV_BROKER_TOKEN).ok());
-            let client = tunaround::mcp_client::McpHttpClient::connect(core, token).await?;
+            // 브로커보다 먼저/직후에 떠도 죽지 않게 접속을 재시도한다(기동 순서 취약성 제거).
+            // --once(테스트)는 즉시 실패를 반환해 문제를 숨기지 않는다.
+            let mut client = loop {
+                match tunaround::mcp_client::McpHttpClient::connect(core.clone(), token.clone()).await {
+                    Ok(c) => break c,
+                    Err(e) if a.once => return Err(e),
+                    Err(e) => {
+                        eprintln!("[presence-scan] 코어 접속 실패(15초 후 재시도): {e}");
+                        tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+                    }
+                }
+            };
             let machine = a.machine.clone().unwrap_or_else(tunaround::discover::default_machine);
             let projects_dir = match a.projects_dir.clone() {
                 Some(p) => Some(std::path::PathBuf::from(tunaround::config::expand_home(&p))),
@@ -1579,6 +1590,16 @@ fn main() {
                     let count = tunaround::presence_scan::count_runner_processes(runner);
                     sessions = tunaround::presence_scan::apply_process_gate(sessions, runner, count);
                 }
+                // 스캐너 자신도 로스터에 등록(설계 v2-44 §3: 스캐너 heartbeat = 머신 도달성 신호).
+                // register는 last_heartbeat를 now로 덮으므로 매 주기 호출 = heartbeat 겸용.
+                let self_uuid = format!("{machine}-presence-scan");
+                let self_tags = format!("machine={machine},role=infra,purpose=presence");
+                if let Err(e) = client
+                    .register_agent(&self_uuid, Some(&self_tags), Some(&format!("{machine}-스캐너")))
+                    .await
+                {
+                    eprintln!("[presence-scan] 자기 등록 실패(무시): {e}");
+                }
                 let payload = tunaround::presence_scan::to_report_json(&machine, &sessions);
                 match client.report_presence(&machine, payload).await {
                     Ok(resp) => {
@@ -1588,7 +1609,16 @@ fn main() {
                             last_report = resp;
                         }
                     }
-                    Err(e) => eprintln!("[presence-scan] 보고 실패(무시, 다음 주기 재시도): {e}"),
+                    Err(e) => {
+                        // 브로커 재시작으로 MCP 세션이 만료되면 모든 호출이 계속 실패한다(R10 교훈).
+                        // 재접속을 시도해 다음 주기부터 새 세션으로 복구한다.
+                        eprintln!("[presence-scan] 보고 실패(재접속 시도): {e}");
+                        if let Ok(c) =
+                            tunaround::mcp_client::McpHttpClient::connect(core.clone(), token.clone()).await
+                        {
+                            client = c;
+                        }
+                    }
                 }
                 if a.once {
                     break;

@@ -23,7 +23,11 @@ function WarnIcon() {
 }
 
 // 칩·드롭다운의 표시 이름 = project(로스터 타이틀과 동일 규약). 같은 project·runner 충돌은 uuid로 식별.
+// infra(codex 주입 경로)는 project가 없으므로 용도가 드러나는 고정 라벨.
 function agentTitle(a: Agent): string {
+  if (a.tags?.role === 'infra') {
+    return `${a.tags?.machine ?? '?'}-codex 주입`
+  }
   return a.tags?.project ?? a.display_name ?? a.uuid.slice(0, 8)
 }
 
@@ -33,8 +37,16 @@ export default function GoalForm({ agents, remoteViewer, selected, onChangeSelec
   const [status, setStatus] = useState('')
   const [pickerOpen, setPickerOpen] = useState(false)
 
-  // 헤드리스 워커(role=worker)는 목표 대상에서 제외(로스터와 동일 분리, work 데몬이 별도 소비).
-  const online = agents.filter((a) => a.online && a.tags?.role !== 'worker')
+  // 목표 대상 = claude 세션 + codex 주입 infra. 제외 3종(전부 no-consumer 방지):
+  //   워커(work 데몬이 별도 소비) / presence 스캐너(task 처리 자리 아님) /
+  //   codex 세션 카드(자기 poll이 없어 수신 불가 - codex로 던지는 경로는 codex-inject watcher가 claim).
+  const online = agents.filter(
+    (a) =>
+      a.online &&
+      a.tags?.role !== 'worker' &&
+      (a.tags?.role !== 'infra' || a.tags?.purpose === 'codex-inject') &&
+      !(a.tags?.role === 'session' && a.tags?.runner === 'codex'),
+  )
 
   if (remoteViewer) {
     return (

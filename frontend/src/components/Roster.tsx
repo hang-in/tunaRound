@@ -14,6 +14,7 @@ const VALUE_COLOR: Record<string, string> = {
   codex: '#10a37f',
   gemini: '#4285f4',
   supervised: '#2da44e',
+  infra: '#2da44e',
   dispatcher: '#8250df',
   worker: '#bf8700',
   tunaround: '#d29922',
@@ -57,12 +58,24 @@ export function TagPill({ k, v }: { k: string; v: string }) {
 
 type Props = {
   rows: SessionRow[]
+  // 머신 상주 데몬(role=infra). 카드가 아니라 머신 그룹 헤더의 상태 도트로 렌더한다(설계 v2-44 §5).
+  infra: SessionRow[]
   // uuid -> 방금 heartbeat 가 갱신돼 pulse 링을 잠깐 보여줄지 여부.
   pulses: Record<string, boolean>
   // 총감독(활성 중 사람 입력 최신).
   autoBossUuid: string
   // 상세의 "이 세션에 목표" -> 목표 제출 폼 선택에 추가(App이 배선).
   onAddTarget?: (uuid: string) => void
+}
+
+// 머신 그룹 헤더의 인프라 상태 도트 한 개. ok=해당 데몬 online(도달 가능), off=부재.
+function InfraDot({ ok, label, title }: { ok: boolean; label: string; title: string }) {
+  return (
+    <span className={`rst-infra-dot${ok ? ' ok' : ''}`} title={title}>
+      <span className="rst-infra-bullet" aria-hidden="true" />
+      {label}
+    </span>
+  )
 }
 
 // 그룹 내 같은 (runner, project) 세션이 여럿이면 두 번째부터 ·B ·C 접미(uuid 정렬 순).
@@ -86,13 +99,14 @@ function titleSuffixes(rows: SessionRow[]): Map<string, string> {
   return out
 }
 
-export default function Roster({ rows, pulses, autoBossUuid, onAddTarget }: Props) {
+export default function Roster({ rows, infra, pulses, autoBossUuid, onAddTarget }: Props) {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   const [copied, setCopied] = useState('')
 
-  // 머신 그룹: 총감독 머신 → win → mac → 나머지 알파벳.
+  // 머신 그룹: 총감독 머신 → win → mac → 나머지 알파벳. 세션이 없어도 infra만 있는 머신은 그룹을 남긴다
+  // (도트 = "이 머신에 A2A가 닿는가"의 인디케이터, 설계 v2-44 §5).
   const bossMachine = rows.find((r) => r.uuid === autoBossUuid)?.machine ?? null
-  const machines = [...new Set(rows.map((r) => r.machine ?? '기타'))]
+  const machines = [...new Set([...rows, ...infra].map((r) => r.machine ?? '기타'))]
   machines.sort((a, b) => {
     const rank = (m: string) => (m === bossMachine ? 0 : m === 'win' ? 1 : m === 'mac' ? 2 : 3)
     return rank(a) - rank(b) || a.localeCompare(b)
@@ -117,7 +131,7 @@ export default function Roster({ rows, pulses, autoBossUuid, onAddTarget }: Prop
         <span className="section-count">{rows.length} online</span>
       </div>
       <div className="roster-list">
-        {rows.length === 0 ? (
+        {rows.length === 0 && infra.length === 0 ? (
           <div className="roster-empty">열린 세션 없음.</div>
         ) : (
           machines.map((m) => {
@@ -128,14 +142,32 @@ export default function Roster({ rows, pulses, autoBossUuid, onAddTarget }: Prop
                 (a.uuid === autoBossUuid ? 0 : 1) - (b.uuid === autoBossUuid ? 0 : 1) ||
                 (a.project ?? a.label).localeCompare(b.project ?? b.label),
             )
+            // 머신 인프라 도트: presence = 스캐너 데몬 heartbeat(폴백=이 머신 세션이 src=scan으로 보고됨),
+            // codex 주입 = codex-inject watcher online(이 머신 codex에 던지면 받는가).
+            const machineInfra = infra.filter((r) => (r.machine ?? '기타') === m)
+            const presenceOk =
+              machineInfra.some((r) => r.tags.purpose === 'presence') ||
+              group.some((r) => r.tags.src === 'scan')
+            const injectOk = machineInfra.some((r) => r.tags.purpose === 'codex-inject')
             return (
               <div key={m}>
                 <div className="rst-group">
                   <MachineGlyph machine={m === '기타' ? undefined : m} />
                   <span className="rst-group-name">{m}</span>
                   <span className="rst-group-count">· {group.length}</span>
+                  <InfraDot
+                    ok={presenceOk}
+                    label="presence"
+                    title={presenceOk ? '스캐너 동작 중(이 머신에 A2A 도달 가능)' : '스캐너 부재(세션 자체 등록만)'}
+                  />
+                  <InfraDot
+                    ok={injectOk}
+                    label="codex 주입"
+                    title={injectOk ? 'codex-inject watcher online(이 머신 codex에 task 전달 가능)' : 'codex 주입 경로 없음'}
+                  />
                   <span className="rst-group-line" />
                 </div>
+                {group.length === 0 ? <div className="roster-empty">열린 세션 없음(인프라만 동작 중).</div> : null}
                 {sorted.map((s) => {
                   const isBoss = s.uuid === autoBossUuid
                   const pulse = Boolean(pulses[s.uuid])
