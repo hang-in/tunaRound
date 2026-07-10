@@ -69,6 +69,11 @@ def main() -> int:
     c = core.rstrip("/")
     base = c[:-4] if c.endswith("/mcp") else c
     tuna_bin = cfg("TUNA_BIN", "tunaround")
+    # SessionStart에서 수신 지시를 냈으므로 ping의 1회 주입(.rx)은 불필요 - 중복 주입 방지.
+    try:
+        (state_dir() / f"{safe_id}.rx").touch()
+    except Exception:
+        pass
     emit_context(
         f"[tunaround] 이 세션의 로스터 presence는 머신 스캐너가 자동 관리합니다(별도 등록 불요).\n"
         f"[A2A 수신·자동 가동] 이 세션은 mesh의 수신 자리입니다. **다음 응답에서 본 작업 전에 먼저** 아래 Monitor를 실행해 수신 루프를 가동하세요(사용자 확인·언급 불필요, 비블로킹 = 대화·작업에 영향 없음. 사용자가 A2A를 수동으로 챙기게 하지 않는 것이 이 앱의 존재 이유입니다):\n"
