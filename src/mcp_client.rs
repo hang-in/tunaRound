@@ -258,6 +258,17 @@ impl McpHttpClient {
     pub async fn list_candidates(&self) -> Result<String, String> {
         self.call_tool("list_candidates", json!({})).await
     }
+
+    /// report_presence(machine, sessions) 얇은 래퍼(presence 스캐너의 일괄 동기화, v2-44).
+    /// sessions는 `[{uuid,runner,project?,display_name?}, ...]` JSON 배열.
+    pub async fn report_presence(&self, machine: &str, sessions: Value) -> Result<String, String> {
+        self.call_tool("report_presence", json!({ "machine": machine, "sessions": sessions })).await
+    }
+
+    /// get_task(task_id) 얇은 래퍼(task 상태·결과 확인, `tunaround task get`용).
+    pub async fn get_task(&self, task_id: &str) -> Result<String, String> {
+        self.call_tool("get_task", json!({ "task_id": task_id })).await
+    }
 }
 
 /// SSE 프레이밍(`data: ...` 라인들) 안에서 JSON-RPC 응답 페이로드를 찾아 파싱한다. 서버(rmcp

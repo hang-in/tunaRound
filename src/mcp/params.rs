@@ -151,6 +151,29 @@ pub struct ReportCandidatesParams {
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ListCandidatesParams {}
 
+/// report_presence 툴의 라이브 세션 한 건(presence 스캐너가 보고, 설계 v2-44 §6).
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct PresenceSessionInput {
+    /// 세션 id(claude=jsonl stem, codex=rollout uuid). roster uuid와 같은 공간.
+    pub uuid: String,
+    /// 러너 종류(claude | codex).
+    pub runner: String,
+    /// 추정 프로젝트(불명이면 생략).
+    pub project: Option<String>,
+    /// 로스터 가독용 표시 이름(예: win-claude-tunaRound). 생략 가능.
+    pub display_name: Option<String>,
+}
+
+/// report_presence 툴 파라미터(머신당 스캐너 데몬이 라이브 세션 전집합을 일괄 보고).
+/// 같은 machine의 스캐너 소유(src=scan) 항목 중 보고에 없는 것은 브로커가 제거한다.
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ReportPresenceParams {
+    /// 이 스캐너의 머신 식별자(win|mac|unix).
+    pub machine: String,
+    /// 이 머신의 라이브 세션 전집합.
+    pub sessions: Vec<PresenceSessionInput>,
+}
+
 /// get_task 툴 파라미터(dispatcher가 위임한 task의 상태·결과를 확인할 때 사용).
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct GetTaskParams {
