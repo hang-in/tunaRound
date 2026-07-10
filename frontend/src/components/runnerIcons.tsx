@@ -7,7 +7,9 @@ const RUNNER_COLOR: Record<string, string> = {
 }
 
 function runnerColor(runner: string | null | undefined): string {
-  return RUNNER_COLOR[runner ?? ''] ?? '#8791a3'
+  const key = runner ?? ''
+  // own-property 검사: 'toString' 같은 키가 상속 프로퍼티를 잡아 함수가 반환되는 것 방지(봇리뷰).
+  return Object.prototype.hasOwnProperty.call(RUNNER_COLOR, key) ? RUNNER_COLOR[key] : '#8791a3'
 }
 
 const CLAUDE_PATH =
@@ -36,9 +38,9 @@ export function RunnerIcon({ runner, size = 15 }: { runner: string | null; size?
       </svg>
     )
   }
-  // 폴백: 이니셜 색점(미지의 러너).
+  // 폴백: 이니셜 색점(미지의 러너). 러너 이름은 항상 옆 텍스트로 노출되므로 장식용으로 숨긴다(봇리뷰).
   return (
-    <span className="rst-runner" style={{ background: runnerColor(name) }} title={name} aria-label={name}>
+    <span className="rst-runner" style={{ background: runnerColor(name) }} title={name} aria-hidden="true">
       {name.charAt(0).toUpperCase()}
     </span>
   )
