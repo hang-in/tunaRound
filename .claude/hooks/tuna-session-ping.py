@@ -36,6 +36,15 @@ def main() -> int:
         return 0
     agent, core = armed
 
+    # 하네스는 백그라운드 이벤트(Monitor wake·Agent 완료 등)로 세션을 깨울 때도 UserPromptSubmit을
+    # 발화한다. 그건 사람 입력이 아니므로 human-ping(총감독 판정)을 보내지 않는다 - A2A 수신만 한
+    # 세션이 ★를 가져가는 오염 실측(2026-07-11, mac-claude-tunaRound). 무장 보장은 위에서 이미 했다.
+    # 판별 = 하네스 고정 래퍼의 시작 prefix만(실측 2종). 본문 어딘가의 부분 문자열 매칭은
+    # 그 문구를 인용·논의하는 진짜 사람 프롬프트까지 제외하므로 쓰지 않는다.
+    prompt = str(payload.get("prompt") or "").lstrip()
+    if prompt.startswith(("<task-notification>", "[SYSTEM NOTIFICATION")):
+        return 0
+
     # 핑: {core-base}/dashboard/human-ping {agent}. core는 .../mcp라 base로 절단.
     # 후행 슬래시를 먼저 제거해 "http://x/mcp/"처럼 끝나도 /mcp가 정확히 잘리게 한다.
     c = core.rstrip("/")
