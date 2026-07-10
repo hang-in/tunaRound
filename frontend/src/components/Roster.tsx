@@ -1,13 +1,10 @@
-// 관리자 로스터: 피드와 동일한 패널+행 레이아웃. 각 관리자 = 상태닷·머신아이콘·이름·heartbeat·태그.
-// 총괄은 별도 카드가 아니라 대등한 행에 "현재 총괄" 뱃지로 표식(클릭해 지정, 앉는 머신 따라 바뀜).
+// 관리자 로스터: 머신별 그룹 + 1줄 행(프로젝트·러너·상태만). 이름/뱃지 3중 중복 제거 리디자인.
+// role=session(기본값)은 숨기고 예외(supervised 등)만 칩. uuid는 행 클릭 확장 상세로(복사·목표 추가).
+import { useState } from 'react'
 import { relativeTime } from '../api'
 import type { SessionRow } from '../activity'
-import { TAG_ORDER, orderedTags } from './tags'
 
-const N_DOTS = 14
-
-// 태그 값별 색(같은 키라도 값에 따라 다르게: mac≠win, claude≠codex, supervised≠dispatcher).
-// 알려진 값은 고정 색, 나머지는 값 해시로 팔레트에서 안정적으로 배정.
+// 태그 값별 색(워커 섹션 TagPill 재사용분). 알려진 값은 고정, 나머지는 해시 팔레트.
 const VALUE_COLOR: Record<string, string> = {
   mac: '#6e7681',
   win: '#0078d4',
@@ -29,18 +26,18 @@ function valueColor(v: string): string {
   return PALETTE[h % PALETTE.length]
 }
 
-// 머신 브랜드 글리프(박스 없이 인라인, 일관 크기). 워커 섹션도 재사용한다.
+// 머신 브랜드 글리프(그룹 헤더·워커 섹션 재사용).
 export function MachineGlyph({ machine }: { machine: string | undefined }) {
   if (machine === 'mac') {
     return (
-      <svg className="machine-glyph" width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-label="mac">
+      <svg className="machine-glyph" width="13" height="13" viewBox="0 0 16 16" fill="currentColor" aria-label="mac">
         <path d="M11.05 8.36c-.02-1.5 1.22-2.22 1.28-2.26-.7-1.02-1.79-1.16-2.17-1.18-.92-.09-1.8.54-2.27.54-.47 0-1.19-.53-1.96-.51-1.01.01-1.94.59-2.46 1.49-1.05 1.82-.27 4.52.75 6 .5.73 1.09 1.54 1.87 1.51.75-.03 1.03-.48 1.94-.48.9 0 1.16.48 1.95.47.81-.01 1.32-.74 1.81-1.47.57-.84.81-1.66.82-1.7-.02-.01-1.57-.6-1.59-2.38zM9.6 3.87c.41-.5.69-1.2.61-1.9-.59.02-1.31.4-1.74.9-.38.44-.71 1.15-.62 1.83.66.05 1.34-.33 1.75-.83z" />
       </svg>
     )
   }
   if (machine === 'win') {
     return (
-      <svg className="machine-glyph win" width="13" height="13" viewBox="0 0 16 16" fill="currentColor" aria-label="win">
+      <svg className="machine-glyph win" width="12" height="12" viewBox="0 0 16 16" fill="currentColor" aria-label="win">
         <path d="M0 2.25 6.5 1.35v6.4H0V2.25zM7.4 1.22 16 0v7.75H7.4V1.22zM0 8.55h6.5v6.4L0 14.05V8.55zM7.4 8.55H16V16l-8.6-1.2V8.55z" />
       </svg>
     )
@@ -48,17 +45,7 @@ export function MachineGlyph({ machine }: { machine: string | undefined }) {
   return <span className="machine-glyph-none" aria-hidden="true" />
 }
 
-function HbClockIcon() {
-  return (
-    <svg width="11" height="11" viewBox="0 0 12 12" fill="none" style={{ flex: 'none' }}>
-      <circle cx="6" cy="6" r="4.6" stroke="currentColor" strokeWidth="1.1" />
-      <path d="M6 3.4V6l1.8 1.1" stroke="currentColor" strokeWidth="1.1" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  )
-}
-
-// 값만 표시하는 뱃지(라벨/타이틀 없이 - 값이 자명: win/claude/supervised/프로젝트명).
-// 무엇의 값인지는 hover title로만 남긴다. 워커 섹션도 재사용한다.
+// 값만 표시하는 뱃지(워커 섹션 전용으로 유지 - 로스터 본문에서는 예외 role 칩만 쓴다).
 export function TagPill({ k, v }: { k: string; v: string }) {
   return (
     <span className="shield-v shield-solo" style={{ background: valueColor(v) }} title={k}>
@@ -67,78 +54,175 @@ export function TagPill({ k, v }: { k: string; v: string }) {
   )
 }
 
-type Props = {
-  // 활성 세션(활동 age < 60분). 이미 age 오름차순(최근 먼저)으로 정렬돼 들어온다(설계 v2-41).
-  rows: SessionRow[]
-  // uuid -> 방금 heartbeat 가 갱신돼 pulse 애니를 잠깐 보여줄지 여부.
-  pulses: Record<string, boolean>
-  // 자동 총감독 후보(활성 중 사람 입력 최신). 수동 ★ override가 없으면 이걸 총감독으로 표식.
-  autoBossUuid: string
+// 러너 색점(이니셜). 알려진 러너는 고정 색, 그 외는 해시 팔레트.
+function RunnerDot({ runner }: { runner: string | null }) {
+  const r = runner || '?'
+  const initial = r === 'claude' ? 'C' : r === 'codex' ? 'X' : r.charAt(0).toUpperCase()
+  return (
+    <span className="rst-runner" style={{ background: valueColor(r) }} title={r} aria-label={r}>
+      {initial}
+    </span>
+  )
 }
 
-export default function Roster({ rows, pulses, autoBossUuid }: Props) {
-  // 총감독 = 순수 자동(활성 중 사람 입력 최신 = App의 autoBossUuid). 수동 override 없음(★는 표시만).
-  const effectiveBoss = autoBossUuid
+type Props = {
+  rows: SessionRow[]
+  // uuid -> 방금 heartbeat 가 갱신돼 pulse 링을 잠깐 보여줄지 여부.
+  pulses: Record<string, boolean>
+  // 총감독(활성 중 사람 입력 최신).
+  autoBossUuid: string
+  // 상세의 "이 세션에 목표" -> 목표 제출 폼 선택에 추가(App이 배선).
+  onAddTarget?: (uuid: string) => void
+}
 
-  // 정렬: 총감독 최상단 → 현재 사용 머신(=총감독 머신) 세션 → 원격 세션. 각 그룹 내 age 오름차순(최근 먼저).
-  const bossMachine = rows.find((r) => r.uuid === effectiveBoss)?.machine ?? null
-  const rank = (r: SessionRow) =>
-    r.uuid === effectiveBoss ? 0 : bossMachine !== null && r.machine === bossMachine ? 1 : 2
-  const sorted = [...rows].sort((a, b) => rank(a) - rank(b) || a.label.localeCompare(b.label))
+// 그룹 내 같은 (runner, project) 세션이 여럿이면 두 번째부터 ·B ·C 접미(uuid 정렬 순).
+function titleSuffixes(rows: SessionRow[]): Map<string, string> {
+  const groups = new Map<string, SessionRow[]>()
+  rows.forEach((r) => {
+    const k = `${r.runner ?? '?'}|${r.project ?? r.label}`
+    if (!groups.has(k)) groups.set(k, [])
+    groups.get(k)!.push(r)
+  })
+  const out = new Map<string, string>()
+  for (const group of groups.values()) {
+    if (group.length === 1) continue
+    ;[...group]
+      .sort((a, b) => a.uuid.localeCompare(b.uuid))
+      .forEach((r, i) => {
+        if (i > 0) out.set(r.uuid, ' ·' + String.fromCharCode(65 + i)) // ·B, ·C ...
+      })
+  }
+  return out
+}
+
+export default function Roster({ rows, pulses, autoBossUuid, onAddTarget }: Props) {
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({})
+  const [copied, setCopied] = useState('')
+
+  // 머신 그룹: 총감독 머신 → win → mac → 나머지 알파벳.
+  const bossMachine = rows.find((r) => r.uuid === autoBossUuid)?.machine ?? null
+  const machines = [...new Set(rows.map((r) => r.machine ?? '기타'))]
+  machines.sort((a, b) => {
+    const rank = (m: string) => (m === bossMachine ? 0 : m === 'win' ? 1 : m === 'mac' ? 2 : 3)
+    return rank(a) - rank(b) || a.localeCompare(b)
+  })
+
+  const toggle = (uuid: string) => setExpanded((p) => ({ ...p, [uuid]: !p[uuid] }))
+
+  const copyUuid = async (uuid: string) => {
+    try {
+      await navigator.clipboard.writeText(uuid)
+      setCopied(uuid)
+      window.setTimeout(() => setCopied((c) => (c === uuid ? '' : c)), 1500)
+    } catch {
+      // clipboard 미지원(비보안 컨텍스트 등)이면 조용히 무시 - uuid는 화면에 이미 보인다.
+    }
+  }
 
   return (
     <section className="roster-section">
       <div className="panel-header">
         <h2 className="section-title">관리자 로스터</h2>
-        <span className="section-count">{sorted.length} online</span>
+        <span className="section-count">{rows.length} online</span>
       </div>
       <div className="roster-list">
-        {sorted.length === 0 ? (
+        {rows.length === 0 ? (
           <div className="roster-empty">열린 세션 없음.</div>
         ) : (
-          sorted.map((s) => {
-            const pulse = !!pulses[s.uuid]
-            const isBoss = effectiveBoss === s.uuid
-            const name = s.label
+          machines.map((m) => {
+            const group = rows.filter((r) => (r.machine ?? '기타') === m)
+            const suffix = titleSuffixes(group)
+            const sorted = [...group].sort(
+              (a, b) =>
+                (a.uuid === autoBossUuid ? 0 : 1) - (b.uuid === autoBossUuid ? 0 : 1) ||
+                (a.project ?? a.label).localeCompare(b.project ?? b.label),
+            )
             return (
-              <div className="roster-row" key={s.uuid}>
-                <div className="card-row">
-                  <span className="status-dot-wrap">
-                    <span className="status-dot online" />
-                    {pulse ? <span className="status-ping" /> : null}
-                  </span>
-                  <MachineGlyph machine={s.machine ?? undefined} />
-                  <span className="roster-uuid">{name || s.uuid}</span>
-                  {isBoss ? (
-                    <span className="boss-star on" title="현재 총감독(자동 감지 - 사람이 입력 중인 세션)">
-                      ★
-                    </span>
-                  ) : null}
-                  {isBoss ? <span className="pill-boss">현재 총괄</span> : null}
-                  <span className="hb-dots">
-                    {Array.from({ length: N_DOTS }, (_, i) => (
-                      <span key={i} className="hb-dot" style={{ animationDelay: (i * 0.09).toFixed(2) + 's' }} />
-                    ))}
-                    {pulse ? <span className="hb-sweep" /> : null}
-                  </span>
-                  <span className="dash-spacer" />
-                  <span className="hb-label-group">
-                    <HbClockIcon />
-                    <span className="hb-label">{relativeTime(s.lastHeartbeat)}</span>
-                  </span>
+              <div key={m}>
+                <div className="rst-group">
+                  <MachineGlyph machine={m === '기타' ? undefined : m} />
+                  <span className="rst-group-name">{m}</span>
+                  <span className="rst-group-count">· {group.length}</span>
+                  <span className="rst-group-line" />
                 </div>
-                <div className="tag-row">
-                  {orderedTags(s.tags)
-                    .filter(([k]) => TAG_ORDER.includes(k))
-                    .map(([k, v]) => (
-                      <TagPill key={k} k={k} v={v} />
-                    ))}
-                </div>
-                <div className="tag-row session-row">
-                  <span className="shield-session" title="session / uuid">
-                    {s.tags.session ?? s.uuid}
-                  </span>
-                </div>
+                {sorted.map((s) => {
+                  const isBoss = s.uuid === autoBossUuid
+                  const pulse = !!pulses[s.uuid]
+                  const open = !!expanded[s.uuid]
+                  const role = s.tags.role
+                  const title = (s.project ?? s.label) + (suffix.get(s.uuid) ?? '')
+                  const sessionId = s.tags.session ?? s.uuid
+                  return (
+                    <div key={s.uuid}>
+                      <div
+                        className={'rst-row' + (isBoss ? ' boss' : '') + (pulse ? ' fresh' : '')}
+                        role="button"
+                        tabIndex={0}
+                        aria-expanded={open}
+                        onClick={() => toggle(s.uuid)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault()
+                            toggle(s.uuid)
+                          }
+                        }}
+                      >
+                        <span className="rst-dot-wrap">
+                          <span className="rst-dot" />
+                          {pulse ? <span className="rst-ping" /> : null}
+                        </span>
+                        <RunnerDot runner={s.runner} />
+                        <span className="rst-title">{title}</span>
+                        <span className="rst-runner-name">{s.runner ?? '?'}</span>
+                        {isBoss ? (
+                          <>
+                            <span className="boss-star on" title="현재 총감독(사람이 마지막으로 입력한 세션)">
+                              ★
+                            </span>
+                            <span className="rst-chip boss">총괄</span>
+                          </>
+                        ) : null}
+                        {role && role !== 'session' ? (
+                          <span className={'rst-chip role-' + role}>{role}</span>
+                        ) : null}
+                        <span className="dash-spacer" />
+                        <span className="rst-hb">{relativeTime(s.lastHeartbeat)}</span>
+                        <span className="rst-caret" aria-hidden="true">
+                          ▸
+                        </span>
+                      </div>
+                      {open ? (
+                        <div className="rst-detail">
+                          <span className="rst-uuid" title="session / uuid">
+                            {sessionId}
+                          </span>
+                          <button
+                            type="button"
+                            className="rst-detail-btn"
+                            onClick={(e) => {
+                              e.stopPropagation()
+                              void copyUuid(s.uuid)
+                            }}
+                          >
+                            {copied === s.uuid ? '복사됨 ✓' : 'uuid 복사'}
+                          </button>
+                          {onAddTarget ? (
+                            <button
+                              type="button"
+                              className="rst-detail-btn"
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                onAddTarget(s.uuid)
+                              }}
+                            >
+                              이 세션에 목표
+                            </button>
+                          ) : null}
+                        </div>
+                      ) : null}
+                    </div>
+                  )
+                })}
               </div>
             )
           })
