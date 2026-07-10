@@ -120,6 +120,8 @@ def deregister(agent, core) -> None:
         return
     c = str(core).rstrip("/")
     base = c[:-4] if c.endswith("/mcp") else c  # ".../mcp"를 base로 절단.
+    if not base.startswith(("http://", "https://")):
+        return  # loopback HTTP 전용(file: 등 비정상 스킴 차단)
     token = cfg("TUNA_BROKER_TOKEN", "")
     body = json.dumps({"agent": agent}).encode()
     req = urllib.request.Request(base + "/dashboard/deregister", data=body, method="POST")

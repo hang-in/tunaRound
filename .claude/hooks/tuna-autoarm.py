@@ -33,10 +33,10 @@ except Exception:
     def proc_map():
         return {}
 
-    def find_owner_pid(pmap=None):
+    def find_owner_pid(_pmap=None):
         return 0
 
-    def reap_orphans(pmap, current_session_id=""):
+    def reap_orphans(_pmap, _current_session_id=""):
         return 0
 
 

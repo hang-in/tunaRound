@@ -110,7 +110,7 @@ def proc_map() -> dict:
                 ["powershell", "-NoProfile", "-Command",
                  "Get-CimInstance Win32_Process | ForEach-Object "
                  "{ \"$($_.ProcessId),$($_.ParentProcessId),$($_.Name)\" }"],
-                capture_output=True, text=True, timeout=10,
+                capture_output=True, text=True, timeout=10, check=False,
             ).stdout
             for line in out.splitlines():
                 parts = line.strip().split(",", 2)
@@ -119,7 +119,7 @@ def proc_map() -> dict:
         else:
             out = subprocess.run(
                 ["ps", "-eo", "pid=,ppid=,comm="],
-                capture_output=True, text=True, timeout=10,
+                capture_output=True, text=True, timeout=10, check=False,
             ).stdout
             for line in out.splitlines():
                 f = line.split(None, 2)
@@ -130,7 +130,7 @@ def proc_map() -> dict:
     return m
 
 
-def find_owner_pid(pmap: dict = None) -> int:
+def find_owner_pid(pmap=None) -> int:
     """이 훅을 낳은 세션(claude 프로세스)의 PID. getpid부터 조상을 올라가며 이름에 'claude'가
     든 첫 프로세스를 owner로 본다. 못 찾으면 getppid 폴백(0이면 미지정)."""
     m = pmap if pmap is not None else proc_map()
@@ -156,6 +156,8 @@ def _deregister(agent: str, core: str, token: str) -> None:
         return
     c = str(core).rstrip("/")
     base = c[:-4] if c.endswith("/mcp") else c
+    if not base.startswith(("http://", "https://")):
+        return  # loopback HTTP 전용(file: 등 비정상 스킴 차단)
     body = json.dumps({"agent": agent}).encode()
     req = urllib.request.Request(base + "/dashboard/deregister", data=body, method="POST")
     req.add_header("Content-Type", "application/json")
@@ -198,7 +200,7 @@ def reap_orphans(pmap: dict, current_session_id: str = "") -> int:
                 try:
                     if os.name == "nt":
                         subprocess.run(["taskkill", "/PID", str(pollpid), "/F"],
-                                       capture_output=True, timeout=5)
+                                       capture_output=True, timeout=5, check=False)
                     else:
                         os.kill(int(pollpid), 9)
                 except Exception:
