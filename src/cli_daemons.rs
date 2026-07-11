@@ -235,6 +235,23 @@ pub fn presence_scan(rt: &tokio::runtime::Runtime, a: PresenceScanArgs) {
                     let alive = tunaround::presence_scan::parse_pids(&proc_text, is_win);
                     sessions = tunaround::presence_scan::filter_dead_sessions(sessions, &marker_dir, &alive);
                 }
+                // P8: 유휴-열림 claude 세션 되살리기(순수 additive). 마커 owner pid가 살아있는 claude면
+                // 신선도 창(stale, 기본 240분)과 무관하게 로스터에 유지한다. 프로세스 스냅샷이 있는 주기
+                // 에만 수행(스냅샷 실패 주기엔 추가 안 함 = 보수적). 마커 없음/codex는 비대상(기존 창 폴백).
+                if let (Some(h), Some(pdir)) = (&home, &projects_dir) {
+                    let marker_dir = h.join(".tunaround").join("autoarm");
+                    let claude_pids = tunaround::presence_scan::runner_pids(&proc_text, "claude", is_win);
+                    let existing: std::collections::HashSet<String> =
+                        sessions.iter().map(|s| s.uuid.clone()).collect();
+                    let idle = tunaround::presence_scan::enumerate_idle_marker_sessions(
+                        &marker_dir,
+                        pdir,
+                        &claude_pids,
+                        &existing,
+                        home.as_deref(),
+                    );
+                    sessions.extend(idle);
+                }
             }
             // 스캐너 자신도 로스터에 등록(설계 v2-44 §3: 스캐너 heartbeat = 머신 도달성 신호).
             // register는 last_heartbeat를 now로 덮으므로 매 주기 호출 = heartbeat 겸용.
