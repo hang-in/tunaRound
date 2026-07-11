@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-11
+
 > 0.3.0 이후 mesh를 관측·영속·자동수신 쪽으로 굳혔다(presence 스캐너, codex-relay, 재생·기억화, 대시보드 관제탑 고도화). 전부 하위호환 추가이며 스키마는 v8→v10(컬럼·테이블 추가)로 확장됐다.
 
 ### 추가 (Added)
@@ -104,7 +106,8 @@
 
 - AGPL-3.0-only.
 
-[Unreleased]: https://github.com/hang-in/tunaRound/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/hang-in/tunaRound/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/hang-in/tunaRound/releases/tag/v0.4.0
 [0.3.0]: https://github.com/hang-in/tunaRound/releases/tag/v0.3.0
 [0.2.2]: https://github.com/hang-in/tunaRound/releases/tag/v0.2.2
 [0.2.1]: https://github.com/hang-in/tunaRound/releases/tag/v0.2.1
