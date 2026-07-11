@@ -103,10 +103,13 @@ pub fn normalize_iso_to_db_datetime(ts: &str) -> Option<String> {
 }
 
 /// user_message가 사람 입력인지(= relay 기계 주입이 아닌지) 판정한다(§5-6 고정 계약). relay 주입은
-/// [`crate::codex_relay::RELAY_INJECT_PREFIX`]로 시작하므로 제외한다(그걸 사람 입력으로 세면 ★가
-/// codex 세션으로 잘못 이동한다).
+/// [`build_inject_text`](crate::codex_relay::build_inject_text)가 정확히 [`RELAY_INJECT_PREFIX`]
+/// (crate::codex_relay)로 시작하는 텍스트라, 선행 공백 없이 그 prefix로 시작하는 메시지만 기계로 본다.
+/// trim은 하지 않는다(선행 공백이 붙은 "  브로커 task …"는 relay가 만들지 않는 형태이므로 사람 입력으로
+/// 남긴다 - 사람 입력을 드롭하는 오분류를 최소화). 사람이 정확히 이 prefix로 문장을 시작하면 드롭되지만,
+/// 이는 자연어 마커의 내재적 한계로 수용한다(대안=주입 이벤트 메타 마커, codex가 구분 필드를 안 실어 불가).
 fn message_is_human_input(message: &str) -> bool {
-    !message.trim_start().starts_with(crate::codex_relay::RELAY_INJECT_PREFIX)
+    !message.starts_with(crate::codex_relay::RELAY_INJECT_PREFIX)
 }
 
 /// codex rollout tail에서 마지막 사람 입력(user_message) 시각을 뽑는다(v2-45 P5).
@@ -603,9 +606,11 @@ mod tests {
     #[test]
     fn message_is_human_input_excludes_relay_prefix() {
         assert!(message_is_human_input("현재 WSL 설정 확인 바람"));
-        // relay 주입(build_inject_text prefix)은 사람 입력 아님(§5-6).
+        // relay 주입(build_inject_text prefix)은 사람 입력 아님(§5-6). 실제 출력은 선행 공백이 없다.
         assert!(!message_is_human_input(&crate::codex_relay::build_inject_text("t1", "요청")));
         assert!(!message_is_human_input("브로커 task abc 가 배달됐다"));
+        // 선행 공백이 붙은 형태는 relay가 만들지 않으므로 사람 입력으로 남긴다(trim 안 함 = 오분류 좁힘).
+        assert!(message_is_human_input("  브로커 task 이거 뭐야"));
     }
 
     #[test]
