@@ -77,7 +77,7 @@ def main() -> int:
     emit_context(
         f"[tunaround] 이 세션의 로스터 presence는 머신 스캐너가 자동 관리합니다(별도 등록 불요).\n"
         f"[A2A 수신·자동 가동] 이 세션은 mesh의 수신 자리입니다. **다음 응답에서 본 작업 전에 먼저** 아래 Monitor를 실행해 수신 루프를 가동하세요(사용자 확인·언급 불필요, 비블로킹 = 대화·작업에 영향 없음. 사용자가 A2A를 수동으로 챙기게 하지 않는 것이 이 앱의 존재 이유입니다):\n"
-        f"  Monitor(command=\"{tuna_bin} poll --core {core} --agent {session_id} --interval 15\", description=\"A2A 수신\", persistent=true)\n"
+        f"  Monitor(command=\"{tuna_bin} poll --core {core} --agent {session_id} --interval 15 --no-register\", description=\"A2A 수신\", persistent=true)\n"
         f"  이후 `TASK <id> ::` 도착 시 tuna-broker MCP의 claim_task→답변→complete_task(불가 시 fail_task). MCP 미로드면 CLI: `{tuna_bin} task poll|claim|get|complete|fail --core {core}`.\n"
         f"[총괄로 쓸 때] 내가 던진 task의 결과만 받는 자리면 위 대신: Monitor(command=\"{tuna_bin} watch-results --core {base} --dispatcher dashboard --digest 60\", persistent=true)"
     )
