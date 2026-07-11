@@ -376,7 +376,8 @@ impl Session {
         self.retrieve_for_from_path(topic, &active)
     }
 
-    /// Redis snapshot에서 트리 상태를 주입한다. main이 --session 재개 시 호출.
+    /// 저장된 트리 상태(파일 또는 SQLite 세션 load_session)를 인메모리 세션에 주입한다.
+    /// main이 --session/파일 재개 시 호출(v2-45 P7: Redis 스냅샷 경로 제거).
     pub fn seed_from(&mut self, ss: StoredSession) {
         self.messages = ss.messages;
         self.head = ss.head;

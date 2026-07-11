@@ -318,37 +318,31 @@ fn main() {
                     std::process::exit(1);
                 }
             };
-            // 초기 스냅샷 출력 + cursor(=최대 msg_id) 확립.
-            let mut cursor: u64 = 0;
-            match store.load_session(&sid) {
-                Ok(Some(ss)) => {
-                    for m in &ss.messages {
-                        println!("[{}] {}: {}", m.id, m.speaker, m.content);
-                        cursor = cursor.max(m.id);
-                    }
-                }
-                Ok(None) => println!("(세션 없음: {sid})"),
-                Err(e) => {
-                    eprintln!("[observe] 세션 로드 실패: {e}");
-                    std::process::exit(1);
-                }
-            }
-            println!("=== 라이브 ===");
-            // 동기 폴링 루프(2초). load_session은 msg_id 오름차순이라 cursor 초과분만 새 발언이다.
+            // 활성 경로(path_to_root)만 tail한다: 세션 전체 메시지엔 /checkout 분기가 섞여 있으므로,
+            // 다른 표시 로직(transcript/read_transcript)과 동일하게 head→root 활성 경로만 고른다
+            // (봇 리뷰 Major: 분기 혼입 방지). 이미 출력한 발언 수를 커서로 삼아 새 발언만 흘린다.
+            // 초기 스냅샷과 폴링을 한 루프로 통합해 로드 에러를 대칭 처리한다(초기 에러도 즉사 안 하고
+            // 재시도, 리뷰 nit). load_session은 세션 부재를 Ok(None)으로 주므로 Err는 실제 DB 에러뿐이다.
+            println!("=== observe {sid} (2초 폴링, 활성 경로) ===");
+            let mut printed = 0usize;
             loop {
-                std::thread::sleep(std::time::Duration::from_secs(2));
                 match store.load_session(&sid) {
                     Ok(Some(ss)) => {
-                        for m in &ss.messages {
-                            if m.id > cursor {
-                                println!("[{}] {}: {}", m.id, m.speaker, m.content);
-                                cursor = m.id;
-                            }
+                        let path = tunaround::store::path_to_root(&ss.messages, ss.head);
+                        // /checkout으로 활성 경로가 짧아지면(분기 전환) 커서를 재동기화한다.
+                        if path.len() < printed {
+                            printed = 0;
                         }
+                        for u in &path[printed..] {
+                            println!("{}: {}", u.speaker, u.content);
+                        }
+                        printed = path.len();
                     }
-                    Ok(None) => {}
-                    Err(e) => eprintln!("[observe] 폴링 로드 실패: {e}"),
+                    // 세션이 삭제됐다가 같은 sid로 재생성되면 커서를 초기화해 처음부터 다시 흘린다(봇 리뷰).
+                    Ok(None) => printed = 0,
+                    Err(e) => eprintln!("[observe] 세션 로드 실패(재시도): {e}"),
                 }
+                std::thread::sleep(std::time::Duration::from_secs(2));
             }
         }
         #[cfg(not(feature = "sqlite"))]
