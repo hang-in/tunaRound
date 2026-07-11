@@ -221,8 +221,10 @@ pub(crate) fn get_task_text(store: &SqliteStore, task_id: &str) -> Result<String
     }
 }
 
-/// task 상태를 `[id] state=...` 한 줄로 조립하고, completed면 artifact 텍스트를 이어붙이는 순수 함수
-/// (SQLite 없이 테스트 가능). now는 health_annotation(표시 전용 stuck?/no-consumer? 주석)에 쓰인다.
+/// task 상태를 `[id] state=...` 한 줄로 조립하고, completed면 artifact 텍스트를, 열린 상태
+/// (submitted/working/input_required)면 원 요청 본문을 이어붙이는 순수 함수(SQLite 없이 테스트 가능).
+/// 열린 상태 본문은 claim 후 본문 재조회 경로가 없어 수신자가 브로커 DB를 직독하던 마찰을 없앤다
+/// (세션20 실측). now는 health_annotation(표시 전용 stuck?/no-consumer? 주석)에 쓰인다.
 /// runner가 기록돼 있으면(v8, claim한 워커의 러너 종류) ` runner=<x>`를 덧붙인다. 표시 전용, 없으면 생략.
 pub(crate) fn format_task_status(task: &crate::store::a2a::Task, now: &str) -> String {
     let mut out = format!("[{}] state={}{}", task.id, task.state.as_str(), health_annotation(task, now));
@@ -236,6 +238,20 @@ pub(crate) fn format_task_status(task: &crate::store::a2a::Task, now: &str) -> S
             out.push('\n');
             out.push('\n');
             out.push_str(&texts.join("\n\n"));
+        }
+    } else if matches!(task.state, TaskState::Submitted | TaskState::Working | TaskState::InputRequired) {
+        // 텍스트가 하나도 없는 status_message는 건너뛰고 history로 폴백한다(봇리뷰: Some이지만
+        // parts.text 전부 None이면 본문이 있는 history[0]가 막히던 것).
+        let texts: Vec<&str> = task
+            .status_message
+            .as_ref()
+            .filter(|m| m.parts.iter().any(|p| p.text.is_some()))
+            .or_else(|| task.history.first())
+            .map(|m| m.parts.iter().filter_map(|p| p.text.as_deref()).collect())
+            .unwrap_or_default();
+        if !texts.is_empty() {
+            out.push_str("\n\n[요청]\n");
+            out.push_str(&texts.join("\n"));
         }
     }
     out
@@ -313,6 +329,30 @@ mod tests {
         assert!(text.contains("win-claude"), "from_agent 누락: {text}");
         assert!(text.contains("submitted"), "state 누락: {text}");
         assert!(text.contains("리뷰 부탁"), "메시지 본문 누락: {text}");
+    }
+
+    #[test]
+    fn format_task_status_open_states_include_request_body() {
+        // claim 후(working)에도 원 요청 본문이 보여야 수신자가 DB 직독 없이 재조회한다(세션20 실측).
+        let mut task =
+            crate::store::a2a::Task::new("t9", None, "boss", "worker", "2026-07-11 09:00:00");
+        task.status_message = Some(crate::store::a2a::Message {
+            message_id: "m1".into(),
+            role: "user".into(),
+            parts: vec![Part { text: Some("31*13을 계산해줘".into()), ..Default::default() }],
+            task_id: Some("t9".into()),
+            context_id: None,
+        });
+        for state in [TaskState::Submitted, TaskState::Working, TaskState::InputRequired] {
+            task.state = state;
+            let text = format_task_status(&task, "2026-07-11 09:00:01");
+            assert!(text.contains("[요청]"), "본문 라벨 누락({:?}): {text}", task.state);
+            assert!(text.contains("31*13"), "본문 누락({:?}): {text}", task.state);
+        }
+        // completed는 기존대로 artifact만(요청 본문 미표시).
+        task.state = TaskState::Completed;
+        let text = format_task_status(&task, "2026-07-11 09:00:01");
+        assert!(!text.contains("[요청]"), "completed에 본문이 붙으면 안 됨: {text}");
     }
 
     #[test]
