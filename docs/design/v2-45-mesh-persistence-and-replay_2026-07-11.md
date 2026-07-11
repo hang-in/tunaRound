@@ -49,7 +49,9 @@
   - **6b retention** (P2·P3 머지 뒤에만): prune_terminal_tasks(보존기간 기본 30일) = indexed_at NOT NULL이고 기간 초과분을 슬림화 - history_json='[]' → (completed만) message_json=NULL. **artifacts_json과 failed의 message_json(실패 사유)은 행 수명 내내 보존**(get_task 재조회 계약 + watch-results 160자 절단 후 전문 재조회 창구). 행 삭제 없음. sweep에 PRAGMA wal_checkpoint 동반(수동 정리 실측 해소).
 - **P7 Redis 전삭제** (독립, diff 넓음): Cargo.toml redis dep 제거 + session_bus.rs 삭제(SessionBus trait 포함 - 구현체 없는 죽은 추상화 방지) + repl bus 필드·미러 블록 제거. main.rs = --observe를 SQLite 재작성(load_session 출력 + msg_id 커서 폴링 tail), --session 재개를 load_session→seed_from으로(--db 없으면 경고), owner lease 삭제(로컬 DB 단일머신 YAGNI - 결정 명시 기록), 종료 flush 삭제. --session 옵션·프로파일 session 키는 의미 전환 유지(SQLite 세션 id로도 이미 쓰임). 문서 개정(README·tunaround.toml.example·dev-mac-windows).
 
-**순서**: P0·P1 즉시(상호 독립, 파일 겹침 없음) → P2 → P3. P4 → P5. P6a는 독립, P6b는 P2·P3 뒤. P7은 순서 무관(리베이스 부담만 회피).
+- **P8 유휴-열림 세션 로스터 유지** (백로그 C 승격, 2026-07-11 세션21): 마커 pid가 살아 있으면 mtime 창(240분)과 무관하게 로스터 유지. **3중 가드 필수** - ① pid 생존 + 그 프로세스가 claude/codex(이름 검증) ② 같은 살아있는 pid를 여러 마커가 가리키면 mtime 최신 세션만 인정 ③ 마커 없음 = 현행 창 폴백. codex 세션은 마커가 없어 rollout session_meta의 pid 유무를 정찰 후 범위 결정. 대안이었던 "총괄 주기 하트비트 주입"은 비채택(claude TUI 주입 채널 부재, 세션 wake 토큰 비용, 가짜 활동의 유휴/활동 신호 오염).
+
+**순서**: P0·P1 즉시(상호 독립, 파일 겹침 없음) → P2 → P3. P4 → P5. P6a는 독립, P6b는 P2·P3 뒤. P7·P8은 순서 무관(리베이스 부담만 회피).
 
 ## 5. 고정 계약 (구현이 흔들리면 안 되는 것)
 

@@ -471,6 +471,7 @@
 - [ ] P6a mesh 기억화 색인(스키마 v10=tasks.indexed_at): complete_task/fail_task 핸들러 훅(writer Option 가드·락 순서·best-effort) + a2a:<task_id> 네임스페이스 + 기동 백필 스캔.
 - [ ] P6b retention(P2·P3 뒤에만): prune_terminal_tasks(30일, 슬림화만·행 삭제 없음, artifacts·failed message_json 보존) + wal_checkpoint 동반.
 - [ ] P7 Redis 전삭제(독립): redis dep+session_bus.rs+repl bus 삭제, --observe SQLite 재작성(msg_id 커서 폴링), --session 재개=load_session, owner lease 삭제(결정 기록), 문서 개정.
+- [ ] P8 유휴-열림 세션 로스터 유지(240분 드롭 해소, 백로그 C 승격 2026-07-11 세션21): 마커 pid 생존 시 mtime 창 무관 유지, **3중 가드 필수**(pid 살아있음+claude/codex 이름 검증 / 같은 pid 다중 마커=mtime 최신만 / 마커 없음=현행 창 폴백). codex는 마커 없음 → rollout session_meta pid 유무 정찰 후 범위 결정. 하트비트 주입안 비채택(채널 부재·토큰·신호 오염 - context-notes 세션21).
 - [ ] 아크 통합 스모크: 브로커 재기동 시나리오 5종(설계 §6) 라이브 실측.
 
 ## 백로그 v2-47: 대시보드 관제탑 고도화 (docs/design/v2-47-dashboard-observatory-backlog_2026-07-11.md)
