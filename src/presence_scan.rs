@@ -151,11 +151,12 @@ pub fn process_list_text() -> Option<(String, bool)> {
         return None;
     }
     let text = String::from_utf8_lossy(&out.stdout).into_owned();
-    // 건전성 가드: tasklist는 부하 시 exit 0인 채 "ERROR: ... timeout period expired"만 뱉는다
-    // (2026-07-11 실측: 5회 중 3회). 그 스냅샷으로 필터하면 전 세션이 한 사이클 떨어졌다
-    // 복귀하는 로스터 깜빡임이 된다. 실제 시스템 프로세스는 항상 수백 개이므로, 파싱되는
-    // pid가 비정상적으로 적으면 스냅샷 실패로 간주하고 None(= 이번 주기 필터 스킵, 보수적 유지).
-    if parse_pids(&text, windows).len() < 20 {
+    // 건전성 가드(windows 한정): tasklist는 부하 시 exit 0인 채 "ERROR: ... timeout period
+    // expired"만 뱉는다(2026-07-11 실측: 5회 중 3회). 그 스냅샷으로 필터하면 전 세션이 한
+    // 사이클 떨어졌다 복귀하는 로스터 깜빡임이 된다. Windows 데스크톱 프로세스는 항상 수백
+    // 개이므로 파싱 pid가 비정상적으로 적으면 스냅샷 실패로 간주하고 None(=이번 주기 필터
+    // 스킵, 보수적 유지). unix는 경량 컨테이너에서 프로세스 <20이 정상이라 제외(봇리뷰 high).
+    if windows && parse_pids(&text, windows).len() < 20 {
         return None;
     }
     Some((text, windows))
