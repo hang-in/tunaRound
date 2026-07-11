@@ -11,7 +11,7 @@
 - **#53** 윈도우 mesh 재기동 스크립트(restart-win-mesh.ps1, 재부팅 복구 1줄) + presence 스냅샷 10초 데드라인(이 머신 tasklist가 부하 시 출력 0 무한 행 실측 - 스캔 루프 전체가 멈춰 win 세션 전멸하던 근본 원인) + 훅 Monitor 커맨드 경로 정규화(백슬래시가 Git Bash에서 exit 127).
 - **#54** v2-46 codex-relay: 머신당 배달 데몬(로컬 codex 세션 열거=스캐너 SoR 공유 → 대리 claim → in-process 주입 → 실패=fail_task) + codex-inject `--thread` 직지정 + GoalForm codex 세션 카드 복귀(relay online 조건)·infra 대상 제외 + **유령 B석 tombstone**(SessionEnd가 .ctx 삭제 대신 "dead" 기록, 스캐너 Dead=스냅샷 무관 즉시 제외, ping 자가치유가 산 세션 복원). 라이브 E2E: win 56dd249b(403)·mac 2a09fab7. **mac 이관 = A2A task로 mac이 자율 수행**(eb9b2e2d).
 - **#55** T5 정리: supervised→infra alias 제거(유예 종료) + candidates/discover 계열 전삭제(presence 스캐너가 대체) + a2a-usage §10 재작성(relay)·§0 infra 태그 규약 명문화 + README 현행화. mac 반영 = task ff31b212(자율 완료).
-- **#56**(열림, CI 확인 후 머지): 운영 견고화 A = restart 스크립트 **mesh.pids 선별 종료 + rename-swap**(세션 수신 poll이 재기동을 통과해 생존 - 2차 실행 실측) + `task get` 열린 task 본문 표시([요청], claim 후 재조회 마찰 제거) + 피드 uuid→로스터 이름 표시.
+- **#56**(머지됨): 운영 견고화 A = restart 스크립트 **mesh.pids 선별 종료 + rename-swap**(세션 수신 poll이 재기동을 통과해 생존 - 2차 실행 실측) + `task get` 열린 task 본문 표시([요청], claim 후 재조회 마찰 제거) + 피드 uuid→로스터 이름 표시.
 
 ## 2. 오늘 실측·교훈 (다음 세션이 오진하지 않게)
 
@@ -39,7 +39,7 @@
 
 ## 5. 다음 세션 첫 행동
 
-1. `git pull` + PR #56 상태 확인(열려 있으면 CI green·봇 리뷰 확인 후 머지, 머지됐으면 스킵).
+1. `git pull`(#56까지 전부 머지 = d195657). 라이브 win 스택 = #56 빌드로 배포 완료(재배포 불요).
 2. **B 착수 = 설계 문서 먼저**(규율 #7): v2-45(watch-results 재접속·재생 + mesh 기억화 + Redis opt-out). 재접속은 소수정이라 설계에서 분리해 먼저 PR 가능.
 3. mesh가 죽어 있으면 `pwsh -File scripts\restart-win-mesh.ps1`(재부팅 복구 1줄. -SourceBin은 새 빌드 배포 시에만). 세션 수신은 훅이 자동 안내.
 4. 로스터·피드 정상 여부는 대시보드에서 확인(피드가 이름으로 표시되는 건 #56 머지+npm build 반영 후).
