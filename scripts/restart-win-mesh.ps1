@@ -79,10 +79,18 @@ if (-not $ok) { throw "브로커가 30초 내 8770 listen 안 함. ~/.tunaround/
 Write-Host "[mesh] 브로커 8770 listen 확인"
 
 # 5. codex app-server(8790): 브로커 이후에 떠야 tuna-broker MCP 로드 성공(세션18 실측). 살아있으면 유지.
+#    기동했으면 listen까지 대기 - relay가 준비 전 주입을 시도해 fail_task로 새지 않게(봇리뷰 Major).
 if (Test-Port 8790) {
     Write-Host "[mesh] codex app-server 8790 이미 listen(유지)"
 } elseif (Test-Path $CodexExe) {
     Start-Daemon "codex-appserver" $CodexExe @("app-server", "--listen", "ws://127.0.0.1:8790") | Out-Null
+    $appOk = $false
+    foreach ($i in 1..30) {
+        if (Test-Port 8790) { $appOk = $true; break }
+        Start-Sleep -Seconds 1
+    }
+    if ($appOk) { Write-Host "[mesh] codex app-server 8790 listen 확인" }
+    else { Write-Host "[mesh] 경고: app-server가 30초 내 8790 listen 안 함(relay 주입은 실패 시 fail_task)" }
 } else {
     Write-Host "[mesh] codex.exe 없음($CodexExe) - app-server 생략"
 }
@@ -90,9 +98,9 @@ if (Test-Port 8790) {
 # 6. presence 스캐너(머신당 1, v2-44): core/token/machine은 config env 폴백.
 Start-Daemon "presence-scan" $StableBin @("presence-scan") | Out-Null
 
-# 7. win-codex-sup 감독 poll(infra, codex-inject 글루 핸들러).
-$Handler = Join-Path $TunaHome "codex-sup-handle.cmd"
-Start-Daemon "codex-sup" $StableBin @("poll", "--core", $Core, "--agent", "win-codex-sup", "--tags", "machine=win,purpose=codex-inject,role=infra,runner=codex", "--on-task", $Handler) | Out-Null
+# 7. codex 배달 데몬(v2-46, 구 codex-sup poll+핸들러 대체): 로컬 codex 세션들 앞 task를
+#    대리 claim해 그 세션 thread로 in-process 주입. core/token/machine은 config env 폴백.
+Start-Daemon "codex-relay" $StableBin @("codex-relay", "--ws", "ws://127.0.0.1:8790") | Out-Null
 
 # 8. 총괄 결과 인박스(watch-results, digest 60초).
 Start-Daemon "watch-results" $StableBin @("watch-results", "--core", $BaseUrl, "--dispatcher", "dashboard", "--digest", "60") | Out-Null

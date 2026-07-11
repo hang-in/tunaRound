@@ -259,6 +259,10 @@ pub enum MarkerState {
     Pid(u32),
     /// 마커는 있으나 PID 미상(owner 탐색 실패 등) → 보수적으로 유지.
     Unknown,
+    /// tombstone: SessionEnd 훅이 깨끗한 종료(/clear·/exit·창닫기)를 확정 기록 → 즉시 제외.
+    /// 종전엔 훅이 마커를 삭제했는데, 삭제=NoMarker=보수적 유지라서 jsonl mtime이 신선한 직전
+    /// 세션이 창 만료(240분)까지 유령 B석으로 남았다(2026-07-11 실측 f09e84dc·46a26152). v2-46.
+    Dead,
 }
 
 /// 세션 uuid의 마커를 읽는다(마커 디렉토리 = ~/.tunaround/autoarm, 훅과 같은 sanitize 규약 전제 -
@@ -267,20 +271,34 @@ pub fn read_marker(dir: &Path, uuid: &str) -> MarkerState {
     let path = dir.join(format!("{uuid}.ctx"));
     match std::fs::read_to_string(&path) {
         Err(_) => MarkerState::NoMarker,
-        Ok(s) => match s.trim().parse::<u32>() {
-            Ok(pid) => MarkerState::Pid(pid),
-            Err(_) => MarkerState::Unknown,
-        },
+        Ok(s) => {
+            let t = s.trim();
+            if t == "dead" {
+                return MarkerState::Dead;
+            }
+            match t.parse::<u32>() {
+                Ok(pid) => MarkerState::Pid(pid),
+                Err(_) => MarkerState::Unknown,
+            }
+        }
     }
 }
 
 /// 마커 생존 판정(순수부): owner PID가 기록돼 있고 스냅샷에 없으면 죽은 세션(유령) → 제외.
-/// 미기록·미상은 유지(오판으로 산 세션을 지우는 것보다 유령이 창 만료로 늦게 죽는 쪽이 안전).
+/// tombstone(깨끗한 종료 확정)도 제외. 미기록·미상은 유지(오판으로 산 세션을 지우는 것보다
+/// 유령이 창 만료로 늦게 죽는 쪽이 안전).
 pub fn is_session_live(marker: &MarkerState, alive: &std::collections::HashSet<u32>) -> bool {
     match marker {
         MarkerState::Pid(pid) => alive.contains(pid),
+        MarkerState::Dead => false,
         MarkerState::NoMarker | MarkerState::Unknown => true,
     }
+}
+
+/// tombstone 세션만 제거한다(순수부). PID 생존 판정과 달리 프로세스 스냅샷이 필요 없으므로,
+/// 스냅샷 실패(tasklist 행·부하) 주기에도 항상 적용한다(깨끗한 종료 = 스냅샷 무관 확정 죽음).
+pub fn filter_tombstoned(sessions: Vec<LiveSession>, marker_dir: &Path) -> Vec<LiveSession> {
+    sessions.into_iter().filter(|s| read_marker(marker_dir, &s.uuid) != MarkerState::Dead).collect()
 }
 
 /// 세션 목록에 마커 생존 필터를 적용한다(v2-44 §10: /clear·창닫기·크래시 유령 즉시 제거).

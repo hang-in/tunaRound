@@ -293,10 +293,15 @@ async fn start_thread(
 /// `tunaround codex-inject` 본체: ws 접속 -> initialize -> thread 확보(resume|start) -> turn/start ->
 /// turn/completed까지 알림 펌프. 성공 시 Ok(()), 타임아웃·프로토콜 에러는 Err(설계 §6 종료코드 계약은
 /// main.rs가 이 Result를 process::exit로 변환).
+///
+/// `thread`가 Some이면 직지정 모드(v2-46): 영속 파일을 읽지도 쓰지도 않고 그 threadId를 resume만 한다.
+/// resume 실패 시 새 thread 자가치유 없이 Err - 엉뚱한 thread에 답이 생기는 것을 막고, 호출자(codex-relay)가
+/// fail_task로 전환한다. None이면 기존 `--agent` 파일 모드(불변).
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
     ws_url: &str,
     agent: &str,
+    thread: Option<&str>,
     text: &str,
     approval: ApprovalPolicy,
     sandbox: SandboxMode,
@@ -328,7 +333,19 @@ pub async fn run(
         .await?;
     expect_response(&mut sink, &mut stream, init_id, deadline).await?;
 
-    // 2. thread 확보(설계 §5.1: 글루가 thread를 소유, 영속 파일로 결정론 유지).
+    // 2. thread 확보. 직지정 모드(v2-46)는 지정 threadId resume만(영속 파일·자가치유 없음),
+    //    파일 모드는 기존 그대로(설계 §5.1: 글루가 thread를 소유, 영속 파일로 결정론 유지).
+    if let Some(tid) = thread {
+        let resume_id = alloc_id!();
+        send_json(&mut sink, &build_thread_resume_request(resume_id, tid, Some(approval), Some(sandbox)))
+            .await?;
+        let resp = expect_response(&mut sink, &mut stream, resume_id, deadline)
+            .await
+            .map_err(|e| format!("codex-inject: --thread {tid} resume 실패(자가치유 없음): {e}"))?;
+        let thread_id = parse_thread_id(&resp).unwrap_or_else(|| tid.to_string());
+        return pump_turn(&mut sink, &mut stream, &mut next_id, &thread_id, text, approval, deadline)
+            .await;
+    }
     let thread_path = thread_file_path(agent);
     let existing = if force_new { None } else { read_persisted_thread_id(&thread_path) };
     let cwd = std::env::current_dir().ok().map(|p| p.to_string_lossy().to_string());
@@ -359,20 +376,31 @@ pub async fn run(
         )
         .await?
     };
+    pump_turn(&mut sink, &mut stream, &mut next_id, &thread_id, text, approval, deadline).await
+}
+
+/// turn/start 전송 -> turn/completed까지 알림 펌프(승인은 handle_incoming이 자동응답).
+/// 최종답(PrintText)을 누적해 반환한다 - CLI는 handle_incoming이 이미 stdout에 출력하고,
+/// 대시보드 제어(/dashboard/control)·codex-relay는 이 반환값을 결과로 쓴다.
+/// thread 확보 두 경로(파일 모드·--thread 직지정)가 공유한다(v2-46).
+async fn pump_turn(
+    sink: &mut WsSink,
+    stream: &mut WsRead,
+    next_id: &mut u64,
+    thread_id: &str,
+    text: &str,
+    approval: ApprovalPolicy,
+    deadline: Instant,
+) -> Result<String, String> {
     eprintln!("[codex-inject] thread={thread_id}로 turn/start 주입");
+    *next_id += 1;
+    send_json(sink, &build_turn_start_request(*next_id, thread_id, text, Some(approval))).await?;
 
-    // 3. turn/start
-    let turn_start_id = alloc_id!();
-    send_json(&mut sink, &build_turn_start_request(turn_start_id, &thread_id, text, Some(approval))).await?;
-
-    // 4. turn/completed까지 알림 펌프(승인은 handle_incoming이 자동응답).
-    // 최종답(PrintText)을 누적해 반환한다 - CLI는 handle_incoming이 이미 stdout에 출력하고,
-    // 대시보드 제어(/dashboard/control)는 이 반환값을 응답으로 쓴다.
     let mut answer = String::new();
     loop {
-        let msg = recv_json(&mut stream, deadline).await?;
+        let msg = recv_json(stream, deadline).await?;
         let Some(incoming) = classify_message(&msg) else { continue };
-        match handle_incoming(&mut sink, &incoming, &thread_id).await? {
+        match handle_incoming(sink, &incoming, thread_id).await? {
             InjectAction::Complete => {
                 eprintln!("[codex-inject] turn/completed 수신, 종료");
                 return Ok(answer);

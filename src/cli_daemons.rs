@@ -243,6 +243,12 @@ pub fn presence_scan(rt: &tokio::runtime::Runtime, a: PresenceScanArgs) {
             if let Some(dir) = &codex_dir {
                 sessions.extend(tunaround::presence_scan::enumerate_codex_sessions(dir, now, stale, home.as_deref()));
             }
+            // tombstone(깨끗한 종료 확정)은 프로세스 스냅샷과 무관하게 항상 제거한다(v2-46:
+            // 스냅샷 실패 주기에도 직전 종료 세션이 유령 B석으로 남지 않게).
+            if let Some(h) = &home {
+                let marker_dir = h.join(".tunaround").join("autoarm");
+                sessions = tunaround::presence_scan::filter_tombstoned(sessions, &marker_dir);
+            }
             // 프로세스 스냅샷 1회: 러너 카운트 게이트 + 마커 생존 판정이 공유한다.
             if let Some((proc_text, is_win)) = tunaround::presence_scan::process_list_text() {
                 // 게이트: 러너 프로세스가 확실히 0개면 그 러너 세션 전부 죽음(재부팅 즉시 반영).
@@ -360,11 +366,52 @@ pub fn codex_inject(rt: &tokio::runtime::Runtime, a: CodexInjectArgs) {
             std::process::exit(1);
         }
     };
+    // clap이 --agent/--thread 배타·최소 1개를 보장한다(required_unless_present).
+    let agent = a.agent.as_deref().unwrap_or("");
     let result = rt.block_on(tunaround::codex_inject::run(
-        &a.ws, &a.agent, &a.text, approval, sandbox, a.timeout, a.new,
+        &a.ws, agent, a.thread.as_deref(), &a.text, approval, sandbox, a.timeout, a.new,
     ));
     if let Err(e) = result {
         eprintln!("[codex-inject] 오류: {e}");
+        std::process::exit(1);
+    }
+}
+
+/// codex-relay <...>: 머신당 codex 배달 데몬(v2-46). 로컬 codex 세션들 앞 task를 대리 claim해
+/// 그 세션 thread로 in-process 주입한다(sup poll + .cmd 핸들러의 대체).
+pub fn codex_relay(rt: &tokio::runtime::Runtime, a: CodexRelayArgs) {
+    let result = rt.block_on(async {
+        let core = a
+            .core
+            .clone()
+            .or_else(|| std::env::var(ENV_BROKER_CORE).ok())
+            .ok_or_else(|| "--core 또는 TUNA_BROKER_CORE가 필요합니다".to_string())?;
+        let token = a.token.clone().or_else(|| std::env::var(ENV_BROKER_TOKEN).ok());
+        let machine = a.machine.clone().unwrap_or_else(tunaround::discover::default_machine);
+        let codex_dir = match a.codex_dir.clone() {
+            Some(p) => Some(std::path::PathBuf::from(tunaround::config::expand_home(&p))),
+            None => tunaround::presence_scan::default_codex_sessions_dir(),
+        };
+        let home = std::env::var(ENV_USERPROFILE)
+            .or_else(|_| std::env::var(ENV_HOME))
+            .ok()
+            .map(std::path::PathBuf::from);
+        tunaround::codex_relay::run(tunaround::codex_relay::RelayOpts {
+            core,
+            token,
+            ws: a.ws.clone(),
+            machine,
+            codex_dir,
+            home,
+            stale: std::time::Duration::from_secs(a.stale_mins.saturating_mul(60)),
+            interval_secs: a.interval,
+            inject_timeout_secs: a.inject_timeout,
+            once: a.once,
+        })
+        .await
+    });
+    if let Err(e) = result {
+        eprintln!("[codex-relay] 오류: {e}");
         std::process::exit(1);
     }
 }

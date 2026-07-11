@@ -661,7 +661,9 @@ async fn dashboard_control_handler(
         // 제어 주입은 tuna-broker MCP 호출 자동승인(never) + workspace-write(감독 레시피와 동일).
         let approval = crate::codex_appserver::ApprovalPolicy::Never;
         let sandbox = crate::codex_appserver::SandboxMode::WorkspaceWrite;
-        match crate::codex_inject::run(&req.ws, &agent, &req.text, approval, sandbox, timeout, false).await {
+        match crate::codex_inject::run(&req.ws, &agent, None, &req.text, approval, sandbox, timeout, false)
+            .await
+        {
             Ok(answer) => {
                 #[derive(serde::Serialize)]
                 struct Resp {

@@ -82,6 +82,9 @@ fn main() {
     // task <...>: A2A task 수동 조작 CLI 옵션(worker 피처 전용, v2-44 W3).
     #[cfg(feature = "worker")]
     let mut task_cli_args: Option<TaskArgs> = None;
+    // codex-relay <...>: 머신당 codex 배달 데몬 옵션(worker 피처 전용, v2-46).
+    #[cfg(feature = "worker")]
+    let mut codex_relay_args: Option<CodexRelayArgs> = None;
     // node <...>: 워커 노드 상주 옵션(serve+worker 피처 전용).
     #[cfg(all(feature = "serve", feature = "worker"))]
     let mut node_args: Option<NodeArgs> = None;
@@ -215,6 +218,14 @@ fn main() {
                 db_path = None;
             }
             task_cli_args = Some(a);
+        }
+        #[cfg(feature = "worker")]
+        Commands::CodexRelay(a) => {
+            #[cfg(feature = "sqlite")]
+            {
+                db_path = None;
+            }
+            codex_relay_args = Some(a);
         }
         #[cfg(all(feature = "serve", feature = "worker"))]
         Commands::Node(a) => {
@@ -511,6 +522,12 @@ fn main() {
     #[cfg(feature = "worker")]
     if let Some(a) = codex_inject_args {
         return cli_daemons::codex_inject(&rt, a);
+    }
+
+    // codex-relay <...>: 머신당 codex 배달 데몬(v2-46). 세션 thread 직주입.
+    #[cfg(feature = "worker")]
+    if let Some(a) = codex_relay_args {
+        return cli_daemons::codex_relay(&rt, a);
     }
 
     // init <...>: node.toml 생성 후 exit.
