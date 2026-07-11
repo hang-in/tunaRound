@@ -2,6 +2,14 @@
 
 > 작업 중 결정과 근거. 계속 append. (규율 #7) 다음 세션이 결정을 재유도하지 않게.
 
+## 2026-07-11 세션21: v2-45 설계 확정 (mesh 영속·재생 아크) + 대시보드 정체성 결정
+
+- **경위**: 세션20 핸드오프 §3(B 아크)대로 설계 착수. 병렬 조사 워크플로우(recon 6영역+gap-check, 코드 근거 파일:라인 전수) 후 정본 docs/design/v2-45-mesh-persistence-and-replay_2026-07-11.md 작성. 사용자가 피드 리로드 전멸을 라이브로 재확인.
+- **사용자 결정 3건(세션21)**: ① **codex 직접 제어(/dashboard/control+ControlForm) 제거** - v2-46 relay가 task 장부 경유로 완전 대체, 직접 제어는 장부 우회+마커 없는 주입(사람 턴 오인 구멍). ② **대시보드=관제탑 충실** - 뷰+목표 제출(위임 티켓)만, 제어 UX 비확장("웹이 총괄" 아이디어는 매력적이나 또 다른 UX가 됨). ③ 그 귀결로 **웹 goal 제출의 human 신호 승격 비채택** - ★=TUI 자리 기준 유지.
+- **조사 핵심 확정(오진 방지)**: watch-results exit 1은 주석에 "호출부가 재기동"이라 적힌 의도적 설계였으나 재기동자가 없음 / 이벤트 버스=cap 256+Lagged 스킵+무영속이라 SSE id 재생은 구조적 불가 → **재생 SoR=tasks 테이블**(재료 전부 영속돼 있음) / 브로커 DB messages=0행(색인 충돌 대상 없음, search_context가 빈 코퍼스 검색 중) / redis는 무조건 dep라 "피처 제거" 선택지 자체가 없음(전삭제가 유일 경로) / rollout mtime은 어시스턴트 출력에도 갱신(사람 신호로 사용 금지, user_message 줄 timestamp 필수) / relay 주입도 user_message로 기록("브로커 task " prefix가 유일 구분자=계약으로 고정).
+- **gap-check가 잡은 함정(설계 §5 계약으로 승격)**: catch-up 표면 중복(질의·헬퍼 1개로 통일) / envelope 매핑 자기모순(state=completed만 "completed") / 스키마 v9 경합(v9=★ 영속, v10=indexed_at 선점 배정) / retention이 재생·재조회 데이터를 침범(artifacts·failed message_json 행 수명 보존, 행 삭제 비채택) / sync_presence를 P4·P5가 각자 고치는 접합부(최종형을 정본으로 명시) / since 포맷 ISO 함정('T'>' ' 사전순 왜곡, DB 포맷 그대로) / canceled 통지 의미론(피드 replay=포함, watch-results=제외 유지) / 세션 소멸 대부분이 deregister를 안 탐(GC를 sync_presence stale 루프에도).
+- **PR 분할 = P0~P7**(checklist 참조). P0·P1=즉시 병렬 가능, P3은 P1·P2 뒤, P5는 P4 뒤, P6b는 P2·P3 뒤, P7 독립.
+
 ## 2026-07-11 세션18 후속: v2-44 승인 + sup 재정의 + role 개편 (설계 정본 확정)
 
 - **경위**: 사용자가 맥의 mac-codex-sup watcher 실행 문의 → sup의 로스터 노출을 논의하다 두 결정 도출. (a) **sup은 사람이 직접 관리하는 감독이 아니라 "그 머신에 A2A 전달이 되는가" 확인용 인프라 인디케이터**(project=tunaRound 태그·대등 카드 노출은 오염). (b) **role 명칭 전체 정리 필요**(세션15 백로그였던 것).

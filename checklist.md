@@ -457,3 +457,18 @@
 - [ ] 백로그(사용자 승인 2026-07-11): **watch-results 재구독 시 미통지 terminal task 재생**(SQLite 기반) - 인박스 다운 중 완료된 task 통지 유실 창 제거(Redis Streams 검토에서 발견된 실질 갭, 재생은 브로커 DB로 충분). v2-45와 묶기 좋음.
 - [x] 유령 세션 근절 + 수신 자동 가동(PR #49=788f68a, 2026-07-11): ① 세션별 owner-pid 마커(.ctx=pid, autoarm 시작+ping 자가치유, resume 갱신·unknown sentinel·args basename 매칭) → 스캐너가 pid 사망 세션 즉시 제외(win 라이브: 로스터 13→10→실세션 일치, luckyCAD 유령 규명·제거). ② **수신 자동 가동**: SessionStart 지시문 + 기존 세션은 ping이 .rx 1회 주입 → 세션이 스스로 Monitor(poll)를 걺(사용자 A2A 언급 불필요, 세션당 1회 ~300토큰·상시 0토큰 불변). ③ A2A 왕복 실측: mac-tunaRound(완전자동)·mac-codex·win-codex(app-server 재기동+핸들러 CRLF 함정 재확인 후 claim) ✅. ④ mac 배포 task=a20245ac.
 - [ ] 백로그(사용자 승인 2026-07-11, 별도 후속 PR): **마커 생존 유지 확장** = 마커 pid가 살아 있으면 mtime 창과 무관하게 로스터 유지(유휴-열림 세션이 4시간 후 끊기는 것 해소). **순진 버전 금지, 3중 가드 필수**: ① pid 살아있음+그 프로세스가 claude/codex(이름 검증) ② 같은 살아있는 pid를 여러 마커가 가리키면 mtime 최신 세션만 인정(/clear 훅 실패 유령의 구조적 해소) ③ 마커 없음=현행 창 폴백. 근거 논의=2026-07-11 세션(영구 유령·PID 재사용 벡터 분석).
+
+## Plan v2-45: mesh 영속·재생 아크 (docs/design/v2-45-mesh-persistence-and-replay_2026-07-11.md)
+
+> 2026-07-11 세션21 설계(병렬 조사 7 에이전트 기반). 사용자 방향 확정: 대시보드=관제탑 충실(직접 제어 제거·비확장) / ★=TUI 자리 기준(웹 신호 비채택) / Redis=전삭제. 고정 계약은 설계 §5.
+
+- [ ] P0 직접 제어 제거(독립 소수정): /dashboard/control route+핸들러+SSRF 가드 / ControlForm.tsx·sendControl·vite proxy / npm build. codex_inject::run은 유지(relay 사용).
+- [ ] P1 watch-results 재접속(클라이언트 전용): 재접속 루프(백오프 1s→30s) + seen·pending 루프 바깥 소유 + 청크 에러 경로 flush + 연속 실패 20회 초과 시 exit 1 유지.
+- [ ] P2 서버 재생 기반+피드 스냅샷: 공용 질의 list_tasks_replay + envelope 헬퍼(state=completed만 "completed") + /dashboard/events `?replay=N`(전 상태)·`?since=TS&dispatcher=`(completed/failed만) chain + Feed `?replay=50`+history 중복 가드.
+- [ ] P3 watch-results 재생 클라이언트(P1·P2 뒤): 접속 시 since=워터마크 구독, 워터마크=서버 updatedAt만, >= + seen dedup, 상태 파일 영속(파일 없으면 라이브부터).
+- [ ] P4 ★ human_input_at 영속(스키마 v9=agent_human_input): write-through(DB 먼저) + 미등록 핑 선기록 + register/sync_presence 폴백 SELECT + sync_presence stale 제거 루프 DELETE + 7일 GC.
+- [ ] P5 codex 입력 신호(P4 뒤): 스캐너 rollout user_message tail 스캔("브로커 task " prefix 제외, mtime 무변경 스킵) + ISO→SQLite datetime 정규화 + report_presence에 human_input_at 추가 + sync_presence max-merge·승자 write-through + relay prefix 계약 주석.
+- [ ] P6a mesh 기억화 색인(스키마 v10=tasks.indexed_at): complete_task/fail_task 핸들러 훅(writer Option 가드·락 순서·best-effort) + a2a:<task_id> 네임스페이스 + 기동 백필 스캔.
+- [ ] P6b retention(P2·P3 뒤에만): prune_terminal_tasks(30일, 슬림화만·행 삭제 없음, artifacts·failed message_json 보존) + wal_checkpoint 동반.
+- [ ] P7 Redis 전삭제(독립): redis dep+session_bus.rs+repl bus 삭제, --observe SQLite 재작성(msg_id 커서 폴링), --session 재개=load_session, owner lease 삭제(결정 기록), 문서 개정.
+- [ ] 아크 통합 스모크: 브로커 재기동 시나리오 5종(설계 §6) 라이브 실측.
