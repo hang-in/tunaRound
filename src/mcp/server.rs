@@ -77,6 +77,8 @@ pub async fn serve_http_mcp_on_listener(
     let a2a_router = crate::a2a_server::build_router(a2a_store, agent_card);
 
     let retriever2 = retriever.clone();
+    // /dashboard/search 서브라우터 state용(MCP search_context와 같은 retriever = 형태소+FTS 재사용).
+    let retriever_for_search = retriever.clone();
     let reader2 = reader.clone();
     let writer2 = writer.clone();
     let roster2 = roster.clone();
@@ -154,10 +156,16 @@ pub async fn serve_http_mcp_on_listener(
     {
         dashboard = dashboard.route("/dashboard", get(dashboard_fallback_page));
     }
+    // /dashboard/search는 store가 아니라 retriever를 state로 쓰므로 별도 서브라우터로 만들어 merge한다
+    // (with_state 후 Router<()>가 되어 서로 다른 state의 라우터도 합쳐진다).
+    let search_router = Router::new()
+        .route("/dashboard/search", get(dashboard_search_handler))
+        .with_state(retriever_for_search);
     let app = dashboard
         .with_state(a2a_store_for_dash)
         .layer(axum::Extension(dash_token))
-        .merge(authed);
+        .merge(authed)
+        .merge(search_router);
 
     #[cfg(feature = "dashboard")]
     eprintln!("[serve-mcp] HTTP MCP 서버 기동: {bound_addr} (대시보드 SPA: /dashboard)");
@@ -573,6 +581,68 @@ async fn dashboard_health_handler(
     }
 }
 
+/// GET /dashboard/search?q=<질의>: 위임 이력 검색(read-only, v2-47 #5). P6a가 종결 task의 요청문·
+/// 결과를 messages/FTS에 색인(`a2a:<task_id>` 세션, `a2a/<agent>` 화자)한 것을 MCP search_context와
+/// 같은 retriever(형태소+FTS)로 검색한다. 배포 바이너리는 semantic 미포함이라 embedder 네트워크 비의존.
+#[cfg(feature = "serve")]
+async fn dashboard_search_handler(
+    axum::extract::State(retriever): axum::extract::State<Arc<dyn crate::orchestrator::ContextRetriever>>,
+    uri: axum::http::Uri,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    #[derive(serde::Serialize)]
+    struct SearchResult {
+        speaker: String,
+        content: String,
+    }
+    #[derive(serde::Serialize)]
+    struct SearchResponse {
+        query: String,
+        results: Vec<SearchResult>,
+    }
+    // ?q= 파싱(events 핸들러와 동일: Query 추출기 미채택이라 Uri에서 직접 + percent_decode).
+    let mut query = String::new();
+    for pair in uri.query().unwrap_or("").split('&') {
+        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+        if key == "q" {
+            query = percent_decode(value);
+        }
+    }
+    let query = query.trim().to_string();
+    let json = [(axum::http::header::CONTENT_TYPE, "application/json")];
+    if query.is_empty() {
+        let body = serde_json::to_vec(&SearchResponse { query, results: Vec::new() })
+            .unwrap_or_else(|_| b"{}".to_vec());
+        return (axum::http::StatusCode::OK, json, body).into_response();
+    }
+    // retrieve는 store 락 + FTS를 도는 동기 작업이라 spawn_blocking으로 감싼다. 검색 실패(진짜 DB 장애·
+    // spawn 패닉)는 "결과 없음"으로 위장하지 않고 500으로 표면화한다(헬스 핸들러와 같은 원칙).
+    // 위임 이력 검색은 P6a가 색인한 a2a 화자(`a2a/<agent>`)만 노출한다 - 같은 브로커 DB에 섞인 비-a2a
+    // 세션버스 전사(post_turn)까지 무인증 대시보드로 새지 않게(적대적 리뷰). 비-a2a 희석 대비 over-fetch.
+    let q2 = query.clone();
+    match tokio::task::spawn_blocking(move || retriever.retrieve(&q2, 60)).await {
+        Ok(Ok(utterances)) => {
+            let results = utterances
+                .into_iter()
+                .filter(|u| u.speaker.starts_with("a2a/"))
+                .take(20)
+                .map(|u| SearchResult { speaker: u.speaker, content: u.content })
+                .collect();
+            let body = serde_json::to_vec(&SearchResponse { query, results })
+                .unwrap_or_else(|_| b"{}".to_vec());
+            (axum::http::StatusCode::OK, json, body).into_response()
+        }
+        Ok(Err(e)) => {
+            eprintln!("[dashboard/search] 검색 실패: {e}");
+            (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "검색 실패").into_response()
+        }
+        Err(e) => {
+            eprintln!("[dashboard/search] spawn_blocking 실패: {e}");
+            (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "검색 실패").into_response()
+        }
+    }
+}
+
 /// 로컬 write 엔드포인트(goal 등)의 local CSRF 방어. 브라우저가 붙이는 `Sec-Fetch-Site`가
 /// `cross-site`면 다른 사이트가 유도한 요청이므로 거부한다. 헤더가 없으면(curl 등 비브라우저) 허용.
 #[cfg(feature = "serve")]
@@ -974,6 +1044,15 @@ mod tests {
             // read_transcript → 방금 post한 발언이 보임(쓰기→읽기 일관).
             let read_text = post(call_body(4, "read_transcript", "{}")).await;
             assert!(read_text.contains("살구"), "read_transcript에 post_turn 내용 없음: {read_text}");
+
+            // GET /dashboard/search → 별도 state(retriever) 서브라우터 merge 배선 검증
+            // (NullRetriever = 빈 결과, 200). 라우터 merge가 깨지면 여기서 404가 잡힌다.
+            let search = reqwest::get(format!("http://127.0.0.1:{port}/dashboard/search?q=test"))
+                .await
+                .expect("search get");
+            assert_eq!(search.status(), 200);
+            let search_body = search.text().await.expect("search text");
+            assert!(search_body.contains("\"results\":[]"), "search 응답: {search_body}");
         }
 
         /// HTTP MCP로 poll_tasks→claim_task→complete_task 왕복을 검증한다. Task 2(a2a_server)가 만든

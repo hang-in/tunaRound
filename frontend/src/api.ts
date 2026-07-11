@@ -96,6 +96,19 @@ export async function fetchHealth(signal?: AbortSignal): Promise<BrokerHealth> {
   return (await res.json()) as BrokerHealth
 }
 
+// 위임 이력 검색 결과 한 건(P6a 색인: speaker=`a2a/<agent>`, content=요청/결과 원문).
+export type SearchResult = { speaker: string; content: string }
+export type SearchResponse = { query: string; results: SearchResult[] }
+
+// 위임 이력을 검색한다(GET /dashboard/search?q=). 실패는 던져서 호출부가 상태 표시하도록 한다.
+export async function searchHistory(q: string, signal?: AbortSignal): Promise<SearchResponse> {
+  const res = await fetch('/dashboard/search?q=' + encodeURIComponent(q), { signal })
+  if (!res.ok) {
+    throw new Error('검색 실패: ' + res.status)
+  }
+  return (await res.json()) as SearchResponse
+}
+
 
 // POST /dashboard/goal 성공 응답: 대상별로 생성된 task 를 알려준다.
 export type GoalCreated = { taskId: string; toAgent: string }
