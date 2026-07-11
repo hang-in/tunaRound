@@ -503,4 +503,4 @@
 - [x] 빌드+테스트(548 lib)+CI clippy 2종 green(doc 주석 `+` 줄머리 clippy 실수정 1건 반영)
 - [x] 적대적 리뷰(워크플로우 3렌즈→검증): 원시 3건 → 확증 0건(전부 기각, cosmetic·기존 코드). 코드 변경 없음
 - [x] 커밋 `7493376`(7파일 +180/-6)
-- [ ] (push 승인 후) PR → CI(clippy 3-OS·dashboard SPA·CodeRabbit) → 머지 → 배포(WMI 스폰) → 라이브 Chrome 검증
+- [x] PR #70 → CI(clippy 3-OS·dashboard SPA·CodeRabbit 전부 pass) → 봇리뷰 실이슈 2건 반영(uptime 손상 500·wal 테스트) → 머지(`5fdfb4b`) → WMI 스폰 배포 → **라이브 Chrome 검증 완료**(가동 1분·WAL 0 B 칩 렌더, uptime_secs=7→증가·wal_bytes=0 실데이터). 문체 Minor 3건 스킵. DeepSource JS=자문성 fail(비게이트).
