@@ -51,6 +51,14 @@ pub async fn serve_http_mcp_on_listener(
     let a2a_store_for_mcp = a2a_store.clone();
     // 대시보드 SSE/roster용 clone(같은 store = 같은 이벤트버스·로스터를 공유한다).
     let a2a_store_for_dash = a2a_store.clone();
+    // v2-45 P6a: 기동 시 미색인 종결 task를 mesh 기억에 백필(구 바이너리 완료분·유실 보완, best-effort).
+    if let Some(w) = &writer {
+        let a2a = a2a_store.clone();
+        let w = w.clone();
+        tokio::task::spawn_blocking(move || crate::mcp::backfill_unindexed_terminal_tasks(&a2a, &w))
+            .await
+            .ok();
+    }
     let a2a_router = crate::a2a_server::build_router(a2a_store, agent_card);
 
     let retriever2 = retriever.clone();
