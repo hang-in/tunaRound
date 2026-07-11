@@ -61,6 +61,9 @@ pub struct PresenceUpsert {
     pub project: Option<String>,
     /// 로스터 가독용 표시 이름(예: win-claude-tunaRound).
     pub display_name: Option<String>,
+    /// 스캐너가 관측한 마지막 사람 입력 시각(v2-45 P5, codex rollout user_message tail 스캔).
+    /// claude는 human-ping 훅이 별도 경로라 여기선 None. sync_presence가 인메모리·영속과 max-merge한다.
+    pub human_input_at: Option<String>,
 }
 
 /// last_heartbeat가 now 기준 ttl_secs 이내면 online으로 판정한다. age_secs 파싱 실패(포맷 불량)는

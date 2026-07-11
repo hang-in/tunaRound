@@ -102,12 +102,20 @@ impl SqliteStore {
             self.delete_human_input(uuid);
         }
         for s in sessions {
-            // ★ 복원 폴백: 인메모리에 값이 있으면 그대로 쓴다(이미 테이블과 동기 - mark가 둘 다 기록).
-            // 없을 때만(재기동 후 빈 로스터) 테이블에서 복원한다. P4는 스캐너가 새 값을 보고하지 않으므로
-            // write-through가 불필요하다(매 주기·매 세션 SELECT/UPSERT 제거, gemini 리뷰). P5가 스캐너
-            // 보고값을 도입하면 여기서 max(인메모리, 보고값) + 승자 단조 write-through로 확장한다(§5-8 최종형).
+            // §5-8 최종형: human_input_at = max(인메모리, 스캐너 보고값, 영속 테이블).
+            // base = 인메모리(있으면 직전 write-through로 테이블과 동기) 또는 재기동 복원(테이블 SELECT).
+            // 보고값(codex 입력 신호)이 base보다 새로우면(merged != base) 승자를 테이블에 단조
+            // write-through한다. 보고값 없음(claude)·불변이면 write 생략(P4의 N+1 회피 유지).
             let mem = roster.get(&s.uuid).and_then(|e| e.human_input_at.clone());
-            let human_input_at = mem.or_else(|| self.load_human_input(&s.uuid));
+            let base = mem.or_else(|| self.load_human_input(&s.uuid));
+            // Option<String>은 None < Some 순서(파생 Ord)라 std::cmp::max가 곧 max(base, 보고값)이다
+            // (DB datetime 포맷은 사전순=시간순, gemini 리뷰). 커스텀 헬퍼 대신 stdlib.
+            let human_input_at = std::cmp::max(base.clone(), s.human_input_at.clone());
+            if human_input_at != base
+                && let Some(at) = &human_input_at
+            {
+                self.persist_human_input(&s.uuid, at);
+            }
             let mut tags = BTreeMap::new();
             tags.insert("machine".to_string(), machine.to_string());
             tags.insert("runner".to_string(), s.runner.clone());
@@ -268,7 +276,13 @@ mod tests {
             runner: runner.to_string(),
             project: project.map(str::to_string),
             display_name: project.map(|p| format!("win-{runner}-{p}")),
+            human_input_at: None,
         }
+    }
+
+    /// 스캐너 보고값(codex 입력 신호)이 있는 presence 항목(v2-45 P5).
+    fn presence_with_input(uuid: &str, at: &str) -> crate::store::agents::PresenceUpsert {
+        crate::store::agents::PresenceUpsert { human_input_at: Some(at.to_string()), ..presence(uuid, "codex", None) }
     }
 
     #[test]
@@ -434,6 +448,43 @@ mod tests {
         assert_eq!(db.load_human_input("s1").as_deref(), Some("2026-07-11 10:00:05"), "과거 값으로 되감기 없음");
         db.persist_human_input("s1", "2026-07-11 11:00:00"); // 미래 = 전진
         assert_eq!(db.load_human_input("s1").as_deref(), Some("2026-07-11 11:00:00"), "새 값은 전진");
+    }
+
+    // --- v2-45 P5: 스캐너 보고값(codex 입력 신호) merge(§5-8 최종형) ---
+
+    #[test]
+    fn sync_presence_reported_input_advances_and_persists() {
+        let db = SqliteStore::open_memory().unwrap();
+        // codex 세션이 첫 등장 + 보고값(사람 입력 시각) → 인메모리·영속 양쪽에 반영.
+        db.sync_presence("win", &[presence_with_input("c1", "2026-07-11 10:00:05")], "2026-07-11 10:00:10");
+        let e = &db.list_agents(&BTreeMap::new(), "2026-07-11 10:00:15", 90)[0];
+        assert_eq!(e.human_input_at.as_deref(), Some("2026-07-11 10:00:05"), "보고값이 로스터에 반영");
+        assert_eq!(db.load_human_input("c1").as_deref(), Some("2026-07-11 10:00:05"), "보고값이 영속에 write-through");
+    }
+
+    #[test]
+    fn sync_presence_reported_input_takes_max_not_regress() {
+        let db = SqliteStore::open_memory().unwrap();
+        db.sync_presence("win", &[presence_with_input("c1", "2026-07-11 10:00:30")], "2026-07-11 10:00:31");
+        // 다음 보고가 더 과거 값이어도(rollout 캐시 지연 등) 후퇴하지 않는다(max-merge).
+        db.sync_presence("win", &[presence_with_input("c1", "2026-07-11 10:00:10")], "2026-07-11 10:00:45");
+        let e = &db.list_agents(&BTreeMap::new(), "2026-07-11 10:00:50", 90)[0];
+        assert_eq!(e.human_input_at.as_deref(), Some("2026-07-11 10:00:30"), "과거 보고로 후퇴 안 함");
+        // 더 새 보고는 전진.
+        db.sync_presence("win", &[presence_with_input("c1", "2026-07-11 10:01:00")], "2026-07-11 10:01:01");
+        let e = &db.list_agents(&BTreeMap::new(), "2026-07-11 10:01:05", 90)[0];
+        assert_eq!(e.human_input_at.as_deref(), Some("2026-07-11 10:01:00"), "새 보고는 전진");
+    }
+
+    #[test]
+    fn sync_presence_no_report_preserves_existing_star() {
+        let db = SqliteStore::open_memory().unwrap();
+        // 훅으로 기록된 ★(claude) 후 스캐너가 보고값 없이(None) upsert해도 보존(max-merge).
+        db.sync_presence("win", &[presence("c1", "codex", None)], "2026-07-11 10:00:00");
+        db.mark_human_input("c1", "2026-07-11 10:00:05");
+        db.sync_presence("win", &[presence("c1", "codex", None)], "2026-07-11 10:00:15");
+        let e = &db.list_agents(&BTreeMap::new(), "2026-07-11 10:00:20", 90)[0];
+        assert_eq!(e.human_input_at.as_deref(), Some("2026-07-11 10:00:05"), "무보고 upsert가 기존 ★ 보존");
     }
 
     #[test]
