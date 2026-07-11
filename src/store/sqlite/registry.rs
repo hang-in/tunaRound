@@ -1,12 +1,63 @@
-// 에이전트 로스터(인메모리 RefCell 풀, 영속 아님).
+// 에이전트 로스터(인메모리 RefCell 풀). human_input_at(총감독 ★)만 agent_human_input 테이블로 영속한다.
 
 use std::collections::BTreeMap;
 
+use rusqlite::OptionalExtension;
+
 use super::*;
 
+/// human_input_at 영속 행 보존기간(일). deregister/stale를 안 탄 고아 행을 이 기간 뒤 GC한다.
+const HUMAN_INPUT_RETAIN_DAYS: u32 = 7;
+
+/// 두 human_input_at(Option, DB datetime 포맷=사전순=시간순) 중 큰 값. §5-8 merge용 순수 헬퍼.
+/// P5가 여기에 스캐너 보고값(PresenceUpsert.human_input_at)을 하나 더 합류시킨다.
+fn max_opt_ts(a: Option<String>, b: Option<String>) -> Option<String> {
+    match (a, b) {
+        (Some(x), Some(y)) => Some(if x >= y { x } else { y }),
+        (Some(x), None) => Some(x),
+        (None, b) => b,
+    }
+}
+
 impl SqliteStore {
+    // ---- 총감독 ★ 신호(human_input_at) 영속(v2-45 P4, agent_human_input 테이블) ----
+
+    /// 영속 테이블에서 uuid의 human_input_at을 읽는다(재기동 후 인메모리 로스터가 빈 상태에서 ★ 복원
+    /// 폴백). 행이 없으면 None. DB 에러도 None으로 흡수한다(★ 복원은 best-effort, 로스터를 막지 않음).
+    fn load_human_input(&self, uuid: &str) -> Option<String> {
+        self.conn
+            .query_row("SELECT at FROM agent_human_input WHERE uuid = ?1", [uuid], |r| r.get::<_, String>(0))
+            .optional()
+            .unwrap_or(None)
+    }
+
+    /// human_input_at을 영속 테이블에 **단조** write-through(UPSERT, 더 새 값만). best-effort
+    /// (영속 실패가 로스터/통지를 막지 않는다). 단조라 과거 값으로 되감기지 않아 merge 승자 재기록도 안전.
+    fn persist_human_input(&self, uuid: &str, at: &str) {
+        let _ = self.conn.execute(
+            "INSERT INTO agent_human_input(uuid, at) VALUES(?1, ?2) \
+             ON CONFLICT(uuid) DO UPDATE SET at = excluded.at WHERE excluded.at > agent_human_input.at",
+            rusqlite::params![uuid, at],
+        );
+    }
+
+    /// 영속 human_input_at 행을 제거(세션 소멸 GC = deregister·sync_presence stale). best-effort.
+    fn delete_human_input(&self, uuid: &str) {
+        let _ = self.conn.execute("DELETE FROM agent_human_input WHERE uuid = ?1", [uuid]);
+    }
+
+    /// 보존기간(기본 7일) 초과 human_input_at 행을 GC한다. deregister/stale를 안 타고 남은 고아 행
+    /// (스캐너가 다시 보고하지 않는 uuid)을 정리한다. sync_presence가 매 스캔 주기에 호출 = 자연 주기 훅.
+    fn gc_human_input(&self) {
+        let _ = self.conn.execute(
+            "DELETE FROM agent_human_input WHERE at < datetime('now', ?1)",
+            [format!("-{HUMAN_INPUT_RETAIN_DAYS} days")],
+        );
+    }
+
     /// 에이전트를 로스터에 등록(있으면 교체). now는 last_heartbeat 초기값.
-    /// 재등록(재기동) 시 기존 human_input_at(총감독 신호)은 보존한다(설계 v2-42).
+    /// 재등록(재기동) 시 human_input_at(총감독 ★)은 인메모리 → 영속 테이블 순으로 복원한다(v2-45 P4:
+    /// 브로커 재기동 직후 인메모리가 비어도 register/스캐너 첫 보고 때 테이블에서 ★를 되살린다).
     pub fn register_agent(
         &self,
         uuid: &str,
@@ -14,9 +65,13 @@ impl SqliteStore {
         display_name: Option<String>,
         now: &str,
     ) {
-        let mut roster = self.agent_roster.borrow_mut();
-        let human_input_at = roster.get(uuid).and_then(|e| e.human_input_at.clone());
-        roster.insert(
+        let human_input_at = self
+            .agent_roster
+            .borrow()
+            .get(uuid)
+            .and_then(|e| e.human_input_at.clone())
+            .or_else(|| self.load_human_input(uuid));
+        self.agent_roster.borrow_mut().insert(
             uuid.to_string(),
             AgentEntry {
                 uuid: uuid.to_string(),
@@ -51,11 +106,19 @@ impl SqliteStore {
             .map(|e| e.uuid.clone())
             .collect();
         let removed = stale.len();
-        for uuid in stale {
-            roster.remove(&uuid);
+        for uuid in &stale {
+            roster.remove(uuid);
+            // 세션 소멸의 대부분은 deregister를 안 타므로(조사 확정) stale 제거 시 영속 행도 GC한다.
+            self.delete_human_input(uuid);
         }
         for s in sessions {
-            let human_input_at = roster.get(&s.uuid).and_then(|e| e.human_input_at.clone());
+            // §5-8 merge: 인메모리 기존 ∨ 영속 테이블 중 최신(재기동 후 인메모리가 비어도 테이블에서
+            // ★ 복원). P5가 여기에 스캐너 보고값(s.human_input_at)을 max에 하나 더 합류시킨다.
+            let mem = roster.get(&s.uuid).and_then(|e| e.human_input_at.clone());
+            let human_input_at = max_opt_ts(mem, self.load_human_input(&s.uuid));
+            if let Some(at) = &human_input_at {
+                self.persist_human_input(&s.uuid, at); // 승자 write-through(단조라 되감김 없음)
+            }
             let mut tags = BTreeMap::new();
             tags.insert("machine".to_string(), machine.to_string());
             tags.insert("runner".to_string(), s.runner.clone());
@@ -76,6 +139,7 @@ impl SqliteStore {
                 },
             );
         }
+        self.gc_human_input(); // 매 스캔 주기 = 7일 초과 고아 행 정리 훅(테이블이 작아 부담 없음)
         (sessions.len(), removed)
     }
 
@@ -91,20 +155,22 @@ impl SqliteStore {
     }
 
     /// 사람 프롬프트 핑: 해당 agent의 human_input_at을 now로 갱신(총감독=이 값 최신 세션, 설계 v2-42).
-    /// 미등록 uuid면 false(무장=등록 선행 필요).
+    /// **미등록이어도 영속 테이블에 선기록**한다(v2-45 P4: 무장 전 핑이 404로 유실되던 창 제거 +
+    /// 재기동/스캐너 첫 보고 때 register/sync_presence가 테이블에서 ★를 복원한다). 로스터에 있으면
+    /// 인메모리도 즉시 갱신한다. 항상 기록되므로 true를 반환한다(핸들러는 200으로 응답).
     pub fn mark_human_input(&self, uuid: &str, now: &str) -> bool {
-        match self.agent_roster.borrow_mut().get_mut(uuid) {
-            Some(entry) => {
-                entry.human_input_at = Some(now.to_string());
-                true
-            }
-            None => false,
+        self.persist_human_input(uuid, now); // DB 선기록(등록 여부 무관, now는 항상 최신이라 단조 통과)
+        if let Some(entry) = self.agent_roster.borrow_mut().get_mut(uuid) {
+            entry.human_input_at = Some(now.to_string());
         }
+        true
     }
 
     /// 로스터에서 에이전트를 즉시 제거(세션 종료 시 disarm이 호출, 설계 v2-43 잔존구간 제거).
     /// 존재했으면 true, 미등록이면 false. TTL(90초) 자연소멸을 기다리지 않고 닫힌 세션을 바로 없앤다.
+    /// 세션 종료이므로 영속 ★ 행도 함께 GC한다(v2-45 P4).
     pub fn deregister_agent(&self, uuid: &str) -> bool {
+        self.delete_human_input(uuid);
         self.agent_roster.borrow_mut().remove(uuid).is_some()
     }
 
@@ -251,6 +317,133 @@ mod tests {
         let e = &db.list_agents(&BTreeMap::new(), "2026-07-11 10:00:20", 90)[0];
         assert_eq!(e.human_input_at.as_deref(), Some("2026-07-11 10:00:03"));
         assert_eq!(e.last_heartbeat, "2026-07-11 10:00:15");
+    }
+
+    // --- v2-45 P4: human_input_at 영속(agent_human_input 테이블) ---
+
+    /// 파일 DB를 새 경로로 열고 마무리에 지우는 테스트 도우미(재기동 시뮬레이션용).
+    fn temp_db_path(tag: &str) -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!("tuna-p4-{tag}-{}.db", std::process::id()));
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{suffix}", p.display()));
+        }
+        p
+    }
+    fn cleanup_db(p: &std::path::Path) {
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{}{suffix}", p.display()));
+        }
+    }
+
+    #[test]
+    fn mark_human_input_records_even_when_unregistered() {
+        let db = SqliteStore::open_memory().unwrap();
+        // 무장 전(로스터에 없음) 핑도 선기록되어 true(404 유실 창 제거).
+        assert!(db.mark_human_input("u1", "2026-07-11 10:00:03"));
+        // 이후 register가 영속 테이블에서 ★를 복원한다.
+        db.register_agent("u1", tags(&[("machine", "win")]), None, "2026-07-11 10:00:10");
+        let e = &db.list_agents(&BTreeMap::new(), "2026-07-11 10:00:20", 90)[0];
+        assert_eq!(e.human_input_at.as_deref(), Some("2026-07-11 10:00:03"), "미등록 선기록이 register에서 복원");
+    }
+
+    #[test]
+    fn human_input_persists_across_broker_restart() {
+        let path = temp_db_path("restart");
+        let p = path.to_str().unwrap();
+        {
+            let db = SqliteStore::open(p).unwrap();
+            db.register_agent("s1", tags(&[("machine", "win")]), None, "2026-07-11 10:00:00");
+            assert!(db.mark_human_input("s1", "2026-07-11 10:00:05"));
+        }
+        // 재기동 = 새 SqliteStore(인메모리 로스터 비어 있음). register가 테이블에서 ★ 복원.
+        {
+            let db = SqliteStore::open(p).unwrap();
+            db.register_agent("s1", tags(&[("machine", "win")]), None, "2026-07-11 10:05:00");
+            let e = &db.list_agents(&BTreeMap::new(), "2026-07-11 10:05:10", 90)[0];
+            assert_eq!(e.human_input_at.as_deref(), Some("2026-07-11 10:00:05"), "재기동 후 ★ 영속 복원");
+        }
+        cleanup_db(&path);
+    }
+
+    #[test]
+    fn sync_presence_restores_human_input_from_table_after_restart() {
+        let path = temp_db_path("sync-restore");
+        let p = path.to_str().unwrap();
+        {
+            let db = SqliteStore::open(p).unwrap();
+            db.sync_presence("win", &[presence("s1", "claude", None)], "2026-07-11 10:00:00");
+            assert!(db.mark_human_input("s1", "2026-07-11 10:00:07"));
+        }
+        {
+            // 재기동 후 스캐너 첫 보고(sync_presence)가 테이블에서 ★를 복원해야 한다(≤15초 자동 복원).
+            let db = SqliteStore::open(p).unwrap();
+            db.sync_presence("win", &[presence("s1", "claude", None)], "2026-07-11 10:05:00");
+            let e = &db.list_agents(&BTreeMap::new(), "2026-07-11 10:05:10", 90)[0];
+            assert_eq!(e.human_input_at.as_deref(), Some("2026-07-11 10:00:07"), "sync가 테이블에서 ★ 복원");
+        }
+        cleanup_db(&path);
+    }
+
+    #[test]
+    fn deregister_deletes_persisted_human_input() {
+        let db = SqliteStore::open_memory().unwrap();
+        db.register_agent("s1", tags(&[("machine", "win")]), None, "2026-07-11 10:00:00");
+        db.mark_human_input("s1", "2026-07-11 10:00:05");
+        assert!(db.deregister_agent("s1"));
+        assert_eq!(db.load_human_input("s1"), None, "deregister가 영속 ★ 행도 제거");
+        // 재등록해도 복원할 값이 없다.
+        db.register_agent("s1", tags(&[("machine", "win")]), None, "2026-07-11 10:10:00");
+        let e = &db.list_agents(&BTreeMap::new(), "2026-07-11 10:10:05", 90)[0];
+        assert_eq!(e.human_input_at, None, "제거된 ★는 재등록 시 복원 안 됨");
+    }
+
+    #[test]
+    fn sync_presence_stale_deletes_persisted_human_input() {
+        let db = SqliteStore::open_memory().unwrap();
+        db.sync_presence("win", &[presence("s1", "claude", None)], "2026-07-11 10:00:00");
+        db.mark_human_input("s1", "2026-07-11 10:00:05");
+        // s1이 다음 스캔 보고에서 사라짐(exit) → stale 제거 + 영속 행 GC.
+        db.sync_presence("win", &[], "2026-07-11 10:00:20");
+        assert_eq!(db.load_human_input("s1"), None, "stale 제거가 영속 ★ 행도 GC");
+    }
+
+    #[test]
+    fn sync_presence_write_through_persists_signal_for_restart() {
+        let path = temp_db_path("wt");
+        let p = path.to_str().unwrap();
+        {
+            // mark로 인메모리+테이블에 기록된 ★가 sync upsert를 거쳐도 테이블에 승자로 남는지(write-through).
+            let db = SqliteStore::open(p).unwrap();
+            db.sync_presence("win", &[presence("s1", "claude", None)], "2026-07-11 10:00:00");
+            db.mark_human_input("s1", "2026-07-11 10:00:05");
+            db.sync_presence("win", &[presence("s1", "claude", None)], "2026-07-11 10:00:15");
+        }
+        {
+            let db = SqliteStore::open(p).unwrap();
+            assert_eq!(db.load_human_input("s1").as_deref(), Some("2026-07-11 10:00:05"), "write-through로 테이블 보존");
+        }
+        cleanup_db(&path);
+    }
+
+    #[test]
+    fn gc_human_input_removes_only_stale_rows() {
+        let db = SqliteStore::open_memory().unwrap();
+        // 7일보다 훨씬 과거/미래 행을 직접 심는다(빈 테이블이라 단조 UPSERT가 그대로 삽입).
+        db.persist_human_input("old", "2020-01-01 00:00:00");
+        db.persist_human_input("fresh", "2099-01-01 00:00:00");
+        db.gc_human_input();
+        assert_eq!(db.load_human_input("old"), None, "보존기간 초과 행은 GC");
+        assert_eq!(db.load_human_input("fresh").as_deref(), Some("2099-01-01 00:00:00"), "신선 행은 보존");
+    }
+
+    #[test]
+    fn persist_human_input_is_monotonic() {
+        let db = SqliteStore::open_memory().unwrap();
+        db.persist_human_input("s1", "2026-07-11 10:00:05");
+        db.persist_human_input("s1", "2026-07-11 09:00:00"); // 과거 = 무시(단조)
+        assert_eq!(db.load_human_input("s1").as_deref(), Some("2026-07-11 10:00:05"), "과거 값으로 되감기 없음");
+        db.persist_human_input("s1", "2026-07-11 11:00:00"); // 미래 = 전진
+        assert_eq!(db.load_human_input("s1").as_deref(), Some("2026-07-11 11:00:00"), "새 값은 전진");
     }
 
     #[test]

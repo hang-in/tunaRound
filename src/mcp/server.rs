@@ -506,7 +506,8 @@ fn dashboard_write_allowed(
 
 /// POST /dashboard/human-ping: 세션의 UserPromptSubmit 훅이 "이 세션이 방금 사람 프롬프트를 받았다"를
 /// 보고한다(총감독=human_input_at 최신 세션, 설계 v2-42). body = {"agent": "<세션 uuid>"}.
-/// loopback 무조건 허용 + 원격은 Bearer 토큰 필요(dashboard_write_allowed). 미등록 uuid(무장 전)면 404.
+/// loopback 무조건 허용 + 원격은 Bearer 토큰 필요(dashboard_write_allowed). v2-45 P4: 미등록(무장 전)
+/// 이어도 영속 테이블에 선기록하고 200을 준다(404 유실 창 제거 - 이후 register/스캐너가 ★를 복원).
 #[cfg(feature = "serve")]
 async fn dashboard_human_ping_handler(
     axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<std::net::SocketAddr>,
@@ -534,19 +535,15 @@ async fn dashboard_human_ping_handler(
         Ok(r) => r,
         Err(e) => return (axum::http::StatusCode::BAD_REQUEST, format!("잘못된 요청: {e}")).into_response(),
     };
-    let ok = tokio::task::spawn_blocking(move || {
+    // 미등록이어도 영속 선기록되므로(v2-45 P4) 항상 성공이다. 반환 bool은 무시하고 200을 준다.
+    tokio::task::spawn_blocking(move || {
         let store = store.lock().unwrap_or_else(|e| e.into_inner());
         let now = store.now().unwrap_or_default();
-        store.mark_human_input(&req.agent, &now)
+        store.mark_human_input(&req.agent, &now);
     })
     .await
-    .unwrap_or(false);
-    if ok {
-        (axum::http::StatusCode::OK, "ok").into_response()
-    } else {
-        // 미등록(아직 무장 안 됨). 훅이 무장 후 재핑하면 된다.
-        (axum::http::StatusCode::NOT_FOUND, "미등록 세션(무장 선행 필요)").into_response()
-    }
+    .ok();
+    (axum::http::StatusCode::OK, "ok").into_response()
 }
 
 /// POST /dashboard/deregister: 세션의 SessionEnd 훅(disarm)이 "이 세션이 닫혔다"를 보고한다.

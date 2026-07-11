@@ -13,7 +13,8 @@ use crate::store::agents::AgentEntry;
 // v7: tasks.claimed_at/lease_expires_at/claimed_by/attempt_count(claim-후-워커사망 자동 requeue,
 // lease 기반. DB 내부용 컬럼이라 Task wire 구조체(store/a2a.rs)에는 노출하지 않는다).
 // v8: tasks.runner(어떤 러너가 claim했는지 트레이스). Task wire 구조체에도 노출(runner 표시용).
-const CURRENT_SCHEMA_VERSION: u32 = 8;
+// v9: agent_human_input(총감독 ★ 신호 영속, 브로커 재기동마다 증발하던 것 해소. v2-45 P4).
+const CURRENT_SCHEMA_VERSION: u32 = 9;
 
 // config 테이블 생성 SQL.
 const CREATE_CONFIG: &str = "CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT);";
@@ -105,6 +106,17 @@ CREATE TABLE IF NOT EXISTS tasks (
     attempt_count     INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_to_agent_state ON tasks(to_agent, state);
+";
+
+// 총감독 ★ 신호(human_input_at) 영속 테이블(v9, v2-45 P4). 인메모리 로스터는 브로커 재기동마다
+// 비워지므로 ★(사람이 앉은 세션)가 증발하던 것을 별도 테이블로 영속화한다. uuid=세션 id, at=마지막
+// 사람 프롬프트 시각(DB datetime 포맷). 로스터 전체가 아니라 이 신호만 영속한다(유령 카드 부활 방지,
+// 설계 §2 비스코프). 새 TABLE이라 IF NOT EXISTS로 fresh·기존 DB 모두 처리한다.
+const CREATE_AGENT_HUMAN_INPUT: &str = "
+CREATE TABLE IF NOT EXISTS agent_human_input (
+    uuid TEXT PRIMARY KEY,
+    at   TEXT NOT NULL
+);
 ";
 
 // tasks 컬럼 목록(고정 순서). SELECT/INSERT 양쪽에서 재사용해 컬럼 순서 불일치를 방지한다.
@@ -239,6 +251,10 @@ impl SqliteStore {
             // v6: A2A task 위임 테이블(새 TABLE이라 IF NOT EXISTS로 fresh·기존 모두 처리).
             self.conn
                 .execute_batch(CREATE_TASKS)
+                .map_err(|e| format!("sqlite: {e}"))?;
+            // v9: 총감독 ★ 신호 영속 테이블(새 TABLE이라 IF NOT EXISTS로 fresh·기존 모두 처리).
+            self.conn
+                .execute_batch(CREATE_AGENT_HUMAN_INPUT)
                 .map_err(|e| format!("sqlite: {e}"))?;
             // v3: 기존(v2) DB의 message_vectors엔 model_id가 없으므로 ADD COLUMN으로 보강한다.
             // fresh DB는 CREATE에 이미 있어 column_exists가 true → ALTER 생략. 기존 행은 NULL이라
@@ -394,6 +410,50 @@ mod tests {
         assert!(db.column_exists("messages", "created_at"), "마이그레이션이 created_at 추가");
         let ca: Option<String> = db.get_created_at("s", 1).unwrap();
         assert_eq!(ca, None, "기존 행 created_at은 NULL(recency 판단 유보)");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn fresh_db_has_agent_human_input_table() {
+        let db = SqliteStore::open_memory().unwrap();
+        // 테이블이 있으면 count 조회가 성공한다(없으면 no such table 에러).
+        let cnt: i64 = db.conn.query_row("SELECT count(*) FROM agent_human_input", [], |r| r.get(0)).unwrap();
+        assert_eq!(cnt, 0, "v9 스키마에 agent_human_input 테이블 존재(빈 상태)");
+    }
+
+    #[test]
+    fn migration_v8_to_v9_adds_agent_human_input_and_preserves_tasks() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("tuna_mig_v8v9.db");
+        let _ = std::fs::remove_file(&path);
+        let p = path.to_str().unwrap();
+        // v8 스키마 수동 구성: agent_human_input 없음 + schema_version=8 + tasks 행 1건.
+        {
+            let conn = rusqlite::Connection::open(p).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE config(key TEXT PRIMARY KEY, value TEXT);
+                 CREATE TABLE tasks(task_id TEXT PRIMARY KEY, context_id TEXT, from_agent TEXT NOT NULL, \
+                     to_agent TEXT NOT NULL, state TEXT NOT NULL, message_json TEXT, artifacts_json TEXT, \
+                     history_json TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, \
+                     claimed_at TEXT, lease_expires_at TEXT, claimed_by TEXT, runner TEXT, \
+                     attempt_count INTEGER NOT NULL DEFAULT 0);
+                 INSERT INTO tasks(task_id,from_agent,to_agent,state,created_at,updated_at) \
+                     VALUES('t1','win','mac','completed','2026-07-11 09:00:00','2026-07-11 09:01:00');
+                 INSERT INTO config(key,value) VALUES('schema_version','8');",
+            )
+            .unwrap();
+        }
+        // open → migrate v8→v9(agent_human_input 테이블 생성).
+        let db = SqliteStore::open(p).unwrap();
+        let cnt: i64 = db.conn.query_row("SELECT count(*) FROM agent_human_input", [], |r| r.get(0)).unwrap();
+        assert_eq!(cnt, 0, "마이그레이션이 agent_human_input 테이블 추가");
+        let tasks: i64 = db.conn.query_row("SELECT count(*) FROM tasks WHERE task_id='t1'", [], |r| r.get(0)).unwrap();
+        assert_eq!(tasks, 1, "기존 tasks 행 보존");
+        let ver: String = db
+            .conn
+            .query_row("SELECT value FROM config WHERE key='schema_version'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(ver, "9", "schema_version가 9로 갱신");
         let _ = std::fs::remove_file(&path);
     }
 }
