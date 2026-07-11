@@ -167,9 +167,8 @@ impl WatermarkFile {
             return;
         };
         // 마지막 기록값 이하(같거나 과거)면 재기록하지 않는다(단조 보장 + 같은 값 IO 절약).
-        if let Some(lw) = self.last_written.as_deref()
-            && ts.as_str() <= lw
-        {
+        // is_some_and = 이 파일의 기존 관용구(connection_was_healthy와 동형, gemini 리뷰 반영).
+        if self.last_written.as_deref().is_some_and(|lw| ts.as_str() <= lw) {
             return;
         }
         if let Some(dir) = path.parent() {
