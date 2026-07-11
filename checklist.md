@@ -486,9 +486,9 @@
 
 > 2026-07-11 세션21 정찰 확정 + 사용자 "나중에 진행". 착수 = v2-45 완료 + opencode 스키마 냉각 후, 착수 시 업스트림 재대조 필수.
 
-- [ ] 워커 러너 `--runner opencode`(opencode run + stdin + --format json, 기존 러너 동형).
-- [ ] 감독 레인: 스캐너 opencode.db read-only 열거(보수 파서+버전 핀) → 수신 (a) tuna-broker MCP native 우선 검증(폴백 (b) relay형 prompt_async 주입) → human 신호 = chat.message 플러그인+prefix 필터(발화 조건 라이브 검증 선행).
-- [ ] 운용 규약: TUI --port 고정 + 머신당 포트 대역(다중 TUI 충돌 방지).
+- [x] 워커 러너 `--runner opencode` **완료**(커밋 7fedac2 구현·배선·테스트, 프롬프트=positional arg. 세션23 재대조: opencode v1.17.18 설치·CLI 드리프트 0, fixture 타임아웃 테스트 추가). 폴리시 보류: RunMode::ReadOnly(안정 플래그 부재)·토큰 하드닝(본문 무손실이라 불요).
+- [ ] (defer, R2) 감독 레인: 스캐너 opencode.db read-only 열거 → 수신 (a) MCP native → human 신호 chat.message. **opencode.db 스키마 미안정(마이그레이션 이슈 7+건 활성, 세션23 재확인) = 몇 달 냉각 후 착수·착수 시 §1 재대조.**
+- [ ] (defer, 감독 레인 묶음) 운용 규약: TUI --port 고정 + 머신당 포트 대역(다중 TUI 충돌 방지).
 
 ## 세션23 v2-47 #3 후속: 브로커 uptime + WAL (feat/v2-47-health-uptime-wal)
 

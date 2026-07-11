@@ -1,6 +1,8 @@
 # v2-48: opencode 좌석 배선 (백로그, 2026-07-11 세션21 정찰 확정)
 
 > 상태 = 백로그. **착수 = v2-45 아크 완료 후**(사용자 결정 2026-07-11 "권고대로 나중에 진행"). 정찰 근거 = 업스트림 공식 문서·소스(anomalyco/opencode v1.17.18, 2026-07-11 기준 - 레포가 sst에서 anomalyco로 이관됨). **착수 시점에 버전·스키마·API 재대조 필수**(아래 R2).
+>
+> **세션23 재대조·현황(2026-07-12)**: ① **워커 레인 = 이미 완성**(§2.1은 스테일). `src/runner/opencode.rs`(OpencodeRunner + `build_opencode_args` + `parse_opencode_stream`)가 커밋 7fedac2(2026-06-30)에 구현·배선(cli.rs `WorkRunner::Opencode`·cli_daemons 팩토리·roster·cli_node)·유닛테스트 완료. 세션23에 fixture 타임아웃 테스트 추가(형제 러너 동형). ② **CLI 재대조 = 드리프트 0**: 이 머신에 opencode **v1.17.18 설치**(정찰 버전과 동일), `opencode run [msg] --format json`(JSONL)·exit 1 계약 불변. ③ **감독 레인 = R2 확증, defer 유지**: opencode.db 마이그레이션 이슈가 1일 뒤에도 활성(세션 고아화·사용자 데이터손실·DB 손상 등 7+건) → 스캐너의 조용한-0 실패 위험 그대로. "몇 달 냉각 + 착수 시 재대조" 조건 미충족. ④ **잔여 폴리시(비착수)**: `RunMode::ReadOnly` 배선(opencode 안정 read-only 플래그 부재로 보류), 토큰 파싱 하드닝(본문은 text 이벤트에서 독립 누적돼 step_finish 드롭에 무손실이라 불요).
 
 ## 0. 결론 요약
 
@@ -26,7 +28,7 @@
 
 ### 2.1 워커 레인 (`--runner opencode`)
 
-- `src/runner/opencode.rs` 신설: `opencode run` spawn + 프롬프트 stdin 파이프 + `--format json` 이벤트 파싱(최종 답 추출) + exit 비0 = fail 전이. 기존 claude/codex 러너와 동형(argv 빌더 + 파서 순수부 + 통합, 가짜 CLI fixture 테스트 관례).
+- ~~`src/runner/opencode.rs` 신설~~ **(완료, 커밋 7fedac2)**: `opencode run` spawn + 프롬프트 **positional arg**(stdin 아님, 실측 정정) + `--format json` JSONL 파싱(text/step_finish → 본문·토큰) + exit 비0 = fail 전이. claude/codex 러너와 동형(argv 빌더 + 파서 순수부 + watchdog idle 타임아웃 + 가짜 CLI fixture 테스트). 배선 완료: `WorkRunner::Opencode`(cli.rs)·cli_daemons 팩토리·roster 좌석·cli_node.
 
 ### 2.2 감독 레인 (codex 선례와 동형 3요소)
 
