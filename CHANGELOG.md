@@ -13,11 +13,14 @@
 - **mesh 영속·재생 (v2-45)**: `watch-results` 재접속 + since 워터마크 재생, 대시보드 피드 초기 스냅샷(`?replay`), 총감독 ★(`human_input_at`) 영속, codex 입력 신호 추출, 종결 task 요청·결과 색인(`a2a:*` 네임스페이스 → `search_context` 검색), 종결 task retention 슬림화, 유휴-열림 세션 로스터 유지.
 - **대시보드 관제탑 고도화 (v2-47)**: task 카드 상세 펼침 + 필터 칩, 브로커 헬스 패널(`GET /dashboard/health`, 미배달·고착·스캐너 도달성 + 브로커 uptime·WAL 크기), 브라우저 알림 옵트인, 위임 이력 검색(`GET /dashboard/search`, a2a 스코프), 로스터 ★ recency 표시·관전 뱃지·모바일 반응형.
 - **opencode 워커 러너**: `--runner opencode`(`opencode run --format json`, 기존 러너와 동형).
+- **task lease 자동연장 + 취소 (v2-49)**: 워커가 실행 중 자기 task의 lease를 주기 연장(`extend_task_lease`, 상한 후 중단해 고착은 회수)해 30분 넘는 장기 task가 실행 중 requeue되지 않게. `cancel_task` MCP 도구 + `tunaround task cancel` CLI(잘못 보냈거나 불필요한 열린 task를 canceled로).
+- **원커맨드 온보딩**: `tunaround init`이 `node.toml` + `~/.tunaround/config`(mesh·훅용 dotenv)를 한 번에 스캐폴드(`--machine` OS 감지, 유닉스 0600 권한, 기존 config는 --force 없이 보존). AI 설치 안내 프롬프트(`docs/prompts/install-with-ai.md`)로 새 머신 설치를 에이전트에 위임.
 
 ### 변경 (Changed)
 
 - **총감독 판정 = 사람 입력 최신 세션**(heartbeat=presence 재설계, v2-42/43). 로스터=online 세션 전부, 발견/유휴·discover 모델 제거.
 - **대시보드 = 관제탑(read-only 뷰)로 수렴**: 뷰(로스터·피드) + 목표 제출만. 직접 제어 UX 비확장.
+- **토큰 env 이름 통일**: `tunaround init` 기본 `token_env`를 `TUNAROUND_TOKEN` → `TUNA_BROKER_TOKEN`으로(node.toml·데몬·훅·`~/.tunaround/config` 공용 = 토큰 env가 둘이던 혼란 제거). 기존 node.toml은 불변, 새 init에만 적용.
 
 ### 제거 (Removed)
 
