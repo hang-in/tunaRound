@@ -4,6 +4,26 @@
 
 ## [Unreleased]
 
+> 0.3.0 이후 mesh를 관측·영속·자동수신 쪽으로 굳혔다(presence 스캐너, codex-relay, 재생·기억화, 대시보드 관제탑 고도화). 전부 하위호환 추가이며 스키마는 v8→v10(컬럼·테이블 추가)로 확장됐다. 아직 릴리스 태그를 붙이지 않았다.
+
+### 추가 (Added)
+
+- **presence 스캐너 (v2-44)**: 머신당 데몬 1개가 라이브 세션(claude·codex)을 스캔해 로스터에 전집합을 일괄 동기화(`report_presence`). 세션 수신 자동 가동 SessionStart 훅. role 태그에 `infra`(머신 상주 데몬) 추가.
+- **codex-relay (v2-46)**: 로스터에 보이는 codex 세션 thread로 task를 직접 배달(app-server ws 주입, 대리 claim). codex는 스스로 수신 메커니즘이 없어 relay가 대신 받는다.
+- **mesh 영속·재생 (v2-45)**: `watch-results` 재접속 + since 워터마크 재생, 대시보드 피드 초기 스냅샷(`?replay`), 총감독 ★(`human_input_at`) 영속, codex 입력 신호 추출, 종결 task 요청·결과 색인(`a2a:*` 네임스페이스 → `search_context` 검색), 종결 task retention 슬림화, 유휴-열림 세션 로스터 유지.
+- **대시보드 관제탑 고도화 (v2-47)**: task 카드 상세 펼침 + 필터 칩, 브로커 헬스 패널(`GET /dashboard/health`, 미배달·고착·스캐너 도달성 + 브로커 uptime·WAL 크기), 브라우저 알림 옵트인, 위임 이력 검색(`GET /dashboard/search`, a2a 스코프), 로스터 ★ recency 표시·관전 뱃지·모바일 반응형.
+- **opencode 워커 러너**: `--runner opencode`(`opencode run --format json`, 기존 러너와 동형).
+
+### 변경 (Changed)
+
+- **총감독 판정 = 사람 입력 최신 세션**(heartbeat=presence 재설계, v2-42/43). 로스터=online 세션 전부, 발견/유휴·discover 모델 제거.
+- **대시보드 = 관제탑(read-only 뷰)로 수렴**: 뷰(로스터·피드) + 목표 제출만. 직접 제어 UX 비확장.
+
+### 제거 (Removed)
+
+- **Redis 전삭제 (v2-45 P7)**: 관찰·세션 버스의 Redis 의존 제거. 관찰(`--observe`)·재개는 SQLite DB 공유로.
+- **대시보드 직접 제어 제거 (v2-45 P0)**: `/dashboard/control` 제거. codex 제어는 task 장부 경유 codex-relay가 대체.
+
 ## [0.3.0] - 2026-07-06
 
 > 0.2.2 이후 오케스트레이션 레이어가 크게 늘었다(레지스트리·감독·대시보드·세션 버스). 전부 하위호환 추가이며 스키마는 v6→v8(컬럼 추가)로 확장됐다.
