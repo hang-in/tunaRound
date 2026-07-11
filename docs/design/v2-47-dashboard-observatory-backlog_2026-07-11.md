@@ -22,7 +22,8 @@
 - 문제: mesh 건강 상태(미배달·고착 task, 머신 도달성)를 보려면 MCP `tasks()` 호출이나 터미널 필요.
 - 해법: `tasks()`가 이미 계산하는 no-consumer/stuck 주석 + 열린 task 수 + 스캐너 heartbeat 나이(머신 도달성) + WAL 크기·브로커 기동 시각을 한 패널로. read-only GET 1개(기존 roster 핸들러 패턴).
 - 가치: "mesh가 지금 건강한가" 한눈 파악 = 관제탑의 본질 기능.
-- **구현(PR #68)**: `GET /dashboard/health` = 열린 task 수 + no-consumer/stuck 집계(`classify_task_health` 단일 소스, `tasks()`와 동일 임계) + 머신별 스캐너 도달성. **WAL 크기·브로커 기동 시각은 후속**(store 표면 변경 필요: SqliteStore path 필드 + config get/set 접근자. 그때 uptime=serve 기동 시 config row 기록, WAL=`<db>-wal` stat).
+- **구현(PR #68)**: `GET /dashboard/health` = 열린 task 수 + no-consumer/stuck 집계(`classify_task_health` 단일 소스, `tasks()`와 동일 임계) + 머신별 스캐너 도달성.
+- **후속 구현(세션23)**: **WAL 크기·브로커 uptime 추가.** store 표면 변경 = `SqliteStore.db_path` 필드 + `get_config`/`set_config`(기존 config 테이블 재사용, 마이그레이션 불요) + `wal_bytes()`. uptime = `serve_http_mcp_on_listener`(serve/core/node 단일 깔때기) 기동 시 `broker_started_at` config row 기록(매 기동 덮어씀) → 헬스 핸들러가 `age_secs(now, started)`로 계산. WAL = `<db>-wal` stat(부재=체크포인트됨=0, 실 IO 오류만 500). uptime·WAL은 **임계 없는 raw 게이지**(task-health 아님). fail-visible 유지(조회 오류는 500 표면화).
 
 ### 4. 브라우저 알림 (옵트인) (완료, PR #68)
 - 해법: task 완료/실패 SSE 수신 시 Notification API 데스크톱 알림(토글, 기본 off).

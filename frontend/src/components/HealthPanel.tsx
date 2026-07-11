@@ -15,6 +15,26 @@ function ageLabel(secs: number): string {
   return Math.floor(min / 60) + '시간'
 }
 
+// 브로커 기동 후 경과 초를 초/분/시간/일 표기로(uptime, 스캐너 나이보다 길어질 수 있어 일 단위 추가).
+function uptimeLabel(secs: number): string {
+  if (secs < 0) return '?'
+  if (secs < 60) return secs + '초'
+  const min = Math.floor(secs / 60)
+  if (min < 60) return min + '분'
+  const hr = Math.floor(min / 60)
+  if (hr < 24) return hr + '시간'
+  return Math.floor(hr / 24) + '일'
+}
+
+// 바이트를 B/KB/MB 짧은 표기로(WAL 사이드카 크기).
+function byteLabel(bytes: number): string {
+  if (bytes < 1024) return bytes + ' B'
+  const kb = bytes / 1024
+  if (kb < 1024) return (kb < 10 ? kb.toFixed(1) : Math.round(kb).toString()) + ' KB'
+  const mb = kb / 1024
+  return (mb < 10 ? mb.toFixed(1) : Math.round(mb).toString()) + ' MB'
+}
+
 export default function HealthPanel() {
   const [health, setHealth] = useState<BrokerHealth | null>(null)
   const [ok, setOk] = useState(true)
@@ -68,6 +88,14 @@ export default function HealthPanel() {
         <span className={'health-metric' + (health.stuck > 0 ? ' err' : '')}>
           <span className="health-metric-label">고착</span>
           <span className="health-metric-value">{health.stuck}</span>
+        </span>
+        <span className="health-metric">
+          <span className="health-metric-label">가동</span>
+          <span className="health-metric-value">{uptimeLabel(health.uptime_secs)}</span>
+        </span>
+        <span className="health-metric">
+          <span className="health-metric-label">WAL</span>
+          <span className="health-metric-value">{byteLabel(health.wal_bytes)}</span>
         </span>
       </div>
       <span className="health-divider" />

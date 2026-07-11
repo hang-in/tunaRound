@@ -142,6 +142,8 @@ pub struct SqliteStore {
     /// 인메모리 에이전트 로스터(uuid → 항목). 영속 아님(브로커 재기동 시 워커 재등록으로 복원).
     /// 내부 가변성(RefCell): 모든 접근이 바깥 Mutex로 직렬화되므로 &self 메서드로 갱신 가능하다.
     agent_roster: RefCell<HashMap<String, AgentEntry>>,
+    /// 파일 기반 DB의 경로. WAL 사이드카(`<path>-wal`) stat용(헬스 패널, v2-47 #3). 인메모리는 None.
+    db_path: Option<String>,
 }
 
 /// FTS 검색 결과 한 건.
@@ -171,6 +173,7 @@ impl SqliteStore {
             conn,
             event_bus: None,
             agent_roster: RefCell::new(HashMap::new()),
+            db_path: Some(path.to_string()),
         };
         db.migrate()?;
         Ok(db)
@@ -185,6 +188,7 @@ impl SqliteStore {
             conn,
             event_bus: None,
             agent_roster: RefCell::new(HashMap::new()),
+            db_path: None,
         };
         db.migrate()?;
         Ok(db)
@@ -338,6 +342,45 @@ impl SqliteStore {
             .query_row("SELECT datetime('now')", [], |row| row.get(0))
             .map_err(|e| format!("sqlite: {e}"))
     }
+
+    /// config 테이블(KV)에서 값을 읽는다. 부재는 Ok(None)(오류 아님), DB 오류만 Err.
+    /// schema_version 저장에 이미 쓰는 config 테이블을 재사용하는 범용 접근자(v2-47 #3).
+    pub fn get_config(&self, key: &str) -> Result<Option<String>, String> {
+        match self
+            .conn
+            .query_row("SELECT value FROM config WHERE key = ?1", [key], |row| {
+                row.get::<_, String>(0)
+            }) {
+            Ok(v) => Ok(Some(v)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(format!("sqlite: {e}")),
+        }
+    }
+
+    /// config 테이블(KV)에 값을 upsert한다(INSERT OR REPLACE, schema_version 저장과 동일 관용구).
+    pub fn set_config(&self, key: &str, value: &str) -> Result<(), String> {
+        self.conn
+            .execute(
+                "INSERT OR REPLACE INTO config(key, value) VALUES(?1, ?2)",
+                [key, value],
+            )
+            .map(|_| ())
+            .map_err(|e| format!("sqlite: {e}"))
+    }
+
+    /// WAL 사이드카(`<db_path>-wal`)의 현재 바이트 수를 반환한다(헬스 게이지, v2-47 #3).
+    /// 인메모리(경로 없음)나 WAL 부재(체크포인트 직후=정상)는 Ok(0), 실제 IO 오류만 Err로 표면화한다
+    /// (헬스는 실패를 정상 0으로 위장하지 않는다, PR #68 원칙).
+    pub fn wal_bytes(&self) -> Result<u64, String> {
+        let Some(path) = self.db_path.as_deref() else {
+            return Ok(0);
+        };
+        match std::fs::metadata(format!("{path}-wal")) {
+            Ok(m) => Ok(m.len()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(0),
+            Err(e) => Err(format!("wal stat: {e}")),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -348,6 +391,56 @@ mod tests {
     fn fresh_db_has_model_id_column() {
         let db = SqliteStore::open_memory().unwrap();
         assert!(db.column_exists("message_vectors", "model_id"), "v3 스키마에 model_id 컬럼 존재");
+    }
+
+    #[test]
+    fn config_get_set_roundtrip() {
+        // v2-47 #3: broker_started_at 등을 저장하는 범용 config 접근자.
+        let db = SqliteStore::open_memory().unwrap();
+        // 부재 = Ok(None)(오류 아님).
+        assert_eq!(db.get_config("broker_started_at").unwrap(), None);
+        db.set_config("broker_started_at", "2026-07-12 00:00:00").unwrap();
+        assert_eq!(
+            db.get_config("broker_started_at").unwrap().as_deref(),
+            Some("2026-07-12 00:00:00")
+        );
+        // upsert = 매 기동 덮어씀.
+        db.set_config("broker_started_at", "2026-07-12 01:00:00").unwrap();
+        assert_eq!(
+            db.get_config("broker_started_at").unwrap().as_deref(),
+            Some("2026-07-12 01:00:00")
+        );
+        // 마이그레이션이 기록한 schema_version도 같은 접근자로 읽힌다(테이블 공유).
+        assert_eq!(db.get_config("schema_version").unwrap().as_deref(), Some("10"));
+    }
+
+    #[test]
+    fn wal_bytes_in_memory_is_zero() {
+        // 인메모리는 파일 경로가 없어 WAL 사이드카도 없다 → Ok(0)(오류 아님).
+        let db = SqliteStore::open_memory().unwrap();
+        assert_eq!(db.wal_bytes().unwrap(), 0);
+    }
+
+    #[test]
+    fn wal_bytes_file_backed_reports_ok_and_zero_after_checkpoint() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("tuna_wal_bytes_test.db");
+        let p = path.to_str().unwrap().to_string();
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{p}{suffix}"));
+        }
+        let db = SqliteStore::open(&p).unwrap();
+        // 파일 기반이라 경로 branch를 타고 stat이 성립한다. 커밋된 쓰기가 체크포인트 전이면 WAL에
+        // 프레임이 쌓여 양수 = 경로·stat 실검증(is_ok만이면 항상 0/잘못된 경로도 통과).
+        db.set_config("broker_started_at", "2026-07-12 00:00:00").unwrap();
+        assert!(db.wal_bytes().unwrap() > 0, "체크포인트 전 WAL은 양수");
+        // TRUNCATE 체크포인트 후 WAL은 0바이트(결정적).
+        db.wal_checkpoint().unwrap();
+        assert_eq!(db.wal_bytes().unwrap(), 0, "체크포인트(TRUNCATE) 후 WAL=0");
+        drop(db);
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{p}{suffix}"));
+        }
     }
 
     #[test]

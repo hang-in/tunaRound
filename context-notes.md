@@ -2,6 +2,23 @@
 
 > 작업 중 결정과 근거. 계속 append. (규율 #7) 다음 세션이 결정을 재유도하지 않게.
 
+## 2026-07-12 세션23: v2-47 #3 후속 - 브로커 uptime + WAL 헬스 패널 확장
+
+- **경위**: 세션22가 v2-47 주 항목 5건 완주 후 "방향 선택". 사용자가 **#3 후속(uptime·WAL)** 선택. 세션22가 무상태-추가로 남긴 헬스 패널을 store 표면 변경으로 확장.
+- **이해(understand 워크플로우 4 에이전트)로 확정된 사실**:
+  - **config 테이블 이미 존재**(sqlite.rs:20, `config(key TEXT PK, value TEXT)`, schema_version 저장) → **새 마이그레이션·스키마 범프 불필요.** broker_started_at는 새 KV row일 뿐.
+  - **Store trait 없음**(grep 무) → db_path 필드 + get/set/wal_bytes 추가에 트레잇 변경 없음. 두 생성자(open/open_memory) struct 리터럴만 필드 추가.
+  - **3개 진입점(serve/core/node) 모두 serve_http_mcp_on_listener 단일 깔때기 수렴** → 기동 시각 기록 한 곳(server.rs:53, axum::serve 이전)이면 전부 커버·무경합.
+- **설계 결정(재론 금지)**:
+  - **uptime 소스 = config row**(백로그 #3 주석이 지정한 경로). Extension 방식(더 작은 diff)보다 문서 부합 + 재사용 가능한 store 표면. 매 기동 INSERT OR REPLACE로 덮어씀(프로세스별 uptime, 단조 아님 = human_input과 대비).
+  - **uptime/WAL = raw 게이지, 임계 없음** → classify_task_health 단일소스 규칙과 무관(task-health 아님). frontend warn/err 클래스 없음.
+  - **fail-visible 유지(PR #68)**: get_config DB 오류·WAL 실 IO 오류는 spawn_blocking 클로저 안 `?`로 500 표면화. 정당한 0(WAL 부재=체크포인트됨, broker_started_at row 부재=기동 write 이전이라 사실상 불가)만 0 표시.
+  - **기동 write = best-effort**(실패는 로그만, 기동 막지 않음). axum::serve 이전 동기 실행이라 첫 헬스 요청 전 항상 존재.
+- **타입**: uptime_secs=i64(age_secs 반환·스캐너 age_secs와 동형, 캐스트 회피), wal_bytes=u64(fs metadata len 네이티브). WAL 부재는 ErrorKind::NotFound로 판별해 Ok(0), 그 외 IO 오류만 Err.
+- **clippy 실수정 1건**: 핸들러 doc 주석 줄이 `+ 브로커...`로 시작 → clippy `doc_lazy_continuation`(마크다운 불릿 오인) → 줄머리 `+` 제거. **CI 정확 명령으로 포착**(`cargo clippy --features "..." -- -D warnings`, `--all-targets` 없음). 내가 `--all-targets`로 돌렸다가 기존 테스트 타깃 type_complexity(runner/claude.rs:415·repl/mod.rs:697, 내 파일 아님·CI 게이트 밖)에 이 실에러가 묻혔던 것 = **CI와 동일 명령으로 검증할 것**(더 엄격이 오히려 실이슈를 노이즈로 가림).
+- **적대적 리뷰(워크플로우 3렌즈→검증)**: 원시 3건 → **확증 0건**(전부 기각). ① 기동 write best-effort→재기동 실패 시 stale uptime = fail-visible는 핸들러 조회 경로 한정(준수)·트리거 사실상 도달불가·uptime은 cosmetic 게이지라 방어적 선택. ② 서버 필드 누락 시 NaN = rust-embed 결합 배포라 불가·dev only·자가치유·기존 무검증 cast 클래스. ③ 500 후 무음 staleness = 기존 코드(diff 미변경, PR #68). **결론: 코드 변경 없음**(hardening 제안은 exotic cosmetic 엣지, 과투자 회피). 재론 금지.
+- **CodeRabbit(PR #70) 실이슈 1건 반영(MAJOR)**: 핸들러 uptime이 broker_started_at row는 있으나 **형식 손상** 시 age_secs=None→`.unwrap_or(0)`으로 정상 0 위장 = 내 적대 리뷰가 놓친 fail-visible 계약 위반 → `match`로 None(부재)=0 / Some(파싱실패)=500 분리. **canonical 게이트(CodeRabbit)가 적대 리뷰 사각을 잡은 사례**. + wal_bytes 테스트 `is_ok()`→체크포인트 전 양수 검증(nitpick, 경로·stat 실검증). 문체 Minor 3건(존댓말)=내부 추적/스펙 파일 terse 관행 일관성 위해 스킵. gemini 클린·DeepSource JS=idiom 재귀속(자문·머지 후 소멸).
+
 ## 2026-07-12 세션22: v2-47 대시보드 관제탑 고도화 #1~#5 완주
 
 - **경위**: 세션21이 백로그로 문서화한 v2-47(docs/design/v2-47-dashboard-observatory-backlog)의 5개 주 항목을 권고 순서(1·2 → 3·4 → 5)대로 세 소 PR로 완주. 각 PR = 구현 → 적대적 리뷰(서브에이전트 1명) → CI → 머지 → WMI 스폰 배포 → Chrome 라이브 검증.
