@@ -510,3 +510,11 @@
 - [x] **③ 스테일 브랜치 정리**: 머지분 전량 삭제(로컬 16 + 원격 다수, fetch --prune). session16 핸드오프 문서를 main 편입(`2e65e12`, CLAUDE.md dangling 참조 해소) 후 브랜치 삭제. 미머지 잔여 = `origin/feat/session17-roster-supervision`(v2-41 superseded, 비가역 유실 위험이라 단독삭제 안 함·삭제 권고).
 - [x] **② v2-48 opencode**(PR #71 머지 `56221c7`): 재대조 = 워커 러너 이미 완성(커밋 7fedac2)·opencode v1.17.18 설치·CLI 드리프트 0. fixture 타임아웃 테스트 추가 + 문서 §0/§2.1/§4 정정(+ CodeRabbit doc-consistency main 정리 `978d3f8`). 감독 레인은 R2(opencode.db 스키마 미안정, 마이그 이슈 7+건) 확증으로 defer.
 - [x] **① v2-47 낮은우선**(PR #72 머지 `1ecaa8b`·배포·라이브): ★ recency(비-총괄 "★ 마지막 N분 전", 라이브=luckyCAD ★1시간전·tunaRound ★40분전) + 관전 뱃지 eye 아이콘 강화 + 모바일 반응형 @media(≤640px 단일컬럼, CSSOM 확인=flex-basis:100%/min-width:0). 봇 오버플로 지적 2건 반영(.rst-title·.rst-runner-name 말줄임). 진짜 ★ 타임라인은 데이터 부재+"로스터 이력 비영속" 설계 반전이라 defer(문서화).
+
+## 세션23 후반: 문서 리프레시 · Codex 채택 · 설치 단순화 · v0.4.0 릴리즈
+
+- [x] README 리프레시(PR #73 `7bca39a`, 650→171줄) + 신설 onboarding.md·mesh-architecture.md. 봇 3건 반영.
+- [x] Codex A2A 제안 검토: 채택 = lease 자동연장(#6)+cancel_task(#4) PR #74 `238eb96`(적대 리뷰 2 + gemini 1 반영). 비채택 8건=SSE·watch-results·lease 재발명.
+- [x] init 원커맨드 온보딩 PR #75 `bda5542`(node.toml+~/.tunaround/config 스캐폴드·토큰 env 통일·AI 설치 안내). 봇 3건 반영(0600·문구·히스토리).
+- [x] v0.4.0 릴리즈: cargo release minor → 태그 v0.4.0 push → cargo-dist(run 29171411699, **다음 세션 발행 확인**). WMI 배포 0.4.0 라이브. 맥 알림 task a795e9c2.
+- [ ] (다음 세션) v2-48 opencode 감독 레인(스키마 재대조 후). session17 원격 브랜치 삭제.
