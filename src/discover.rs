@@ -6,7 +6,7 @@ use std::time::{Duration, SystemTime};
 /// 발견된 로컬 세션 한 건(claude). presence 스캐너가 LiveSession으로 변환해 보고한다.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DiscoveredSession {
-    /// jsonl 파일 stem(= Claude Code 세션 id). roster uuid와 같은 공간이라 armed overlay가 성립한다.
+    /// jsonl 파일 stem(= Claude Code 세션 id). roster uuid와 같은 공간이다.
     pub uuid: String,
     /// cwd basename에서 추출한 프로젝트명(불명이면 None).
     pub project: Option<String>,

@@ -327,19 +327,19 @@ list_agents selector="runner=claude"   # 태그로 필터(부분집합 매칭)
 ### 세팅 절차 (머신당 1회)
 
 ```bash
-# 1) app-server 기동 (상주). 토큰 env 필수 - 없으면 tuna-broker MCP가 로드 안 돼
+# 1) app-server 기동(상주). 토큰 env 필수 - 없으면 tuna-broker MCP가 로드 안 돼
 #    codex가 raw HTTP로 자가구조하며 토큰을 낭비합니다(v2-37 §5.3).
 TUNA_BROKER_TOKEN=<TOKEN> codex app-server --listen ws://127.0.0.1:<PORT>
 
 # 2) 사람이 보는 codex 세션을 app-server thread로 엽니다(이게 로스터에 뜨고 주입 대상이 됩니다).
-#    plain `codex --remote`(resume 없이)는 항상 새 thread를 만드니, 기존 세션은 반드시 resume으로.
+#    plain `codex --remote`(resume 없이)는 항상 새 thread를 만드니, 기존 세션은 반드시 resume으로 엽니다.
 codex resume <threadId> --remote ws://127.0.0.1:<PORT>
-#    id를 모르는 경우: `codex resume --remote ws://...`(목록 picker) / `codex resume --last --remote ...`(최신)
+#    id를 모르면 `codex resume --remote ws://...`(목록 picker) 또는 `codex resume --last --remote ...`(최신)를 씁니다.
 
-# 3) relay 기동 (머신당 1개, core/token/machine은 ~/.tunaround/config env 폴백)
+# 3) relay 기동(머신당 1개). core/token/machine은 ~/.tunaround/config env 폴백으로 읽습니다.
 tunaround codex-relay --ws ws://127.0.0.1:<PORT>
-# 자기 등록: {machine}-codex-relay (tags: machine=<m>,role=infra,purpose=codex-inject)
-# = 대시보드 머신 헤더의 "codex 주입" 도트이자 GoalForm codex 세션 카드의 유효 조건.
+# 자기 등록 = {machine}-codex-relay (tags: machine=<m>,role=infra,purpose=codex-inject).
+# 이 등록이 대시보드 머신 헤더의 "codex 주입" 도트이자 GoalForm codex 세션 카드의 유효 조건입니다.
 ```
 
 ### 동작
