@@ -55,7 +55,15 @@ export default function Header({
           <span className={'dash-badge-dot' + (sseOpen ? ' blink' : ' off')} />
           {sseOpen ? '피드 SSE 수신 중' : '피드 SSE 끊김'}
         </span>
-        {remoteViewer ? <span className="dash-badge-warn">읽기 전용 관전</span> : null}
+        {remoteViewer ? (
+          <span className="dash-badge-warn" title="원격 접속 = 읽기 전용 관전. 목표 제출·제어는 로컬(loopback)에서만 가능합니다.">
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path d="M1 8s2.5-4.5 7-4.5S15 8 15 8s-2.5 4.5-7 4.5S1 8 1 8z" stroke="currentColor" strokeWidth="1.3" />
+              <circle cx="8" cy="8" r="1.9" stroke="currentColor" strokeWidth="1.3" />
+            </svg>
+            읽기 전용 관전
+          </span>
+        ) : null}
         <span className="dash-spacer" />
         {notifySupported ? (
           <button

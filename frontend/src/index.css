@@ -1294,8 +1294,18 @@ body {
   display: grid; place-items: center;
   font-family: var(--font-mono); font-size: 9.5px; font-weight: 700; color: #fff;
 }
-.rst-title { font-size: 14px; font-weight: 650; letter-spacing: -0.005em; color: var(--text); }
-.rst-runner-name { font-size: 12px; color: var(--text-3); }
+/* 제목은 행에서 유일한 가변길이 요소 - min-width:0 + 말줄임으로 긴 제목이 행을 가로로 밀지 않게
+   한다(모바일 단일 컬럼·rst-last-star 추가로 여백이 줄어든 좁은 폭에서 행 내부 오버플로 방지, 봇 리뷰). */
+.rst-title {
+  font-size: 14px; font-weight: 650; letter-spacing: -0.005em; color: var(--text);
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+/* runner 태그는 실무상 짧은 엔진명(claude/codex 등)이나 스토어에서 enum 검증 없는 free-form KV라
+   이론상 길 수 있다 - title과 동일하게 축소·말줄임 처리해 잔여 행 오버플로 여지를 닫는다(봇 리뷰). */
+.rst-runner-name {
+  font-size: 12px; color: var(--text-3);
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .rst-chip {
   font-size: 10.5px; font-weight: 600; padding: 1.5px 8px; border-radius: 999px;
   border: 1px solid var(--border); color: var(--text-2); background: transparent; white-space: nowrap;
@@ -1369,3 +1379,33 @@ body {
 
 /* 프리셋을 목표 제출 타이틀 라인 우측으로. */
 .goal-head .gf-presets { margin-left: auto; }
+
+/* ★가 거쳐간 자리: 비-총괄 세션의 마지막 사람입력 recency(모디스트 이력 뷰, v2-47 낮은우선).
+   진짜 타임라인(이력 테이블)이 아니라 기존 데이터(human_input_at)로 "★가 언제 여기 있었나"를 보여준다. */
+.rst-last-star {
+  font-size: 11px;
+  color: var(--text-3);
+  white-space: nowrap;
+  margin-right: 8px;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.85;
+}
+
+/* ---------- 반응형(모바일/좁은 뷰포트) ---------- */
+/* 데스크톱은 로스터+피드 2컬럼(flex-wrap). 좁은 화면에선 단일 컬럼으로 스택하고 패딩을 줄여
+   body 가로 스크롤을 없앤다. 관제탑을 폰에서 관전(read-only)할 때를 위한 소폭 대응(v2-47 낮은우선). */
+@media (max-width: 640px) {
+  .dash-main {
+    padding: 12px 12px 28px;
+    gap: 12px;
+  }
+  /* min-width:320px + 패딩 합산이 좁은 폭에서 가로 오버플로를 만들던 것을 해소: 전폭 스택. */
+  .roster-section,
+  .feed-section {
+    min-width: 0;
+    flex-basis: 100%;
+  }
+  .dash-header-inner {
+    padding: 10px 14px;
+  }
+}
