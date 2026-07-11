@@ -26,7 +26,8 @@ fn main() {
     let mut roster_path: Option<String> = None;
     let mut state_path: Option<String> = None;
     let mut observe_id: Option<String> = None;
-    let mut redis_session_id: Option<String> = None;
+    // --session <id>: 재개할 SQLite 세션 id(--db 있을 때만 재개). 프로파일 session 키와 동일 의미.
+    let mut session_arg: Option<String> = None;
     let mut recent_turns: Option<usize> = None;
     // MCP 서버 모드에서 --session-id로 받은 기본 세션 id(없으면 "default"). mcp 피처 전용.
     #[cfg(feature = "mcp")]
@@ -100,7 +101,7 @@ fn main() {
             roster_path = a.common.roster;
             recent_turns = a.common.recent_turns;
             pull_context = a.common.pull_context;
-            redis_session_id = a.common.session;
+            session_arg = a.common.session;
             search_url = a.common.search_url;
             search_token = a.common.search_token;
             config_path = a.common.config;
@@ -131,7 +132,7 @@ fn main() {
             roster_path = a.common.roster;
             recent_turns = a.common.recent_turns;
             pull_context = a.common.pull_context;
-            redis_session_id = a.common.session;
+            session_arg = a.common.session;
             search_url = a.common.search_url;
             search_token = a.common.search_token;
             config_path = a.common.config;
@@ -268,7 +269,7 @@ fn main() {
                             roster: roster_path.clone(),
                             recent_turns,
                             pull_context,
-                            session: redis_session_id.clone(),
+                            session: session_arg.clone(),
                             search_url: search_url.clone(),
                             search_token: search_token.clone(),
                         },
@@ -281,7 +282,7 @@ fn main() {
                     roster_path = merged.roster;
                     recent_turns = merged.recent_turns;
                     pull_context = merged.pull_context;
-                    redis_session_id = merged.session;
+                    session_arg = merged.session;
                     search_url = merged.search_url;
                     search_token = merged.search_token;
                 }
@@ -297,33 +298,65 @@ fn main() {
         }
     }
 
-    // tokio 런타임: read path(--observe/--session snapshot GET) + owner refresh에만 사용.
+    // tokio 런타임: HTTP MCP 서버(serve-mcp/core/node) + 워커 데몬 경로에서만 사용.
+    // (--observe/--session/flush의 Redis 경로가 사라져 기본 빌드에선 rt가 필요 없다.)
+    #[cfg(any(feature = "mcp", feature = "worker"))]
     let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
 
-    // --observe 모드: REPL 대신 라이브 구독 루프(read-only).
+    // --observe 모드: REPL 대신 SQLite 세션을 폴링 tail(read-only). msg_id 커서로 새 발언만 출력.
     if let Some(sid) = observe_id {
-        let Some(bus) = tunaround::session_bus::RedisBus::open_from_env() else {
-            eprintln!("[observe] TUNAROUND_REDIS_URL 필요");
-            std::process::exit(1);
-        };
-        rt.block_on(async move {
-            if let Ok(Some(snap)) = bus.get_snapshot(&sid).await {
-                println!("=== 현재 스냅샷 ===\n{snap}\n=== 라이브 ===");
-            }
-            let (tx, mut rx) = tokio::sync::broadcast::channel::<String>(256);
-            let subscriber = {
-                let bus = bus.clone();
-                let sid = sid.clone();
-                tokio::spawn(async move {
-                    let _ = bus.subscribe_events(&sid, tx).await;
-                })
+        #[cfg(feature = "sqlite")]
+        {
+            let Some(db) = db_path.clone() else {
+                eprintln!("[observe] --db <경로> 필요");
+                std::process::exit(1);
             };
-            while let Ok(payload) = rx.recv().await {
-                println!("{payload}");
+            let store = match tunaround::store::sqlite::SqliteStore::open(&db) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("[observe] DB 열기 실패: {e}");
+                    std::process::exit(1);
+                }
+            };
+            // 초기 스냅샷 출력 + cursor(=최대 msg_id) 확립.
+            let mut cursor: u64 = 0;
+            match store.load_session(&sid) {
+                Ok(Some(ss)) => {
+                    for m in &ss.messages {
+                        println!("[{}] {}: {}", m.id, m.speaker, m.content);
+                        cursor = cursor.max(m.id);
+                    }
+                }
+                Ok(None) => println!("(세션 없음: {sid})"),
+                Err(e) => {
+                    eprintln!("[observe] 세션 로드 실패: {e}");
+                    std::process::exit(1);
+                }
             }
-            let _ = subscriber.await;
-        });
-        return;
+            println!("=== 라이브 ===");
+            // 동기 폴링 루프(2초). load_session은 msg_id 오름차순이라 cursor 초과분만 새 발언이다.
+            loop {
+                std::thread::sleep(std::time::Duration::from_secs(2));
+                match store.load_session(&sid) {
+                    Ok(Some(ss)) => {
+                        for m in &ss.messages {
+                            if m.id > cursor {
+                                println!("[{}] {}: {}", m.id, m.speaker, m.content);
+                                cursor = m.id;
+                            }
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(e) => eprintln!("[observe] 폴링 로드 실패: {e}"),
+                }
+            }
+        }
+        #[cfg(not(feature = "sqlite"))]
+        {
+            let _ = sid;
+            eprintln!("[observe] sqlite 피처가 필요합니다");
+            std::process::exit(1);
+        }
     }
 
     // --reindex 모드: 모든 세션의 FTS·벡터 인덱스를 messages(SoR)에서 재생성(sqlite 피처 전용).
@@ -709,7 +742,7 @@ fn main() {
     }
 
     // session_id: --session <id> 값 또는 "default". 러너 생성 전에 계산한다.
-    let sid = redis_session_id.clone().unwrap_or_else(|| "default".to_string());
+    let sid = session_arg.clone().unwrap_or_else(|| "default".to_string());
 
     // 로스터 파일이 있으면 동적 좌석, 없으면 기본 2자리(claude proposer + codex reviewer).
     let (participants, registry): (Vec<Participant>, MapRegistry) = match &roster_path {
@@ -776,13 +809,6 @@ fn main() {
             })
             .collect()
     });
-
-    // bus 핸들 준비: TUNAROUND_REDIS_URL 없으면 None(기존 동작 불변).
-    // RedisBusHandle::spawn은 tokio::spawn을 내부 호출하므로 rt.enter() 가드 안에서 생성.
-    let _g = rt.enter();
-    let bus_handle = tunaround::session_bus::RedisBusHandle::spawn_from_env();
-    drop(_g);
-    let bus_boxed = bus_handle.map(|h| Box::new(h) as Box<dyn tunaround::session_bus::SessionBus>);
 
     // SQLite 인덱서 생성(feature-gated). --db 없거나 sqlite off면 None=기존 동작 불변.
     #[cfg(feature = "sqlite")]
@@ -860,19 +886,19 @@ fn main() {
     #[cfg(not(feature = "sqlite"))]
     let retriever: Option<Box<dyn tunaround::orchestrator::ContextRetriever>> = None;
 
-    // 세션 초기 상태 결정(우선순위: 파일 resume > Redis snapshot > 신규).
+    // 세션 초기 상태 결정(우선순위: 파일 resume > SQLite 세션 재개 > 신규).
     let resume_existing = state_path
         .as_deref()
         .map(|p| std::path::Path::new(p).exists())
         .unwrap_or(false);
 
     let session = if resume_existing {
-        // 파일에서 트리 상태를 로드하고 new_with_bus로 bus를 연결한다.
+        // 파일에서 트리 상태를 로드해 인메모리 세션을 seed한다.
         let p = state_path.as_deref().unwrap();
         match tunaround::store::load_session(p) {
             Ok(ss) => {
                 println!("(이어받음: {p})");
-                let mut s = Session::new_with_indexer(participants, Box::new(registry), sid.clone(), bus_boxed, indexer);
+                let mut s = Session::new_with_indexer(participants, Box::new(registry), sid.clone(), indexer);
                 s.seed_from(ss);
                 s
             }
@@ -881,54 +907,34 @@ fn main() {
                 std::process::exit(1);
             }
         }
-    } else if redis_session_id.is_some() {
-        // --session <id>: Redis snapshot에서 재개(라이브 Redis 있을 때만 실제 동작).
-        if let Some(raw_bus) = tunaround::session_bus::RedisBus::open_from_env() {
-            match rt.block_on(raw_bus.get_snapshot(&sid)) {
-                Ok(Some(json)) => {
-                    match serde_json::from_str::<tunaround::store::StoredSession>(&json) {
-                        Ok(ss) => {
-                            println!("(Redis snapshot 재개: {sid})");
-                            // 위에서 만든 bus_boxed를 재사용한다(중복 핸들 spawn 방지).
-                            let mut s = Session::new_with_indexer(participants, Box::new(registry), sid.clone(), bus_boxed, indexer);
+    } else if session_arg.is_some() {
+        // --session <id>: SQLite 세션(--db)에서 재개. --db 없으면 새 세션(안내).
+        #[cfg(feature = "sqlite")]
+        {
+            let mut s = Session::new_with_indexer(participants, Box::new(registry), sid.clone(), indexer);
+            match &db_path {
+                Some(p) => match tunaround::store::sqlite::SqliteStore::open(p) {
+                    Ok(store) => match store.load_session(&sid) {
+                        Ok(Some(ss)) => {
+                            println!("(SQLite 세션 재개: {sid})");
                             s.seed_from(ss);
-                            // owner lease 시도.
-                            let worker_id = std::process::id().to_string();
-                            match rt.block_on(raw_bus.try_acquire_owner(&sid, &worker_id, 60)) {
-                                Ok(true) => {
-                                    // 백그라운드 owner refresh.
-                                    let refresh_bus = raw_bus.clone();
-                                    let refresh_sid = sid.clone();
-                                    let refresh_wid = worker_id.clone();
-                                    rt.spawn(async move {
-                                        loop {
-                                            tokio::time::sleep(std::time::Duration::from_secs(30)).await;
-                                            let _ = refresh_bus.refresh_owner(&refresh_sid, &refresh_wid, 60).await;
-                                        }
-                                    });
-                                }
-                                Ok(false) => eprintln!("[경고] 다른 프로세스가 driver일 수 있음: {sid}"),
-                                Err(e) => eprintln!("[owner lease 실패] {e}"),
-                            }
-                            s
                         }
-                        Err(e) => {
-                            eprintln!("[snapshot 파싱 실패: {e}] 신규 세션 시작.");
-                            Session::new_with_indexer(participants, Box::new(registry), sid.clone(), bus_boxed, indexer)
-                        }
-                    }
-                }
-                _ => {
-                    eprintln!("[snapshot 없음] 신규 세션 시작.");
-                    Session::new_with_indexer(participants, Box::new(registry), sid.clone(), bus_boxed, indexer)
-                }
+                        Ok(None) => println!("(새 세션: {sid})"),
+                        Err(e) => eprintln!("[session] 세션 로드 실패(새 세션으로 시작): {e}"),
+                    },
+                    Err(e) => eprintln!("[session] DB 열기 실패(새 세션으로 시작): {e}"),
+                },
+                None => eprintln!("[session] --db 없이 --session 재개 불가(무시)"),
             }
-        } else {
-            eprintln!("[--session] TUNAROUND_REDIS_URL 없음: 로컬 단일세션으로 시작.");
-            Session::new_with_indexer(participants, Box::new(registry), sid.clone(), bus_boxed, indexer)
+            s
+        }
+        #[cfg(not(feature = "sqlite"))]
+        {
+            eprintln!("[session] --db 없이 --session 재개 불가(무시)");
+            Session::new_with_indexer(participants, Box::new(registry), sid.clone(), indexer)
         }
     } else {
-        Session::new_with_indexer(participants, Box::new(registry), sid.clone(), bus_boxed, indexer)
+        Session::new_with_indexer(participants, Box::new(registry), sid.clone(), indexer)
     };
 
     // --pull-context 적용. --db 없으면(MCP 백엔드 없음) pull 무의미 → 경고 후 Push 유지.
@@ -1040,18 +1046,6 @@ fn main() {
         match session.save_state(p) {
             Ok(()) => println!("세션 저장됨: {p}"),
             Err(e) => println!("[세션 저장 실패] {e}"),
-        }
-    }
-
-    // bus 미러는 fire-and-forget이라 마지막 라운드 스냅샷이 종료 시 유실될 수 있다.
-    // resume 정확성을 위해 종료 직전 최종 스냅샷을 동기로 1회 기록한다(Redis 있을 때만).
-    if session.message_count() > 0 {
-        let flush_bus = {
-            let _g = rt.enter();
-            tunaround::session_bus::RedisBus::open_from_env()
-        };
-        if let Some(rb) = flush_bus {
-            let _ = rt.block_on(rb.set_snapshot(&sid, &session.snapshot_json()));
         }
     }
 }

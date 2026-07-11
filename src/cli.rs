@@ -87,7 +87,7 @@ pub struct CommonSessionArgs {
     /// Pull 컨텍스트 모드(포인터 프롬프트 + 에이전트가 MCP로 전사를 당김). --db 없으면 무의미(경고 후 Push 유지).
     #[arg(long = "pull-context")]
     pub pull_context: bool,
-    /// Redis snapshot에서 세션을 재개(id 지정).
+    /// SQLite 세션에서 재개(id 지정, --db 필요).
     #[arg(long)]
     pub session: Option<String>,
     /// 원격 HTTP MCP 서버 URL(stdio spawn 대신 접속).

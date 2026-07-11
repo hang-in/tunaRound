@@ -1,7 +1,6 @@
 // 터미널 REPL. 명령 파싱·렌더·세션 step. I/O는 main.rs.
 use crate::orchestrator::{run_round, ContextMode, Participant, RoundInput, RunnerRegistry, Utterance};
 use crate::runner::RunMode;
-use crate::session_bus::SessionBus;
 use crate::store::{StoredMessage, StoredSession};
 
 /// 이월 요약 최대 바이트 수. 초과 시 최근 드롭 턴 우선 유지 + 생략 표기.
@@ -184,7 +183,6 @@ pub struct Session {
     messages: Vec<StoredMessage>,
     head: Option<u64>,
     registry: Box<dyn RunnerRegistry>,
-    bus: Option<Box<dyn SessionBus>>,
     session_id: String,
     indexer: Option<Box<dyn crate::store::indexer::MessageIndexer>>,
     retriever: Option<Box<dyn crate::orchestrator::ContextRetriever>>,
@@ -200,28 +198,17 @@ pub struct Session {
 
 impl Session {
     pub fn new(participants: Vec<Participant>, registry: Box<dyn RunnerRegistry>) -> Self {
-        Self { participants, messages: Vec::new(), head: None, registry, bus: None, session_id: "default".to_string(), indexer: None, retriever: None, recent_turns: None, core_sync: None, validity_sink: None, context_mode: ContextMode::Push }
+        Self { participants, messages: Vec::new(), head: None, registry, session_id: "default".to_string(), indexer: None, retriever: None, recent_turns: None, core_sync: None, validity_sink: None, context_mode: ContextMode::Push }
     }
 
-    /// bus + session_id 있는 생성자. 매 라운드 후 Redis 미러를 활성화한다.
-    pub fn new_with_bus(
-        participants: Vec<Participant>,
-        registry: Box<dyn RunnerRegistry>,
-        session_id: String,
-        bus: Option<Box<dyn SessionBus>>,
-    ) -> Self {
-        Self { participants, messages: Vec::new(), head: None, registry, bus, session_id, indexer: None, retriever: None, recent_turns: None, core_sync: None, validity_sink: None, context_mode: ContextMode::Push }
-    }
-
-    /// bus + indexer 동시 배선 생성자. SQLite 색인 활성화용.
+    /// indexer 배선 생성자. SQLite 색인 활성화용.
     pub fn new_with_indexer(
         participants: Vec<Participant>,
         registry: Box<dyn RunnerRegistry>,
         session_id: String,
-        bus: Option<Box<dyn SessionBus>>,
         indexer: Option<Box<dyn crate::store::indexer::MessageIndexer>>,
     ) -> Self {
-        Self { participants, messages: Vec::new(), head: None, registry, bus, session_id, indexer, retriever: None, recent_turns: None, core_sync: None, validity_sink: None, context_mode: ContextMode::Push }
+        Self { participants, messages: Vec::new(), head: None, registry, session_id, indexer, retriever: None, recent_turns: None, core_sync: None, validity_sink: None, context_mode: ContextMode::Push }
     }
 
     /// retriever를 설정하는 빌더 메서드(단일 적용, self를 소비 후 반환).
@@ -412,17 +399,9 @@ impl Session {
             }
             // 쓰기 후 DB 권위 트리를 채택(이번 라운드 + 사이에 들어온 외부 post 포함).
             self.adopt_from_core();
-            // bus 미러는 스냅샷만(DB가 색인 권위, adopt 후 증분 슬라이스는 인덱스가 안 맞음).
-            if let Some(bus) = &self.bus {
-                let snap = StoredSession { messages: self.messages.clone(), head: self.head };
-                if let Ok(s) = serde_json::to_string(&snap) {
-                    bus.snapshot_json(&self.session_id, &s);
-                }
-            }
             return;
         }
 
-        let start = self.messages.len();
         for u in round {
             let id = crate::store::next_id(&self.messages);
             self.messages.push(StoredMessage {
@@ -432,16 +411,6 @@ impl Session {
                 content: u.content.clone(),
             });
             self.head = Some(id);
-        }
-        if let Some(bus) = &self.bus {
-            let new_msgs = &self.messages[start..];
-            if let Ok(ev) = serde_json::to_string(new_msgs) {
-                bus.publish_event_json(&self.session_id, &ev);
-            }
-            let snap = StoredSession { messages: self.messages.clone(), head: self.head };
-            if let Ok(s) = serde_json::to_string(&snap) {
-                bus.snapshot_json(&self.session_id, &s);
-            }
         }
         if let Some(idx) = &self.indexer {
             idx.persist(&self.session_id, &StoredSession { messages: self.messages.clone(), head: self.head });
@@ -477,16 +446,6 @@ impl Session {
         crate::store::save_session(&StoredSession { messages: self.messages.clone(), head: self.head }, path)
     }
 
-    /// 현재 트리를 StoredSession JSON으로 직렬화한다(종료 시 Redis 동기 스냅샷 flush용).
-    pub fn snapshot_json(&self) -> String {
-        serde_json::to_string(&StoredSession { messages: self.messages.clone(), head: self.head })
-            .unwrap_or_else(|e| {
-                // 직렬화 실패 시 빈 스냅샷을 조용히 발행하면 크로스터미널 상태가 덮여 유실될 수 있어 로그를 남긴다.
-                eprintln!("[tunaRound] 스냅샷 직렬화 실패(빈 스냅샷 반환): {e}");
-                String::new()
-            })
-    }
-
     /// 현재 인메모리 트리를 StoredSession으로 복제한다(--core seed를 코어 DB에 권위로 반영할 때 사용).
     pub fn to_stored(&self) -> StoredSession {
         StoredSession { messages: self.messages.clone(), head: self.head }
@@ -499,7 +458,7 @@ impl Session {
         path: &str,
     ) -> std::io::Result<Self> {
         let ss = crate::store::load_session(path)?;
-        Ok(Self { participants, messages: ss.messages, head: ss.head, registry, bus: None, session_id: "default".to_string(), indexer: None, retriever: None, recent_turns: None, core_sync: None, validity_sink: None, context_mode: ContextMode::Push })
+        Ok(Self { participants, messages: ss.messages, head: ss.head, registry, session_id: "default".to_string(), indexer: None, retriever: None, recent_turns: None, core_sync: None, validity_sink: None, context_mode: ContextMode::Push })
     }
 
     /// 한 입력을 처리한다. run_round 호출 등 로직만; 실제 I/O는 호출자(main).
@@ -1095,41 +1054,6 @@ mod tests {
         assert!(result.is_empty(), "retriever 없으면 빈 결과");
     }
 
-    use std::cell::RefCell;
-    use std::rc::Rc;
-
-    #[derive(Default)]
-    struct BusCalls { events: usize, snapshots: usize, last_session: String }
-    struct FakeBus(Rc<RefCell<BusCalls>>);
-    impl crate::session_bus::SessionBus for FakeBus {
-        fn submit_command_json(&self, _s: &str, _p: &str) {}
-        fn publish_event_json(&self, s: &str, _p: &str) {
-            let mut c = self.0.borrow_mut(); c.events += 1; c.last_session = s.to_string();
-        }
-        fn snapshot_json(&self, _s: &str, _p: &str) { self.0.borrow_mut().snapshots += 1; }
-    }
-
-    #[test]
-    fn round_mirrors_event_and_snapshot_when_bus_present() {
-        let calls = Rc::new(RefCell::new(BusCalls::default()));
-        let mut reg = MapRegistry::new();
-        reg.insert("claude", Box::new(FakeRunner { reply: "제안".into() }));
-        let participants = vec![Participant { engine: "claude".into(), role: Some("proposer".into()), instruction: String::new() }];
-        let mut s = Session::new_with_bus(participants, Box::new(reg), "sess-1".into(), Some(Box::new(FakeBus(Rc::clone(&calls)))));
-        let _ = s.step(Command::Message("주제".into()));
-        let c = calls.borrow();
-        assert_eq!(c.events, 1);      // 라운드 1회 -> 이벤트 1
-        assert_eq!(c.snapshots, 1);   // 스냅샷 1
-        assert_eq!(c.last_session, "sess-1");
-    }
-
-    #[test]
-    fn no_bus_means_no_mirror_and_normal_behavior() {
-        let mut s = session_with_two_seats(); // bus 없음
-        let _ = s.step(Command::Message("주제".into()));
-        assert_eq!(s.transcript_len(), 2); // 기존 동작 불변
-    }
-
     #[derive(Default)]
     struct IdxCalls { persists: usize, last_session: String, last_len: usize }
     struct FakeIndexer(std::sync::Arc<std::sync::Mutex<IdxCalls>>);
@@ -1146,7 +1070,7 @@ mod tests {
         let mut reg = MapRegistry::new();
         reg.insert("claude", Box::new(FakeRunner { reply: "제안".into() }));
         let participants = vec![Participant { engine: "claude".into(), role: Some("proposer".into()), instruction: String::new() }];
-        let mut s = Session::new_with_indexer(participants, Box::new(reg), "sess-i".into(), None, Some(Box::new(FakeIndexer(std::sync::Arc::clone(&calls)))));
+        let mut s = Session::new_with_indexer(participants, Box::new(reg), "sess-i".into(), Some(Box::new(FakeIndexer(std::sync::Arc::clone(&calls)))));
         let _ = s.step(Command::Message("주제".into()));
         let c = calls.lock().unwrap();
         assert_eq!(c.persists, 1);

@@ -6,7 +6,6 @@ pub mod orchestrator;
 pub mod repl;
 pub mod store;
 pub mod roster;
-pub mod session_bus;
 pub mod search;
 #[cfg(feature = "mcp")]
 pub mod mcp;
