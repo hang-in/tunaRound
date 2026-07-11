@@ -51,10 +51,10 @@ fn watermark_file_name(dispatcher: &str) -> String {
 /// 같은 안정 네임스페이스). LOCALAPPDATA가 없는 맥/리눅스는 기존 상태 파일 관례(`~/.tunaround`,
 /// codex-sup thread 파일)로 폴백. 둘 다 없으면 None = 영속 불가(메모리 워터마크만으로 동작).
 fn state_dir() -> Option<std::path::PathBuf> {
-    if let Some(lad) = std::env::var_os("LOCALAPPDATA") {
-        if !lad.is_empty() {
-            return Some(std::path::PathBuf::from(lad).join("tunaround"));
-        }
+    if let Some(lad) = std::env::var_os("LOCALAPPDATA")
+        && !lad.is_empty()
+    {
+        return Some(std::path::PathBuf::from(lad).join("tunaround"));
     }
     let home = crate::config::expand_home("~/.tunaround");
     if home.starts_with("~/") {
