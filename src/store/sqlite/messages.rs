@@ -114,6 +114,31 @@ impl SqliteStore {
         result
     }
 
+    /// 세션의 모든 색인 행(messages/FTS/vectors/sessions)을 지운다(v2-45 P6a 멱등 재색인용).
+    /// 재색인 전 호출하면 크래시·부분실패 후 백필의 재-append가 중복을 쌓지 않고 덮어쓴다
+    /// (delete-then-append). 한 트랜잭션으로 묶어 부분 삭제가 남지 않게 한다.
+    pub fn delete_session_messages(&self, session_id: &str) -> Result<(), String> {
+        self.conn.execute_batch("BEGIN;").map_err(|e| format!("sqlite: {e}"))?;
+        let result = (|| -> Result<(), String> {
+            for sql in [
+                "DELETE FROM messages_fts WHERE session_id=?1",
+                "DELETE FROM message_vectors WHERE session_id=?1",
+                "DELETE FROM message_validity WHERE session_id=?1",
+                "DELETE FROM messages WHERE session_id=?1",
+                "DELETE FROM sessions WHERE id=?1",
+            ] {
+                self.conn.execute(sql, [session_id]).map_err(|e| format!("sqlite: {e}"))?;
+            }
+            Ok(())
+        })();
+        if result.is_ok() {
+            self.conn.execute_batch("COMMIT;").map_err(|e| format!("sqlite: {e}"))?;
+        } else {
+            let _ = self.conn.execute_batch("ROLLBACK;");
+        }
+        result
+    }
+
     /// 단일 발언을 세션 전사 끝(현재 head의 자식)에 증분 추가하고 새 msg_id를 반환한다.
     /// save_session(전량 교체)과 달리 INSERT만 하므로, 외부 writer(post_turn)와 REPL이
     /// 같은 DB id 권위(max msg_id+1)를 공유해 충돌·클로버가 구조적으로 없다(Plan 27 옵션 B).
@@ -626,6 +651,32 @@ mod tests {
         db.save_session("s1", &ss(), |t| t.to_string()).unwrap();
         let back = db.load_session("s1").unwrap().unwrap();
         assert_eq!(back.messages.len(), 2);
+    }
+
+    #[test]
+    fn delete_then_append_is_idempotent() {
+        // v2-45 P6a 멱등 재색인(적대 리뷰): delete_session_messages 후 재-append하면 중복이 안 쌓인다.
+        let db = SqliteStore::open_memory().unwrap();
+        let tok = |t: &str| t.to_string();
+        let sid = "a2a:task-1";
+        db.append_turn(sid, "a2a/win", "요청문 XYZ", tok).unwrap();
+        db.append_turn(sid, "a2a/mac", "결과문 ABC", tok).unwrap();
+        let msg_count = |db: &SqliteStore| -> i64 {
+            db.conn.query_row("SELECT COUNT(*) FROM messages WHERE session_id=?1", [sid], |r| r.get(0)).unwrap()
+        };
+        let fts_count = |db: &SqliteStore| -> i64 {
+            db.conn.query_row("SELECT COUNT(*) FROM messages_fts WHERE session_id=?1", [sid], |r| r.get(0)).unwrap()
+        };
+        assert_eq!(msg_count(&db), 2);
+        // 재색인(크래시·부분실패 후 백필 시뮬레이션): delete 후 다시 append → 여전히 2건.
+        db.delete_session_messages(sid).unwrap();
+        db.append_turn(sid, "a2a/win", "요청문 XYZ", tok).unwrap();
+        db.append_turn(sid, "a2a/mac", "결과문 ABC", tok).unwrap();
+        assert_eq!(msg_count(&db), 2, "delete-then-append는 멱등(중복 없음)");
+        assert_eq!(fts_count(&db), 2, "FTS도 멱등(중복 hit 없음)");
+        // delete 없이 append만 반복하면 중복이 쌓임(대조: 비멱등 원본 동작 확인).
+        db.append_turn(sid, "a2a/win", "요청문 XYZ", tok).unwrap();
+        assert_eq!(msg_count(&db), 3, "delete 없는 재-append는 중복(원본 결함 재현)");
     }
 
     #[test]

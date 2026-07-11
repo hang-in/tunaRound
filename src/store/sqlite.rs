@@ -14,7 +14,8 @@ use crate::store::agents::AgentEntry;
 // lease 기반. DB 내부용 컬럼이라 Task wire 구조체(store/a2a.rs)에는 노출하지 않는다).
 // v8: tasks.runner(어떤 러너가 claim했는지 트레이스). Task wire 구조체에도 노출(runner 표시용).
 // v9: agent_human_input(총감독 ★ 신호 영속, 브로커 재기동마다 증발하던 것 해소. v2-45 P4).
-const CURRENT_SCHEMA_VERSION: u32 = 9;
+// v10: tasks.indexed_at(종결 task를 mesh 기억(messages/FTS)에 색인했는지 스탬프. v2-45 P6a).
+const CURRENT_SCHEMA_VERSION: u32 = 10;
 
 // config 테이블 생성 SQL.
 const CREATE_CONFIG: &str = "CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT);";
@@ -103,7 +104,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     lease_expires_at  TEXT,
     claimed_by        TEXT,
     runner            TEXT,
-    attempt_count     INTEGER NOT NULL DEFAULT 0
+    attempt_count     INTEGER NOT NULL DEFAULT 0,
+    indexed_at        TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_tasks_to_agent_state ON tasks(to_agent, state);
 ";
@@ -301,6 +303,12 @@ impl SqliteStore {
                 self.conn.execute("ALTER TABLE tasks ADD COLUMN runner TEXT", [])
                     .map_err(|e| format!("sqlite: {e}"))?;
             }
+            // v10: 종결 task를 mesh 기억에 색인했는지 스탬프(NULL=미색인). 기존 종결 행은 NULL이라
+            // 기동 백필이 색인한다(v2-45 P6a).
+            if !self.column_exists("tasks", "indexed_at") {
+                self.conn.execute("ALTER TABLE tasks ADD COLUMN indexed_at TEXT", [])
+                    .map_err(|e| format!("sqlite: {e}"))?;
+            }
             self.conn
                 .execute(
                     "INSERT OR REPLACE INTO config(key, value) VALUES('schema_version', ?1)",
@@ -422,6 +430,43 @@ mod tests {
     }
 
     #[test]
+    fn fresh_db_has_tasks_indexed_at_column() {
+        let db = SqliteStore::open_memory().unwrap();
+        assert!(db.column_exists("tasks", "indexed_at"), "v10 스키마에 tasks.indexed_at 존재");
+    }
+
+    #[test]
+    fn migration_v9_to_v10_adds_indexed_at_and_preserves_tasks() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("tuna_mig_v9v10.db");
+        let _ = std::fs::remove_file(&path);
+        let p = path.to_str().unwrap();
+        // v9 스키마 수동 구성: tasks에 indexed_at 없음 + schema_version=9 + 종결 task 1건.
+        {
+            let conn = rusqlite::Connection::open(p).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE config(key TEXT PRIMARY KEY, value TEXT);
+                 CREATE TABLE tasks(task_id TEXT PRIMARY KEY, context_id TEXT, from_agent TEXT NOT NULL, \
+                     to_agent TEXT NOT NULL, state TEXT NOT NULL, message_json TEXT, artifacts_json TEXT, \
+                     history_json TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, \
+                     claimed_at TEXT, lease_expires_at TEXT, claimed_by TEXT, runner TEXT, \
+                     attempt_count INTEGER NOT NULL DEFAULT 0);
+                 INSERT INTO tasks(task_id,from_agent,to_agent,state,created_at,updated_at) \
+                     VALUES('t1','win','mac','completed','2026-07-11 09:00:00','2026-07-11 09:01:00');
+                 INSERT INTO config(key,value) VALUES('schema_version','9');",
+            )
+            .unwrap();
+        }
+        let db = SqliteStore::open(p).unwrap();
+        assert!(db.column_exists("tasks", "indexed_at"), "마이그레이션이 indexed_at 추가");
+        // 기존 종결 행은 indexed_at NULL이라 백필 대상으로 잡혀야 한다.
+        let unindexed = db.list_unindexed_terminal_tasks().unwrap();
+        assert_eq!(unindexed.len(), 1, "기존 종결 task가 미색인 목록에 있음");
+        assert_eq!(unindexed[0].id, "t1");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
     fn migration_v8_to_v9_adds_agent_human_input_and_preserves_tasks() {
         let dir = std::env::temp_dir();
         let path = dir.join("tuna_mig_v8v9.db");
@@ -453,7 +498,7 @@ mod tests {
             .conn
             .query_row("SELECT value FROM config WHERE key='schema_version'", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(ver, "9", "schema_version가 9로 갱신");
+        assert_eq!(ver, "10", "schema_version가 최신(10)으로 갱신");
         let _ = std::fs::remove_file(&path);
     }
 }

@@ -10,9 +10,127 @@ use rmcp::{
 };
 
 use crate::orchestrator::{ContextRetriever, RosterSeat, TranscriptReader, TranscriptWriter, Utterance};
-use crate::store::a2a::TaskState;
+use crate::store::a2a::{Task, TaskState};
 use crate::store::agents::{parse_tags, AGENT_TTL_SECS};
 use crate::store::sqlite::SqliteStore;
+
+// ---------------------------------------------------------------------------
+// v2-45 P6a: mesh 기억화 = 종결 task의 요청문+결과를 messages/FTS에 색인(search_context로 위임 이력 검색).
+// ---------------------------------------------------------------------------
+
+/// 종결 task 색인에 필요한 최소 정보(락 밖에서 writer로 색인하기 위해 락 안에서 미리 뽑는다).
+struct TerminalIndexPayload {
+    task_id: String,
+    from_agent: String,
+    to_agent: String,
+    runner: Option<String>,
+    /// 원 요청문(history[0]). 없으면 결과만 색인.
+    request_text: Option<String>,
+    /// 결과: completed=artifact 텍스트, failed=상태 메시지 텍스트. 없으면 요청만 색인.
+    result_text: Option<String>,
+}
+
+/// 종결(completed/failed) task에서 색인 payload를 뽑는다(§5-7 네임스페이스용). 요청=history[0],
+/// 결과=completed면 artifact·failed면 status_message. **비종결(canceled·열린)만 None**이다.
+/// 결과 텍스트가 없어도 요청문만 있으면 색인한다: 결과 없다고 None을 주면 백필이 색인 없이 indexed_at을
+/// 스탬프하고, P6b prune이 그걸 "mesh에 있음"으로 신뢰해 요청(history)을 영구 삭제해버리는 손실이 생긴다
+/// (적대 리뷰 confirmed). "indexed_at ⟹ 텍스트 내용이 mesh에(또는 애초에 없음)" 불변식을 지킨다.
+fn build_terminal_index_payload(task: &Task) -> Option<TerminalIndexPayload> {
+    if !matches!(task.state, TaskState::Completed | TaskState::Failed) {
+        return None; // canceled·열린 task는 색인 비대상(§4 P6a).
+    }
+    let request_text =
+        task.history.first().and_then(|m| m.parts.first()).and_then(|p| p.text.clone());
+    let result_text = match task.state {
+        TaskState::Completed => {
+            task.artifacts.first().and_then(|a| a.parts.first()).and_then(|p| p.text.clone())
+        }
+        _ => task.status_message.as_ref().and_then(|m| m.parts.first()).and_then(|p| p.text.clone()),
+    };
+    Some(TerminalIndexPayload {
+        task_id: task.id.clone(),
+        from_agent: task.from_agent.clone(),
+        to_agent: task.to_agent.clone(),
+        runner: task.runner.clone(),
+        request_text,
+        result_text,
+    })
+}
+
+/// 종결 task 하나를 mesh 기억에 색인한다(v2-45 P6a). 네임스페이스(§5-7): session_id=`a2a:<task_id>`,
+/// speaker=`a2a/<agent>`(요청=from, 결과=to 또는 runner). writer는 자체 store 연결이라 a2a_store 락과
+/// 무관하다(락 순서: a2a_store 해제 후 호출). best-effort - 색인 실패는 종결을 되돌리지 않고 로그만 남기며
+/// indexed_at을 스탬프하지 않아 다음 백필이 재시도한다. 양쪽 turn이 성공해야 스탬프한다.
+fn index_terminal_task(
+    writer: &Arc<dyn TranscriptWriter>,
+    a2a_store: &Arc<Mutex<SqliteStore>>,
+    p: &TerminalIndexPayload,
+) {
+    let sid = format!("a2a:{}", p.task_id);
+    // 멱등 재색인(적대 리뷰 major): append_turn은 비멱등이고 append 커밋과 indexed_at 스탬프가 서로 다른
+    // 커넥션이라, 크래시(taskkill·WMI 재기동 상시)·부분실패로 스탬프 전 죽으면 백필이 turn을 재-append해
+    // 중복이 쌓인다. 재색인 전 이 세션의 기존 색인을 비워 delete-then-append로 멱등화한다(재실행=덮어쓰기).
+    {
+        let store = a2a_store.lock().unwrap_or_else(|e| e.into_inner());
+        if let Err(e) = store.delete_session_messages(&sid) {
+            eprintln!("[index] task {} 기존 색인 정리 실패(무시): {e}", p.task_id);
+        }
+    }
+    let mut ok = true;
+    if let Some(req) = &p.request_text
+        && let Err(e) = writer.append_turn(&sid, &format!("a2a/{}", p.from_agent), req)
+    {
+        eprintln!("[index] task {} 요청 색인 실패(무시): {e}", p.task_id);
+        ok = false;
+    }
+    let result_speaker = p.runner.as_deref().unwrap_or(&p.to_agent);
+    if let Some(res) = &p.result_text
+        && let Err(e) = writer.append_turn(&sid, &format!("a2a/{result_speaker}"), res)
+    {
+        eprintln!("[index] task {} 결과 색인 실패(무시): {e}", p.task_id);
+        ok = false;
+    }
+    if ok {
+        let store = a2a_store.lock().unwrap_or_else(|e| e.into_inner());
+        if let Err(e) = store.mark_task_indexed(&p.task_id) {
+            eprintln!("[index] task {} indexed_at 스탬프 실패(무시): {e}", p.task_id);
+        }
+    }
+}
+
+/// 기동 시 미색인 종결 task를 mesh 기억에 백필한다(v2-45 P6a). 구 바이너리 시절 완료분·색인 유실
+/// (expire_stale_claims 등)을 재기동 때 메운다. best-effort(개별 실패는 다음 기동이 재시도).
+pub fn backfill_unindexed_terminal_tasks(
+    a2a_store: &Arc<Mutex<SqliteStore>>,
+    writer: &Arc<dyn TranscriptWriter>,
+) {
+    let tasks = {
+        let store = a2a_store.lock().unwrap_or_else(|e| e.into_inner());
+        match store.list_unindexed_terminal_tasks() {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("[index] 백필 조회 실패(무시): {e}");
+                return;
+            }
+        }
+    };
+    if tasks.is_empty() {
+        return;
+    }
+    let n = tasks.len();
+    for task in &tasks {
+        match build_terminal_index_payload(task) {
+            Some(payload) => index_terminal_task(writer, a2a_store, &payload),
+            None => {
+                // 결과 텍스트 없는 종결(레거시·expire→failed 등): 색인할 것이 없으니 스탬프만 해
+                // 목록에서 제외한다(적대 리뷰 minor: 미스탬프 시 매 기동 무한 재스캔·비수렴).
+                let store = a2a_store.lock().unwrap_or_else(|e| e.into_inner());
+                let _ = store.mark_task_indexed(&task.id);
+            }
+        }
+    }
+    eprintln!("[index] 기동 백필: 미색인 종결 task {n}건 처리");
+}
 
 #[cfg(feature = "serve")]
 mod server;
@@ -257,13 +375,27 @@ impl TunaSearchServer {
         let agent = p.agent;
         let outcome = tokio::task::spawn_blocking(move || {
             let store = store.lock().unwrap_or_else(|e| e.into_inner());
-            complete_task_text(&store, &task_id, &result, agent.as_deref())
+            let text = complete_task_text(&store, &task_id, &result, agent.as_deref())?;
+            // v2-45 P6a: 종결 성공 후 색인 payload를 같은 락 안에서 구성(요청=history[0], 결과=artifact).
+            let payload =
+                store.get_task(&task_id).ok().flatten().as_ref().and_then(build_terminal_index_payload);
+            Ok::<_, String>((text, payload))
         })
         .await
         .unwrap_or_else(|e| Err(format!("작업 실패: {e}")));
         // R1: 내부 실패(전이충돌 포함)를 success로 위장하지 않는다(claim_task와 동일 사유).
         match outcome {
-            Ok(t) => Ok(CallToolResult::success(vec![Content::text(t)])),
+            Ok((t, payload)) => {
+                // a2a_store 락 해제 후 writer로 mesh 기억 색인(best-effort, 종결 응답과 독립).
+                if let (Some(writer), Some(a2a), Some(payload)) =
+                    (self.writer.clone(), self.a2a_store.clone(), payload)
+                {
+                    // best-effort·종결 응답과 독립: 색인을 백그라운드로 던지고 응답을 막지 않는다
+                    // (gemini 리뷰). 크래시로 미완료 시 재기동 백필이 멱등 재색인한다(delete-then-append).
+                    tokio::task::spawn_blocking(move || index_terminal_task(&writer, &a2a, &payload));
+                }
+                Ok(CallToolResult::success(vec![Content::text(t)]))
+            }
             Err(e) => Ok(CallToolResult::error(vec![Content::text(format!("완료 처리 실패: {e}"))])),
         }
     }
@@ -283,13 +415,26 @@ impl TunaSearchServer {
         let agent = p.agent;
         let outcome = tokio::task::spawn_blocking(move || {
             let store = store.lock().unwrap_or_else(|e| e.into_inner());
-            fail_task_text(&store, &task_id, &reason, agent.as_deref())
+            let text = fail_task_text(&store, &task_id, &reason, agent.as_deref())?;
+            // v2-45 P6a: 종결 성공 후 색인 payload 구성(요청=history[0], 결과=실패 사유 status_message).
+            let payload =
+                store.get_task(&task_id).ok().flatten().as_ref().and_then(build_terminal_index_payload);
+            Ok::<_, String>((text, payload))
         })
         .await
         .unwrap_or_else(|e| Err(format!("작업 실패: {e}")));
         // R1: 내부 실패(전이충돌 포함)를 success로 위장하지 않는다(claim_task와 동일 사유).
         match outcome {
-            Ok(t) => Ok(CallToolResult::success(vec![Content::text(t)])),
+            Ok((t, payload)) => {
+                if let (Some(writer), Some(a2a), Some(payload)) =
+                    (self.writer.clone(), self.a2a_store.clone(), payload)
+                {
+                    // best-effort·종결 응답과 독립: 색인을 백그라운드로 던지고 응답을 막지 않는다
+                    // (gemini 리뷰). 크래시로 미완료 시 재기동 백필이 멱등 재색인한다(delete-then-append).
+                    tokio::task::spawn_blocking(move || index_terminal_task(&writer, &a2a, &payload));
+                }
+                Ok(CallToolResult::success(vec![Content::text(t)]))
+            }
             Err(e) => Ok(CallToolResult::error(vec![Content::text(format!("실패 처리 실패: {e}"))])),
         }
     }
@@ -581,6 +726,88 @@ mod tests {
             }))
             .await;
         assert!(result.is_ok(), "검색이 Ok여야 함: {result:?}");
+    }
+
+    #[test]
+    fn terminal_index_payload_extracts_request_and_result() {
+        use crate::store::a2a::{Artifact, Message, Part};
+        let req = Message {
+            message_id: "m1".into(),
+            role: "user".into(),
+            parts: vec![Part { text: Some("피드백 3건 정리해줘".into()), ..Default::default() }],
+            task_id: None,
+            context_id: None,
+        };
+        // completed: 요청=history[0], 결과=artifact, 결과 speaker=runner.
+        let mut done = Task::new("t1", None, "dashboard", "mac-claude", "2026-07-11 09:00:00");
+        done.state = TaskState::Completed;
+        done.history = vec![req.clone()];
+        done.runner = Some("claude".into());
+        done.artifacts = vec![Artifact {
+            artifact_id: "a1".into(),
+            name: None,
+            parts: vec![Part { text: Some("정리 결과".into()), ..Default::default() }],
+        }];
+        let p = build_terminal_index_payload(&done).unwrap();
+        assert_eq!(p.request_text.as_deref(), Some("피드백 3건 정리해줘"));
+        assert_eq!(p.result_text.as_deref(), Some("정리 결과"));
+        assert_eq!(p.from_agent, "dashboard");
+        assert_eq!(p.runner.as_deref(), Some("claude"));
+        // failed: 결과=status_message(실패 사유).
+        let mut fail = Task::new("t2", None, "dashboard", "mac-claude", "2026-07-11 09:00:00");
+        fail.state = TaskState::Failed;
+        fail.history = vec![req.clone()];
+        fail.status_message = Some(Message {
+            message_id: "m2".into(),
+            role: "agent".into(),
+            parts: vec![Part { text: Some("BLOCKED: 자료 없음".into()), ..Default::default() }],
+            task_id: None,
+            context_id: None,
+        });
+        assert_eq!(
+            build_terminal_index_payload(&fail).unwrap().result_text.as_deref(),
+            Some("BLOCKED: 자료 없음")
+        );
+        // 결과 없어도 요청만 있으면 색인 대상(적대 리뷰: prune이 미색인 요청을 지우지 않게).
+        let mut req_only = Task::new("t2b", None, "d", "m", "2026-07-11 09:00:00");
+        req_only.state = TaskState::Completed;
+        req_only.history = vec![req.clone()]; // artifact 없음.
+        let ro = build_terminal_index_payload(&req_only).unwrap();
+        assert_eq!(ro.request_text.as_deref(), Some("피드백 3건 정리해줘"));
+        assert_eq!(ro.result_text, None, "결과 없음이어도 payload는 Some(요청 색인용)");
+        // canceled·열린 task만 None(색인 비대상).
+        let mut cancel = Task::new("t3", None, "d", "m", "2026-07-11 09:00:00");
+        cancel.state = TaskState::Canceled;
+        assert!(build_terminal_index_payload(&cancel).is_none());
+    }
+
+    #[test]
+    fn backfill_stamps_result_less_terminal_to_converge() {
+        // 결과·요청 텍스트가 전혀 없는 종결(레거시)도 백필이 스탬프해 매 기동 재스캔(비수렴)을 끊어야 한다.
+        // (요청만 있으면 색인되어 스탬프되고, 아무것도 없으면 색인 없이 스탬프 - 둘 다 수렴.)
+        struct FakeWriter;
+        impl crate::orchestrator::TranscriptWriter for FakeWriter {
+            fn append_turn(&self, _s: &str, _sp: &str, _c: &str) -> Result<u64, String> {
+                Ok(0)
+            }
+        }
+        let db = SqliteStore::open_memory().unwrap();
+        // completed인데 artifact 없음 → build_terminal_index_payload가 None.
+        let mut t = Task::new("t1", None, "win", "mac", "2026-07-11 09:00:00");
+        t.state = TaskState::Completed;
+        db.create_task(&t).unwrap();
+        assert_eq!(db.list_unindexed_terminal_tasks().unwrap().len(), 1);
+        let a2a = Arc::new(Mutex::new(db));
+        let writer: Arc<dyn TranscriptWriter> = Arc::new(FakeWriter);
+        backfill_unindexed_terminal_tasks(&a2a, &writer);
+        assert_eq!(
+            a2a.lock().unwrap().list_unindexed_terminal_tasks().unwrap().len(),
+            0,
+            "결과 없는 종결도 스탬프돼 재스캔 목록에서 빠짐(수렴)"
+        );
+        // 재백필도 no-op(수렴 유지).
+        backfill_unindexed_terminal_tasks(&a2a, &writer);
+        assert_eq!(a2a.lock().unwrap().list_unindexed_terminal_tasks().unwrap().len(), 0);
     }
 
     #[tokio::test]

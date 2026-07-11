@@ -206,6 +206,33 @@ impl SqliteStore {
         Ok(tasks)
     }
 
+    /// task가 mesh 기억에 색인됐음을 스탬프한다(v2-45 P6a). indexed_at NULL인 종결 task만 백필·재색인
+    /// 대상이므로, 색인 성공 시 이 스탬프로 제외된다. best-effort 호출부라 존재하지 않는 task_id도 Ok(0행).
+    pub fn mark_task_indexed(&self, task_id: &str) -> Result<(), String> {
+        self.conn
+            .execute("UPDATE tasks SET indexed_at = datetime('now') WHERE task_id = ?1", [task_id])
+            .map(|_| ())
+            .map_err(|e| format!("sqlite: {e}"))
+    }
+
+    /// 아직 색인되지 않은 종결(completed/failed) task를 오름차순으로 반환한다(v2-45 P6a 기동 백필).
+    /// canceled·열린 task는 대상 아님("결과 있는 종결만 색인" 스코프). indexed_at은 DB 내부 컬럼이라
+    /// Task wire에는 없으므로 WHERE 절로만 필터한다.
+    pub fn list_unindexed_terminal_tasks(&self) -> Result<Vec<Task>, String> {
+        let sql = format!(
+            "SELECT {TASK_COLUMNS} FROM tasks \
+             WHERE state IN ('completed','failed') AND indexed_at IS NULL \
+             ORDER BY updated_at ASC, rowid ASC"
+        );
+        let mut stmt = self.conn.prepare(&sql).map_err(|e| format!("sqlite: {e}"))?;
+        let rows: Vec<TaskRow> = stmt
+            .query_map([], task_row_from_sql)
+            .map_err(|e| format!("sqlite: {e}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("sqlite: {e}"))?;
+        rows.into_iter().map(TaskRow::into_task).collect::<Result<Vec<_>, _>>()
+    }
+
     /// state와 동반 상태 메시지를 원자적으로 갱신한다(A2A TaskStatus 단위). status_message=None이면
     /// 이번 전이에 메시지가 없다는 뜻으로 message_json을 비운다(이전 값 보존 아님).
     pub fn update_task_state(
@@ -727,6 +754,30 @@ mod tests {
         fn list_tasks_replay_empty_db_is_empty() {
             let db = SqliteStore::open_memory().unwrap();
             assert!(db.list_tasks_replay(None, None, &[], ReplayLimit::Newest(50)).unwrap().is_empty());
+        }
+
+        #[test]
+        fn unindexed_terminal_tasks_lists_completed_failed_and_mark_excludes() {
+            let db = SqliteStore::open_memory().unwrap();
+            for (id, st, ts) in [
+                ("t1", TaskState::Completed, "2026-07-11 09:00:00"),
+                ("t2", TaskState::Failed, "2026-07-11 09:01:00"),
+                ("t3", TaskState::Canceled, "2026-07-11 09:02:00"),
+                ("t4", TaskState::Submitted, "2026-07-11 09:03:00"),
+            ] {
+                let mut t = Task::new(id, None, "win", "mac", ts);
+                t.state = st;
+                db.create_task(&t).unwrap();
+            }
+            // 미색인 종결 = completed·failed만(canceled·submitted 제외), updated_at 오름차순.
+            let un = db.list_unindexed_terminal_tasks().unwrap();
+            assert_eq!(un.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), vec!["t1", "t2"]);
+            // 색인 스탬프 후엔 목록에서 빠진다.
+            db.mark_task_indexed("t1").unwrap();
+            let un2 = db.list_unindexed_terminal_tasks().unwrap();
+            assert_eq!(un2.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), vec!["t2"]);
+            // 존재하지 않는 task_id 스탬프도 Ok(0행, best-effort).
+            assert!(db.mark_task_indexed("nope").is_ok());
         }
 
         #[test]
