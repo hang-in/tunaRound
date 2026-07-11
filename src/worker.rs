@@ -530,6 +530,9 @@ async fn run_one_pass(
         // 러너가 끝나면 즉시 연장을 멈춘다(client를 borrow만 하므로 clone 불요).
         let run_result = {
             let mut ticker = tokio::time::interval(Duration::from_secs(LEASE_KEEPALIVE_SECS));
+            // 노트북 절전·고부하로 tick이 밀려도 기본 Burst처럼 몰아치지 않게 Skip(밀린 tick을 버리고
+            // 다음 정상 tick만) - 깨어날 때 연장 상한을 몰아서 소진하는 것 방지(gemini 리뷰).
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             ticker.tick().await; // 최초 즉시 tick 소비(방금 claim해 lease가 신선함)
             let mut extensions: u32 = 0;
             tokio::pin!(rx);
