@@ -466,8 +466,9 @@ pub struct CodexInjectArgs {
     #[arg(long, conflicts_with = "thread", required_unless_present = "thread")]
     pub agent: Option<String>,
     /// threadId 직지정(v2-46): 영속 파일 없이 이 thread를 resume해 주입한다. 실패 시 새 thread
-    /// 자가치유 없이 즉시 실패(로스터에 보이는 세션 thread에만 답이 생기게).
-    #[arg(long)]
+    /// 자가치유 없이 즉시 실패(로스터에 보이는 세션 thread에만 답이 생기게). --new와 배타
+    /// (직지정 모드는 영속 파일을 안 쓰므로 --new가 무의미).
+    #[arg(long, conflicts_with = "new")]
     pub thread: Option<String>,
     /// 주입할 유저 턴 텍스트(브로커 task 처리 지시 + task 메시지).
     #[arg(long)]

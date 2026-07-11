@@ -39,13 +39,15 @@ export default function GoalForm({ agents, remoteViewer, selected, onChangeSelec
   const relayMachines = new Set(
     agents
       .filter((a) => a.online && a.tags?.role === 'infra' && a.tags?.purpose === 'codex-inject')
-      .map((a) => a.tags?.machine ?? '?'),
+      .map((a) => a.tags?.machine)
+      .filter((m): m is string => !!m),
   )
   const online = agents.filter((a) => {
     if (!a.online || a.tags?.role === 'worker' || a.tags?.role === 'infra') return false
     // codex 세션 = 그 머신에 codex-relay(purpose=codex-inject) online일 때만 유효 대상
     // (role 미지정 codex도 동일 규칙 - 수신은 relay가 대리하므로 자기 poll 여부와 무관).
-    if (a.tags?.runner === 'codex') return relayMachines.has(a.tags?.machine ?? '?')
+    // machine 태그가 없으면 배달 경로를 확정할 수 없으므로 무효(미상끼리 오매칭 방지, 봇리뷰).
+    if (a.tags?.runner === 'codex') return !!a.tags?.machine && relayMachines.has(a.tags.machine)
     return true
   })
 

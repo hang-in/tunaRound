@@ -79,10 +79,18 @@ if (-not $ok) { throw "브로커가 30초 내 8770 listen 안 함. ~/.tunaround/
 Write-Host "[mesh] 브로커 8770 listen 확인"
 
 # 5. codex app-server(8790): 브로커 이후에 떠야 tuna-broker MCP 로드 성공(세션18 실측). 살아있으면 유지.
+#    기동했으면 listen까지 대기 - relay가 준비 전 주입을 시도해 fail_task로 새지 않게(봇리뷰 Major).
 if (Test-Port 8790) {
     Write-Host "[mesh] codex app-server 8790 이미 listen(유지)"
 } elseif (Test-Path $CodexExe) {
     Start-Daemon "codex-appserver" $CodexExe @("app-server", "--listen", "ws://127.0.0.1:8790") | Out-Null
+    $appOk = $false
+    foreach ($i in 1..30) {
+        if (Test-Port 8790) { $appOk = $true; break }
+        Start-Sleep -Seconds 1
+    }
+    if ($appOk) { Write-Host "[mesh] codex app-server 8790 listen 확인" }
+    else { Write-Host "[mesh] 경고: app-server가 30초 내 8790 listen 안 함(relay 주입은 실패 시 fail_task)" }
 } else {
     Write-Host "[mesh] codex.exe 없음($CodexExe) - app-server 생략"
 }

@@ -145,13 +145,14 @@ pub async fn run(opts: RelayOpts) -> Result<(), String> {
             }
         }
 
+        if opts.once {
+            // 테스트·수동 실행 모드: 폴 실패가 있었으면 성공으로 위장하지 않는다(봇리뷰).
+            return if reconnect { Err("codex-relay: --once 패스 중 poll 실패".to_string()) } else { Ok(()) };
+        }
         if reconnect
             && let Ok(c) = McpHttpClient::connect(opts.core.clone(), opts.token.clone()).await
         {
             client = c;
-        }
-        if opts.once {
-            return Ok(());
         }
         tokio::time::sleep(Duration::from_secs(opts.interval_secs.max(1))).await;
     }
