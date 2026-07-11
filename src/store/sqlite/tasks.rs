@@ -3,6 +3,20 @@
 use super::*;
 use crate::store::a2a::{append_history_json, Artifact, Message, Task, TaskRow, TaskState};
 
+/// list_tasks_replay의 상한 방향(v2-45 P3). 잘림 의미가 소비자마다 달라 방향을 명시한다:
+/// 피드 스냅샷(?replay=N)은 "최근 N건" 창 뷰이고, watch-results catch-up(?since=TS)은
+/// "오래된 것부터 N건"이어야 클라이언트 워터마크가 앞에서부터 전진해 재접속 연쇄가 갭 없이 따라잡는다
+/// (최근 N건으로 자르면 since와 창 시작 사이가 영영 건너뛰어진다).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReplayLimit {
+    /// 상한 없음(전량).
+    All,
+    /// updated_at 기준 최근 N건(DESC LIMIT로 끊고 뒤집어 오름차순 반환).
+    Newest(usize),
+    /// updated_at 기준 가장 오래된 N건(ASC LIMIT 그대로).
+    Oldest(usize),
+}
+
 impl SqliteStore {
     /// 신규 A2A task_id를 생성한다. SQLite 내장 randomblob(16)을 hex로 인코딩(32자)해 신규 crate 의존
     /// 없이 고유 식별자를 얻는다(uuid crate 등 도입 회피).
@@ -128,7 +142,7 @@ impl SqliteStore {
     ///   ("YYYY-MM-DD HH:MM:SS" UTC, 사전순 비교 가능). ISO8601 변환 금지(§5-3 고정 계약:
     ///   'T' > ' ' 사전순 왜곡).
     /// - `states`: 빈 배열이면 전 상태, 아니면 `state IN (...)` 필터.
-    /// - `limit`: Some(N)이면 "updated_at 기준 최근 N건"(DESC LIMIT로 끊고 뒤집어 반환).
+    /// - `limit`: [`ReplayLimit`] 참조(Newest=최근 N건, Oldest=오래된 것부터 N건, All=전량).
     ///
     /// 반환은 항상 updated_at 오름차순(소비자 = SSE 선행 프레임이 시간순으로 흘러야 함). 같은 초의
     /// tie는 rowid를 2차 키로 안정화한다.
@@ -137,7 +151,7 @@ impl SqliteStore {
         from_agent: Option<&str>,
         since: Option<&str>,
         states: &[&str],
-        limit: Option<usize>,
+        limit: ReplayLimit,
     ) -> Result<Vec<Task>, String> {
         let mut clauses: Vec<String> = Vec::new();
         let mut params: Vec<String> = Vec::new();
@@ -164,10 +178,12 @@ impl SqliteStore {
         } else {
             format!(" WHERE {}", clauses.join(" AND "))
         };
-        // limit는 "최근 N건"이므로 DESC로 끊은 뒤 Rust에서 뒤집어 오름차순 계약을 지킨다.
+        // Newest는 "최근 N건"이므로 DESC로 끊은 뒤 Rust에서 뒤집어 오름차순 계약을 지킨다.
+        // Oldest는 ASC LIMIT가 곧 "앞에서부터 N건"이라 그대로 반환한다.
         let order_sql = match limit {
-            Some(n) => format!(" ORDER BY updated_at DESC, rowid DESC LIMIT {n}"),
-            None => " ORDER BY updated_at ASC, rowid ASC".to_string(),
+            ReplayLimit::Newest(n) => format!(" ORDER BY updated_at DESC, rowid DESC LIMIT {n}"),
+            ReplayLimit::Oldest(n) => format!(" ORDER BY updated_at ASC, rowid ASC LIMIT {n}"),
+            ReplayLimit::All => " ORDER BY updated_at ASC, rowid ASC".to_string(),
         };
         let sql = format!("SELECT {TASK_COLUMNS} FROM tasks{where_sql}{order_sql}");
         let mut stmt = self.conn.prepare(&sql).map_err(|e| format!("sqlite: {e}"))?;
@@ -178,7 +194,7 @@ impl SqliteStore {
             .map_err(|e| format!("sqlite: {e}"))?;
         let mut tasks: Vec<Task> =
             rows.into_iter().map(TaskRow::into_task).collect::<Result<Vec<_>, _>>()?;
-        if limit.is_some() {
+        if matches!(limit, ReplayLimit::Newest(_)) {
             tasks.reverse();
         }
         Ok(tasks)
@@ -621,7 +637,7 @@ mod tests {
         fn list_tasks_replay_no_filters_returns_all_states_ascending() {
             let db = SqliteStore::open_memory().unwrap();
             seed_replay_tasks(&db);
-            let all = db.list_tasks_replay(None, None, &[], None).unwrap();
+            let all = db.list_tasks_replay(None, None, &[], ReplayLimit::All).unwrap();
             assert_eq!(ids(&all), vec!["t1", "t2", "t3", "t4"], "전 상태 + updated_at 오름차순");
         }
 
@@ -629,15 +645,26 @@ mod tests {
         fn list_tasks_replay_limit_takes_most_recent_and_returns_ascending() {
             let db = SqliteStore::open_memory().unwrap();
             seed_replay_tasks(&db);
-            let recent = db.list_tasks_replay(None, None, &[], Some(2)).unwrap();
+            let recent = db.list_tasks_replay(None, None, &[], ReplayLimit::Newest(2)).unwrap();
             assert_eq!(ids(&recent), vec!["t3", "t4"], "최근 2건을 오름차순으로 반환(DESC LIMIT 후 뒤집기)");
+        }
+
+        #[test]
+        fn list_tasks_replay_oldest_limit_takes_from_front() {
+            let db = SqliteStore::open_memory().unwrap();
+            seed_replay_tasks(&db);
+            // catch-up 연쇄(v2-45 P3): 잘려도 오래된 것부터 이어받아야 워터마크가 갭 없이 전진한다.
+            let oldest = db.list_tasks_replay(None, None, &[], ReplayLimit::Oldest(2)).unwrap();
+            assert_eq!(ids(&oldest), vec!["t1", "t2"], "오래된 것부터 2건(ASC LIMIT)");
         }
 
         #[test]
         fn list_tasks_replay_since_is_inclusive_gte() {
             let db = SqliteStore::open_memory().unwrap();
             seed_replay_tasks(&db);
-            let from = db.list_tasks_replay(None, Some("2026-07-11 09:01:00"), &[], None).unwrap();
+            let from = db
+                .list_tasks_replay(None, Some("2026-07-11 09:01:00"), &[], ReplayLimit::All)
+                .unwrap();
             assert_eq!(ids(&from), vec!["t2", "t3", "t4"], "since는 >= (경계 포함, seen dedup은 소비자 몫)");
         }
 
@@ -646,8 +673,9 @@ mod tests {
             let db = SqliteStore::open_memory().unwrap();
             seed_replay_tasks(&db);
             // watch-results 의미론: completed/failed만 + dispatcher(from_agent) 필터.
-            let terminal =
-                db.list_tasks_replay(Some("win"), None, &["completed", "failed"], None).unwrap();
+            let terminal = db
+                .list_tasks_replay(Some("win"), None, &["completed", "failed"], ReplayLimit::All)
+                .unwrap();
             assert_eq!(ids(&terminal), vec!["t1", "t2"], "canceled(t3)·submitted(t4)·타 발신자 제외");
         }
 
@@ -660,7 +688,7 @@ mod tests {
                     Some("win"),
                     Some("2026-07-11 09:01:00"),
                     &["completed", "failed"],
-                    Some(10),
+                    ReplayLimit::Newest(10),
                 )
                 .unwrap();
             assert_eq!(ids(&hit), vec!["t2"], "필터 4종 동시 적용");
@@ -669,7 +697,7 @@ mod tests {
         #[test]
         fn list_tasks_replay_empty_db_is_empty() {
             let db = SqliteStore::open_memory().unwrap();
-            assert!(db.list_tasks_replay(None, None, &[], Some(50)).unwrap().is_empty());
+            assert!(db.list_tasks_replay(None, None, &[], ReplayLimit::Newest(50)).unwrap().is_empty());
         }
 
         #[test]

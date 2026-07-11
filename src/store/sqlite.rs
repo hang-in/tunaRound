@@ -143,6 +143,8 @@ mod messages;
 mod registry;
 mod tasks;
 
+pub use tasks::ReplayLimit;
+
 impl SqliteStore {
     /// 파일 기반 SQLite DB를 열고 WAL/foreign_keys 설정 + 마이그레이션을 적용한다.
     pub fn open(path: &str) -> Result<Self, String> {
