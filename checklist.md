@@ -472,3 +472,11 @@
 - [ ] P6b retention(P2·P3 뒤에만): prune_terminal_tasks(30일, 슬림화만·행 삭제 없음, artifacts·failed message_json 보존) + wal_checkpoint 동반.
 - [ ] P7 Redis 전삭제(독립): redis dep+session_bus.rs+repl bus 삭제, --observe SQLite 재작성(msg_id 커서 폴링), --session 재개=load_session, owner lease 삭제(결정 기록), 문서 개정.
 - [ ] 아크 통합 스모크: 브로커 재기동 시나리오 5종(설계 §6) 라이브 실측.
+
+## 백로그 v2-47: 대시보드 관제탑 고도화 (docs/design/v2-47-dashboard-observatory-backlog_2026-07-11.md)
+
+> 2026-07-11 세션21 사용자 "문서화 해두자". 전부 read-only 뷰 강화(관제탑 원칙 준수). 착수 시점 미정.
+
+- [ ] (P2 직후) task 카드 상세 펼침(요청·결과 전문·실패 사유, 프론트 전용) + 피드 필터 칩.
+- [ ] 브로커 헬스 패널(no-consumer/stuck 시각화 + 스캐너 heartbeat 나이 + WAL, read-only GET 1개) + 브라우저 알림 옵트인.
+- [ ] (P6a 뒤) 위임 이력 검색 탭(/dashboard/search, retriever 재사용).
