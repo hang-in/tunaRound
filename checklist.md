@@ -481,3 +481,11 @@
 - [ ] (P2 직후) task 카드 상세 펼침(요청·결과 전문·실패 사유, 프론트 전용) + 피드 필터 칩.
 - [ ] 브로커 헬스 패널(no-consumer/stuck 시각화 + 스캐너 heartbeat 나이 + WAL, read-only GET 1개) + 브라우저 알림 옵트인.
 - [ ] (P6a 뒤) 위임 이력 검색 탭(/dashboard/search, retriever 재사용).
+
+## 백로그 v2-48: opencode 좌석 배선 (docs/design/v2-48-opencode-wiring_2026-07-11.md)
+
+> 2026-07-11 세션21 정찰 확정 + 사용자 "나중에 진행". 착수 = v2-45 완료 + opencode 스키마 냉각 후, 착수 시 업스트림 재대조 필수.
+
+- [ ] 워커 러너 `--runner opencode`(opencode run + stdin + --format json, 기존 러너 동형).
+- [ ] 감독 레인: 스캐너 opencode.db read-only 열거(보수 파서+버전 핀) → 수신 (a) tuna-broker MCP native 우선 검증(폴백 (b) relay형 prompt_async 주입) → human 신호 = chat.message 플러그인+prefix 필터(발화 조건 라이브 검증 선행).
+- [ ] 운용 규약: TUI --port 고정 + 머신당 포트 대역(다중 TUI 충돌 방지).
