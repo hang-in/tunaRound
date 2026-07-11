@@ -9,6 +9,10 @@ use crate::runner::{RunInput, Runner};
 /// task id의 고정 길이(SqliteStore::new_task_id = lower(hex(randomblob(16))) = 32 hex chars).
 const ID_LEN: usize = 32;
 
+/// 러너 실행 중 lease를 연장하는 주기(초). 브로커 CLAIM_LEASE_SECS(30분)보다 충분히 짧아야 lease가
+/// 만료되기 전에 갱신된다(10분 = 3배 여유). v2-49 #6.
+const LEASE_KEEPALIVE_SECS: u64 = 10 * 60;
+
 /// poll_tasks 텍스트 한 블록에서 뽑아낸 필드(from_agent는 워커 루프에 불필요해 생략).
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParsedTask {
@@ -515,9 +519,29 @@ async fn run_one_pass(
         std::thread::spawn(move || {
             let _ = tx.send(runner2.run(&input));
         });
+        // v2-49 #6: 러너 실행 중 주기적으로 lease를 연장해, CLAIM_LEASE_SECS(30분)를 넘는 장기 task가
+        // expire_stale_claims에 실행 중 requeue되는 것을 막는다. rx 완료와 interval을 select!로 경합해
+        // 러너가 끝나면 즉시 연장을 멈춘다(client를 borrow만 하므로 clone 불요).
+        let run_result = {
+            let mut ticker = tokio::time::interval(Duration::from_secs(LEASE_KEEPALIVE_SECS));
+            ticker.tick().await; // 최초 즉시 tick 소비(방금 claim해 lease가 신선함)
+            tokio::pin!(rx);
+            loop {
+                tokio::select! {
+                    r = &mut rx => break r,
+                    _ = ticker.tick() => {
+                        // 연장 실패(이미 requeue/재claim/종료) = 이 워커의 소유권 상실. 로그만 남기고
+                        // 계속 진행한다(러너 결과는 complete 시 first-completer-wins 가드가 거른다).
+                        if let Err(e) = client.extend_lease(&t.id, agent).await {
+                            eprintln!("[work] task {} lease 연장 실패: {e}", t.id);
+                        }
+                    }
+                }
+            }
+        };
         // 성공 -> complete_task(결과 artifact, state=completed). 실패 -> fail_task(사유, state=failed).
         // 실패를 completed로 위장하지 않아 dispatcher가 성패를 구분하고 재시도를 판단할 수 있다.
-        match rx.await {
+        match run_result {
             Ok(Ok(out)) => match client.complete_task(&t.id, &out.content, Some(agent)).await {
                 Ok(_) => eprintln!("[work] task {} complete 완료", t.id),
                 Err(e) => eprintln!("[work] task {} complete 실패: {e}", t.id),

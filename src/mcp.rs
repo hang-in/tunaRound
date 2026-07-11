@@ -439,6 +439,59 @@ impl TunaSearchServer {
         }
     }
 
+    #[tool(
+        description = "claim한 task의 lease를 연장한다(장시간 실행 중 requeue 방지, 워커가 주기 호출)."
+    )]
+    async fn extend_task_lease(
+        &self,
+        Parameters(p): Parameters<ExtendLeaseParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let Some(store) = self.a2a_store.clone() else {
+            return Ok(CallToolResult::success(vec![Content::text(
+                "A2A task 저장소 미구성(extend_task_lease 비활성)".to_string(),
+            )]));
+        };
+        let task_id = p.task_id;
+        let agent = p.agent;
+        let outcome = tokio::task::spawn_blocking(move || {
+            let store = store.lock().unwrap_or_else(|e| e.into_inner());
+            extend_lease_text(&store, &task_id, &agent)
+        })
+        .await
+        .unwrap_or_else(|e| Err(format!("작업 실패: {e}")));
+        // 대상이 아니면(종료·재claim) isError=true라야 워커가 Err로 인지한다(claim_task와 동일 계약).
+        match outcome {
+            Ok(t) => Ok(CallToolResult::success(vec![Content::text(t)])),
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!("lease 연장 실패: {e}"))])),
+        }
+    }
+
+    #[tool(
+        description = "열린 task를 취소한다(-> canceled). 잘못 보냈거나 더 필요 없는 task 정리용. 이미 종료된 task는 거부한다."
+    )]
+    async fn cancel_task(
+        &self,
+        Parameters(p): Parameters<CancelTaskParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let Some(store) = self.a2a_store.clone() else {
+            return Ok(CallToolResult::success(vec![Content::text(
+                "A2A task 저장소 미구성(cancel_task 비활성)".to_string(),
+            )]));
+        };
+        let task_id = p.task_id;
+        let reason = p.reason;
+        let outcome = tokio::task::spawn_blocking(move || {
+            let store = store.lock().unwrap_or_else(|e| e.into_inner());
+            cancel_task_text(&store, &task_id, reason.as_deref())
+        })
+        .await
+        .unwrap_or_else(|e| Err(format!("작업 실패: {e}")));
+        match outcome {
+            Ok(t) => Ok(CallToolResult::success(vec![Content::text(t)])),
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!("취소 실패: {e}"))])),
+        }
+    }
+
     #[tool(description = "다른 에이전트에게 새 A2A task를 위임한다(생성 즉시 submitted 상태, dispatcher용).")]
     async fn send_task(
         &self,

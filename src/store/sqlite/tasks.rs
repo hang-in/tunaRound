@@ -348,6 +348,30 @@ impl SqliteStore {
         Ok(())
     }
 
+    /// claim한 워커가 살아 있는 동안 자기 task의 lease를 갱신한다(장기 task가 실행 중 requeue되는 것
+    /// 방지, v2-49 #6). working이고 claimed_by가 일치할 때만 lease_expires_at을 now+CLAIM_LEASE_SECS로
+    /// 밀고 updated_at도 갱신한다(살아있는 워커의 task는 ⚠stuck? 표시가 뜨지 않게). 상태 전이가 아니라
+    /// keepalive라 이벤트는 emit하지 않는다(SSE 노이즈 방지). 대상이 아니면(종료됐거나 다른 워커 소유)
+    /// affected!=1로 Err를 돌려, 워커가 이미 requeue/재claim된 상황을 로그로 인지하게 한다.
+    pub fn extend_lease(&self, task_id: &str, claimed_by: &str) -> Result<(), String> {
+        let affected = self
+            .conn
+            .execute(
+                "UPDATE tasks SET \
+                 lease_expires_at=datetime('now', '+' || ?2 || ' seconds'), \
+                 updated_at=datetime('now') \
+                 WHERE task_id=?1 AND state='working' AND claimed_by=?3",
+                rusqlite::params![task_id, CLAIM_LEASE_SECS, claimed_by],
+            )
+            .map_err(|e| format!("sqlite: {e}"))?;
+        if affected != 1 {
+            return Err(format!(
+                "lease 연장 불가: task_id={task_id} (working 아님 또는 claimed_by 불일치)"
+            ));
+        }
+        Ok(())
+    }
+
     /// lease 만료된 working task를 회수한다(poll 경로에서 호출되는 지연 sweep, 별도 타이머 없음).
     /// lease_expires_at이 지난 working 중 attempt_count < MAX_CLAIM_ATTEMPTS면 submitted로 되돌리고
     /// (claim 필드 클리어, attempt_count는 유지해 다음 claim에서 다시 증가), MAX 이상이면 무한 requeue를
@@ -1140,6 +1164,40 @@ mod tests {
 
             let reloaded = db.get_task("t1").unwrap().unwrap();
             assert_eq!(reloaded.runner, None, "runner 없이 claim하면 NULL이어야 함");
+        }
+
+        #[test]
+        fn extend_lease_refreshes_lease_and_prevents_requeue() {
+            // v2-49 #6: 살아 있는 워커가 lease를 연장하면 만료로 인한 requeue가 일어나지 않아야 한다.
+            let db = SqliteStore::open_memory().unwrap();
+            let task = Task::new("t1", None, "win", "mac", "2026-07-02 09:00:00");
+            db.create_task(&task).unwrap();
+            db.try_claim("t1", Some("worker-a"), None).unwrap();
+            // lease를 강제 만료(워커 사망 시나리오와 동일한 상태로) 시킨 뒤,
+            db.test_force_lease_expired("t1");
+            // 워커가 살아 있어 연장하면 lease_expires_at이 미래로 밀린다.
+            db.extend_lease("t1", "worker-a").unwrap();
+            let requeued = db.expire_stale_claims().unwrap();
+            assert_eq!(requeued, 0, "lease 연장 후에는 requeue되지 않아야 함");
+            assert_eq!(
+                db.get_task("t1").unwrap().unwrap().state,
+                TaskState::Working,
+                "연장 후에도 여전히 working"
+            );
+        }
+
+        #[test]
+        fn extend_lease_rejects_non_working_and_wrong_claimer() {
+            let db = SqliteStore::open_memory().unwrap();
+            let task = Task::new("t1", None, "win", "mac", "2026-07-02 09:00:00");
+            db.create_task(&task).unwrap();
+            // claim 전(submitted)에는 working이 아니라 연장 불가.
+            assert!(db.extend_lease("t1", "worker-a").is_err(), "claim 전에는 연장 불가");
+            db.try_claim("t1", Some("worker-a"), None).unwrap();
+            // 다른 워커는 claimed_by 불일치라 연장 불가(소유권 없는 연장 차단).
+            assert!(db.extend_lease("t1", "worker-b").is_err(), "claimed_by 불일치 연장 불가");
+            // 소유 워커는 성공.
+            assert!(db.extend_lease("t1", "worker-a").is_ok(), "소유 워커는 연장 성공");
         }
 
         #[test]

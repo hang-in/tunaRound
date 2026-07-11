@@ -343,6 +343,9 @@ pub fn task_cli(rt: &tokio::runtime::Runtime, a: TaskArgs) {
                 let text = arg_or_stdin(reason)?;
                 client.fail_task(task_id, &text, agent.as_deref()).await?
             }
+            TaskAction::Cancel { task_id, reason } => {
+                client.cancel_task(task_id, reason.as_deref()).await?
+            }
         };
         println!("{out}");
         Ok::<(), String>(())

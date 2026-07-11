@@ -82,6 +82,24 @@ pub struct FailTaskParams {
     pub agent: Option<String>,
 }
 
+/// extend_task_lease 툴 파라미터(워커가 실행 중 자기 task의 lease를 연장, v2-49 #6).
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ExtendLeaseParams {
+    /// lease를 연장할 task id.
+    pub task_id: String,
+    /// 연장하는 에이전트 id(claimed_by와 일치해야 성공, 소유자 확인용).
+    pub agent: String,
+}
+
+/// cancel_task 툴 파라미터(잘못 보냈거나 더 필요 없는 열린 task를 취소, v2-49 #4).
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct CancelTaskParams {
+    /// 취소할 task id.
+    pub task_id: String,
+    /// 취소 사유(선택, 로그·표시용). 상태는 canceled로만 전이하고 사유는 별도 저장하지 않는다.
+    pub reason: Option<String>,
+}
+
 /// send_task 툴 파라미터(dispatcher가 새 A2A task를 위임할 때 사용). to_agent(구체 대상)와
 /// to_selector(태그 발견, 발송 시점에 uuid로 해석) 중 정확히 하나만 지정한다.
 #[derive(Debug, Deserialize, JsonSchema)]

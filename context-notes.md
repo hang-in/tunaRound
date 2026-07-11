@@ -2,6 +2,14 @@
 
 > 작업 중 결정과 근거. 계속 append. (규율 #7) 다음 세션이 결정을 재유도하지 않게.
 
+## 2026-07-12 세션23: task lease 자동연장(#6) + cancel MCP 도구(#4) - Codex 제안 채택분
+
+- **경위**: Codex A2A 명령 10제안 검토 → 대부분 재발명(SSE·watch-results·lease 이미 있음)으로 판정, 코드 확증된 실수정 1(lease vs 장기 task) + 작은 갭 1(cancel MCP 미노출)만 채택. 사용자 "c"(문서 먼저 후 이거).
+- **#6 코드 확증된 실버그**: claim 시 `CLAIM_LEASE_SECS=30분` lease + `expire_stale_claims`가 만료 working을 submitted로 requeue, **연장 코드 없음**. 30분 넘는 정당한 task(대형 감사·빌드)가 실행 중 requeue → 중복 실행 + first-completer-wins로 원 완료 거부. `STUCK_WORKING_SECS=15분`이라 stuck 표시도 오인.
+  - **수정**: store `extend_lease(task_id, claimed_by)`(working+claimed_by 일치 시 lease+updated_at 갱신, 이벤트 미emit) + MCP `extend_task_lease` 도구 + client 래퍼 + 워커가 러너 실행 중 `tokio::select!`로 rx.await와 interval 경합해 주기 연장(LEASE_KEEPALIVE_SECS=600s=CLAIM_LEASE_SECS/3, client borrow 유지=clone 불요). updated_at 갱신은 의도(살아있으면 stuck 미표시).
+- **#4 cancel**: `store.try_cancel`(종료상태 가드) **이미 존재** → MCP `cancel_task` 도구 + client 래퍼 + `task cancel` CLI만 추가. **권한은 단순 유지**(토큰 게이트=단일소유). Codex의 sender/claimer/admin 다계층은 멀티테넌트 과투자라 비채택([[no-competitive-lens]]).
+- **비채택(재발명)**: await_task(SSE·watch-results), notify_sender(이벤트버스+watch-results), subscribe_tasks(SubscribeToTask SSE), task_inbox/outbox(poll+피드+search), reply/parent_task_id(결과가 같은 task로 회귀=역주소 문제 없음, 스레딩 YAGNI), release/task_events(니치·coarse 타임라인 있음). 교훈=[[tunaround-north-star]] 재발명 금지, 세션17 "A2A 워크플로우 이미 완성".
+
 ## 2026-07-12 세션23: README 리프레시 + 문서 분리(온보딩·mesh) + 배포
 
 - **경위**: 잔여 3건 완주 후 사용자가 "리드미 제대로 업데이트 + 문서 좀 분리 + 온보딩 어떻게". 병렬 조사(README·문서 트리·온보딩) 후 사용자 결정 3건: ① 전용 onboarding.md 신설 ② README 재프레이밍+대폭 트림 ③ mesh-architecture.md 신설.

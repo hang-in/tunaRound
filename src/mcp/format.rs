@@ -153,6 +153,34 @@ pub(crate) fn fail_task_text(
     Ok(format!("실패 처리됨: task_id={task_id} state=failed"))
 }
 
+/// extend_task_lease 순수 로직: 워커가 실행 중 자기 task의 lease를 연장한다(v2-49 #6). working이고
+/// claimed_by가 일치할 때만 성공(store.extend_lease가 affected!=1이면 Err). 대상이 아니면(종료·재claim)
+/// Err를 전파해 워커가 이미 requeue된 상황을 로그로 인지한다.
+pub(crate) fn extend_lease_text(
+    store: &SqliteStore,
+    task_id: &str,
+    agent: &str,
+) -> Result<String, String> {
+    store.extend_lease(task_id, agent)?;
+    Ok(format!("lease 연장됨: task_id={task_id} agent={agent}"))
+}
+
+/// cancel_task 순수 로직: 열린 task를 canceled로 전이한다(v2-49 #4). 대상이 없으면 Err. 이미
+/// completed/failed/canceled로 종료된 task면 try_cancel이 Err를 반환하고 그대로 전파한다(레이스
+/// 방지, R2 - 종료 상태 덮어쓰기 금지). reason은 로그·응답 표시용이며 상태는 canceled로만 전이한다.
+pub(crate) fn cancel_task_text(
+    store: &SqliteStore,
+    task_id: &str,
+    reason: Option<&str>,
+) -> Result<String, String> {
+    if store.get_task(task_id)?.is_none() {
+        return Err(format!("task 없음: task_id={task_id}"));
+    }
+    store.try_cancel(task_id)?;
+    let suffix = reason.map(|r| format!(" 사유={r}")).unwrap_or_default();
+    Ok(format!("취소됨: task_id={task_id} state=canceled{suffix}"))
+}
+
 /// send_task 순수 로직: text 하나를 A2A Message로 감싸 store::create_task_from_message에 위임한다.
 /// message_id는 store.new_task_id()로 발급(신규 crate 의존 없이 고유성 확보, complete_task_text의
 /// artifact_id 발급과 같은 관례).
@@ -415,6 +443,40 @@ mod tests {
         let store = SqliteStore::open_memory().unwrap();
         let err = claim_task_text(&store, "nope", None, None).unwrap_err();
         assert!(err.contains("nope"), "에러 메시지에 task_id 없음: {err}");
+    }
+
+    #[test]
+    fn cancel_task_text_cancels_open_task_with_reason() {
+        let store = SqliteStore::open_memory().unwrap();
+        seed_task(&store, "t1", "win", "mac", "2026-07-02 09:00:00");
+        let text = cancel_task_text(&store, "t1", Some("오발송")).unwrap();
+        assert!(text.contains("state=canceled"), "응답 불일치: {text}");
+        assert!(text.contains("오발송"), "사유 미표시: {text}");
+        assert_eq!(store.get_task("t1").unwrap().unwrap().state, TaskState::Canceled);
+    }
+
+    #[test]
+    fn cancel_task_text_blocks_terminal_and_missing() {
+        let store = SqliteStore::open_memory().unwrap();
+        // 없는 task는 Err.
+        assert!(cancel_task_text(&store, "nope", None).is_err(), "없는 task는 Err");
+        // 이미 completed(종료)면 canceled로 덮어쓰지 못한다(R2 - 종료 상태 보호).
+        seed_task(&store, "t1", "win", "mac", "2026-07-02 09:00:00");
+        claim_task_text(&store, "t1", None, None).unwrap();
+        complete_task_text(&store, "t1", "결과", None).unwrap();
+        assert!(cancel_task_text(&store, "t1", None).is_err(), "completed는 취소 불가(R2)");
+        assert_eq!(store.get_task("t1").unwrap().unwrap().state, TaskState::Completed);
+    }
+
+    #[test]
+    fn extend_lease_text_requires_working_and_owner() {
+        let store = SqliteStore::open_memory().unwrap();
+        seed_task(&store, "t1", "win", "mac", "2026-07-02 09:00:00");
+        // claim 전에는 working이 아니라 연장 불가.
+        assert!(extend_lease_text(&store, "t1", "worker-a").is_err(), "claim 전 연장 불가");
+        claim_task_text(&store, "t1", Some("worker-a"), None).unwrap();
+        let text = extend_lease_text(&store, "t1", "worker-a").unwrap();
+        assert!(text.contains("lease 연장됨"), "응답 불일치: {text}");
     }
 
     #[test]
