@@ -92,7 +92,9 @@ export default function Feed({ onConnectedChange, onEvent, agents }: Props) {
     agentNames.get(id) ?? (/^[0-9a-f][0-9a-f-]{11,}$/i.test(id) ? id.slice(0, 8) : id)
 
   useEffect(() => {
-    const source = new EventSource('/dashboard/events')
+    // replay=50: 접속(리로드 포함) 시 최근 50 task 스냅샷을 라이브에 앞서 선행 수신한다
+    // (브라우저 리로드 = 피드 전멸이던 것 해소, v2-45 P2).
+    const source = new EventSource('/dashboard/events?replay=50')
     source.onopen = () => onConnectedChange(true)
     source.onmessage = (event) => {
       try {
@@ -100,8 +102,15 @@ export default function Feed({ onConnectedChange, onEvent, agents }: Props) {
         setCards((prev) => {
           const id = msg.task.id
           const existing = prev.find((c) => c.id === id)
+          // EventSource 자동 재접속마다 스냅샷이 다시 오므로, 이미 반영된 것과 같은
+          // updatedAt(+state)의 이벤트는 history에 다시 쌓지 않는다('N단계' 부풀림 방지).
+          // 카드 최신 상태 병합·맨 위 이동 자체는 유지한다.
+          const duplicate =
+            existing !== undefined &&
+            existing.latest.task.updatedAt === msg.task.updatedAt &&
+            existing.latest.task.state === msg.task.state
           const card: TaskCard = existing
-            ? { id, latest: msg, history: [...existing.history, msg] }
+            ? { id, latest: msg, history: duplicate ? existing.history : [...existing.history, msg] }
             : { id, latest: msg, history: [msg] }
           // 방금 갱신된 task를 맨 위로, 상위 50 task만 유지.
           return [card, ...prev.filter((c) => c.id !== id)].slice(0, MAX_TASKS)

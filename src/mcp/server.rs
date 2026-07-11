@@ -212,6 +212,18 @@ async fn dashboard_fallback_page() -> axum::response::Html<&'static str> {
     )
 }
 
+/// task 스냅샷 하나를 대시보드 SSE envelope JSON 문자열로 만든다(라이브·재생 공용, v2-45 P2 §3).
+/// 매핑 = state가 completed일 때만 event="completed", 그 외(failed/canceled 포함) 전부 "status"
+/// (§5-2 고정 계약). completed 상태는 try_complete/complete_task 전이(=Completed 이벤트)로만
+/// 도달하므로 state 기준 재구성이 라이브 버스의 variant 기준 매핑과 일치한다. 라이브 스트림과
+/// 재생 스냅샷이 이 한 함수를 공유해 두 경로의 매핑이 갈라지지 않게 한다.
+#[cfg(feature = "serve")]
+fn dashboard_envelope_json(task: &crate::store::a2a::Task) -> String {
+    let kind = if task.state == TaskState::Completed { "completed" } else { "status" };
+    let envelope = serde_json::json!({ "event": kind, "task": task });
+    serde_json::to_string(&envelope).unwrap_or_else(|_| "{}".to_string())
+}
+
 /// 전역 task 이벤트를 JSON data 문자열로 흘리는 순수 스트림(단위테스트 대상). task_id 필터 없이 모든
 /// TaskEvent를 내보낸다. Lagged는 스킵하고 계속, Closed면 종료한다.
 #[cfg(feature = "serve")]
@@ -223,13 +235,12 @@ fn dashboard_event_json_stream(
         loop {
             match rx.recv().await {
                 Ok(ev) => {
-                    let (kind, task) = match &ev {
-                        TaskEvent::Status(t) => ("status", t),
-                        TaskEvent::Completed(t) => ("completed", t),
+                    // Status/Completed 모두 변이 후 Task 전체 스냅샷을 담으므로 envelope 매핑은
+                    // state 기준 공용 헬퍼로 수렴한다(§5-2, dashboard_envelope_json 주석 참조).
+                    let task = match &ev {
+                        TaskEvent::Status(t) | TaskEvent::Completed(t) => t,
                     };
-                    let envelope = serde_json::json!({ "event": kind, "task": task });
-                    let data = serde_json::to_string(&envelope).unwrap_or_else(|_| "{}".to_string());
-                    return Some((data, rx));
+                    return Some((dashboard_envelope_json(task), rx));
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
@@ -238,21 +249,93 @@ fn dashboard_event_json_stream(
     })
 }
 
-/// 위 JSON 문자열을 axum SSE Event로 감싼다(HTTP 핸들러 전용 얇은 래퍼).
+/// GET /dashboard/events 쿼리 파라미터(v2-45 P2 §3). axum Query 추출기는 "query" 피처(미채택 =
+/// serde_urlencoded 신규 의존)라 Uri에서 직접 파싱한다.
 #[cfg(feature = "serve")]
-fn dashboard_event_stream(
-    rx: tokio::sync::broadcast::Receiver<crate::store::a2a::TaskEvent>,
-) -> impl futures_util::Stream<Item = Result<axum::response::sse::Event, std::convert::Infallible>> {
-    use futures_util::StreamExt;
-    dashboard_event_json_stream(rx).map(|data| Ok(axum::response::sse::Event::default().data(data)))
+#[derive(Debug, Clone, Default, PartialEq)]
+struct DashboardEventsQuery {
+    /// 최근 N건 스냅샷 선행(전 상태 포함, 피드 전용). 0=현행 유지(라이브만).
+    replay: usize,
+    /// 이 시각(updated_at, DB datetime 포맷) 이후의 completed/failed만 선행(watch-results 재생 전용).
+    since: Option<String>,
+    /// since와 조합해 from_agent 필터(빈 값=전체, watch-results 의미와 일치).
+    dispatcher: Option<String>,
+}
+
+/// replay 상한. 재생은 피드 창(50건)용 표면이라 전 테이블 덤프 수준의 N을 막는다(원격 관전자도
+/// 무인증으로 붙는 엔드포인트라 방어적 상한).
+#[cfg(feature = "serve")]
+const DASHBOARD_REPLAY_MAX: usize = 500;
+
+/// application/x-www-form-urlencoded 값 디코딩('+' -> 공백, %XX -> 바이트). since의
+/// "YYYY-MM-DD HH:MM:SS"가 %20/+로 인코딩되어 오는 것을 원복한다. 불완전한 %시퀀스는 그대로 둔다.
+#[cfg(feature = "serve")]
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'+' => {
+                out.push(b' ');
+                i += 1;
+            }
+            b'%' if i + 2 < bytes.len() => {
+                let hi = (bytes[i + 1] as char).to_digit(16);
+                let lo = (bytes[i + 2] as char).to_digit(16);
+                match (hi, lo) {
+                    (Some(hi), Some(lo)) => {
+                        out.push((hi * 16 + lo) as u8);
+                        i += 3;
+                    }
+                    _ => {
+                        out.push(b'%');
+                        i += 1;
+                    }
+                }
+            }
+            b => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// raw query 문자열("a=1&b=2")을 DashboardEventsQuery로 파싱한다(순수 함수, 단위테스트 대상).
+/// 알 수 없는 키·파싱 불가 replay 값은 조용히 무시한다(기본 0 = 현행 라이브 전용과 동일).
+#[cfg(feature = "serve")]
+fn parse_dashboard_events_query(query: &str) -> DashboardEventsQuery {
+    let mut q = DashboardEventsQuery::default();
+    for pair in query.split('&') {
+        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+        let value = percent_decode(value);
+        match key {
+            "replay" => q.replay = value.parse().unwrap_or(0).min(DASHBOARD_REPLAY_MAX),
+            "since" if !value.is_empty() => q.since = Some(value),
+            "dispatcher" if !value.is_empty() => q.dispatcher = Some(value),
+            _ => {}
+        }
+    }
+    q
 }
 
 /// GET /dashboard/events: 전역 task 이벤트 SSE(대시보드 라이브 피드). 브라우저 EventSource가 구독한다.
+///
+/// v2-45 P2: opt-in 쿼리 파라미터로 과거 task를 스냅샷 프레임으로 선행 재생한다(SoR = tasks 테이블,
+/// §5-1). `?replay=N` = 최근 N건 전 상태(피드 전용) / `?since=TS[&dispatcher=X]` = TS 이후
+/// completed/failed만(watch-results 재생 표면, P3가 소비). **둘 다 지정되면 since 우선·replay 무시**
+/// (소비자가 다르다 - since는 인박스 재생 의미론이라 전 상태 스냅샷과 섞으면 계약이 흐려진다).
+/// 무파라미터 = 현행 그대로 라이브만(watch-results 무파라미터 구독 회귀 없음).
 #[cfg(feature = "serve")]
 async fn dashboard_events_handler(
     axum::extract::State(store): axum::extract::State<Arc<Mutex<crate::store::sqlite::SqliteStore>>>,
+    uri: axum::http::Uri,
 ) -> axum::response::Response {
     use axum::response::IntoResponse;
+    use futures_util::StreamExt;
+    let query = parse_dashboard_events_query(uri.query().unwrap_or(""));
     let sender = {
         let store = store.lock().unwrap_or_else(|e| e.into_inner());
         store.task_event_sender()
@@ -260,8 +343,41 @@ async fn dashboard_events_handler(
     let Some(sender) = sender else {
         return (axum::http::StatusCode::SERVICE_UNAVAILABLE, "task event bus 미활성").into_response();
     };
+    // 순서 계약(§3): 스냅샷 질의보다 먼저 구독해야 질의 중 일어난 전이도 rx에 버퍼되어 유실되지
+    // 않는다(a2a_server handle_subscribe_to_task의 subscribe-먼저 순서 답습). 그 대가로 스냅샷과
+    // 라이브가 같은 전이를 중복 운반할 수 있는데, 소비자(피드 updatedAt 가드·watch-results seen)가
+    // dedup한다.
     let rx = sender.subscribe();
-    let stream = dashboard_event_stream(rx);
+    let snapshot: Vec<String> = if query.since.is_some() || query.replay > 0 {
+        // lock은 spawn_blocking 안에서 짧게 잡는다(roster 핸들러 패턴). SSE 스트림 안에서 lock 보유 금지.
+        tokio::task::spawn_blocking(move || {
+            let store = store.lock().unwrap_or_else(|e| e.into_inner());
+            let tasks = if let Some(since) = query.since.as_deref() {
+                let dispatcher = query.dispatcher.as_deref().filter(|d| !d.is_empty());
+                store.list_tasks_replay(dispatcher, Some(since), &["completed", "failed"], None)
+            } else {
+                // replay = 전 상태 스냅샷(canceled·열린 task 포함 - 피드는 전 상태 뷰).
+                store.list_tasks_replay(None, None, &[], Some(query.replay))
+            };
+            tasks
+                .unwrap_or_else(|e| {
+                    eprintln!("[dashboard] 재생 스냅샷 질의 실패(라이브만 제공): {e}");
+                    Vec::new()
+                })
+                .iter()
+                .map(dashboard_envelope_json)
+                .collect()
+        })
+        .await
+        .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let stream = futures_util::stream::iter(snapshot)
+        .chain(dashboard_event_json_stream(rx))
+        .map(|data| {
+            Ok::<_, std::convert::Infallible>(axum::response::sse::Event::default().data(data))
+        });
     axum::response::sse::Sse::new(stream)
         .keep_alive(axum::response::sse::KeepAlive::default())
         .into_response()
@@ -815,6 +931,160 @@ mod tests {
             assert_eq!(final_task.artifacts[0].parts[0].text.as_deref(), Some("작업 결과 요약"));
         }
 
+        /// v2-45 P2: ?replay=N이 과거 task 스냅샷 프레임(전 상태, updated_at 오름차순)을 라이브
+        /// 스트림보다 먼저 내보내는지 HTTP 레벨로 검증한다(subscribe-먼저 + chain 배선 확인).
+        #[tokio::test]
+        async fn dashboard_events_replay_sends_snapshot_frames_before_live() {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+            let port = listener.local_addr().unwrap().port();
+
+            // 이벤트 버스 활성 store에 종결·취소 task를 미리 심는다(재기동 후 피드 리로드 시나리오).
+            let store = Arc::new(std::sync::Mutex::new(
+                crate::store::sqlite::SqliteStore::open_memory()
+                    .expect("in-memory sqlite")
+                    .with_task_events(),
+            ));
+            {
+                let s = store.lock().unwrap();
+                let mut done =
+                    crate::store::a2a::Task::new("done-task", None, "win", "mac", "2026-07-11 09:00:00");
+                done.state = TaskState::Completed;
+                s.create_task(&done).unwrap();
+                let mut gone =
+                    crate::store::a2a::Task::new("gone-task", None, "win", "mac", "2026-07-11 09:01:00");
+                gone.state = TaskState::Canceled;
+                s.create_task(&gone).unwrap();
+            }
+
+            let retriever = Arc::new(NullRetriever) as Arc<dyn crate::orchestrator::ContextRetriever>;
+            let store_for_server = store.clone();
+            tokio::spawn(async move {
+                let _ = serve_http_mcp_on_listener(
+                    listener, retriever, None, None, None, None, store_for_server,
+                )
+                .await;
+            });
+            tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+
+            let resp = reqwest::get(format!("http://127.0.0.1:{port}/dashboard/events?replay=10"))
+                .await
+                .expect("SSE 접속 실패");
+            assert_eq!(resp.status(), 200);
+
+            // 스냅샷 2프레임이 접속 직후(라이브 이벤트 없이) 도착해야 한다. SSE 이벤트는 "\n\n"으로
+            // 끝나므로, 청크 경계에서 잘린 미완 프레임은 세지 않는다(마지막 조각 제외).
+            fn complete_data_frames(body: &str) -> Vec<&str> {
+                let mut parts: Vec<&str> = body.split("\n\n").collect();
+                parts.pop(); // 마지막 조각은 아직 미완일 수 있다.
+                parts.into_iter().filter_map(|p| p.trim().strip_prefix("data: ")).collect()
+            }
+            let mut resp = resp;
+            let mut body = String::new();
+            while complete_data_frames(&body).len() < 2 {
+                let chunk = tokio::time::timeout(std::time::Duration::from_secs(5), resp.chunk())
+                    .await
+                    .expect("스냅샷 프레임 타임아웃")
+                    .expect("chunk 읽기 실패")
+                    .expect("스트림 조기 종료");
+                body.push_str(&String::from_utf8_lossy(&chunk));
+            }
+            // 순서 = updated_at 오름차순(done 09:00 < gone 09:01) + envelope 매핑(§5-2):
+            // completed만 "completed", canceled는 "status".
+            let frames: Vec<serde_json::Value> = complete_data_frames(&body)
+                .into_iter()
+                .map(|d| serde_json::from_str(d).expect("SSE data JSON 파싱 실패"))
+                .collect();
+            assert_eq!(frames.len(), 2, "스냅샷은 task당 최종 상태 1프레임: {body}");
+            assert_eq!(frames[0]["event"], "completed");
+            assert_eq!(frames[0]["task"]["id"], "done-task");
+            assert_eq!(frames[1]["event"], "status");
+            assert_eq!(frames[1]["task"]["state"], "canceled");
+
+            // 스냅샷 뒤로 라이브 스트림이 이어진다(chain): 새 task 생성(Status emit 경로)이 같은
+            // 접속에 도착.
+            {
+                let s = store.lock().unwrap();
+                let msg = crate::store::a2a::Message {
+                    message_id: "m-live".into(),
+                    role: "user".into(),
+                    parts: vec![],
+                    task_id: None,
+                    context_id: None,
+                };
+                s.create_task_from_message("win", "live-target", msg).unwrap();
+            }
+            while !body.contains("live-target") {
+                let chunk = tokio::time::timeout(std::time::Duration::from_secs(5), resp.chunk())
+                    .await
+                    .expect("라이브 프레임 타임아웃")
+                    .expect("chunk 읽기 실패")
+                    .expect("스트림 조기 종료");
+                body.push_str(&String::from_utf8_lossy(&chunk));
+            }
+        }
+
+        /// 무파라미터 구독은 현행 그대로 라이브 전용이어야 한다(watch-results 재기동 시 과거 재통지
+        /// 회귀 금지 - 설계 §4 P2 항목 5).
+        #[tokio::test]
+        async fn dashboard_events_without_params_sends_no_snapshot() {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+            let port = listener.local_addr().unwrap().port();
+
+            let store = Arc::new(std::sync::Mutex::new(
+                crate::store::sqlite::SqliteStore::open_memory()
+                    .expect("in-memory sqlite")
+                    .with_task_events(),
+            ));
+            {
+                let s = store.lock().unwrap();
+                let mut done =
+                    crate::store::a2a::Task::new("done-task", None, "win", "mac", "2026-07-11 09:00:00");
+                done.state = TaskState::Completed;
+                s.create_task(&done).unwrap();
+            }
+
+            let retriever = Arc::new(NullRetriever) as Arc<dyn crate::orchestrator::ContextRetriever>;
+            let store_for_server = store.clone();
+            tokio::spawn(async move {
+                let _ = serve_http_mcp_on_listener(
+                    listener, retriever, None, None, None, None, store_for_server,
+                )
+                .await;
+            });
+            tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+
+            let mut resp = reqwest::get(format!("http://127.0.0.1:{port}/dashboard/events"))
+                .await
+                .expect("SSE 접속 실패");
+            assert_eq!(resp.status(), 200);
+
+            // 라이브 이벤트를 하나 흘려 첫 도착 프레임이 (스냅샷이 아니라) 그 이벤트인지 확인한다.
+            {
+                let s = store.lock().unwrap();
+                let msg = crate::store::a2a::Message {
+                    message_id: "m-live".into(),
+                    role: "user".into(),
+                    parts: vec![],
+                    task_id: None,
+                    context_id: None,
+                };
+                s.create_task_from_message("win", "live-target", msg).unwrap();
+            }
+            let mut body = String::new();
+            while !body.contains("live-target") {
+                let chunk = tokio::time::timeout(std::time::Duration::from_secs(5), resp.chunk())
+                    .await
+                    .expect("라이브 프레임 타임아웃")
+                    .expect("chunk 읽기 실패")
+                    .expect("스트림 조기 종료");
+                body.push_str(&String::from_utf8_lossy(&chunk));
+            }
+            assert!(
+                !body.contains("done-task"),
+                "무파라미터 구독에 과거 task가 재생되면 안 됨(회귀): {body}"
+            );
+        }
+
         #[test]
         fn core_local_url_maps_wildcards_to_loopback() {
             // 와일드카드 host는 loopback으로, 일반 host는 그대로.
@@ -961,5 +1231,71 @@ mod tests {
             serde_json::from_str(&stream.next().await.expect("frame2 있어야 함")).unwrap();
         assert_eq!(f2["event"], "completed");
         assert_eq!(f2["task"]["id"], "task-b");
+    }
+
+    // --- v2-45 P2: envelope 공용 헬퍼 + 쿼리 파싱 단위테스트 ---
+
+    /// §5-2 고정 계약: state가 completed일 때만 "completed", 그 외(failed/canceled 포함) 전부 "status".
+    /// failed/canceled를 "completed"로 내보내면 계약 파손(조사 중 자기모순 있었던 지점의 회귀 가드).
+    #[cfg(feature = "serve")]
+    #[test]
+    fn dashboard_envelope_json_maps_only_completed_state_to_completed_event() {
+        use crate::store::a2a::Task;
+        let expectations = [
+            (TaskState::Submitted, "status"),
+            (TaskState::Working, "status"),
+            (TaskState::InputRequired, "status"),
+            (TaskState::Completed, "completed"),
+            (TaskState::Failed, "status"),
+            (TaskState::Canceled, "status"),
+        ];
+        for (state, expected) in expectations {
+            let mut task = Task::new("t1", None, "win", "mac", "2026-07-11 09:00:00");
+            task.state = state;
+            let frame: serde_json::Value =
+                serde_json::from_str(&dashboard_envelope_json(&task)).unwrap();
+            assert_eq!(frame["event"], expected, "state={state:?}의 envelope 매핑이 §5-2와 다름");
+            assert_eq!(frame["task"]["id"], "t1");
+        }
+    }
+
+    #[cfg(feature = "serve")]
+    #[test]
+    fn parse_dashboard_events_query_defaults_and_each_param() {
+        // 무파라미터 = 기본(replay 0, since/dispatcher 없음) = 현행 라이브 전용.
+        assert_eq!(parse_dashboard_events_query(""), DashboardEventsQuery::default());
+        // replay 단독.
+        assert_eq!(parse_dashboard_events_query("replay=50").replay, 50);
+        // 파싱 불가 replay는 0(무시), 상한 초과는 상한으로 클램프.
+        assert_eq!(parse_dashboard_events_query("replay=abc").replay, 0);
+        assert_eq!(parse_dashboard_events_query("replay=999999").replay, DASHBOARD_REPLAY_MAX);
+        // since(%20·%3A 인코딩) + dispatcher 조합.
+        let q = parse_dashboard_events_query(
+            "since=2026-07-11%2009%3A00%3A00&dispatcher=win-opus-boss",
+        );
+        assert_eq!(q.since.as_deref(), Some("2026-07-11 09:00:00"));
+        assert_eq!(q.dispatcher.as_deref(), Some("win-opus-boss"));
+        // '+' 공백 인코딩도 동등.
+        let q = parse_dashboard_events_query("since=2026-07-11+09:00:00");
+        assert_eq!(q.since.as_deref(), Some("2026-07-11 09:00:00"));
+        // 빈 값 since/dispatcher는 None(전체 의미, watch-results 의미와 일치).
+        let q = parse_dashboard_events_query("since=&dispatcher=");
+        assert_eq!(q.since, None);
+        assert_eq!(q.dispatcher, None);
+        // 알 수 없는 키는 무시.
+        assert_eq!(parse_dashboard_events_query("foo=bar"), DashboardEventsQuery::default());
+    }
+
+    #[cfg(feature = "serve")]
+    #[test]
+    fn percent_decode_handles_plus_hex_and_malformed_sequences() {
+        assert_eq!(percent_decode("2026-07-11%2009%3A00%3A00"), "2026-07-11 09:00:00");
+        assert_eq!(percent_decode("a+b"), "a b");
+        assert_eq!(percent_decode("plain"), "plain");
+        // 불완전/비-hex %시퀀스는 그대로 통과(패닉·소실 없음).
+        assert_eq!(percent_decode("100%"), "100%");
+        assert_eq!(percent_decode("%zz"), "%zz");
+        // UTF-8 멀티바이트(한글) 복원.
+        assert_eq!(percent_decode("%ED%94%BC%EB%93%9C"), "피드");
     }
 }
