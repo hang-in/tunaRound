@@ -1,95 +1,246 @@
-# 맥 - 윈도우 왕복 개발 핸드오프
+# macOS와 Windows에서 함께 운용하기
 
-> 두 머신(맥/윈도우)을 오가며 tunaRound를 개발할 때의 환경·재개 가이드. 세션별 핸드오프가 아니라 **상시 참조용**. 사설 도메인/토큰은 레포 문서에 넣지 않는다(각 머신의 env·로컬 설정에만).
+이 문서는 macOS와 Windows 두 머신에서 tunaRound를 개발하거나 mesh로 함께 운용할 때 필요한 차이만 정리합니다.
 
-## 0. 왕복 규칙 (제일 중요)
+설치와 기본 온보딩은 [온보딩 가이드](onboarding.md), 작업 위임은 [A2A 사용법](a2a-usage.md)을 먼저 참고하세요.
 
-- **머신을 옮기기 전 항상 push**, 옮긴 뒤 항상 `git pull`. 작업은 `main`에 올린다(현재 정책).
-- 검증(build/test)과 commit/push는 분리. cargo는 **Bash 툴**로(PowerShell 아님).
-- 진행 상태·결정은 레포의 `checklist.md` + `context-notes.md`에 남긴다 = 두 머신이 공유하는 단일 진실.
+## 1. 가장 중요한 원칙
 
-## 1. 공통 전제 (양 머신)
+- 한 레포를 두 머신에서 개발할 때는 이동 전 push, 이동 후 pull을 기본으로 합니다.
+- 같은 브랜치를 두 머신에서 동시에 편집하지 않습니다.
+- 병렬 작업은 브랜치와 worktree 또는 별도 클론으로 분리합니다.
+- 토큰, 사설 IP, 호스트 이름은 레포 문서에 기록하지 않습니다.
+- 코어와 워커가 읽는 토큰은 `TUNA_BROKER_TOKEN`으로 통일합니다.
 
-- Rust 툴체인(rustup).
-- `claude` CLI + `codex` CLI 설치 + **로그인**(에이전트는 tunaRound가 도는 그 머신에서 subprocess로 실행됨).
-- git.
-- (선택) 원격 Ollama 접근(의미검색). 멀티세션 관찰은 공유 SQLite DB(`--db`)로 한다.
+## 2. 공통 준비
 
-## 2. 레포 동기 / 실행
+두 머신 모두 다음 도구를 준비합니다.
 
-```bash
-git clone https://github.com/hang-in/tunaRound   # 처음
-git pull                                          # 이어받기
-cargo run -- chat                                 # 기본 REPL (인자 없으면 자동 chat)
-```
-- 서브커맨드: `chat`(기본) · `core <addr>` · `serve <addr>` · `join <url>` · `reindex`. `cargo run -- <명령> --help`.
-- 검색·의미검색·MCP까지: `cargo run --features "semantic mcp" -- chat --db tuna.db` (morphology+sqlite는 default 포함).
-- 설치형: `cargo install --path .` → 이후 `tunaround`.
+- Git
+- Rust stable과 Cargo
+- 사용할 에이전트 CLI와 로그인 상태
+- 선택적으로 Ollama 또는 다른 임베딩 서버
 
-## 3. 플랫폼 차이 (왕복 시 주의)
-
-### 형태소 분석기(Kiwi/lindera)
-- 빌드는 순수 Rust라 양쪽 동일하게 됨. Kiwi 네이티브(libkiwi)+모델은 **런타임 자동 다운로드**(OS 캐시), 실패하면 lindera 폴백.
-- **Windows**: 이미 `%LOCALAPPDATA%\kiwi`에 pre-seed됨(자동 다운로드 성공 이력).
-- **맥**: 첫 실행 시 자동 다운로드 예상(bab2min/Kiwi에 `kiwi_mac_arm64`/`x86_64` 자산 존재). 안 되면 `KIWI_RS_VERSION`/`KIWI_LIBRARY_PATH` env 또는 수동 캐시. 그래도 안 되면 lindera로 동작(검색 품질 측정도 lindera 기준이라 무방).
-
-### 줄바꿈(CRLF/LF)
-- Windows에서 커밋 시 "LF will be replaced by CRLF" 경고가 뜨지만 **레포엔 LF로 저장**되므로 맥(LF)과 충돌 없음. 대량 diff가 보이면 `git config core.autocrlf` 확인. 필요하면 `.gitattributes`(`* text=auto eol=lf`)로 정규화(1회 renormalize 커밋 발생하니 작업 경계에서).
-
-### 경로
-- DB/스크래치 경로는 OS마다 다름. `--db`는 상대·절대 경로 자유. `tunaround.toml` 프로파일(`--config`/`--profile`, `tunaround.toml.example` 참고)을 쓰면 `db`/`roster`의 선행 `~/`를 홈 디렉터리로 자동 확장하므로 `~/.tunaround/…` 같은 홈 기준 경로를 권장.
-
-## 4. 백엔드 / 환경변수 (양 머신에서 동일 이름)
-
-- `TUNAROUND_OLLAMA_URL` — 의미검색 임베딩 서버(기본 `http://127.0.0.1:11435`). 원격 Ollama는 각자 SSH 터널로 로컬 포트에 연결(호스트·포트는 개인 설정, 레포에 미기재).
-- `TUNAROUND_EMBED_MODEL` — 기본 `qwen3-embedding:0.6b`(bge-m3보다 랭킹 우위 측정). `bge-m3`로 교체 가능. 모델 바꾸면 다음 색인 때 자동 재임베딩.
-- (`TUNAROUND_REDIS_URL`은 제거됨 - 멀티세션 관찰/재개는 이제 공유 SQLite DB `--db`를 쓴다.)
-- 원격 코어 접속용 도메인/bearer 토큰은 **env·로컬 설정파일에만**(레포 미포함, 서비스 비공개 원칙).
-
-## 5. 검증 루틴 (커밋 전, Bash 툴)
+레포를 받습니다.
 
 ```bash
-cargo test                                             # 기본(morphology+sqlite)
-cargo test --features "semantic morphology mcp serve"  # 풀 피처
-cargo clippy --features "semantic morphology mcp serve"
+git clone https://github.com/hang-in/tunaRound.git
+cd tunaRound
+cargo test
 ```
-- 의미검색/모델 비교 등 수동 테스트는 `#[ignore]`(Ollama 터널 필요): `cargo test --features "semantic morphology" --test embed_model_compare -- --ignored --nocapture`.
 
-## 6. 배포 도구(cargo-dist)
-
-- `dist`(cargo-dist 0.31.0)로 릴리스. 로컬 설치는 각 머신에서(Windows는 `D:\.cargo\bin`에 설치됨). 미설치 머신은 powershell/shell 인스톨러로 `v0.31.0` 설치.
-- 설정: `dist-workspace.toml`(+ `.github/workflows/release.yml`). 드라이런: `dist plan`.
-- **실제 릴리스는 도그푸딩 후 태그 푸시**: `git tag v0.1.0 && git push origin v0.1.0` → 공개 Release + `hang-in/homebrew-tap` 발행. 라이선스=AGPL-3.0.
-- ⚠ 크로스컴파일 리스크(rusqlite bundled C·reqwest rustls·axum, 특히 aarch64-linux)는 첫 릴리스 CI에서 확인.
-- **rc.1 실전 교훈(2026-07-02, CI 전용 버그 3개 = 로컬 미검출):**
-  1. **cargo-dist는 git 태그 버전 = Cargo.toml 패키지 버전을 요구.** rc는 Cargo.toml `version="X.Y.Z-rc.N"` + 태그 `vX.Y.Z-rc.N`. 로컬 `dist plan`은 기본 태그라 안 걸리고, CI가 명시 태그 `--tag`로 실패("nothing to Release"). 최종은 `version="X.Y.Z"` 되돌리고 `vX.Y.Z`.
-  2. **`[profile.dist]` 필수**(Cargo.toml, `inherits="release" lto="thin"`). 없으면 build 잡이 `profile dist is not defined`로 전멸. `dist init` 미완 흔적.
-  3. **aarch64 크로스는 ring C가 깨짐**(arm64-windows: cargo-xwin clang `/imsvc` 오류 / arm64-linux 유사). **v0.1.0은 4타깃**(mac arm64·x64, win x64, linux x64)만. arm64 크로스는 zigbuild/xwin ring 설정 후 후속.
-  - **prerelease(`-rc.N`) 태그는 homebrew publish 잡을 자동 skip**(확인됨) → tap/시크릿 없이 rc CI 안전. tap은 최종 정식 태그 전에만 필요.
-  - 검증: rc 태그 → `gh run view <id> --json jobs`로 **잡별 결론 직접 확인**(`gh run watch --exit-status`의 exit code는 신뢰 불가, 실제 실패해도 0 반환 사례 있었음) + `gh release view <tag>`.
-
-## 7. 분산(맥 ↔ 윈도우) 실행
-
-- 한 머신이 코어(`tunaround serve <addr> --token <T>` 헤드리스, 또는 `core <addr>` 단일프로세스), 다른 머신이 프론트(`tunaround join <url> --token <T>`)로 접속해 전사·검색 공유. 양쪽 다 자기 claude/codex 필요.
-- 네트워크는 Tailscale/LAN/SSH. 코어 바인드는 `0.0.0.0:<port>`, 인증은 bearer.
-- 상세·검증범위: `docs/design/v2-deploy-onboarding_2026-07-02.md`, `docs/design/v2-A2A-core-backend_2026-06-30.md`.
-
-### codex 라이브 감독을 다른 머신에서 관전(SSH 포워딩)
-
-`codex app-server --listen ws://127.0.0.1:<PORT>`는 **localhost 바인드**입니다. 감독이 도는 머신이 아닌 다른 머신에서 `codex --remote`로 그 라이브 thread를 관전하려면 SSH 포트포워딩으로 로컬 포트를 감독 머신에 연결합니다.
+기본 REPL 실행은 두 플랫폼에서 같습니다.
 
 ```bash
-# 총감독 머신에서: 감독(codex app-server)이 도는 머신으로 포워딩
-ssh -L <PORT>:127.0.0.1:<PORT> <supervisor-host>
-# 별도 터미널에서: 포워딩된 로컬 포트로 접속
-codex --remote ws://127.0.0.1:<PORT>
+cargo run -- chat --db tuna.db
 ```
 
-단, **크로스머신 작업 라우팅 자체는 브로커가 담당**하므로(코어 브로커가 이미 원격 폴러에 작업을 배달) 이 ws 포워딩은 **원격 관전(HITL) 용도로만** 필요합니다 - 예를 들어 맥 총감독이 윈도우 codex 감독에게 작업을 던지는 경로 자체는 브로커 경유라 ws 노출이 필요 없습니다. 상세: [docs/design/v2-codex-live-supervisor-appserver_2026-07-05.md](../design/v2-codex-live-supervisor-appserver_2026-07-05.md) §5.5. `<supervisor-host>`/포트는 각자 환경(SSH config alias 등)으로 대체하고 레포에 실제 호스트명·IP를 남기지 않습니다.
+## 3. 권장 구성
 
-## 8. 현재 상태 / 재개 포인터 (2026-07-02 기준)
+두 머신을 함께 쓸 때는 한 머신을 코어로 정하고 다른 머신을 워커 또는 원격 REPL로 붙이는 구성이 단순합니다.
 
-- **완료**: v1 + v2 검색/맥락 로드맵(step 2~8) + Stage 3a-3d + codex pull(behavioral) + 실코퍼스 회귀(step 6) + 외래어 병기 색인 + 임베딩 기본 qwen3. 배포 온보딩 **Stage 1(clap 서브커맨드)·Stage 2(cargo-dist 설정)·Stage 3(tunaround.toml 프로파일)** 구현 완료(Stage 3은 리뷰·커밋 대기).
-- **대기/다음**: 배포 실릴리스(도그푸딩 후 태그) · 온보딩 Stage 4 doctor · abstraction/anchors(보류) · 분산 코어 홈랩 호스팅(보류).
-- **재개 시 읽을 것**: `checklist.md`(단계별 체크+커밋해시) · `context-notes.md`(최근 노트) · `docs/plans/index.md` · `docs/design/v2-deploy-onboarding_2026-07-02.md` · 최신 세션 핸드오프(`docs/prompts/`).
-- 검증 기대치(참고): 기본 166+6 / 풀피처 180+9 테스트 pass, clippy 클린(세션마다 갱신).
+```text
+Windows 또는 macOS
+└─ 코어: serve + SQLite + 대시보드
+
+다른 머신
+├─ 원격 REPL: join
+├─ 헤드리스 워커: node 또는 work
+└─ 라이브 세션 등록: presence-scan + 필요 시 codex-relay
+```
+
+어느 운영체제가 코어를 맡아도 구조는 같습니다. 항상 켜 두기 쉬운 머신을 코어로 정하세요.
+
+## 4. 코어 머신
+
+코어를 실행합니다.
+
+```bash
+tunaround serve 0.0.0.0:8770 \
+  --db ~/.tunaround/broker.db \
+  --token <토큰>
+```
+
+다른 머신에서 접근할 수 있도록 다음 항목을 확인합니다.
+
+1. 코어가 `0.0.0.0:<port>`에 바인드되었는가
+2. 운영체제 방화벽이 해당 포트를 허용하는가
+3. 양쪽 머신이 같은 LAN이나 Tailscale 네트워크에 있는가
+4. 토큰이 같은가
+
+대시보드를 사용하려면 소스에서 프런트엔드를 빌드해야 합니다. 자세한 과정은 [소스 빌드 안내](../development/source-run.md#5-웹-대시보드-빌드)를 참고하세요.
+
+## 5. 합류하는 머신
+
+가장 간단한 원격 REPL 접속입니다.
+
+```bash
+tunaround join http://<코어-IP>:8770/mcp --token <토큰>
+```
+
+워커 노드로 상주시킵니다.
+
+```bash
+tunaround init --core http://<코어-IP>:8770/mcp --machine mac
+# 또는 --machine win
+
+tunaround doctor
+tunaround node
+```
+
+`init`이 만든 `~/.tunaround/config`에서 다음 값을 확인합니다.
+
+```dotenv
+TUNA_BROKER_CORE=http://<코어-IP>:8770/mcp
+TUNA_BROKER_TOKEN=<토큰>
+TUNA_MACHINE=mac
+```
+
+Windows에서는 `TUNA_MACHINE=win`을 사용합니다.
+
+## 6. 플랫폼별 차이
+
+### 6.1 경로
+
+홈 디렉터리 기준 경로를 사용하면 설정을 두 플랫폼에서 비슷하게 유지할 수 있습니다.
+
+```text
+~/.tunaround/broker.db
+~/.tunaround/node.toml
+~/.tunaround/config
+```
+
+`tunaround.toml`과 `node.toml`은 `~/`를 홈 디렉터리로 확장합니다. 셸 스크립트나 외부 도구에서는 플랫폼별 경로 처리가 다를 수 있으므로 확인이 필요합니다.
+
+### 6.2 실행 파일
+
+macOS와 Linux에서는 보통 확장자 없는 실행 파일을 사용합니다.
+
+```bash
+./target/release/tunaround
+```
+
+Windows에서는 `.exe`, CLI 래퍼는 `.cmd`일 수 있습니다.
+
+```powershell
+.\target\release\tunaround.exe
+Get-Command claude
+Get-Command codex
+```
+
+Rust 러너는 Windows의 `.cmd`와 `.bat` 실행을 처리하지만, 셸 스크립트 예시는 Git Bash 또는 WSL이 더 편할 수 있습니다.
+
+### 6.3 환경변수
+
+macOS의 zsh 예시입니다.
+
+```bash
+export TUNA_BROKER_TOKEN=<토큰>
+export TUNAROUND_OLLAMA_URL=http://127.0.0.1:11434
+```
+
+PowerShell 예시입니다.
+
+```powershell
+$env:TUNA_BROKER_TOKEN="<토큰>"
+$env:TUNAROUND_OLLAMA_URL="http://127.0.0.1:11434"
+```
+
+환경변수를 영구 변경해도 이미 실행 중인 데몬에는 반영되지 않습니다. 토큰이나 서버 주소를 바꾸면 관련 프로세스를 재기동하세요.
+
+### 6.4 줄바꿈
+
+레포 파일은 LF를 기준으로 유지합니다. Windows에서 대량 줄바꿈 diff가 생기면 다음 설정을 확인합니다.
+
+```bash
+git config core.autocrlf
+```
+
+단순 문서 수정에서 파일 전체가 변경된 것처럼 보이면 커밋하기 전에 중단하고 줄바꿈을 먼저 바로잡습니다.
+
+### 6.5 Kiwi 형태소 분석기
+
+Kiwi 네이티브 라이브러리나 모델을 불러오지 못하면 lindera로 자동 폴백합니다. 검색 자체는 계속 동작합니다.
+
+Windows에서는 자동 다운로드가 불안정할 수 있으므로 [Windows Kiwi 설정](kiwi-windows-setup.md)을 참고하세요. macOS에서는 자동 다운로드가 실패하면 로그를 확인하고, 필요한 경우 `KIWI_LIBRARY_PATH`를 지정합니다.
+
+## 7. 라이브 세션 등록
+
+각 머신에서 `presence-scan`을 하나씩 실행하면 해당 머신의 Claude Code와 Codex 세션이 공용 로스터에 나타납니다.
+
+```bash
+tunaround presence-scan --machine mac
+```
+
+Windows에서는 다음과 같이 실행합니다.
+
+```powershell
+tunaround presence-scan --machine win
+```
+
+스캐너는 세션 존재만 보고합니다. 실제 작업 수신은 별도입니다.
+
+- Claude 세션은 Monitor 또는 task CLI로 수신합니다.
+- Codex 라이브 세션은 `codex app-server`와 `tunaround codex-relay`가 필요합니다.
+
+세부 설정은 [A2A 사용법의 라이브 세션 절](a2a-usage.md#4-라이브-세션을-mesh에-연결하기)을 참고하세요.
+
+## 8. Codex 세션을 다른 머신에서 관전하기
+
+Codex app-server는 기본적으로 localhost에 바인드합니다. 다른 머신에서 같은 thread를 열어 볼 때만 SSH 포트 포워딩을 사용합니다.
+
+```bash
+ssh -L <로컬-포트>:127.0.0.1:<원격-포트> <원격-머신>
+```
+
+포워딩된 주소로 접속합니다.
+
+```bash
+codex resume <threadId> --remote ws://127.0.0.1:<로컬-포트>
+```
+
+이 포워딩은 원격 관전용입니다. 일반적인 작업 위임과 결과 회수는 코어 브로커를 통하므로 Codex WebSocket을 다른 머신에 직접 공개할 필요가 없습니다.
+
+## 9. 검색 서버 공유
+
+임베딩 서버는 각 머신에서 따로 실행해도 되고 한 머신의 서버를 네트워크로 공유해도 됩니다.
+
+```bash
+export TUNAROUND_OLLAMA_URL=http://<임베딩-서버-IP>:11434
+export TUNAROUND_EMBED_MODEL=qwen3-embedding:0.6b
+```
+
+외부 네트워크에 Ollama 포트를 직접 공개하지 마세요. LAN, Tailscale 또는 SSH 터널 안에서만 접근하도록 구성합니다.
+
+## 10. 개발 검증
+
+두 플랫폼 모두 기본 검증은 같습니다.
+
+```bash
+cargo fmt -- --check
+cargo test
+cargo clippy --all-targets --all-features -- -D warnings
+```
+
+한 플랫폼에서만 통과했다고 끝내지 말고, 플랫폼 의존 변경은 GitHub Actions의 macOS와 Windows 결과까지 확인합니다.
+
+특히 다음 변경은 양쪽 확인이 필요합니다.
+
+- 프로세스 실행과 종료
+- 경로와 홈 디렉터리 처리
+- `.cmd`, `.bat`, `.exe` 탐색
+- 파일 잠금과 SQLite
+- 네이티브 라이브러리 로딩
+
+## 11. 연결이 안 될 때
+
+| 증상 | 먼저 확인할 것 |
+| --- | --- |
+| `join` 실패 | 코어 주소의 `/mcp`, 토큰, 방화벽 |
+| 워커가 안 보임 | `node` 또는 `work` 실행 여부, `doctor` 결과 |
+| 세션이 로스터에 안 보임 | 각 머신의 `presence-scan` 실행 여부 |
+| Codex task가 전달되지 않음 | app-server thread와 `codex-relay` 상태 |
+| 의미 검색 실패 | `TUNAROUND_OLLAMA_URL`, 서버 포트, 모델 존재 여부 |
+| 토큰 변경 후 인증 실패 | 모든 코어·워커·relay 프로세스 재기동 |
+
+실제 IP, 토큰, 호스트 별칭은 각 머신의 로컬 설정에서 관리하고 문서나 커밋에 포함하지 않습니다.
