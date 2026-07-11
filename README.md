@@ -88,6 +88,8 @@ tunaround chat --roster examples/roster.json  # 역할·엔진 직접 지정
 
 ## 설치
 
+**가장 쉬운 방법 - AI에게 맡기기**: [`docs/prompts/install-with-ai.md`](docs/prompts/install-with-ai.md)의 프롬프트를 새 머신의 Claude Code(또는 Codex)에 붙여넣으면 AI가 OS 감지·설치·`init`·`doctor`까지 대신합니다(사람은 역할과 코어 주소·토큰만). 아래는 직접 하는 경우입니다.
+
 소스는 공개되어 있습니다(crates.io에는 게시하지 않습니다). 릴리스 바이너리 또는 소스 빌드 중 편한 쪽을 씁니다.
 
 ```bash
