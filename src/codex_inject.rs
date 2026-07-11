@@ -381,7 +381,7 @@ pub async fn run(
 
 /// turn/start 전송 -> turn/completed까지 알림 펌프(승인은 handle_incoming이 자동응답).
 /// 최종답(PrintText)을 누적해 반환한다 - CLI는 handle_incoming이 이미 stdout에 출력하고,
-/// 대시보드 제어(/dashboard/control)·codex-relay는 이 반환값을 결과로 쓴다.
+/// codex-relay는 이 반환값을 결과로 쓴다.
 /// thread 확보 두 경로(파일 모드·--thread 직지정)가 공유한다(v2-46).
 async fn pump_turn(
     sink: &mut WsSink,
