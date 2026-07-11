@@ -2,6 +2,13 @@
 
 > 작업 중 결정과 근거. 계속 append. (규율 #7) 다음 세션이 결정을 재유도하지 않게.
 
+## 2026-07-12 세션23: README 리프레시 + 문서 분리(온보딩·mesh) + 배포
+
+- **경위**: 잔여 3건 완주 후 사용자가 "리드미 제대로 업데이트 + 문서 좀 분리 + 온보딩 어떻게". 병렬 조사(README·문서 트리·온보딩) 후 사용자 결정 3건: ① 전용 onboarding.md 신설 ② README 재프레이밍+대폭 트림 ③ mesh-architecture.md 신설.
+- **조사 결론**: README 650줄, 기능 3중복(핵심기능·현재상태·로드맵) + product-adoption 프레이밍이 개인악기 메모리와 충돌. privacy 클린. 실오류 1건(`chat --features semantic`=컴파일 피처를 런타임 플래그로 오기). 문서 트리는 이미 잘 구조화(docs/index.md + 폴더별 index)라 새 문서 남발이 아니라 링크+중복제거가 핵심. 온보딩은 실제 복잡(피처 divergence·설정파일 3종·토큰 로테이션 함정).
+- **실행**: README 650→~200줄 재작성(개인악기 톤, 소스공개/서비스사적 명시, 완료목록 제거·CHANGELOG [Unreleased]로 이관 v2-42~v2-48, A2A/검색/설정 detail을 링크로). 신설 docs/reference/onboarding.md(3갈래+피처표+설정 3종 표+토큰 로테이션+검색설정+mac/win). 신설 docs/reference/mesh-architecture.md(구성·역할·task 수명주기·영속·interop, design 문서에서 distill). reference/index.md 등재. Cargo.toml description 갱신(스테일).
+- **결정·주의(재론 방지)**: 온보딩 전용 문서 O(README는 컴팩트 Quickstart+링크). backend-private.md는 gitignored LAN IP라 어떤 문서도 링크 금지. 릴리스 태그는 아직(0.3.0 유지, 후속 변경은 [Unreleased]). "배포"=문서 public main push(코드 무변경이라 mesh 바이너리 재배포 불요).
+
 ## 2026-07-12 세션23: v2-47 #3 후속 - 브로커 uptime + WAL 헬스 패널 확장
 
 - **경위**: 세션22가 v2-47 주 항목 5건 완주 후 "방향 선택". 사용자가 **#3 후속(uptime·WAL)** 선택. 세션22가 무상태-추가로 남긴 헬스 패널을 store 표면 변경으로 확장.
