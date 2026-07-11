@@ -10,7 +10,7 @@
 | 설치하고 처음 실행하는 방법 | [온보딩 가이드](reference/onboarding.md) |
 | A2A 작업을 보내고 받는 방법 | [A2A 작업 위임 사용법](reference/a2a-usage.md) |
 | 여러 머신과 에이전트가 연결되는 구조 | [mesh 아키텍처](reference/mesh-architecture.md) |
-| macOS와 Windows를 함께 쓰는 방법 | [macOS ↔ Windows 구성](reference/dev-mac-windows.md) |
+| macOS와 Windows를 함께 쓰는 방법 | [macOS와 Windows 구성](reference/dev-mac-windows.md) |
 
 권장 순서는 다음과 같습니다.
 
@@ -23,11 +23,13 @@
 
 | 문서 | 내용 |
 | --- | --- |
-| [소스 빌드와 개발 실행](development/source-run.md) | 피처 조합, 프런트엔드 빌드, 개발 실행 |
-| [개발 가이드](reference/development-guidelines.md) | 변경 범위, 테스트, 코드 작업 규칙 |
-| [버전 정책](reference/versioning.md) | 버전 번호와 릴리스 기준 |
-| [현행 설계 스펙](design/tunaRound-v1-design_2026-06-29.md) | 전체 구조와 설계 배경 |
-| [CHANGELOG](../CHANGELOG.md) | 버전별 변경 내역 |
+| [소스 빌드와 개발 실행](development/source-run.md) | 피처 조합, 대시보드 빌드, 테스트와 디버깅 |
+| [개발 규칙](reference/development-guidelines.md) | 변경 범위, 설계 경계, 테스트, 커밋 규칙 |
+| [버전과 릴리스 정책](reference/versioning.md) | 버전 번호, CHANGELOG, 릴리스 절차 |
+| [CHANGELOG](../CHANGELOG.md) | 사용자에게 영향을 주는 버전별 변경 내역 |
+| [v1 설계 기록](design/tunaRound-v1-design_2026-06-29.md) | 프로젝트가 사람 주도 2-에이전트 토론 도구로 시작한 배경 |
+
+현재 전체 구조는 단일 설계 문서 하나보다 README와 reference 문서에 나뉘어 설명되어 있습니다. v1 설계 기록은 현행 스펙이 아니라 프로젝트의 출발점을 설명하는 역사 문서입니다.
 
 ## 작업 문서
 
@@ -38,7 +40,7 @@
 | [`plans/`](plans/) | 진행 중인 구현 계획 |
 | [`prompts/`](prompts/) | 재사용 프롬프트와 작업 인계문 |
 | [`archive/`](archive/) | 완료되거나 보류된 계획과 구버전 문서 |
-| [`design/`](design/) | 기능별 설계 문서와 현행 설계 스펙 |
+| [`design/`](design/) | 기능별 설계 문서와 역사적 설계 기록 |
 | [`reference/`](reference/) | 사용자·운영자·개발자용 참고 문서 |
 
 작업 상태만 확인하려면 [`plans/index.md`](plans/index.md)를 봅니다. 일반 사용자는 개별 plan이나 prompt를 읽을 필요가 없습니다.
