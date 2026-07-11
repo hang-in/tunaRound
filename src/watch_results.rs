@@ -2,7 +2,38 @@
 // 브로커의 /dashboard/events SSE(무인증)를 구독해 fromAgent==dispatcher인 terminal 이벤트만 골라 stdout에
 // 한 줄로 낸다. 총괄 세션이 이 프로세스를 Monitor로 감싸면 "던지고 자리 떠도 결과가 깨우는" 구조가 된다.
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
+
+/// terminal dedup 집합의 상한. 라이브 버스는 terminal 이벤트를 task당 한 번만 흘리므로 dedup은
+/// 방어 장치다 - 최근 창만 유지하면 충분하고, 상한 없이는 장기 상주 시 무한 성장한다(리뷰 지적).
+/// 주간 task 약 100건 실측 대비 수개월분 여유.
+const SEEN_CAP: usize = 4096;
+
+/// 상한이 있는 terminal dedup 집합: 초과 시 가장 오래 기억한 id부터 잊는다(FIFO).
+struct SeenSet {
+    set: HashSet<String>,
+    order: VecDeque<String>,
+}
+
+impl SeenSet {
+    fn new() -> Self {
+        Self { set: HashSet::new(), order: VecDeque::new() }
+    }
+
+    /// 새 id면 기억하고 true, 이미 본 id면 false. 상한 초과분은 오래된 것부터 방출한다.
+    fn insert(&mut self, id: &str) -> bool {
+        if !self.set.insert(id.to_string()) {
+            return false;
+        }
+        self.order.push_back(id.to_string());
+        while self.order.len() > SEEN_CAP {
+            if let Some(old) = self.order.pop_front() {
+                self.set.remove(&old);
+            }
+        }
+        true
+    }
+}
 
 /// task 스냅샷에서 결과 텍스트를 뽑는다: completed=artifact 텍스트, 그 외=statusMessage 텍스트.
 fn extract_result_text(task: &serde_json::Value) -> String {
@@ -33,7 +64,7 @@ fn extract_result_text(task: &serde_json::Value) -> String {
 /// ("RESULT ..." 한 줄, failed 여부)를 만든다. 이미 본 task(seen)·비-terminal·다른 dispatcher는 None.
 /// dispatcher가 빈 문자열이면 fromAgent 필터를 끈다(전체 완료 관측). failed 여부는 --digest 분기용
 /// (failed=즉시 알림 / completed=묶음 가능, v2-44 W5).
-pub fn parse_result_line(data: &str, dispatcher: &str, seen: &mut HashSet<String>) -> Option<(String, bool)> {
+fn parse_result_line(data: &str, dispatcher: &str, seen: &mut SeenSet) -> Option<(String, bool)> {
     let v: serde_json::Value = serde_json::from_str(data.trim()).ok()?;
     let task = v.get("task")?;
     let state = task.get("state")?.as_str()?;
@@ -45,7 +76,7 @@ pub fn parse_result_line(data: &str, dispatcher: &str, seen: &mut HashSet<String
         return None;
     }
     let id = task.get("id")?.as_str()?;
-    if !seen.insert(id.to_string()) {
+    if !seen.insert(id) {
         return None; // 같은 task terminal은 한 번만
     }
     let to = task.get("toAgent").and_then(|x| x.as_str()).unwrap_or("?");
@@ -69,15 +100,16 @@ fn backoff_secs(consecutive_failures: u32) -> u64 {
 /// 리셋해 포기(exit 1)가 불가능해지므로, 이 시간 이상 살았던 접속만 건강했던 것으로 본다.
 const MIN_HEALTHY_SECS: u64 = 30;
 
-/// 실패 연쇄 리셋 판정: 2xx 스트림 수립 + 최소 생존 시간을 넘긴 접속만 "건강했다".
-fn connection_was_healthy(connected: bool, lived: std::time::Duration) -> bool {
-    connected && lived >= std::time::Duration::from_secs(MIN_HEALTHY_SECS)
+/// 실패 연쇄 리셋 판정: 2xx 스트림 수립 후(None=수립 실패) 최소 생존 시간을 넘긴 접속만 "건강했다".
+/// 생존 시간은 수립 시점부터 잰다(접속 수립에 쓴 핸드셰이크 시간을 생존으로 오산하지 않게, 리뷰 반영).
+fn connection_was_healthy(lived_after_connect: Option<std::time::Duration>) -> bool {
+    lived_after_connect.is_some_and(|lived| lived >= std::time::Duration::from_secs(MIN_HEALTHY_SECS))
 }
 
 /// 재접속을 넘어 유지되는 인박스 상태(재접속 루프 바깥 소유): terminal dedup(seen)·digest 묶음(pending)·
 /// flush 예정 시각. 접속이 끊겨도 "이미 알린 task"와 "아직 못 알린 묶음"을 잃지 않는다.
 struct InboxState {
-    seen: HashSet<String>,
+    seen: SeenSet,
     pending: Vec<String>,
     flush_at: Option<tokio::time::Instant>,
 }
@@ -95,15 +127,15 @@ fn flush_pending(pending: &mut Vec<String>) {
 }
 
 /// SSE 접속 1회분: 접속해 끊길 때까지 이벤트를 처리하고, 단절 사유를 돌려준다(정상 종료 없음).
-/// 2xx 스트림 수립에 성공하면 *connected=true(호출부가 백오프·실패 카운터를 리셋할 근거).
-/// state(seen·pending·flush_at)는 호출부(재접속 루프) 소유라 재접속을 넘어 유지된다.
+/// 2xx 스트림 수립에 성공하면 *connected_at=수립 시점(호출부가 순수 생존 시간으로 실패 카운터
+/// 리셋을 판정할 근거). state(seen·pending·flush_at)는 호출부(재접속 루프) 소유라 재접속을 넘어 유지된다.
 async fn run_once(
     client: &reqwest::Client,
     url: &str,
     dispatcher: &str,
     digest_secs: u64,
     state: &mut InboxState,
-    connected: &mut bool,
+    connected_at: &mut Option<tokio::time::Instant>,
 ) -> String {
     use futures_util::StreamExt;
     use std::io::Write;
@@ -114,7 +146,7 @@ async fn run_once(
     if !resp.status().is_success() {
         return format!("SSE 상태 {}", resp.status());
     }
-    *connected = true;
+    *connected_at = Some(tokio::time::Instant::now());
     eprintln!("[watch-results] {url} 구독 시작 (dispatcher={dispatcher}, digest={digest_secs}s)");
     // 버퍼는 Vec<u8>로 유지한다. 청크마다 UTF-8 변환하면 멀티바이트 문자(한글 등)가 청크 경계에서
     // 깨지므로(U+FFFD 영구 손실), 개행(\n=ASCII)으로 완결된 라인만 변환한다.
@@ -177,17 +209,16 @@ pub async fn run(core: &str, dispatcher: &str, digest_secs: u64) -> Result<(), S
         .build()
         .map_err(|e| format!("watch-results: 클라이언트 구성 실패: {e}"))?;
     // seen(dedup)·digest pending은 재접속을 넘어 유지한다(루프 바깥 소유, v2-45 P1 고정 계약).
-    let mut state = InboxState { seen: HashSet::new(), pending: Vec::new(), flush_at: None };
+    let mut state = InboxState { seen: SeenSet::new(), pending: Vec::new(), flush_at: None };
     let mut consecutive_failures: u32 = 0;
     loop {
-        let mut connected = false;
-        let attempt_started = tokio::time::Instant::now();
-        let reason = run_once(&client, &url, dispatcher, digest_secs, &mut state, &mut connected).await;
+        let mut connected_at: Option<tokio::time::Instant> = None;
+        let reason = run_once(&client, &url, dispatcher, digest_secs, &mut state, &mut connected_at).await;
         // 모든 단절 경로(접속 실패·비2xx·스트림 종료·청크 오류)에서 pending을 먼저 flush한다
         // (digest 묶음 유실 방지). flush했으니 예정 시각도 지운다.
         flush_pending(&mut state.pending);
         state.flush_at = None;
-        if connection_was_healthy(connected, attempt_started.elapsed()) {
+        if connection_was_healthy(connected_at.map(|at| at.elapsed())) {
             consecutive_failures = 0; // 건강했던 접속(수립+최소 생존) 이후의 단절 = 새 실패 연쇄
         }
         consecutive_failures += 1;
@@ -223,7 +254,7 @@ mod tests {
 
     #[test]
     fn completed_from_dispatcher_yields_result() {
-        let mut seen = HashSet::new();
+        let mut seen = SeenSet::new();
         let line = parse_result_line(&ev("completed", "dashboard", "mac-claude-sup", "abc12345xyz", Some("발견 6건")), "dashboard", &mut seen);
         let (line, is_failed) = line.unwrap();
         assert!(line.contains("RESULT abc12345"));
@@ -235,7 +266,7 @@ mod tests {
 
     #[test]
     fn failed_yields_result_with_status_text() {
-        let mut seen = HashSet::new();
+        let mut seen = SeenSet::new();
         let data = serde_json::json!({
             "event": "status",
             "task": { "id": "f00d", "state": "failed", "fromAgent": "dashboard", "toAgent": "mac-claude-sup",
@@ -249,14 +280,14 @@ mod tests {
 
     #[test]
     fn non_terminal_and_other_dispatcher_filtered() {
-        let mut seen = HashSet::new();
+        let mut seen = SeenSet::new();
         assert!(parse_result_line(&ev("working", "dashboard", "x", "1", None), "dashboard", &mut seen).is_none());
         assert!(parse_result_line(&ev("completed", "other", "x", "2", None), "dashboard", &mut seen).is_none());
     }
 
     #[test]
     fn same_task_terminal_reported_once() {
-        let mut seen = HashSet::new();
+        let mut seen = SeenSet::new();
         let e = ev("completed", "dashboard", "x", "dup1", Some("r"));
         assert!(parse_result_line(&e, "dashboard", &mut seen).is_some());
         assert!(parse_result_line(&e, "dashboard", &mut seen).is_none()); // 두 번째는 dedup
@@ -284,14 +315,28 @@ mod tests {
     #[test]
     fn healthy_connection_needs_establishment_and_min_lifetime() {
         use std::time::Duration;
-        // 수립 실패는 생존 시간과 무관하게 실패 연쇄 유지.
-        assert!(!connection_was_healthy(false, Duration::from_secs(120)));
+        // 수립 실패(None)는 생존 시간 개념 자체가 없다 = 실패 연쇄 유지.
+        assert!(!connection_was_healthy(None));
         // 수립했어도 즉시 닫히면(크래시루프 브로커) 건강 아님 = 카운터가 계속 쌓여 포기 가능.
-        assert!(!connection_was_healthy(true, Duration::from_secs(1)));
-        assert!(!connection_was_healthy(true, Duration::from_secs(MIN_HEALTHY_SECS - 1)));
-        // 최소 생존을 넘긴 접속만 리셋 근거.
-        assert!(connection_was_healthy(true, Duration::from_secs(MIN_HEALTHY_SECS)));
-        assert!(connection_was_healthy(true, Duration::from_secs(3600)));
+        assert!(!connection_was_healthy(Some(Duration::from_secs(1))));
+        assert!(!connection_was_healthy(Some(Duration::from_secs(MIN_HEALTHY_SECS - 1))));
+        // 수립 시점부터 잰 순수 생존이 최소치를 넘긴 접속만 리셋 근거.
+        assert!(connection_was_healthy(Some(Duration::from_secs(MIN_HEALTHY_SECS))));
+        assert!(connection_was_healthy(Some(Duration::from_secs(3600))));
+    }
+
+    #[test]
+    fn seen_set_dedups_and_evicts_oldest_beyond_cap() {
+        let mut seen = SeenSet::new();
+        assert!(seen.insert("a"));
+        assert!(!seen.insert("a"), "같은 id는 dedup");
+        // 상한을 넘기면 가장 오래된 id부터 잊는다(무한 성장 방지, 리뷰 반영).
+        for i in 0..SEEN_CAP {
+            seen.insert(&format!("id-{i}"));
+        }
+        assert!(seen.set.len() <= SEEN_CAP, "상한 유지");
+        assert!(seen.insert("a"), "방출된 가장 오래된 id는 다시 새 것으로 취급");
+        assert!(!seen.insert(&format!("id-{}", SEEN_CAP - 1)), "최근 id는 여전히 dedup");
     }
 
     #[test]
