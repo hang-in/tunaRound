@@ -180,29 +180,6 @@ pub fn format_agents(agents: &[AgentEntry]) -> String {
         .join("\n")
 }
 
-/// CandidateEntry 목록을 사람이 읽는 텍스트로 조립한다(비면 "발견된 세션 없음").
-/// armed_uuids(online roster 소속)에 있으면 armed, 아니면 candidate로 표시한다.
-pub fn format_candidates(
-    candidates: &[CandidateEntry],
-    armed_uuids: &std::collections::HashSet<String>,
-) -> String {
-    if candidates.is_empty() {
-        return "발견된 세션 없음".to_string();
-    }
-    candidates
-        .iter()
-        .map(|c| {
-            let armed = if armed_uuids.contains(&c.uuid) { "armed" } else { "candidate" };
-            let project = c.project.as_deref().unwrap_or("-");
-            let machine = c.machine.as_deref().unwrap_or("-");
-            format!(
-                "[{}] {}/{} machine={} project={} age={}s ({})",
-                c.uuid, c.runner, c.source, machine, project, c.age_secs, armed
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
 
 /// send_task 셀렉터 인지 버전. Agent면 concrete 발송(send_task_text 위임), Selector면 resolve 후
 /// 0개=no-consumer 안내(생성 안 함), 1개=그 uuid로 발송, 2개+=후보 목록(생성 안 함).
@@ -551,46 +528,6 @@ mod tests {
         assert!(text.contains("2026-07-04 10:00:00"));
     }
 
-    #[test]
-    fn format_candidates_marks_armed_overlay() {
-        let cands = vec![
-            CandidateEntry {
-                uuid: "s1".to_string(),
-                runner: "claude".to_string(),
-                project: Some("tunaround".to_string()),
-                machine: Some("win".to_string()),
-                source: "claude-jsonl".to_string(),
-                age_secs: 5,
-                reported_at: "2026-07-06 10:00:00".to_string(),
-            },
-            CandidateEntry {
-                uuid: "s2".to_string(),
-                runner: "codex".to_string(),
-                project: None,
-                machine: Some("mac".to_string()),
-                source: "claude-jsonl".to_string(),
-                age_secs: 9,
-                reported_at: "2026-07-06 10:00:00".to_string(),
-            },
-        ];
-        // s1은 online roster 소속(armed), s2는 미무장(candidate).
-        let armed: std::collections::HashSet<String> = ["s1".to_string()].into_iter().collect();
-        let text = format_candidates(&cands, &armed);
-        assert!(text.contains("[s1]"));
-        assert!(text.contains("(armed)"));
-        assert!(text.contains("[s2]"));
-        assert!(text.contains("(candidate)"));
-        assert!(text.contains("project=tunaround"));
-        assert!(text.contains("project=-")); // s2는 project 불명
-        assert!(text.contains("machine=win"));
-        assert!(text.contains("machine=mac"));
-    }
-
-    #[test]
-    fn format_candidates_empty_says_none() {
-        let armed = std::collections::HashSet::new();
-        assert_eq!(format_candidates(&[], &armed), "발견된 세션 없음");
-    }
 
     #[test]
     fn send_task_routed_selector_zero_matches_is_no_consumer_and_no_task_created() {

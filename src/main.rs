@@ -70,9 +70,6 @@ fn main() {
     // codex-inject <...>: codex app-server ws 주입 옵션(worker 피처 전용).
     #[cfg(feature = "worker")]
     let mut codex_inject_args: Option<CodexInjectArgs> = None;
-    // discover <...>: 발견 리포터 옵션(worker 피처 전용).
-    #[cfg(feature = "worker")]
-    let mut discover_args: Option<DiscoverArgs> = None;
     // watch-results <...>: 총괄 결과 인박스 옵션(worker 피처 전용).
     #[cfg(feature = "worker")]
     let mut watch_results_args: Option<WatchResultsArgs> = None;
@@ -186,14 +183,6 @@ fn main() {
                 db_path = None;
             }
             codex_inject_args = Some(a);
-        }
-        #[cfg(feature = "worker")]
-        Commands::Discover(a) => {
-            #[cfg(feature = "sqlite")]
-            {
-                db_path = None;
-            }
-            discover_args = Some(a);
         }
         #[cfg(feature = "worker")]
         Commands::WatchResults(a) => {
@@ -492,12 +481,6 @@ fn main() {
     #[cfg(feature = "worker")]
     if let Some(a) = poll_args {
         return cli_daemons::poll(&rt, a);
-    }
-
-    // discover <...>: 로컬 Claude Code 세션을 열거해 브로커에 미무장 후보로 보고(v2-40 S2, worker 피처).
-    #[cfg(feature = "worker")]
-    if let Some(a) = discover_args {
-        return cli_daemons::discover(&rt, a);
     }
 
     // watch-results <...>: 총괄이 던진 task의 완료/실패를 브로커 SSE로 받아 stdout으로 알린다(worker 피처).

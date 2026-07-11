@@ -12,7 +12,6 @@ use rmcp::{
 use crate::orchestrator::{ContextRetriever, RosterSeat, TranscriptReader, TranscriptWriter, Utterance};
 use crate::store::a2a::TaskState;
 use crate::store::agents::{parse_tags, AGENT_TTL_SECS};
-use crate::store::candidates::{CandidateEntry, CANDIDATE_TTL_SECS};
 use crate::store::sqlite::SqliteStore;
 
 #[cfg(feature = "serve")]
@@ -411,45 +410,6 @@ impl TunaSearchServer {
         }
     }
 
-    #[tool(description = "발견한 미무장 세션 후보를 브로커에 보고한다(발견 리포터용, uuid 단위 upsert).")]
-    async fn report_candidates(
-        &self,
-        Parameters(p): Parameters<ReportCandidatesParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let Some(store) = self.a2a_store.clone() else {
-            return Ok(CallToolResult::success(vec![Content::text(
-                "A2A task 저장소 미구성(report_candidates 비활성)".to_string(),
-            )]));
-        };
-        let inputs = p.candidates;
-        let outcome = tokio::task::spawn_blocking(move || {
-            let store = store.lock().unwrap_or_else(|e| e.into_inner());
-            let now = store.now()?;
-            let count = inputs.len();
-            let entries: Vec<CandidateEntry> = inputs
-                .into_iter()
-                .map(|c| CandidateEntry {
-                    uuid: c.uuid,
-                    runner: c.runner,
-                    project: c.project,
-                    machine: c.machine,
-                    source: c.source,
-                    age_secs: c.age_secs,
-                    reported_at: now.clone(),
-                })
-                .collect();
-            store.report_candidates(entries, &now);
-            Ok::<String, String>(format!("후보 {count}건 보고됨"))
-        })
-        .await
-        .unwrap_or_else(|e| Err(format!("작업 실패: {e}")));
-        // R1: 보고 실패(now 오류)를 success로 위장하지 않는다.
-        match outcome {
-            Ok(t) => Ok(CallToolResult::success(vec![Content::text(t)])),
-            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!("보고 실패: {e}"))])),
-        }
-    }
-
     #[tool(description = "머신당 presence 스캐너가 라이브 세션 전집합을 일괄 보고한다(upsert+소유분 제거, v2-44).")]
     async fn report_presence(
         &self,
@@ -482,33 +442,6 @@ impl TunaSearchServer {
         match outcome {
             Ok(t) => Ok(CallToolResult::success(vec![Content::text(t)])),
             Err(e) => Ok(CallToolResult::error(vec![Content::text(format!("presence 동기화 실패: {e}"))])),
-        }
-    }
-
-    #[tool(description = "발견된(미무장) 세션 후보를 조회한다(armed overlay: online roster 소속이면 armed).")]
-    async fn list_candidates(
-        &self,
-        Parameters(_p): Parameters<ListCandidatesParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let Some(store) = self.a2a_store.clone() else {
-            return Ok(CallToolResult::success(vec![Content::text(
-                "A2A task 저장소 미구성(list_candidates 비활성)".to_string(),
-            )]));
-        };
-        let outcome = tokio::task::spawn_blocking(move || {
-            let store = store.lock().unwrap_or_else(|e| e.into_inner());
-            let now = store.now()?;
-            let candidates = store.list_candidates(&now, CANDIDATE_TTL_SECS);
-            // armed overlay: online roster의 uuid 또는 session 태그에 있으면 이미 무장된 것으로 표시.
-            let armed = store.armed_session_ids(&now, AGENT_TTL_SECS);
-            Ok::<String, String>(format_candidates(&candidates, &armed))
-        })
-        .await
-        .unwrap_or_else(|e| Err(format!("작업 실패: {e}")));
-        // R1: 조회 실패(now 오류)를 success로 위장하지 않는다.
-        match outcome {
-            Ok(t) => Ok(CallToolResult::success(vec![Content::text(t)])),
-            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!("조회 실패: {e}"))])),
         }
     }
 
@@ -568,7 +501,6 @@ impl ServerHandler for TunaSearchServer {
                  작업을 받는 쪽(worker)은 poll_tasks(agent)로 확인하고 claim_task(task_id)로 착수, complete_task(task_id, result)로 완료를 보고하세요. \
                  워커/세션은 register_agent(uuid, tags?, display_name?)로 로스터에 등록하고 heartbeat(uuid)로 주기 갱신하며, \
                  dispatcher는 list_agents(selector?)로 online 에이전트를 발견합니다. \
-                 발견 리포터는 report_candidates(candidates)로 미무장 세션 후보를 보고하고 list_candidates()로 후보를 조회합니다(armed=online roster 소속). \
                  머신당 presence 스캐너는 report_presence(machine, sessions)로 라이브 세션 전집합을 일괄 동기화합니다(v2-44). \
                  브로커 운영자는 tasks()로 전체 열린 task를 미배달(no-consumer?)/고착(stuck?) 주석과 함께 조망할 수 있습니다."
                     .to_string(),

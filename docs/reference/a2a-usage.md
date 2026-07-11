@@ -26,7 +26,8 @@
 
 **태그 관례**(강제 아님, 표준키만 합의):
 
-- `machine`(win/mac/linux) · `runner`(claude/codex/opencode/llm/a2a) · `role`(worker/supervised/dispatch) · `project`(레포명) · `mode`(read/write). 자유 키도 허용됩니다.
+- `machine`(win/mac/linux) · `runner`(claude/codex/opencode/llm/a2a) · `role`(session/worker/infra) · `project`(레포명) · `mode`(read/write). 자유 키도 허용됩니다.
+- **infra 규약(v2-44/46)**: 머신 상주 데몬은 `role=infra` + `purpose`(presence=스캐너 / codex-inject=relay)로 광고하고, uuid는 `{machine}-{용도}` 고정 이름(예: `win-presence-scan`, `mac-codex-relay`)을 씁니다. infra는 task 대상이 아니라 머신 도달성 신호(대시보드 헤더 도트)이며, GoalForm 등 대상 목록에서 제외됩니다. 세션은 스캐너가 `role=session,src=scan`으로 자동 동기화하므로 별도 등록이 불필요합니다. (구 `role=supervised`는 v2-46에서 alias까지 제거 - 더 이상 인식되지 않습니다.)
 - 예전 네이밍 규약(`{머신}-{역할}`)은 이제 **태그로 흡수**됩니다. `win-worker`라는 이름 대신 `machine=win,role=worker` 태그로 같은 정보를 라우팅 가능한 형태로 담습니다. 사람이 읽는 id는 `display_name`으로 따로 둘 수 있습니다.
 
 여전히 유효한 규칙:
@@ -313,47 +314,44 @@ list_agents selector="runner=claude"   # 태그로 필터(부분집합 매칭)
 
 ---
 
-## 10. codex 라이브 감독 (app-server)
+## 10. codex 세션 수신 (codex-relay, v2-46)
 
-지금까지의 워커(§2·§3)는 **헤드리스**(fresh runner가 claim→처리→complete하고 끝)입니다. 반면 **감독**은 사람이 관전할 수 있는 **라이브 세션**이 맥락을 누적하며 브로커 작업을 받아 처리해야 합니다. claude 감독은 세션 하네스(Monitor)로 외부에서 깨울 수 있지만, codex는 그 메커니즘이 없어 별도 경로가 필요합니다.
+워커(§2·§3)는 **헤드리스**(fresh runner가 claim→처리→complete하고 끝)입니다. 반면 **codex 라이브 세션**은 사람이 보는 그 대화에 task와 답이 그대로 나타나야 합니다. claude 세션은 하네스(Monitor)로 스스로 수신하지만 codex는 그 메커니즘이 없어, **머신당 배달 데몬(codex-relay)** 이 대신 받아 세션 thread에 주입합니다.
 
 ### 개념
 
-codex 감독을 헤드리스 `exec`가 아니라 **`codex app-server`가 띄운 라이브 thread**로 둡니다. 브로커에 작업이 도착하면 `poll --on-task`가 그 thread에 ws로 `turn/start`를 주입해 깨우고, codex는 그 턴 안에서 tuna-broker MCP 도구(`claim_task`→처리→`complete_task`)를 직접 호출합니다. 사람은 `codex resume <threadId> --remote ws://...`로 그 라이브 thread에 붙어 대화를 관전(HITL)할 수 있으며, 붙어 있지 않아도 감독은 동작합니다. **주의: plain `codex --remote`(resume 없이)는 항상 새 thread를 만들어 글루 thread가 보이지 않습니다**(소스 확인 2026-07-10, 설계 §11).
+로스터에 보이는 codex 세션(uuid=threadId)이 곧 주입 대상입니다. relay가 주기적으로 로컬 라이브 codex 세션들을 열거하고(스캐너와 같은 SoR=rollout 파일), 각 세션 앞 task를 **대리 claim**한 뒤 `codex app-server` ws로 그 세션 thread에 `turn/start`를 주입합니다. codex는 그 턴 안에서 tuna-broker MCP `complete_task`(불가 시 `fail_task`)를 native 호출해 마감합니다. 주입 실패(세션 소멸·타임아웃)는 relay가 `fail_task`로 전환해 dispatcher가 즉시 봅니다.
 
-- **워커와의 구분**: 워커(`tunaround work`)는 맥락 없는 헤드리스 프로세스입니다. 감독은 맥락을 누적하는 라이브 thread + 사람 관전(선택)입니다. 같은 `poll` 골격을 쓰되 `--on-task` 대상만 다릅니다(워커=`work`류, 감독=`codex-inject`).
-- 정본 설계: [docs/design/v2-codex-live-supervisor-appserver_2026-07-05.md](../design/v2-codex-live-supervisor-appserver_2026-07-05.md).
+구 경로(v2-37 sup: `{machine}-codex-sup` poll + 사설 글루 thread + .cmd 핸들러)는 v2-46에서 폐기됐습니다 - "sup"이라는 별도 정체성 없이, 세션 자체가 대상이고 relay는 익명 배달부입니다. 정본 설계: [v2-46 codex-relay](../design/v2-46-codex-relay_2026-07-11.md) (프로토콜 기반 = [v2-37 app-server](../design/v2-codex-live-supervisor-appserver_2026-07-05.md)).
 
-### 세팅 절차
+### 세팅 절차 (머신당 1회)
 
 ```bash
-# 1) app-server 기동 (감독 머신에서 상주). 토큰 env 필수 - 없으면 tuna-broker MCP가
-#    로드 안 돼 codex가 raw HTTP로 자가구조하며 토큰을 낭비합니다(설계 §5.3).
+# 1) app-server 기동(상주). 토큰 env 필수 - 없으면 tuna-broker MCP가 로드 안 돼
+#    codex가 raw HTTP로 자가구조하며 토큰을 낭비합니다(v2-37 §5.3).
 TUNA_BROKER_TOKEN=<TOKEN> codex app-server --listen ws://127.0.0.1:<PORT>
 
-# 2) (선택, HITL 관전) 사람이 글루-소유 라이브 thread에 붙어 대화를 지켜봅니다.
-#    threadId는 글루가 ~/.tunaround/codex-sup-<agent-id>.thread 에 영속해 둡니다.
-#    plain `codex --remote`는 새 thread를 만들어 관전할 수 없으므로 반드시 resume을 사용합니다.
+# 2) 사람이 보는 codex 세션을 app-server thread로 엽니다(이게 로스터에 뜨고 주입 대상이 됩니다).
+#    plain `codex --remote`(resume 없이)는 항상 새 thread를 만드니, 기존 세션은 반드시 resume으로 엽니다.
 codex resume <threadId> --remote ws://127.0.0.1:<PORT>
-#    id를 모르는 경우: `codex resume --remote ws://...`(목록 picker) / `codex resume --last --remote ...`(최신)
+#    id를 모르면 `codex resume --remote ws://...`(목록 picker) 또는 `codex resume --last --remote ...`(최신)를 씁니다.
 
-# 3) 감독 등록: codex(또는 app-server thread)가 register_agent로 로스터에 광고
-#    (uuid=<agent-id>, tags="machine=<win|mac>,runner=codex,role=supervised,project=tunaround")
-
-# 4) 감시 + 주입: 브로커 작업 도착 시 codex-inject가 ws로 turn/start를 쏨
-tunaround poll --core <core-url> --token <TOKEN> --agent <agent-id> \
-  --on-task 'tunaround codex-inject --ws ws://127.0.0.1:<PORT> --agent <agent-id> \
-             --text "브로커 task {id}를 claim_task로 처리하고 complete_task로 보고하라"'
+# 3) relay 기동(머신당 1개). core/token/machine은 ~/.tunaround/config env 폴백으로 읽습니다.
+tunaround codex-relay --ws ws://127.0.0.1:<PORT>
+# 자기 등록 = {machine}-codex-relay (tags: machine=<m>,role=infra,purpose=codex-inject).
+# 이 등록이 대시보드 머신 헤더의 "codex 주입" 도트이자 GoalForm codex 세션 카드의 유효 조건입니다.
 ```
 
 ### 동작
 
-1. 브로커에 작업이 도착 → `poll`이 감지 → `--on-task`로 `codex-inject`를 실행.
-2. `codex-inject`가 ws로 접속해 (영속된 threadId가 있으면 `thread/resume`, 없으면 `thread/start` 후) `turn/start`를 주입.
-3. 라이브 thread(codex)가 그 턴 안에서 tuna-broker MCP의 `claim_task`→처리→`complete_task`를 native 호출.
-4. 사람이 `codex resume <threadId> --remote ws://...`로 붙어 있으면 이 과정이 실시간으로 보입니다(알림은 thread별 구독이라, resume으로 그 thread에 구독한 클라이언트에만 옵니다). 붙어 있지 않아도 완료됩니다.
+1. 브로커에 codex 세션 앞 task 도착 → relay가 다음 폴(기본 15초)에 감지.
+2. relay가 `claim_task`(claimed_by=세션 uuid, runner=codex) 후 그 thread로 `turn/start` 주입(in-process, 핸들러 없음).
+3. 세션(codex)이 그 턴 안에서 답하고 `complete_task`를 native 호출.
+4. 사람이 그 세션을 보고 있으면 task 도착·처리·답이 실시간으로 보입니다. 안 보고 있어도 완료됩니다.
 
-사람 릴레이는 0입니다 - task 도착부터 완료 보고까지 사람 개입 없이 기계가 돕니다(감독 스코프는 no-shuttle).
+사람 릴레이는 0입니다 - task 도착부터 완료 보고까지 사람 개입 없이 기계가 돕니다(no-shuttle).
+
+수동 디버그용으로 `tunaround codex-inject --ws <ws> --thread <threadId> --text "..."`(직지정, 실패 시 자가치유 없음) 또는 `--agent <id>`(글루 thread 파일 모드, 레거시)를 직접 쓸 수 있습니다.
 
 ### exec-resume과의 구분
 
@@ -469,7 +467,7 @@ tunaround presence-scan --machine win
 # 총괄이 던진(dispatcher=dashboard) task의 완료/실패만 인박스로 흘린다.
 tunaround watch-results --core http://127.0.0.1:8770 --dispatcher dashboard
 # -> RESULT 1c16d115 completed <- mac-claude-sup :: pong
-# -> RESULT 7a3f... failed <- win-codex-sup :: (2) 브로커 토큰 만료로 claim 실패, 새 토큰 필요
+# -> RESULT 7a3f... failed <- 019f4d64(win codex 세션) :: (2) 브로커 토큰 만료로 claim 실패, 새 토큰 필요
 ```
 
 - `--core`는 **베이스 URL**이다(§1의 `serve` 주소, 끝에 `/mcp` 안 붙임). 내부적으로 `/dashboard/events`를 붙인다.

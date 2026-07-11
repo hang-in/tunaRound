@@ -115,7 +115,6 @@ pub async fn serve_http_mcp_on_listener(
     let mut dashboard = Router::new()
         .route("/dashboard/events", get(dashboard_events_handler))
         .route("/dashboard/roster", get(dashboard_roster_handler))
-        .route("/dashboard/candidates", get(dashboard_candidates_handler))
         .route("/dashboard/goal", axum::routing::post(dashboard_goal_handler))
         .route("/dashboard/human-ping", axum::routing::post(dashboard_human_ping_handler))
         .route("/dashboard/deregister", axum::routing::post(dashboard_deregister_handler))
@@ -310,58 +309,6 @@ async fn dashboard_roster_handler(
     .await
     .unwrap_or_default();
     let body = serde_json::to_vec(&agents).unwrap_or_else(|_| b"[]".to_vec());
-    (
-        axum::http::StatusCode::OK,
-        [(axum::http::header::CONTENT_TYPE, "application/json")],
-        body,
-    )
-        .into_response()
-}
-
-/// GET /dashboard/candidates: 발견된(미무장) 세션 후보 JSON. 브라우저가 주기 폴(S3 "발견된 세션" 패널).
-/// armed는 저장값이 아니라 online roster 소속으로 계산한 overlay다(무장되면 자동 armed=true로 승격 표시).
-#[cfg(feature = "serve")]
-async fn dashboard_candidates_handler(
-    axum::extract::State(store): axum::extract::State<Arc<Mutex<crate::store::sqlite::SqliteStore>>>,
-) -> axum::response::Response {
-    use axum::response::IntoResponse;
-    #[derive(serde::Serialize)]
-    struct DashCandidate {
-        uuid: String,
-        runner: String,
-        project: Option<String>,
-        machine: Option<String>,
-        source: String,
-        age_secs: i64,
-        reported_at: String,
-        armed: bool,
-    }
-    let candidates: Vec<DashCandidate> = tokio::task::spawn_blocking(move || {
-        let store = store.lock().unwrap_or_else(|e| e.into_inner());
-        let now = store.now().unwrap_or_default();
-        // armed overlay: online roster의 uuid 또는 session 태그에 있으면 이미 무장된 것으로 표시.
-        let armed = store.armed_session_ids(&now, AGENT_TTL_SECS);
-        store
-            .list_candidates(&now, CANDIDATE_TTL_SECS)
-            .into_iter()
-            .map(|c| {
-                let is_armed = armed.contains(&c.uuid);
-                DashCandidate {
-                    uuid: c.uuid,
-                    runner: c.runner,
-                    project: c.project,
-                    machine: c.machine,
-                    source: c.source,
-                    age_secs: c.age_secs,
-                    reported_at: c.reported_at,
-                    armed: is_armed,
-                }
-            })
-            .collect()
-    })
-    .await
-    .unwrap_or_default();
-    let body = serde_json::to_vec(&candidates).unwrap_or_else(|_| b"[]".to_vec());
     (
         axum::http::StatusCode::OK,
         [(axum::http::header::CONTENT_TYPE, "application/json")],

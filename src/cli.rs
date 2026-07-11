@@ -49,9 +49,6 @@ pub enum Commands {
     /// codex app-server 라이브 thread에 turn/start로 유저 턴 1건을 ws로 주입(worker 피처).
     #[cfg(feature = "worker")]
     CodexInject(CodexInjectArgs),
-    /// 발견 리포터: 로컬 Claude Code 세션을 열거해 브로커에 미무장 후보로 보고한다(v2-40 S2, worker 피처).
-    #[cfg(feature = "worker")]
-    Discover(DiscoverArgs),
     /// 총괄 결과 인박스: 내가 던진 task의 완료/실패를 브로커 SSE로 받아 알린다(책임의 이전, worker 피처).
     #[cfg(feature = "worker")]
     WatchResults(WatchResultsArgs),
@@ -257,7 +254,7 @@ pub struct PollArgs {
     /// 감시할 to_agent id(이 agent 앞 새 submitted task만 알린다).
     #[arg(long)]
     pub agent: String,
-    /// 로스터 발견용 태그 "k=v,k=v"(예: "machine=win,runner=codex,role=supervised,project=tunaround").
+    /// 로스터 발견용 태그 "k=v,k=v"(예: "machine=win,runner=codex,role=infra,purpose=codex-inject").
     /// dispatcher가 to_selector로 이 감독을 발견한다. 생략 가능.
     #[arg(long)]
     pub tags: Option<String>,
@@ -280,35 +277,6 @@ pub struct PollArgs {
     /// 예: --on-task 'codex exec resume --last "브로커 task {id}를 claim해서 처리하고 complete로 보고"'.
     #[arg(long)]
     pub on_task: Option<String>,
-}
-
-/// `discover` 서브커맨드(worker 피처 전용) 옵션: 로컬 Claude Code 세션을 열거해 브로커에 미무장
-/// 후보로 보고한다(v2-40 S2). 무장(S1) 안 한 세션도 대시보드 "발견된 세션" 패널에 뜨게 한다.
-#[cfg(feature = "worker")]
-#[derive(Args, Debug)]
-pub struct DiscoverArgs {
-    /// 코어 `/mcp` 절대 URL(예: http://127.0.0.1:8770/mcp).
-    #[arg(long)]
-    pub core: String,
-    /// bearer 토큰(코어가 --token으로 띄워졌다면 필요). report는 write 경계라 토큰이 필요하다.
-    #[arg(long)]
-    pub token: Option<String>,
-    /// 스캔할 projects 디렉토리(생략 시 ~/.claude/projects).
-    #[arg(long)]
-    pub projects_dir: Option<String>,
-    /// 세션을 후보로 리포트할 "잊기 지평"(분). jsonl mtime이 이 시간 이내면 리포트한다. 활성/유휴 분리는
-    /// 대시보드가 age로 하므로(설계 v2-41, 활성<60분/유휴>=60분), 이 값은 유휴 창을 덮게 커야 한다(기본 240분=4시간).
-    #[arg(long, default_value_t = 240)]
-    pub stale_mins: u64,
-    /// 이 리포터의 머신 식별자(win|mac|unix 등). 생략 시 TUNA_MACHINE env 또는 빌드 타깃 OS로 추정.
-    #[arg(long)]
-    pub machine: Option<String>,
-    /// 보고 간격(초, 기본 30).
-    #[arg(long, default_value_t = 30)]
-    pub interval: u64,
-    /// 한 번만 열거·보고하고 종료(테스트·수동 실행용).
-    #[arg(long)]
-    pub once: bool,
 }
 
 /// `watch-results` 서브커맨드(worker 피처 전용): 총괄이 던진 task의 완료/실패를 브로커 SSE로 받아
@@ -714,7 +682,7 @@ mod cli_tests {
             "--agent",
             "win-sup",
             "--tags",
-            "machine=win,runner=codex,role=supervised,project=tunaround",
+            "machine=win,runner=codex,role=infra,purpose=codex-inject",
         ])
         .expect("파싱 성공");
         match cli.command {
@@ -722,7 +690,7 @@ mod cli_tests {
                 assert_eq!(a.agent, "win-sup");
                 assert_eq!(
                     a.tags.as_deref(),
-                    Some("machine=win,runner=codex,role=supervised,project=tunaround")
+                    Some("machine=win,runner=codex,role=infra,purpose=codex-inject")
                 );
             }
             other => panic!("Poll 서브커맨드 기대, 실제: {other:?}"),
