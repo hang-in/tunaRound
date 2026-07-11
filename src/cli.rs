@@ -517,13 +517,19 @@ pub struct InitArgs {
     /// 러너 작업 디렉터리(기본: 현재 디렉터리).
     #[arg(long)]
     pub project: Option<String>,
-    /// 토큰을 읽을 환경변수 이름(기본 TUNAROUND_TOKEN).
+    /// 토큰을 읽을 환경변수 이름(기본 TUNA_BROKER_TOKEN = 데몬·훅과 동일 이름으로 통일).
     #[arg(long = "token-env")]
     pub token_env: Option<String>,
+    /// 이 머신 태그(win/mac/unix). ~/.tunaround/config의 TUNA_MACHINE에 쓰인다(기본: OS 감지).
+    #[arg(long)]
+    pub machine: Option<String>,
     /// 출력 경로(기본 ~/.tunaround/node.toml).
     #[arg(long)]
     pub out: Option<String>,
-    /// 기존 파일 덮어쓰기.
+    /// ~/.tunaround/config(mesh·훅용 dotenv) 스캐폴드를 건너뛴다(node.toml만 생성).
+    #[arg(long)]
+    pub no_mesh_config: bool,
+    /// 기존 파일 덮어쓰기(node.toml + ~/.tunaround/config. config의 기존 토큰도 덮어쓰니 주의).
     #[arg(long)]
     pub force: bool,
 }

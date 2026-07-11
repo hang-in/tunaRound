@@ -2,6 +2,13 @@
 
 > 작업 중 결정과 근거. 계속 append. (규율 #7) 다음 세션이 결정을 재유도하지 않게.
 
+## 2026-07-12 세션23: 온보딩 단순화 - init 원커맨드 스캐폴드 + 토큰 env 통일
+
+- **경위**: 사용자 "설치 너무 복잡한거 아닌가?" → 정직 진단(본질=멀티머신 코어/토큰/네트워크 irreducible / 우발=피처 divergence·설정파일 3종·토큰 로테이션, 체감은 문서가 오버셀·실 반복비용은 1회성+restart 한 줄). 사용자 선택="init 확장(원커맨드 셋업)".
+- **핵심 발견**: 토큰 env 이름이 **둘**이었음 - node.toml `@env:TUNAROUND_TOKEN` vs 데몬·훅·config `TUNA_BROKER_TOKEN`. "설정 복잡"의 실체 중 하나 → **통일**(init 기본 token_env를 TUNA_BROKER_TOKEN으로).
+- **구현**: `tunaround init`이 node.toml만이 아니라 **`~/.tunaround/config`(mesh·훅 dotenv)까지 한 번에 스캐폴드**(TUNA_AUTOARM/BIN/BROKER_CORE/MACHINE/BROKER_TOKEN). 안전: 기존 config(실토큰 보유 가능)는 --force 없이 안 덮고, **토큰은 placeholder만**(argv/히스토리 유출 방지, 대화형 stdin 비채택). `--machine`·`--no-mesh-config` 플래그. content 빌더는 순수함수 분리(테스트가 실 config 미접촉, no_mesh_config=true로 통합테스트). 온보딩 문서 §4·§5 갱신.
+- **비채택(과투자)**: node/doctor가 config 파일 토큰까지 읽게 하는 더 깊은 통합(후속 가능), 배포 바이너리 dashboard 포함(별 옵션), 대화형 위저드(stdin 토큰 유출·비테스트).
+
 ## 2026-07-12 세션23: task lease 자동연장(#6) + cancel MCP 도구(#4) - Codex 제안 채택분
 
 - **경위**: Codex A2A 명령 10제안 검토 → 대부분 재발명(SSE·watch-results·lease 이미 있음)으로 판정, 코드 확증된 실수정 1(lease vs 장기 task) + 작은 갭 1(cancel MCP 미노출)만 채택. 사용자 "c"(문서 먼저 후 이거).
