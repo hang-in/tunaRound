@@ -1300,7 +1300,12 @@ body {
   font-size: 14px; font-weight: 650; letter-spacing: -0.005em; color: var(--text);
   min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.rst-runner-name { font-size: 12px; color: var(--text-3); flex: none; }
+/* runner 태그는 실무상 짧은 엔진명(claude/codex 등)이나 스토어에서 enum 검증 없는 free-form KV라
+   이론상 길 수 있다 - title과 동일하게 축소·말줄임 처리해 잔여 행 오버플로 여지를 닫는다(봇 리뷰). */
+.rst-runner-name {
+  font-size: 12px; color: var(--text-3);
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .rst-chip {
   font-size: 10.5px; font-weight: 600; padding: 1.5px 8px; border-radius: 999px;
   border: 1px solid var(--border); color: var(--text-2); background: transparent; white-space: nowrap;
