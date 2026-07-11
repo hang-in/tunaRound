@@ -123,34 +123,6 @@ pub struct ListAgentsParams {
     pub selector: Option<String>,
 }
 
-/// report_candidates 툴의 후보 한 건(발견 리포터가 열거해 보고). reported_at은 브로커가 수신 시각으로 채운다.
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct CandidateInput {
-    /// 세션 id(claude=jsonl 파일 stem). roster uuid와 같은 공간이라 armed overlay가 가능하다.
-    pub uuid: String,
-    /// 러너 종류(claude | codex | ...).
-    pub runner: String,
-    /// 추정 프로젝트(불명이면 생략).
-    pub project: Option<String>,
-    /// 리포터 머신(win|mac|unix). 크로스머신 발견 시 머신 구분용(생략 가능).
-    pub machine: Option<String>,
-    /// 발견 출처(예: claude-jsonl).
-    pub source: String,
-    /// 세션 활동 경과 초(claude=jsonl mtime 유래).
-    pub age_secs: i64,
-}
-
-/// report_candidates 툴 파라미터(발견 리포터가 로컬 세션 후보 배열을 보고).
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct ReportCandidatesParams {
-    /// 보고할 후보 목록(uuid 단위 upsert, 재보고 없으면 TTL로 소멸).
-    pub candidates: Vec<CandidateInput>,
-}
-
-/// list_candidates 툴 파라미터(필드 없음). fresh 후보 전체를 armed overlay와 함께 반환한다.
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct ListCandidatesParams {}
-
 /// report_presence 툴의 라이브 세션 한 건(presence 스캐너가 보고, 설계 v2-44 §6).
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct PresenceSessionInput {

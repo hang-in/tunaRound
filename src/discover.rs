@@ -1,9 +1,9 @@
-// 로컬 머신의 실행 중 Claude Code 세션을 열거해 브로커에 발견 후보로 보고하는 순수 함수와 스캐너.
+// 로컬 머신의 Claude Code 세션 열거 헬퍼(presence 스캐너가 재사용, v2-44).
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-/// 발견된 로컬 세션 한 건(MVP=claude). 브로커 report_candidates의 CandidateInput으로 직렬화해 보고한다.
+/// 발견된 로컬 세션 한 건(claude). presence 스캐너가 LiveSession으로 변환해 보고한다.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DiscoveredSession {
     /// jsonl 파일 stem(= Claude Code 세션 id). roster uuid와 같은 공간이라 armed overlay가 성립한다.
@@ -176,26 +176,6 @@ pub fn default_machine() -> String {
     }
 }
 
-/// 발견된 세션들을 report_candidates 툴이 받는 candidates JSON 배열로 직렬화한다.
-/// source는 발견 출처(claude-jsonl 고정, MVP), runner=claude. project=None이면 필드 생략(null).
-/// machine은 이 리포터의 머신 식별자(크로스머신 발견 시 win/mac 구분).
-pub fn sessions_to_candidates_json(sessions: &[DiscoveredSession], machine: &str) -> serde_json::Value {
-    let arr: Vec<serde_json::Value> = sessions
-        .iter()
-        .map(|s| {
-            serde_json::json!({
-                "uuid": s.uuid,
-                "runner": "claude",
-                "project": s.project,
-                "machine": machine,
-                "source": "claude-jsonl",
-                "age_secs": s.age_secs,
-            })
-        })
-        .collect();
-    serde_json::Value::Array(arr)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -306,21 +286,4 @@ mod tests {
         std::fs::remove_dir_all(&base).ok();
     }
 
-    #[test]
-    fn sessions_to_candidates_json_shapes_array() {
-        let sessions = vec![
-            DiscoveredSession { uuid: "s1".into(), project: Some("tunaround".into()), age_secs: 5, cwd: None },
-            DiscoveredSession { uuid: "s2".into(), project: None, age_secs: 9, cwd: None },
-        ];
-        let json = sessions_to_candidates_json(&sessions, "win");
-        let arr = json.as_array().unwrap();
-        assert_eq!(arr.len(), 2);
-        assert_eq!(arr[0]["uuid"], "s1");
-        assert_eq!(arr[0]["runner"], "claude");
-        assert_eq!(arr[0]["project"], "tunaround");
-        assert_eq!(arr[0]["machine"], "win");
-        assert_eq!(arr[0]["source"], "claude-jsonl");
-        assert_eq!(arr[0]["age_secs"], 5);
-        assert!(arr[1]["project"].is_null());
-    }
 }

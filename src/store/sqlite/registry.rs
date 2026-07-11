@@ -1,4 +1,4 @@
-// 에이전트 로스터 + 발견 후보 풀(인메모리 RefCell 풀, 영속 아님).
+// 에이전트 로스터(인메모리 RefCell 풀, 영속 아님).
 
 use std::collections::BTreeMap;
 
@@ -10,11 +10,10 @@ impl SqliteStore {
     pub fn register_agent(
         &self,
         uuid: &str,
-        mut tags: BTreeMap<String, String>,
+        tags: BTreeMap<String, String>,
         display_name: Option<String>,
         now: &str,
     ) {
-        crate::store::agents::normalize_legacy_tags(&mut tags); // supervised→infra alias(v2-44 §7)
         let mut roster = self.agent_roster.borrow_mut();
         let human_input_at = roster.get(uuid).and_then(|e| e.human_input_at.clone());
         roster.insert(
@@ -116,40 +115,14 @@ impl SqliteStore {
         now: &str,
         ttl_secs: i64,
     ) -> Vec<AgentEntry> {
-        // 셀렉터에도 레거시 alias 적용(구 role=supervised 셀렉터가 신 infra 항목을 찾게, v2-44 §7).
-        let mut selector = selector.clone();
-        crate::store::agents::normalize_legacy_tags(&mut selector);
         let mut out: Vec<AgentEntry> = self
             .agent_roster
             .borrow()
             .values()
             .filter(|entry| {
-                crate::store::agents::selector_matches(&entry.tags, &selector)
+                crate::store::agents::selector_matches(&entry.tags, selector)
                     && crate::store::agents::is_online(&entry.last_heartbeat, now, ttl_secs)
             })
-            .cloned()
-            .collect();
-        out.sort_by(|a, b| a.uuid.cmp(&b.uuid));
-        out
-    }
-
-    /// 발견 후보를 풀에 보고(upsert). uuid 단위로 교체하며 reported_at은 브로커 수신 시각(now)으로
-    /// 덮어쓴다(리포터 시계 불신). 재보고 없는 후보는 list_candidates의 TTL로 자연 제외된다.
-    pub fn report_candidates(&self, candidates: Vec<CandidateEntry>, now: &str) {
-        let mut pool = self.candidate_pool.borrow_mut();
-        for mut c in candidates {
-            c.reported_at = now.to_string();
-            pool.insert(c.uuid.clone(), c);
-        }
-    }
-
-    /// fresh(reported_at이 ttl_secs 이내)인 후보를 uuid 오름차순으로 반환(clone).
-    pub fn list_candidates(&self, now: &str, ttl_secs: i64) -> Vec<CandidateEntry> {
-        let mut out: Vec<CandidateEntry> = self
-            .candidate_pool
-            .borrow()
-            .values()
-            .filter(|c| crate::store::candidates::is_fresh(&c.reported_at, now, ttl_secs))
             .cloned()
             .collect();
         out.sort_by(|a, b| a.uuid.cmp(&b.uuid));
@@ -166,23 +139,6 @@ impl SqliteStore {
         self.list_agents(selector, now, ttl_secs).into_iter().map(|entry| entry.uuid).collect()
     }
 
-    /// online 에이전트의 "무장 식별자" 집합: 각 에이전트의 uuid + `session` 태그값(있으면).
-    /// 후보 overlay가 candidate uuid(=jsonl 세션 id)를 여기에 대조해, 이미 무장된 세션을 armed로 표시한다.
-    /// uuid=세션id로 무장한 세션(autoarm·arm 프롬프트)은 uuid로 매칭되고, 고정 이름으로 무장한 감독
-    /// (로스터 uuid=친숙명, 예: mac-claude-sup)은 `session` 태그에 자기 세션 id를 실어야 매칭돼 후보에서
-    /// 정확히 제외된다. session id는 uuid 공간이라 무관 에이전트와 충돌하지 않는다.
-    pub fn armed_session_ids(&self, now: &str, ttl_secs: i64) -> std::collections::HashSet<String> {
-        let mut set = std::collections::HashSet::new();
-        for entry in self.list_agents(&BTreeMap::new(), now, ttl_secs) {
-            if let Some(sid) = entry.tags.get("session")
-                && !sid.is_empty()
-            {
-                set.insert(sid.clone());
-            }
-            set.insert(entry.uuid);
-        }
-        set
-    }
 }
 
 #[cfg(test)]
@@ -249,80 +205,6 @@ mod tests {
 
         let many = db.resolve_selector(&tags(&[("runner", "claude")]), now, 90);
         assert_eq!(many, vec!["u1".to_string(), "u2".to_string()]);
-    }
-
-    #[test]
-    fn armed_session_ids_includes_uuid_and_session_tag() {
-        let db = SqliteStore::open_memory().unwrap();
-        // (a) uuid=세션 id로 무장(autoarm·arm 프롬프트 경로).
-        db.register_agent("sess-uuid-1", tags(&[("runner", "claude")]), None, "2026-07-04 10:00:00");
-        // (b) 고정 이름으로 무장하되 session 태그에 세션 id를 실음(레거시 감독 마이그레이션 경로).
-        db.register_agent(
-            "mac-claude-sup",
-            tags(&[("runner", "claude"), ("session", "e0502b88")]),
-            None,
-            "2026-07-04 10:00:00",
-        );
-        // (c) offline 에이전트는 무시돼야 함.
-        db.register_agent("stale", tags(&[("session", "zzz")]), None, "2026-07-04 09:00:00");
-
-        let armed = db.armed_session_ids("2026-07-04 10:00:10", 90);
-        assert!(armed.contains("sess-uuid-1"), "uuid로 무장한 세션은 uuid로 매칭");
-        assert!(armed.contains("mac-claude-sup"), "고정 이름 uuid도 포함");
-        assert!(armed.contains("e0502b88"), "session 태그의 세션 id로도 매칭(핵심 수정)");
-        assert!(!armed.contains("zzz"), "offline 에이전트의 session 태그는 제외");
-    }
-
-    fn candidate(uuid: &str) -> CandidateEntry {
-        CandidateEntry {
-            uuid: uuid.to_string(),
-            runner: "claude".to_string(),
-            project: Some("tunaround".to_string()),
-            machine: Some("win".to_string()),
-            source: "claude-jsonl".to_string(),
-            age_secs: 5,
-            reported_at: String::new(), // report_candidates가 now로 덮어씀
-        }
-    }
-
-    #[test]
-    fn report_then_list_candidates_roundtrip_and_upsert() {
-        let db = SqliteStore::open_memory().unwrap();
-        db.report_candidates(vec![candidate("s1"), candidate("s2")], "2026-07-06 10:00:00");
-        let found = db.list_candidates("2026-07-06 10:00:10", 180);
-        assert_eq!(found.len(), 2);
-        assert_eq!(found[0].uuid, "s1");
-        assert_eq!(found[0].reported_at, "2026-07-06 10:00:00"); // 브로커 now로 채워짐
-        // 같은 uuid 재보고는 upsert(교체), 개수 불변.
-        db.report_candidates(vec![candidate("s1")], "2026-07-06 10:01:00");
-        let again = db.list_candidates("2026-07-06 10:01:05", 180);
-        assert_eq!(again.len(), 2);
-        let s1 = again.iter().find(|c| c.uuid == "s1").unwrap();
-        assert_eq!(s1.reported_at, "2026-07-06 10:01:00");
-    }
-
-    #[test]
-    fn list_candidates_excludes_stale() {
-        let db = SqliteStore::open_memory().unwrap();
-        db.report_candidates(vec![candidate("s1")], "2026-07-06 09:00:00");
-        // now 기준 1시간 경과, ttl 180초 -> stale이라 제외되어야 함.
-        let found = db.list_candidates("2026-07-06 10:00:00", 180);
-        assert!(found.is_empty(), "stale 후보는 list_candidates에서 제외되어야 함");
-    }
-
-    #[test]
-    fn register_normalizes_supervised_to_infra_and_selector_alias_matches() {
-        let db = SqliteStore::open_memory().unwrap();
-        // 구식 watcher 등록(role=supervised) → infra로 정규화 저장.
-        db.register_agent("win-codex-sup", tags(&[("role", "supervised"), ("machine", "win")]), None, "2026-07-11 10:00:00");
-        let now = "2026-07-11 10:00:10";
-        let all = db.list_agents(&BTreeMap::new(), now, 90);
-        assert_eq!(all[0].tags.get("role").map(String::as_str), Some("infra"));
-        // 구 셀렉터(supervised)와 신 셀렉터(infra)가 같은 결과(유예 기간 계약).
-        let legacy = db.resolve_selector(&tags(&[("role", "supervised")]), now, 90);
-        let new = db.resolve_selector(&tags(&[("role", "infra")]), now, 90);
-        assert_eq!(legacy, vec!["win-codex-sup".to_string()]);
-        assert_eq!(legacy, new);
     }
 
     fn presence(uuid: &str, runner: &str, project: Option<&str>) -> crate::store::agents::PresenceUpsert {

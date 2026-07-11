@@ -147,47 +147,6 @@ pub fn poll(rt: &tokio::runtime::Runtime, a: PollArgs) {
     }
 }
 
-/// discover <...>: 로컬 Claude Code 세션을 열거해 브로커에 미무장 후보로 보고(v2-40 S2, worker 피처).
-pub fn discover(rt: &tokio::runtime::Runtime, a: DiscoverArgs) {
-    let result = rt.block_on(async {
-        // 토큰은 --token 우선, 없으면 TUNA_BROKER_TOKEN env 폴백(argv 노출 회피용).
-        let token = a.token.clone().or_else(|| std::env::var(ENV_BROKER_TOKEN).ok());
-        let client = tunaround::mcp_client::McpHttpClient::connect(a.core.clone(), token).await?;
-        let projects_dir = match a.projects_dir.clone() {
-            Some(p) => std::path::PathBuf::from(tunaround::config::expand_home(&p)),
-            None => tunaround::discover::default_projects_dir().ok_or_else(|| {
-                "projects 디렉토리를 찾을 수 없습니다(HOME/USERPROFILE 미설정). --projects-dir로 지정하세요"
-                    .to_string()
-            })?,
-        };
-        // stale_mins*60은 큰 입력에서 overflow하므로 saturating. interval 0은 tight loop라 최소 1초로.
-        let stale = std::time::Duration::from_secs(a.stale_mins.saturating_mul(60));
-        let interval = a.interval.max(1);
-        let machine = a.machine.clone().unwrap_or_else(tunaround::discover::default_machine);
-        loop {
-            let sessions = tunaround::discover::enumerate_claude_sessions(
-                &projects_dir,
-                std::time::SystemTime::now(),
-                stale,
-            );
-            let candidates = tunaround::discover::sessions_to_candidates_json(&sessions, &machine);
-            match client.report_candidates(candidates).await {
-                Ok(resp) => println!("[discover] 세션 {}건 발견·보고: {resp}", sessions.len()),
-                Err(e) => eprintln!("[discover] 보고 실패(무시): {e}"),
-            }
-            if a.once {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_secs(interval)).await;
-        }
-        Ok::<(), String>(())
-    });
-    if let Err(e) = result {
-        eprintln!("[discover] 오류: {e}");
-        std::process::exit(1);
-    }
-}
-
 /// watch-results <...>: 총괄이 던진 task의 완료/실패를 브로커 SSE로 받아 stdout으로 알린다(worker 피처).
 pub fn watch_results(rt: &tokio::runtime::Runtime, a: WatchResultsArgs) {
     let result = rt.block_on(tunaround::watch_results::run(&a.core, &a.dispatcher, a.digest));

@@ -50,17 +50,6 @@ pub fn selector_matches(tags: &BTreeMap<String, String>, selector: &BTreeMap<Str
     selector.iter().all(|(k, v)| tags.get(k) == Some(v))
 }
 
-/// 레거시 role 태그값 정규화(설계 v2-44 §4): `supervised`(v2-37 감독 데몬) → `infra`.
-/// 등록(태그)과 발견(셀렉터) 양쪽에 적용해, 구 값으로 뜬 watcher와 구 셀렉터를 쓰는 dispatcher가
-/// 유예 기간 동안 신 값과 같은 결과를 얻게 한다(T5에서 alias 제거 예정).
-pub fn normalize_legacy_tags(tags: &mut BTreeMap<String, String>) {
-    if let Some(role) = tags.get_mut("role")
-        && role == "supervised"
-    {
-        *role = "infra".to_string();
-    }
-}
-
 /// presence 스캐너가 보고하는 라이브 세션 한 건(설계 v2-44 §6). 브로커 sync_presence의 입력.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PresenceUpsert {

@@ -7,7 +7,6 @@ use rusqlite::Connection;
 
 use crate::store::a2a::TaskEvent;
 use crate::store::agents::AgentEntry;
-use crate::store::candidates::CandidateEntry;
 
 // 스키마 버전 상수. v3: message_vectors.model_id. v4: message_validity(유효성 메타).
 // v5: messages.created_at. v6: tasks(A2A task 위임, docs/design/v2-a2a-partner-delegation_2026-07-02.md).
@@ -129,9 +128,6 @@ pub struct SqliteStore {
     /// 인메모리 에이전트 로스터(uuid → 항목). 영속 아님(브로커 재기동 시 워커 재등록으로 복원).
     /// 내부 가변성(RefCell): 모든 접근이 바깥 Mutex로 직렬화되므로 &self 메서드로 갱신 가능하다.
     agent_roster: RefCell<HashMap<String, AgentEntry>>,
-    /// 인메모리 발견 후보 풀(uuid → 후보). 리포터가 열거해 보고한 미무장 세션. roster와 별개 공간이나
-    /// 조회 시 armed overlay(uuid∈online roster)로 승격 표시한다. reported_at TTL로 stale 소멸(영속 아님).
-    candidate_pool: RefCell<HashMap<String, CandidateEntry>>,
 }
 
 /// FTS 검색 결과 한 건.
@@ -159,7 +155,6 @@ impl SqliteStore {
             conn,
             event_bus: None,
             agent_roster: RefCell::new(HashMap::new()),
-            candidate_pool: RefCell::new(HashMap::new()),
         };
         db.migrate()?;
         Ok(db)
@@ -174,7 +169,6 @@ impl SqliteStore {
             conn,
             event_bus: None,
             agent_roster: RefCell::new(HashMap::new()),
-            candidate_pool: RefCell::new(HashMap::new()),
         };
         db.migrate()?;
         Ok(db)

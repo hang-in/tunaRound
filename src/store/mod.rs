@@ -5,7 +5,6 @@ pub mod a2a;
 #[cfg(feature = "sqlite")]
 pub mod agents;
 #[cfg(feature = "sqlite")]
-pub mod candidates;
 #[cfg(feature = "sqlite")]
 pub mod sqlite;
 

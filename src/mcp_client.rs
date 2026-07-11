@@ -255,17 +255,6 @@ impl McpHttpClient {
         self.call_tool("list_agents", json!({ "selector": selector })).await
     }
 
-    /// report_candidates(candidates) 얇은 래퍼(발견 리포터가 후보 배열 보고).
-    /// candidates는 `[{uuid,runner,project?,source,age_secs}, ...]` JSON 배열.
-    pub async fn report_candidates(&self, candidates: Value) -> Result<String, String> {
-        self.call_tool("report_candidates", json!({ "candidates": candidates })).await
-    }
-
-    /// list_candidates() 얇은 래퍼(발견된 미무장 세션 후보 조회, armed overlay 포함).
-    pub async fn list_candidates(&self) -> Result<String, String> {
-        self.call_tool("list_candidates", json!({})).await
-    }
-
     /// report_presence(machine, sessions) 얇은 래퍼(presence 스캐너의 일괄 동기화, v2-44).
     /// sessions는 `[{uuid,runner,project?,display_name?}, ...]` JSON 배열.
     pub async fn report_presence(&self, machine: &str, sessions: Value) -> Result<String, String> {
