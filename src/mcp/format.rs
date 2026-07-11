@@ -240,9 +240,12 @@ pub(crate) fn format_task_status(task: &crate::store::a2a::Task, now: &str) -> S
             out.push_str(&texts.join("\n\n"));
         }
     } else if matches!(task.state, TaskState::Submitted | TaskState::Working | TaskState::InputRequired) {
+        // 텍스트가 하나도 없는 status_message는 건너뛰고 history로 폴백한다(봇리뷰: Some이지만
+        // parts.text 전부 None이면 본문이 있는 history[0]가 막히던 것).
         let texts: Vec<&str> = task
             .status_message
             .as_ref()
+            .filter(|m| m.parts.iter().any(|p| p.text.is_some()))
             .or_else(|| task.history.first())
             .map(|m| m.parts.iter().filter_map(|p| p.text.as_deref()).collect())
             .unwrap_or_default();

@@ -1,6 +1,6 @@
 // /dashboard/events SSE 를 구독해 task별로 묶은 카드로 표시하는 피드(상위 50 task 유지).
 // 한 task의 접수→진행중→완료(실패)를 같은 카드에서 갱신하고, 클릭하면 그 task의 이벤트 이력을 펼친다.
-import { useEffect, useState, type CSSProperties } from 'react'
+import { useEffect, useMemo, useState, type CSSProperties } from 'react'
 import type { Agent, TaskEventMsg } from '../api'
 import { relativeTime } from '../api'
 
@@ -78,11 +78,18 @@ export default function Feed({ onConnectedChange, onEvent, agents }: Props) {
 
   // 라우팅 id(uuid)를 로스터의 사람이 읽는 이름으로 바꾼다(호버에 원 id는 title로 유지).
   // 로스터에 없으면(오프라인·과거 세션) uuid는 8자로 축약, 친숙명(dashboard 등)은 그대로.
-  const nameOf = (id: string) => {
-    const a = agents.find((x) => x.uuid === id)
-    if (a) return a.display_name ?? a.tags?.project ?? id.slice(0, 8)
-    return /^[0-9a-f][0-9a-f-]{11,}$/i.test(id) ? id.slice(0, 8) : id
-  }
+  // 이름 후보는 trim 후 ||로 고른다 - 빈 문자열 display_name/project가 빈 라벨로 렌더되지 않게(봇리뷰).
+  const agentNames = useMemo(() => {
+    const names = new Map<string, string>()
+    for (const agent of agents) {
+      const label =
+        (agent.display_name ?? '').trim() || (agent.tags?.project ?? '').trim() || agent.uuid.slice(0, 8)
+      names.set(agent.uuid, label)
+    }
+    return names
+  }, [agents])
+  const nameOf = (id: string) =>
+    agentNames.get(id) ?? (/^[0-9a-f][0-9a-f-]{11,}$/i.test(id) ? id.slice(0, 8) : id)
 
   useEffect(() => {
     const source = new EventSource('/dashboard/events')

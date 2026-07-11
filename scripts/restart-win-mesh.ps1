@@ -39,7 +39,9 @@ if (Test-Path $PidsFile) {
         $p = Get-Process -Id ([int]$meshPid) -ErrorAction SilentlyContinue
         if ($p -and $p.ProcessName -eq 'tunaround') {
             Write-Host "[mesh] 데몬 종료 PID=$meshPid"
-            Stop-Process -Id $p.Id -Force
+            # 체크와 종료 사이 프로세스가 스스로 죽는 레이스가 전체 재기동을 중단시키지 않게
+            # ($ErrorActionPreference=Stop 전역이라 미지정 시 종단 오류 승격, 봇리뷰 Major).
+            Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
         }
     }
     Remove-Item $PidsFile -Force -ErrorAction SilentlyContinue
@@ -48,7 +50,7 @@ if (Test-Path $PidsFile) {
     $procs = Get-Process tunaround -ErrorAction SilentlyContinue
     if ($procs) {
         Write-Host "[mesh] mesh.pids 없음 - 전수 종료 폴백($($procs.Count)개, 세션 수신 poll은 재무장 필요)"
-        $procs | Stop-Process -Force
+        $procs | Stop-Process -Force -ErrorAction SilentlyContinue
         Start-Sleep -Seconds 2
     }
 }
@@ -61,11 +63,15 @@ if ($SourceBin) {
     # 이전 스왑 잔재 정리(아직 물고 있는 프로세스가 있으면 삭제가 실패해도 무해 - 다음 실행이 재시도).
     Get-ChildItem $StableDir -Filter "tunaround-old-*.exe" -ErrorAction SilentlyContinue |
         ForEach-Object { Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue }
+    # 복사를 먼저 .new로 성사시킨 뒤 스왑한다 - rename 후 복사 실패 시 안정 바이너리가 통째로
+    # 사라지는 창 제거(봇리뷰 Major, mac 원자 재배포 cp .new→mv와 같은 규약). Rename-Item의
+    # NewName은 경로가 아니라 이름(leaf)만 준다(봇리뷰 high).
+    $NewBin = Join-Path $StableDir "tunaround.exe.new"
+    Copy-Item $SourceBin $NewBin -Force
     if (Test-Path $StableBin) {
-        $oldName = "tunaround-old-{0}.exe" -f (Get-Date -Format "yyyyMMddHHmmss")
-        Rename-Item $StableBin (Join-Path $StableDir $oldName)
+        Rename-Item $StableBin ("tunaround-old-{0}.exe" -f (Get-Date -Format "yyyyMMddHHmmss"))
     }
-    Copy-Item $SourceBin $StableBin -Force
+    Rename-Item $NewBin "tunaround.exe"
     Write-Host "[mesh] 바이너리 배포(rename-swap): $SourceBin -> $StableBin"
 }
 if (-not (Test-Path $StableBin)) { throw "안정 바이너리 없음: $StableBin (최초엔 -SourceBin으로 배포)" }
