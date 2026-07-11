@@ -575,12 +575,14 @@ async fn dashboard_health_handler(
                 ScannerHealth { machine, last_heartbeat: a.last_heartbeat, age_secs, online }
             })
             .collect();
-        // uptime = 기동 시각(config) 대비 경과. row 부재(기동 write 이전=사실상 불가)면 0, 조회
-        // 오류(DB 고장)는 ?로 500 표면화. WAL 크기는 부재=체크포인트됨=0, 실 IO 오류만 500(fail-visible).
-        let uptime_secs = store
-            .get_config("broker_started_at")?
-            .and_then(|s| crate::store::a2a::age_secs(&now, &s))
-            .unwrap_or(0);
+        // uptime = 기동 시각(config) 대비 경과. row 부재(기동 write 이전=사실상 불가)면 0.
+        // row는 있으나 형식 손상(age_secs=None)이면 정상 0으로 위장하지 않고 500으로 표면화한다
+        // (fail-visible: 부재만 0, 손상/조회 오류는 500). WAL 크기는 부재=체크포인트됨=0, 실 IO 오류만 500.
+        let uptime_secs = match store.get_config("broker_started_at")? {
+            None => 0,
+            Some(started_at) => crate::store::a2a::age_secs(&now, &started_at)
+                .ok_or_else(|| "broker_started_at 형식 손상".to_string())?,
+        };
         let wal_bytes = store.wal_bytes()?;
         Ok(Health { open_tasks: open.len(), no_consumer, stuck, scanners, now, uptime_secs, wal_bytes })
     })

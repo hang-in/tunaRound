@@ -430,9 +430,10 @@ mod tests {
             let _ = std::fs::remove_file(format!("{p}{suffix}"));
         }
         let db = SqliteStore::open(&p).unwrap();
-        // 파일 기반이라 경로 branch를 타고 stat이 성립한다(부재/성공 모두 Ok).
+        // 파일 기반이라 경로 branch를 타고 stat이 성립한다. 커밋된 쓰기가 체크포인트 전이면 WAL에
+        // 프레임이 쌓여 양수 = 경로·stat 실검증(is_ok만이면 항상 0/잘못된 경로도 통과).
         db.set_config("broker_started_at", "2026-07-12 00:00:00").unwrap();
-        assert!(db.wal_bytes().is_ok(), "파일 기반 WAL stat은 Ok");
+        assert!(db.wal_bytes().unwrap() > 0, "체크포인트 전 WAL은 양수");
         // TRUNCATE 체크포인트 후 WAL은 0바이트(결정적).
         db.wal_checkpoint().unwrap();
         assert_eq!(db.wal_bytes().unwrap(), 0, "체크포인트(TRUNCATE) 후 WAL=0");

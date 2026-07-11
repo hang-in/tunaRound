@@ -17,6 +17,7 @@
 - **타입**: uptime_secs=i64(age_secs 반환·스캐너 age_secs와 동형, 캐스트 회피), wal_bytes=u64(fs metadata len 네이티브). WAL 부재는 ErrorKind::NotFound로 판별해 Ok(0), 그 외 IO 오류만 Err.
 - **clippy 실수정 1건**: 핸들러 doc 주석 줄이 `+ 브로커...`로 시작 → clippy `doc_lazy_continuation`(마크다운 불릿 오인) → 줄머리 `+` 제거. **CI 정확 명령으로 포착**(`cargo clippy --features "..." -- -D warnings`, `--all-targets` 없음). 내가 `--all-targets`로 돌렸다가 기존 테스트 타깃 type_complexity(runner/claude.rs:415·repl/mod.rs:697, 내 파일 아님·CI 게이트 밖)에 이 실에러가 묻혔던 것 = **CI와 동일 명령으로 검증할 것**(더 엄격이 오히려 실이슈를 노이즈로 가림).
 - **적대적 리뷰(워크플로우 3렌즈→검증)**: 원시 3건 → **확증 0건**(전부 기각). ① 기동 write best-effort→재기동 실패 시 stale uptime = fail-visible는 핸들러 조회 경로 한정(준수)·트리거 사실상 도달불가·uptime은 cosmetic 게이지라 방어적 선택. ② 서버 필드 누락 시 NaN = rust-embed 결합 배포라 불가·dev only·자가치유·기존 무검증 cast 클래스. ③ 500 후 무음 staleness = 기존 코드(diff 미변경, PR #68). **결론: 코드 변경 없음**(hardening 제안은 exotic cosmetic 엣지, 과투자 회피). 재론 금지.
+- **CodeRabbit(PR #70) 실이슈 1건 반영(MAJOR)**: 핸들러 uptime이 broker_started_at row는 있으나 **형식 손상** 시 age_secs=None→`.unwrap_or(0)`으로 정상 0 위장 = 내 적대 리뷰가 놓친 fail-visible 계약 위반 → `match`로 None(부재)=0 / Some(파싱실패)=500 분리. **canonical 게이트(CodeRabbit)가 적대 리뷰 사각을 잡은 사례**. + wal_bytes 테스트 `is_ok()`→체크포인트 전 양수 검증(nitpick, 경로·stat 실검증). 문체 Minor 3건(존댓말)=내부 추적/스펙 파일 terse 관행 일관성 위해 스킵. gemini 클린·DeepSource JS=idiom 재귀속(자문·머지 후 소멸).
 
 ## 2026-07-12 세션22: v2-47 대시보드 관제탑 고도화 #1~#5 완주
 
