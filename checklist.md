@@ -464,8 +464,8 @@
 
 - [x] P0 직접 제어 제거(PR #57 머지, -305줄): /dashboard/control route+핸들러+전용 SSRF 가드(ws_target_is_loopback) / ControlForm.tsx·sendControl·vite proxy / README 현행화. codex_inject::run 유지(relay 사용). 라이브 확인=control 401(라우트 소멸).
 - [x] P1 watch-results 재접속(PR #58 머지): run_once 분해+백오프(1→30s)+InboxState 루프 바깥 소유+전 단절 경로 flush+연속 20회 초과만 exit 1. 봇리뷰 반영 2건=SeenSet 상한(FIFO 4096, CodeRabbit Major)·수립 시점 기준 순수 생존 측정(gemini). **라이브 재현 실증**: 배포 재기동 순간 구 바이너리 인박스가 "스트림 오류" exit 1로 즉사(=P1이 고친 결함 그대로) → 신판 재무장. 세션 poll 4개는 재기동 통과 생존(#56 동작 확인).
-- [ ] P2 서버 재생 기반+피드 스냅샷: 공용 질의 list_tasks_replay + envelope 헬퍼(state=completed만 "completed") + /dashboard/events `?replay=N`(전 상태)·`?since=TS&dispatcher=`(completed/failed만) chain + Feed `?replay=50`+history 중복 가드.
-- [ ] P3 watch-results 재생 클라이언트(P1·P2 뒤): 접속 시 since=워터마크 구독, 워터마크=서버 updatedAt만, >= + seen dedup, 상태 파일 영속(파일 없으면 라이브부터).
+- [x] P2 서버 재생 기반+피드 스냅샷(PR #59 머지·배포, 522 pass+temp 브로커 스모크+라이브 replay 검증): 공용 질의 list_tasks_replay(+rowid 2차 키) + envelope 헬퍼 통일(state=completed만 "completed") + `?replay=N`(전 상태, 상한 500)·`?since=TS&dispatcher=`(completed/failed만, since 우선) subscribe-먼저 chain + Feed `?replay=50`+중복 가드(id+updatedAt+state). axum query 피처 대신 Uri 직접 파싱(Cargo.toml 불가침). **사고 교훈**=구현 에이전트가 스모크 정리로 taskkill //IM 전수 종료 → mesh 전멸(메모리 기록: 종료는 PID로만, 스모크 지시에 명시).
+- [ ] P3 watch-results 재생 클라이언트(P1·P2 뒤): 접속 시 since=워터마크 구독, 워터마크=서버 updatedAt만, >= + seen dedup, 상태 파일 영속(파일 없으면 라이브부터). **+P2 리뷰 이월 3건**: since 경로 상한(500, 잘리면 스냅샷 후 스트림 종료=클라이언트 재접속 루프가 이어받는 catch-up 연쇄) / since 'T' 포맷 정규화(사전순 함정 방어) / Feed 비연속 중복(재접속 레이스 창, 표시상 부풀림만 - 관찰 후 판단).
 - [ ] P4 ★ human_input_at 영속(스키마 v9=agent_human_input): write-through(DB 먼저) + 미등록 핑 선기록 + register/sync_presence 폴백 SELECT + sync_presence stale 제거 루프 DELETE + 7일 GC.
 - [ ] P5 codex 입력 신호(P4 뒤): 스캐너 rollout user_message tail 스캔("브로커 task " prefix 제외, mtime 무변경 스킵) + ISO→SQLite datetime 정규화 + report_presence에 human_input_at 추가 + sync_presence max-merge·승자 write-through + relay prefix 계약 주석.
 - [ ] P6a mesh 기억화 색인(스키마 v10=tasks.indexed_at): complete_task/fail_task 핸들러 훅(writer Option 가드·락 순서·best-effort) + a2a:<task_id> 네임스페이스 + 기동 백필 스캔.
