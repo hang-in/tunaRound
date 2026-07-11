@@ -221,10 +221,12 @@ pub fn presence_scan(rt: &tokio::runtime::Runtime, a: PresenceScanArgs) {
                 ));
             }
             // tombstone(깨끗한 종료 확정)은 프로세스 스냅샷과 무관하게 항상 제거한다(v2-46:
-            // 스냅샷 실패 주기에도 직전 종료 세션이 유령 B석으로 남지 않게).
+            // 스냅샷 실패 주기에도 직전 종료 세션이 유령 B석으로 남지 않게). last_idle 캐시에도 적용해,
+            // 스냅샷 None 주기에 tombstone된 세션이 캐시로 되살아나지 않게 한다(CodeRabbit 리뷰).
             if let Some(h) = &home {
                 let marker_dir = h.join(".tunaround").join("autoarm");
                 sessions = tunaround::presence_scan::filter_tombstoned(sessions, &marker_dir);
+                last_idle = tunaround::presence_scan::filter_tombstoned(last_idle, &marker_dir);
             }
             // 프로세스 스냅샷 1회: 러너 카운트 게이트 + 마커 생존 판정이 공유한다.
             if let Some((proc_text, is_win)) = tunaround::presence_scan::process_list_text() {
