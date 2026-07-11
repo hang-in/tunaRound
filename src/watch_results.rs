@@ -158,12 +158,18 @@ impl WatermarkFile {
 
     /// 워터마크를 기록한다. 임시 파일 write 후 rename(부분 쓰기로 파일이 깨지는 것 방지,
     /// mesh.pids rename-swap 답습). 실패는 best-effort로 삼킨다(기록 실패가 통지 기능을
-    /// 멈출 이유는 아니고, 다음 전진 때 재시도된다).
+    /// 멈출 이유는 아니고, 다음 전진 때 재시도된다). 영속 워터마크는 **단조**다: 마지막 기록값보다
+    /// 새 값(사전순=시간순)만 쓴다. --since로 과거 값부터 시작해도 디스크의 더 새 워터마크를 뒤로
+    /// 되감지 않는다(리뷰 이월: 재생은 인메모리 워터마크로 수행하고 영속 floor는 낮추지 않아 재시작
+    /// 시 과거 재생 폭주를 방지).
     fn persist(&mut self, watermark: &Option<String>) {
         let (Some(path), Some(ts)) = (self.path.as_ref(), watermark.as_ref()) else {
             return;
         };
-        if self.last_written.as_deref() == Some(ts.as_str()) {
+        // 마지막 기록값 이하(같거나 과거)면 재기록하지 않는다(단조 보장 + 같은 값 IO 절약).
+        if let Some(lw) = self.last_written.as_deref()
+            && ts.as_str() <= lw
+        {
             return;
         }
         if let Some(dir) = path.parent() {
@@ -414,6 +420,9 @@ pub async fn run(
                     "watch-results: --since 형식은 \"YYYY-MM-DD HH:MM:SS\"(UTC, 'T' 구분자 허용)이어야 합니다: {raw:?}"
                 ));
             }
+            // 오버라이드는 인메모리 재생 시작점으로만 쓴다. 디스크 워터마크를 읽어 영속 floor
+            // (last_written)만 채워, 단조 persist가 더 새 저장값을 오버라이드로 되감지 않게 한다.
+            let _ = file.load();
             Some(norm)
         }
         None => file.load(),
@@ -678,6 +687,29 @@ mod tests {
         let mut nofile = WatermarkFile::at(None);
         assert_eq!(nofile.load(), None);
         nofile.persist(&Some("2026-07-11 09:00:00".to_string()));
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn watermark_file_persist_is_monotonic_no_rewind() {
+        // 단조 영속(리뷰 이월): --since로 과거 값부터 시작해도 디스크의 더 새 워터마크를 되감지
+        // 않는다. persist는 마지막 기록값보다 새 값(사전순=시간순)만 쓴다.
+        let dir = std::env::temp_dir().join(format!("tuna-wr-mono-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join(watermark_file_name("mono-disp"));
+        let _ = std::fs::remove_file(&path);
+
+        let mut file = WatermarkFile::at(Some(path.clone()));
+        file.persist(&Some("2026-07-11 10:00:00".to_string()));
+        // 과거 값(오버라이드 되감기 시나리오)은 무시 - 파일은 더 새 값을 유지한다.
+        file.persist(&Some("2026-07-11 08:00:00".to_string()));
+        let mut reread = WatermarkFile::at(Some(path.clone()));
+        assert_eq!(reread.load().as_deref(), Some("2026-07-11 10:00:00"), "과거 값으로 되감기지 않음");
+        // 더 새 값은 정상 전진 기록.
+        file.persist(&Some("2026-07-11 11:00:00".to_string()));
+        let mut reread = WatermarkFile::at(Some(path.clone()));
+        assert_eq!(reread.load().as_deref(), Some("2026-07-11 11:00:00"), "새 값은 전진 기록");
 
         let _ = std::fs::remove_file(&path);
     }

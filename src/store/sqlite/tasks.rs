@@ -146,6 +146,12 @@ impl SqliteStore {
     ///
     /// 반환은 항상 updated_at 오름차순(소비자 = SSE 선행 프레임이 시간순으로 흘러야 함). 같은 초의
     /// tie는 rowid를 2차 키로 안정화한다.
+    ///
+    /// **Oldest 상한의 전제**(watch-results catch-up 연쇄, v2-45 P3): 클라이언트 워터마크가 초 단위
+    /// (updated_at)라, 단일 초에 종결 task가 상한(N)을 초과하면 Oldest(N)이 매번 같은 rowid 앞 N건만
+    /// 돌려주고 워터마크가 그 초를 넘지 못해 나머지가 재생에서 누락된다(초 내 페이지네이션 불가).
+    /// 운영 처리율(주간 약 100건)에선 비도달이며, 근본 해소는 (updated_at, rowid) 복합 커서로의
+    /// 확장이다(현재는 단순성 우선 비채택 - list_tasks_replay_oldest_wedges_within_same_second로 고정).
     pub fn list_tasks_replay(
         &self,
         from_agent: Option<&str>,
@@ -656,6 +662,29 @@ mod tests {
             // catch-up 연쇄(v2-45 P3): 잘려도 오래된 것부터 이어받아야 워터마크가 갭 없이 전진한다.
             let oldest = db.list_tasks_replay(None, None, &[], ReplayLimit::Oldest(2)).unwrap();
             assert_eq!(ids(&oldest), vec!["t1", "t2"], "오래된 것부터 2건(ASC LIMIT)");
+        }
+
+        #[test]
+        fn list_tasks_replay_oldest_wedges_within_same_second() {
+            // 동일-초 wedge 문서화(v2-45 P3 리뷰, 비도달 nit이라 회귀 가드로만 고정): 한 초에 상한
+            // 초과 종결이 몰리면 Oldest(N)은 매번 rowid 앞 N건만 주고, 클라이언트 워터마크가 그 초를
+            // 못 넘어(초 단위) N+1번째 이후는 재생에서 누락된다. since>= 재조회도 같은 prefix 반복.
+            let db = SqliteStore::open_memory().unwrap();
+            let ts = "2026-07-11 09:00:00";
+            for i in 0..5 {
+                let mut t = Task::new(format!("s{i}"), None, "win", "mac", ts);
+                t.state = TaskState::Completed;
+                db.create_task(&t).unwrap();
+            }
+            let first = db
+                .list_tasks_replay(Some("win"), Some(ts), &["completed"], ReplayLimit::Oldest(3))
+                .unwrap();
+            assert_eq!(ids(&first), vec!["s0", "s1", "s2"], "동일 초에선 rowid 앞 N건만(상한=3)");
+            // 워터마크가 그 초(=ts)로만 전진 가능 → since>= 재조회도 같은 prefix = s3·s4 도달 불가.
+            let again = db
+                .list_tasks_replay(Some("win"), Some(ts), &["completed"], ReplayLimit::Oldest(3))
+                .unwrap();
+            assert_eq!(ids(&again), vec!["s0", "s1", "s2"], "since>= 재조회도 전진 불가(same prefix)");
         }
 
         #[test]
