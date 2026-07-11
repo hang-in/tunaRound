@@ -45,21 +45,27 @@ if ($SourceBin) {
 }
 if (-not (Test-Path $StableBin)) { throw "안정 바이너리 없음: $StableBin (최초엔 -SourceBin으로 배포)" }
 
-function Start-Daemon([string]$Name, [string]$Exe, [string]$Args) {
+# 주의: 둘째 인자 이름을 $Args로 지으면 PowerShell 자동 변수와 충돌해 인자가 증발한다(실측: serve가 REPL로 폴백).
+function Start-Daemon([string]$Name, [string]$Exe, [string[]]$ArgList) {
     $out = Join-Path $TunaHome "$Name.log"
     $err = Join-Path $TunaHome "$Name.err.log"
-    $p = Start-Process -FilePath $Exe -ArgumentList $Args -WindowStyle Hidden -PassThru `
+    $p = Start-Process -FilePath $Exe -ArgumentList $ArgList -WindowStyle Hidden -PassThru `
         -RedirectStandardOutput $out -RedirectStandardError $err
     Write-Host "[mesh] $Name 기동 PID=$($p.Id)"
     return $p
 }
 
+# Get-NetTCPConnection(CIM)은 이 머신에서 부하 시 행에 걸린 실측이 있어 TcpClient 직결로 판정한다.
 function Test-Port([int]$Port) {
-    return [bool](Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue)
+    $c = New-Object System.Net.Sockets.TcpClient
+    try {
+        if ($c.ConnectAsync("127.0.0.1", $Port).Wait(1000)) { return $true }
+        return $false
+    } catch { return $false } finally { $c.Dispose() }
 }
 
 # 4. 브로커 기동 + listen 대기(watcher 레이스 회피, 세션13 실측).
-Start-Daemon "broker" $StableBin "serve 0.0.0.0:8770 --db `"$BrokerDb`"" | Out-Null
+Start-Daemon "broker" $StableBin @("serve", "0.0.0.0:8770", "--db", $BrokerDb) | Out-Null
 $ok = $false
 foreach ($i in 1..30) {
     if (Test-Port 8770) { $ok = $true; break }
@@ -72,20 +78,20 @@ Write-Host "[mesh] 브로커 8770 listen 확인"
 if (Test-Port 8790) {
     Write-Host "[mesh] codex app-server 8790 이미 listen(유지)"
 } elseif (Test-Path $CodexExe) {
-    Start-Daemon "codex-appserver" $CodexExe "app-server --listen ws://127.0.0.1:8790" | Out-Null
+    Start-Daemon "codex-appserver" $CodexExe @("app-server", "--listen", "ws://127.0.0.1:8790") | Out-Null
 } else {
     Write-Host "[mesh] codex.exe 없음($CodexExe) - app-server 생략"
 }
 
 # 6. presence 스캐너(머신당 1, v2-44): core/token/machine은 config env 폴백.
-Start-Daemon "presence-scan" $StableBin "presence-scan" | Out-Null
+Start-Daemon "presence-scan" $StableBin @("presence-scan") | Out-Null
 
 # 7. win-codex-sup 감독 poll(infra, codex-inject 글루 핸들러).
 $Handler = Join-Path $TunaHome "codex-sup-handle.cmd"
-Start-Daemon "codex-sup" $StableBin ("poll --core $Core --agent win-codex-sup --tags `"machine=win,purpose=codex-inject,role=infra,runner=codex`" --on-task `"$Handler`"") | Out-Null
+Start-Daemon "codex-sup" $StableBin @("poll", "--core", $Core, "--agent", "win-codex-sup", "--tags", "machine=win,purpose=codex-inject,role=infra,runner=codex", "--on-task", $Handler) | Out-Null
 
 # 8. 총괄 결과 인박스(watch-results, digest 60초).
-Start-Daemon "watch-results" $StableBin "watch-results --core $BaseUrl --dispatcher dashboard --digest 60" | Out-Null
+Start-Daemon "watch-results" $StableBin @("watch-results", "--core", $BaseUrl, "--dispatcher", "dashboard", "--digest", "60") | Out-Null
 
 Start-Sleep -Seconds 3
 Write-Host "[mesh] 완료. 상태:"
