@@ -80,7 +80,7 @@ tunaround chat --roster examples/roster.json  # 역할·엔진 직접 지정
 - **같은 레포 직접 읽기.** 긴 컨텍스트를 복붙하지 않습니다. 각 에이전트가 자기 CLI로 현재 작업 디렉터리를 직접 읽고 판단합니다.
 - **검색과 기억.** 대화·문서를 SQLite + FTS5로 색인하고 필요한 조각만 검색해 가져옵니다(pull 방식). 한국어 형태소 검색(Kiwi, 실패 시 lindera 폴백), 선택적 Ollama 의미 검색 + BM25 하이브리드, 유효성·최신성 반영 랭킹(`/reject`·`/supersede`). MCP를 켜면 에이전트가 토론 중 직접 `search_context`·`read_transcript`를 씁니다. 검색 백엔드 설정은 [온보딩 가이드](docs/reference/onboarding.md#검색-설정)에 있습니다.
 - **웹 대시보드**(`--features dashboard`로 빌드한 뒤 `serve`의 `/dashboard`). 로컬/LAN 세션 로스터 + 라이브 task 피드 + 목표 제출을 한 화면에서 봅니다. 관제탑에 충실한 뷰로, 로컬(loopback)에서만 목표를 제출할 수 있고 원격 접속은 읽기 전용 관전입니다.
-- **A2A 작업 위임과 워커 노드.** 코어가 제한된 범위의 작업 브로커로 동작합니다. 사람이 목표를 정하면 코어가 작업을 큐에 올리고, 워커 에이전트(Claude·Codex·로컬 LLM·외부 표준 A2A)가 자기 앞 작업을 발견·처리합니다. 구조와 역할은 [mesh 아키텍처](docs/reference/mesh-architecture.md), 명령 흐름은 [a2a-usage](docs/reference/a2a-usage.md)를 참고하세요.
+- **A2A 작업 위임과 워커 노드.** 코어가 제한된 범위("A2A 기반")의 작업 브로커로 동작합니다. 사람이 목표를 정하면 코어가 작업을 큐에 올리고, 워커 에이전트(Claude·Codex·로컬 LLM·외부 표준 A2A 에이전트)가 자기 앞 작업을 발견·처리합니다. 구조·역할과 표준 호환 범위는 [mesh 아키텍처](docs/reference/mesh-architecture.md), 명령 흐름은 [a2a-usage](docs/reference/a2a-usage.md)를 참고하세요.
 
 자율 수준은 **semi-A2A**입니다. 사람이 목표를 정하고, 발견·실행·완료·통지는 기계끼리 처리합니다. 사람 없이 무한히 도는 자동 토론 루프는 의도적으로 두지 않습니다.
 
