@@ -1,7 +1,7 @@
 // 메시지 트리를 검색 인덱스(SQLite/FTS)에 미러링하는 인덱서 추상화.
 use crate::store::StoredSession;
 
-/// 메시지 트리를 검색 인덱스에 반영하는 추상화(SessionBus 미러 패턴과 동형).
+/// 메시지 트리를 검색 인덱스에 반영하는 추상화(append 후 fire-and-forget 미러 패턴).
 pub trait MessageIndexer: Send + Sync {
     /// 현재 전체 트리를 인덱스에 persist한다(전량 교체 의미론).
     fn persist(&self, session_id: &str, ss: &StoredSession);

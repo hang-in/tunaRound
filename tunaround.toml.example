@@ -28,4 +28,4 @@ search_url = "https://your-core-host.example/mcp"   # 실제 도메인은 여기
 search_token_env = "TUNA_TOKEN"
 # search_token = "plain-token-not-recommended"       # 평문도 허용되나 비권장
 pull_context = true
-# session = "my-session-id"                          # 선택: Redis 세션 재개(TUNAROUND_REDIS_URL 필요)
+# session = "my-session-id"                          # 선택: SQLite 세션 재개(--db 필요)

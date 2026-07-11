@@ -347,7 +347,7 @@ recent_turns = 20
         let orig_userprofile = std::env::var_os("USERPROFILE");
 
         // HOME이 있으면 HOME을 쓴다.
-        // 단일 스레드 가정 하 unsafe 사용(session_bus.rs 컨벤션과 동일, 이 테스트 안에서만 mutate+복구).
+        // 단일 스레드 가정 하 unsafe 사용(이 테스트 안에서만 mutate+복구).
         unsafe {
             std::env::set_var("HOME", "/home/tester");
             std::env::remove_var("USERPROFILE");
@@ -391,7 +391,7 @@ recent_turns = 20
         assert_eq!(resolve_search_token(&p), None);
 
         p.search_token_env = Some("TUNAROUND_TEST_TOKEN_CFG_XYZ".to_string());
-        // 단일 스레드 가정 하 unsafe 사용(session_bus.rs 컨벤션과 동일). 유일한 이름이라 교차 테스트 충돌 없음.
+        // 단일 스레드 가정 하 unsafe 사용(이 테스트 안에서만 env mutate+복구). 유일한 이름이라 교차 테스트 충돌 없음.
         unsafe {
             std::env::set_var("TUNAROUND_TEST_TOKEN_CFG_XYZ", "from-env");
         }
