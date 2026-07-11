@@ -494,14 +494,11 @@ pub fn live_idle_marker_uuids(
 
 /// projects_dir 하위(`<mangled-cwd>/<uuid>.jsonl`)에서 특정 uuid의 jsonl 경로를 찾는다(P8). 서브
 /// 디렉토리마다 `<uuid>.jsonl` 존재만 stat으로 확인해 첫 매치를 반환한다(전체 파일 열거 안 함).
-/// 살아남은 유휴 uuid(= 열린 세션 수, 소수)에 대해서만 호출돼 자연히 bounded하다.
-fn find_session_jsonl(projects_dir: &Path, uuid: &str) -> Option<PathBuf> {
+/// 살아남은 유휴 uuid(= 열린 세션 수, 소수)에 대해서만 호출된다. subdirs는 호출부가 projects_dir을
+/// 한 번만 읽어 넘긴다(유휴 세션마다 read_dir 시스템 콜 반복을 피한다, gemini 리뷰).
+fn find_session_jsonl(subdirs: &[PathBuf], uuid: &str) -> Option<PathBuf> {
     let file = format!("{uuid}.jsonl");
-    for sub in std::fs::read_dir(projects_dir).ok()?.flatten() {
-        let subpath = sub.path();
-        if !subpath.is_dir() {
-            continue;
-        }
+    for subpath in subdirs {
         let candidate = subpath.join(&file);
         if candidate.is_file() {
             return Some(candidate);
@@ -517,6 +514,13 @@ fn find_session_jsonl(projects_dir: &Path, uuid: &str) -> Option<PathBuf> {
 /// 우선). 마커가 Pid가 아닌 것(NoMarker/Unknown/Dead=tombstone)은 대상이 아니다 - 가드③(마커 없음)은
 /// 기존 enumerate의 신선도 창 폴백이 처리하며 P8은 여기에 아무것도 더하지 않는다. codex는 마커가
 /// 없어 비대상(설계: rollout session_meta pid 정찰 후 후속).
+///
+/// **잔여 위험(pid 재사용, 적대 리뷰 confirmed minor)**: 크래시로 Pid 마커가 남은 세션의 pid를,
+/// 마커를 쓰지 않는 산 claude(headless·temp cwd·TUNA_AUTOARM 미설정)가 재사용하면 가드①(claude pid)이
+/// 통과하고 가드②(그 pid를 가리키는 마커가 스테일 하나뿐)도 밀어내지 못해 죽은 세션이 유령으로
+/// 되살아날 수 있다. 정상 /clear 경로는 SessionStart가 같은 pid에 더 최신 마커를 써 밀어내므로 안전하다.
+/// 근본 차단은 "그 pid 프로세스 시작시각 > 마커 mtime이면 재사용"인 시작시각 가드(win CIM CreationDate·
+/// unix ps lstart)이나, 케이스가 좁고(마커 없는 정확한 pid 재사용) 결과가 유휴 카드 1개라 후속 하드닝으로 남긴다.
 pub fn enumerate_idle_marker_sessions(
     marker_dir: &Path,
     projects_dir: &Path,
@@ -544,12 +548,16 @@ pub fn enumerate_idle_marker_sessions(
     // 2) 가드①②로 유지할 uuid 판정.
     let keep = live_idle_marker_uuids(&markers, claude_pids);
     // 3) 기존에 없는 uuid만 jsonl에서 project를 뽑아 LiveSession 생성(내부/자동화/temp cwd 필터 존중).
+    //    projects_dir 서브디렉토리 목록을 1회만 읽어 재사용한다(gemini 리뷰: 세션마다 read_dir 반복 회피).
+    let subdirs: Vec<PathBuf> = std::fs::read_dir(projects_dir)
+        .map(|rd| rd.flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect())
+        .unwrap_or_default();
     let mut out: Vec<LiveSession> = Vec::new();
     for uuid in keep {
         if existing.contains(&uuid) {
             continue; // 신선도 창으로 이미 잡힘(기존 우선, 중복 방지).
         }
-        let Some(path) = find_session_jsonl(projects_dir, &uuid) else { continue };
+        let Some(path) = find_session_jsonl(&subdirs, &uuid) else { continue };
         let (cwd, first_user) = crate::discover::scan_jsonl_head(&path, 60);
         // discover 열거와 같은 노이즈 필터(claude-mem observer·secall automation·temp 헤드리스) 존중.
         if cwd.as_deref().is_some_and(crate::discover::is_internal_cwd)

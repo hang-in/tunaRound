@@ -201,6 +201,10 @@ pub fn presence_scan(rt: &tokio::runtime::Runtime, a: PresenceScanArgs) {
         // codex 입력 신호 tail 스캔의 주기 간 캐시(uuid→(mtime, human_input_at)). mtime 무변경 rollout은
         // 재스캔을 건너뛴다(v2-45 P5).
         let mut codex_input_cache = tunaround::presence_scan::CodexInputCache::new();
+        // P8 유휴-열림 세션 캐시: 프로세스 스냅샷 성공 주기에 갱신하고, 실패(None) 주기엔 직전 세트를
+        // 유지해 fresh 세션과 대칭으로 None 주기 깜빡임(→ sync_presence stale 제거·★ GC)을 막는다
+        // (적대 리뷰 finding 1). 스냅샷이 실제로 죽음을 확인한 세션은 다음 성공 주기에 자연히 빠진다.
+        let mut last_idle: Vec<tunaround::presence_scan::LiveSession> = Vec::new();
         loop {
             let now = std::time::SystemTime::now();
             let mut sessions = Vec::new();
@@ -243,15 +247,22 @@ pub fn presence_scan(rt: &tokio::runtime::Runtime, a: PresenceScanArgs) {
                     let claude_pids = tunaround::presence_scan::runner_pids(&proc_text, "claude", is_win);
                     let existing: std::collections::HashSet<String> =
                         sessions.iter().map(|s| s.uuid.clone()).collect();
-                    let idle = tunaround::presence_scan::enumerate_idle_marker_sessions(
+                    // 스냅샷 성공 주기에만 유휴 세트를 재계산해 캐시에 담는다(아래에서 dedup 후 추가).
+                    last_idle = tunaround::presence_scan::enumerate_idle_marker_sessions(
                         &marker_dir,
                         pdir,
                         &claude_pids,
                         &existing,
                         home.as_deref(),
                     );
-                    sessions.extend(idle);
                 }
+            }
+            // 유휴-열림 세션을 추가한다(스냅샷 실패 주기엔 직전 캐시 사용 = fresh와 대칭, 깜빡임 방지).
+            // 이번 주기 fresh에 이미 있으면 제외(중복 방지).
+            {
+                let present: std::collections::HashSet<String> =
+                    sessions.iter().map(|s| s.uuid.clone()).collect();
+                sessions.extend(last_idle.iter().filter(|s| !present.contains(&s.uuid)).cloned());
             }
             // 스캐너 자신도 로스터에 등록(설계 v2-44 §3: 스캐너 heartbeat = 머신 도달성 신호).
             // register는 last_heartbeat를 now로 덮으므로 매 주기 호출 = heartbeat 겸용.
