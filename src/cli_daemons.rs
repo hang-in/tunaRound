@@ -4,7 +4,7 @@
 
 use crate::cli::*;
 
-//// work 모드: 원격 코어를 auto-poll->claim->실행->complete하는 헤드리스 워커 데몬(worker 피처 전용).
+/// work 모드: 원격 코어를 auto-poll->claim->실행->complete하는 헤드리스 워커 데몬(worker 피처 전용).
 pub fn work(rt: &tokio::runtime::Runtime, a: WorkArgs) {
     let mode = if a.write {
         tunaround::runner::RunMode::Write
@@ -123,7 +123,7 @@ pub fn work(rt: &tokio::runtime::Runtime, a: WorkArgs) {
     }
 }
 
-//// poll <...>: 감시 전용(claim/실행 없음). 코어에 연결해 새 task를 stdout으로 알린다.
+/// poll <...>: 감시 전용(claim/실행 없음). 코어에 연결해 새 task를 stdout으로 알린다.
 pub fn poll(rt: &tokio::runtime::Runtime, a: PollArgs) {
     let result = rt.block_on(async {
         // 토큰은 --token 우선, 없으면 TUNA_BROKER_TOKEN env 폴백(argv 노출 회피용).
@@ -146,7 +146,7 @@ pub fn poll(rt: &tokio::runtime::Runtime, a: PollArgs) {
     }
 }
 
-//// discover <...>: 로컬 Claude Code 세션을 열거해 브로커에 미무장 후보로 보고(v2-40 S2, worker 피처).
+/// discover <...>: 로컬 Claude Code 세션을 열거해 브로커에 미무장 후보로 보고(v2-40 S2, worker 피처).
 pub fn discover(rt: &tokio::runtime::Runtime, a: DiscoverArgs) {
     let result = rt.block_on(async {
         // 토큰은 --token 우선, 없으면 TUNA_BROKER_TOKEN env 폴백(argv 노출 회피용).
@@ -187,7 +187,7 @@ pub fn discover(rt: &tokio::runtime::Runtime, a: DiscoverArgs) {
     }
 }
 
-//// watch-results <...>: 총괄이 던진 task의 완료/실패를 브로커 SSE로 받아 stdout으로 알린다(worker 피처).
+/// watch-results <...>: 총괄이 던진 task의 완료/실패를 브로커 SSE로 받아 stdout으로 알린다(worker 피처).
 pub fn watch_results(rt: &tokio::runtime::Runtime, a: WatchResultsArgs) {
     let result = rt.block_on(tunaround::watch_results::run(&a.core, &a.dispatcher, a.digest));
     if let Err(e) = result {
@@ -196,7 +196,7 @@ pub fn watch_results(rt: &tokio::runtime::Runtime, a: WatchResultsArgs) {
     }
 }
 
-//// presence-scan <...>: 머신당 스캐너 데몬 = 라이브 세션 전집합을 브로커에 일괄 동기화(v2-44).
+/// presence-scan <...>: 머신당 스캐너 데몬 = 라이브 세션 전집합을 브로커에 일괄 동기화(v2-44).
 pub fn presence_scan(rt: &tokio::runtime::Runtime, a: PresenceScanArgs) {
     let result = rt.block_on(async {
         let core = a
@@ -299,7 +299,7 @@ pub fn presence_scan(rt: &tokio::runtime::Runtime, a: PresenceScanArgs) {
     }
 }
 
-//// task <...>: A2A task 수동 조작 CLI(v2-44 W3). 결과 텍스트를 그대로 stdout에 낸다(컴팩트).
+/// task <...>: A2A task 수동 조작 CLI(v2-44 W3). 결과 텍스트를 그대로 stdout에 낸다(컴팩트).
 pub fn task_cli(rt: &tokio::runtime::Runtime, a: TaskArgs) {
     // `-` 자리엔 stdin 본문을 채운다(긴 결과의 argv 한도 회피).
     fn arg_or_stdin(v: &str) -> Result<String, String> {
@@ -343,7 +343,7 @@ pub fn task_cli(rt: &tokio::runtime::Runtime, a: TaskArgs) {
     }
 }
 
-//// codex-inject <...>: codex app-server 라이브 thread에 turn/start로 유저 턴 1건 주입(worker 피처).
+/// codex-inject <...>: codex app-server 라이브 thread에 turn/start로 유저 턴 1건 주입(worker 피처).
 pub fn codex_inject(rt: &tokio::runtime::Runtime, a: CodexInjectArgs) {
     let approval = match tunaround::codex_inject::parse_approval_policy(&a.approval) {
         Ok(v) => v,
