@@ -9,16 +9,6 @@ use super::*;
 /// human_input_at 영속 행 보존기간(일). deregister/stale를 안 탄 고아 행을 이 기간 뒤 GC한다.
 const HUMAN_INPUT_RETAIN_DAYS: u32 = 7;
 
-/// 두 human_input_at(Option, DB datetime 포맷=사전순=시간순) 중 큰 값. §5-8 merge용 순수 헬퍼.
-/// P5가 여기에 스캐너 보고값(PresenceUpsert.human_input_at)을 하나 더 합류시킨다.
-fn max_opt_ts(a: Option<String>, b: Option<String>) -> Option<String> {
-    match (a, b) {
-        (Some(x), Some(y)) => Some(if x >= y { x } else { y }),
-        (Some(x), None) => Some(x),
-        (None, b) => b,
-    }
-}
-
 impl SqliteStore {
     // ---- 총감독 ★ 신호(human_input_at) 영속(v2-45 P4, agent_human_input 테이블) ----
 
@@ -112,13 +102,12 @@ impl SqliteStore {
             self.delete_human_input(uuid);
         }
         for s in sessions {
-            // §5-8 merge: 인메모리 기존 ∨ 영속 테이블 중 최신(재기동 후 인메모리가 비어도 테이블에서
-            // ★ 복원). P5가 여기에 스캐너 보고값(s.human_input_at)을 max에 하나 더 합류시킨다.
+            // ★ 복원 폴백: 인메모리에 값이 있으면 그대로 쓴다(이미 테이블과 동기 - mark가 둘 다 기록).
+            // 없을 때만(재기동 후 빈 로스터) 테이블에서 복원한다. P4는 스캐너가 새 값을 보고하지 않으므로
+            // write-through가 불필요하다(매 주기·매 세션 SELECT/UPSERT 제거, gemini 리뷰). P5가 스캐너
+            // 보고값을 도입하면 여기서 max(인메모리, 보고값) + 승자 단조 write-through로 확장한다(§5-8 최종형).
             let mem = roster.get(&s.uuid).and_then(|e| e.human_input_at.clone());
-            let human_input_at = max_opt_ts(mem, self.load_human_input(&s.uuid));
-            if let Some(at) = &human_input_at {
-                self.persist_human_input(&s.uuid, at); // 승자 write-through(단조라 되감김 없음)
-            }
+            let human_input_at = mem.or_else(|| self.load_human_input(&s.uuid));
             let mut tags = BTreeMap::new();
             tags.insert("machine".to_string(), machine.to_string());
             tags.insert("runner".to_string(), s.runner.clone());
@@ -408,11 +397,12 @@ mod tests {
     }
 
     #[test]
-    fn sync_presence_write_through_persists_signal_for_restart() {
+    fn sync_presence_preserves_persisted_signal_across_upsert() {
         let path = temp_db_path("wt");
         let p = path.to_str().unwrap();
         {
-            // mark로 인메모리+테이블에 기록된 ★가 sync upsert를 거쳐도 테이블에 승자로 남는지(write-through).
+            // mark로 테이블에 기록된 ★가 이후 sync upsert를 거쳐도 소실되지 않아야 한다(sync는 인메모리
+            // 값을 그대로 유지하고 테이블을 지우지 않음 - 재기동 후에도 영속 보존).
             let db = SqliteStore::open(p).unwrap();
             db.sync_presence("win", &[presence("s1", "claude", None)], "2026-07-11 10:00:00");
             db.mark_human_input("s1", "2026-07-11 10:00:05");
@@ -420,7 +410,7 @@ mod tests {
         }
         {
             let db = SqliteStore::open(p).unwrap();
-            assert_eq!(db.load_human_input("s1").as_deref(), Some("2026-07-11 10:00:05"), "write-through로 테이블 보존");
+            assert_eq!(db.load_human_input("s1").as_deref(), Some("2026-07-11 10:00:05"), "sync upsert가 영속 ★를 보존");
         }
         cleanup_db(&path);
     }

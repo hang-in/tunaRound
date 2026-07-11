@@ -538,8 +538,11 @@ async fn dashboard_human_ping_handler(
     // 미등록이어도 영속 선기록되므로(v2-45 P4) 항상 성공이다. 반환 bool은 무시하고 200을 준다.
     tokio::task::spawn_blocking(move || {
         let store = store.lock().unwrap_or_else(|e| e.into_inner());
-        let now = store.now().unwrap_or_default();
-        store.mark_human_input(&req.agent, &now);
+        // now() 실패 시 빈 타임스탬프("")를 기록하면 인메모리 ★가 사전순 최소로 오염되므로 건너뛴다
+        // (CodeRabbit 리뷰). 핑 수신 자체는 성공(200)이고 다음 유효 핑에 정상 기록된다.
+        if let Ok(now) = store.now() {
+            store.mark_human_input(&req.agent, &now);
+        }
     })
     .await
     .ok();
