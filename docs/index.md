@@ -1,37 +1,62 @@
-# tunaRound — Documentation Index
+# tunaRound 문서
 
-> 터미널에서 사용자가 운전하는 역할 부여 2-에이전트(Claude Code·Codex) 착수 전 설계 토론 도구. Rust+tokio.
+이 문서는 tunaRound의 문서 입구입니다. 처음 사용하는 사람, 여러 머신을 연결하려는 사람, 코드를 수정하려는 사람이 서로 다른 문서를 바로 찾을 수 있도록 나눴습니다.
+
+## 처음 사용하는 경우
+
+| 알고 싶은 것 | 읽을 문서 |
+| --- | --- |
+| tunaRound가 무엇인지 | [README](../README.md) |
+| 설치하고 처음 실행하는 방법 | [온보딩 가이드](reference/onboarding.md) |
+| A2A 작업을 보내고 받는 방법 | [A2A 작업 위임 사용법](reference/a2a-usage.md) |
+| 여러 머신과 에이전트가 연결되는 구조 | [mesh 아키텍처](reference/mesh-architecture.md) |
+| macOS와 Windows를 함께 쓰는 방법 | [macOS ↔ Windows 구성](reference/dev-mac-windows.md) |
+
+권장 순서는 다음과 같습니다.
+
+1. `README.md`에서 프로젝트의 목적과 기본 명령을 확인합니다.
+2. `onboarding.md`에서 자신에게 맞는 설치 경로를 고릅니다.
+3. 여러 머신을 연결할 때만 `mesh-architecture.md`를 읽습니다.
+4. 실제 작업 위임 명령이 필요할 때 `a2a-usage.md`를 참고합니다.
+
+## 소스에서 실행하거나 기여하는 경우
+
+| 문서 | 내용 |
+| --- | --- |
+| [소스 빌드와 개발 실행](development/source-run.md) | 피처 조합, 프런트엔드 빌드, 개발 실행 |
+| [개발 가이드](reference/development-guidelines.md) | 변경 범위, 테스트, 코드 작업 규칙 |
+| [버전 정책](reference/versioning.md) | 버전 번호와 릴리스 기준 |
+| [현행 설계 스펙](design/tunaRound-v1-design_2026-06-29.md) | 전체 구조와 설계 배경 |
+| [CHANGELOG](../CHANGELOG.md) | 버전별 변경 내역 |
+
+## 작업 문서
+
+아래 문서는 일반 사용 설명서가 아니라 개발 작업을 기록하거나 에이전트에게 일을 넘기기 위한 자료입니다.
 
 | 폴더 | 역할 |
-|---|---|
-| [plans/](plans/) | 진행 중 plan (active + partial). 완료는 archive 로 이동 |
-| [reference/](reference/) | SSOT — 데이터 모델, 규칙, 컨벤션, 용어집 |
-| [prompts/](prompts/) | Developer handoff, 재사용 prompt |
-| [archive/](archive/) | 완료/보류 plan, 구버전 reference |
-| [design/](design/) | 설계 spec (tunaDocs 표준 외 프로젝트 폴더). 현행 spec = `design/tunaRound-v1-design_2026-06-29.md` |
+| --- | --- |
+| [`plans/`](plans/) | 진행 중인 구현 계획 |
+| [`prompts/`](prompts/) | 재사용 프롬프트와 작업 인계문 |
+| [`archive/`](archive/) | 완료되거나 보류된 계획과 구버전 문서 |
+| [`design/`](design/) | 기능별 설계 문서와 현행 설계 스펙 |
+| [`reference/`](reference/) | 사용자·운영자·개발자용 참고 문서 |
 
-## 추천 읽기 순서
+작업 상태만 확인하려면 [`plans/index.md`](plans/index.md)를 봅니다. 일반 사용자는 개별 plan이나 prompt를 읽을 필요가 없습니다.
 
-새 세션 시.
+## 문서 작성 규칙
 
-1. `CLAUDE.md` — 사용자 글로벌 + 프로젝트 지시
-2. `design/tunaRound-v1-design_2026-06-29.md` — 현행 v1 설계 spec
-3. `plans/index.md` — 진행 중 plan 한 줄 확인
-4. 현재 작업 관련 plan 1개 + paired prompt(있으면)
-5. 필요 시 reference 1~2개
-
-## 문서 메타 규칙
-
-신규 plan/prompt 는 다음 7필드 frontmatter 필수.
+새로운 plan과 prompt에는 다음 frontmatter를 사용합니다.
 
 ```yaml
 ---
 title: ...
 type: plan | prompt | reference | how-to | archive
 status: draft | in_progress | partial | done | archived
-priority: P0 | P1 | P2 | P3      # plan 만 필수
+priority: P0 | P1 | P2 | P3
 updated_at: YYYY-MM-DD
 owner: claude | human | shared
-summary: 한두 줄
+summary: 한두 줄 요약
 ---
 ```
+
+`priority`는 plan에만 필수입니다. 사용자 문서는 frontmatter보다 제목, 대상 독자, 실행 순서가 먼저 드러나야 합니다.
