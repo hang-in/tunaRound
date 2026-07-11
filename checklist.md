@@ -494,12 +494,13 @@
 
 > 세션22가 무상태-추가로 남긴 헬스 패널을 store 표면 변경으로 확장. config 테이블 재사용(마이그레이션 불요). 사용자 방향 선택 2026-07-12.
 
-- [ ] store(sqlite.rs): db_path 필드(open=Some/open_memory=None) + get_config/set_config/wal_bytes 메서드
-- [ ] 기동(server.rs serve_http_mcp_on_listener): broker_started_at=now() 동기 기록(매 기동 덮어씀, best-effort, axum::serve 이전)
-- [ ] 핸들러(server.rs): Health에 uptime_secs/wal_bytes + 클로저 내 계산(`?`로 500 표면화) + doc "후속" 제거
-- [ ] frontend: BrokerHealth 타입 2필드(api.ts) + HealthPanel uptimeLabel/byteLabel + 가동·WAL 칩
-- [ ] 테스트: get_config/set_config 라운드트립 + wal_bytes(in-memory=0)
-- [ ] 백로그 문서(v2-47) #3 주석 "후속"→"완료" 갱신
-- [ ] 빌드+테스트+clippy(no-default 포함) green
-- [ ] 적대적 리뷰(워크플로우) → 실이슈 반영
-- [ ] 커밋 → (push 승인 후) PR → CI(clippy 3-OS·dashboard SPA·CodeRabbit) → 머지 → 배포 → 라이브 Chrome 검증
+- [x] store(sqlite.rs): db_path 필드(open=Some/open_memory=None) + get_config/set_config/wal_bytes 메서드
+- [x] 기동(server.rs serve_http_mcp_on_listener): broker_started_at=now() 동기 기록(매 기동 덮어씀, best-effort, axum::serve 이전)
+- [x] 핸들러(server.rs): Health에 uptime_secs/wal_bytes + 클로저 내 계산(`?`로 500 표면화) + doc "후속" 제거
+- [x] frontend: BrokerHealth 타입 2필드(api.ts) + HealthPanel uptimeLabel/byteLabel + 가동·WAL 칩
+- [x] 테스트: get_config/set_config 라운드트립 + wal_bytes(in-memory=0, file-backed checkpoint 후 0) = +3
+- [x] 백로그 문서(v2-47) #3 주석 "후속"→"완료" 갱신
+- [x] 빌드+테스트(548 lib)+CI clippy 2종 green(doc 주석 `+` 줄머리 clippy 실수정 1건 반영)
+- [x] 적대적 리뷰(워크플로우 3렌즈→검증): 원시 3건 → 확증 0건(전부 기각, cosmetic·기존 코드). 코드 변경 없음
+- [x] 커밋 `7493376`(7파일 +180/-6)
+- [ ] (push 승인 후) PR → CI(clippy 3-OS·dashboard SPA·CodeRabbit) → 머지 → 배포(WMI 스폰) → 라이브 Chrome 검증

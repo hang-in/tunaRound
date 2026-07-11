@@ -15,6 +15,8 @@
   - **fail-visible 유지(PR #68)**: get_config DB 오류·WAL 실 IO 오류는 spawn_blocking 클로저 안 `?`로 500 표면화. 정당한 0(WAL 부재=체크포인트됨, broker_started_at row 부재=기동 write 이전이라 사실상 불가)만 0 표시.
   - **기동 write = best-effort**(실패는 로그만, 기동 막지 않음). axum::serve 이전 동기 실행이라 첫 헬스 요청 전 항상 존재.
 - **타입**: uptime_secs=i64(age_secs 반환·스캐너 age_secs와 동형, 캐스트 회피), wal_bytes=u64(fs metadata len 네이티브). WAL 부재는 ErrorKind::NotFound로 판별해 Ok(0), 그 외 IO 오류만 Err.
+- **clippy 실수정 1건**: 핸들러 doc 주석 줄이 `+ 브로커...`로 시작 → clippy `doc_lazy_continuation`(마크다운 불릿 오인) → 줄머리 `+` 제거. **CI 정확 명령으로 포착**(`cargo clippy --features "..." -- -D warnings`, `--all-targets` 없음). 내가 `--all-targets`로 돌렸다가 기존 테스트 타깃 type_complexity(runner/claude.rs:415·repl/mod.rs:697, 내 파일 아님·CI 게이트 밖)에 이 실에러가 묻혔던 것 = **CI와 동일 명령으로 검증할 것**(더 엄격이 오히려 실이슈를 노이즈로 가림).
+- **적대적 리뷰(워크플로우 3렌즈→검증)**: 원시 3건 → **확증 0건**(전부 기각). ① 기동 write best-effort→재기동 실패 시 stale uptime = fail-visible는 핸들러 조회 경로 한정(준수)·트리거 사실상 도달불가·uptime은 cosmetic 게이지라 방어적 선택. ② 서버 필드 누락 시 NaN = rust-embed 결합 배포라 불가·dev only·자가치유·기존 무검증 cast 클래스. ③ 500 후 무음 staleness = 기존 코드(diff 미변경, PR #68). **결론: 코드 변경 없음**(hardening 제안은 exotic cosmetic 엣지, 과투자 회피). 재론 금지.
 
 ## 2026-07-12 세션22: v2-47 대시보드 관제탑 고도화 #1~#5 완주
 
