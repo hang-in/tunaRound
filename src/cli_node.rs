@@ -1,7 +1,7 @@
 // node·온보딩 서브커맨드의 헬퍼(레인 러너 조립·재시도 접속·init·doctor) (main.rs에서 분할, T4.5).
 
 #[cfg(all(feature = "serve", feature = "worker"))]
-use crate::cli::{DoctorArgs, InitArgs};
+use crate::cli::InitArgs;
 
 /// lane.runner(문자열)로부터 Runner를 만든다. 알 수 없는 이름·미충족 피처는 Err.
 // token은 runner=http(engines) 경로에서만 쓰여, engines 미포함 빌드에선 미사용이 정상이다.
