@@ -1019,6 +1019,78 @@ body {
   padding: 7px 9px;
 }
 
+/* ---------- 위임 이력 검색(#5, read-only) ---------- */
+.search-section {
+  flex: 1 1 100%;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px 18px;
+}
+.search-header {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.search-hint {
+  font-size: 11.5px;
+  color: var(--text-3);
+}
+.search-box {
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  padding: 8px 11px;
+}
+.search-box:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.search-results {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 420px;
+  overflow-y: auto;
+}
+.search-empty {
+  font-size: 13px;
+  color: var(--text-3);
+  padding: 4px 0;
+}
+.search-hit {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+}
+.search-hit-speaker {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  font-weight: 700;
+  color: var(--accent);
+  align-self: flex-start;
+}
+.search-hit-content {
+  font-size: 12.5px;
+  color: var(--text-2);
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  max-height: 180px;
+  overflow: auto;
+}
+
 /* ---------- 목표 제출 ---------- */
 .goal-section {
   flex: 1 1 100%;
