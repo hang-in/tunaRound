@@ -51,6 +51,16 @@ pub async fn serve_http_mcp_on_listener(
     let a2a_store_for_mcp = a2a_store.clone();
     // 대시보드 SSE/roster용 clone(같은 store = 같은 이벤트버스·로스터를 공유한다).
     let a2a_store_for_dash = a2a_store.clone();
+    // v2-47 #3: 브로커 기동 시각을 config에 기록한다(헬스 패널 uptime 소스). 매 기동 덮어씀(프로세스별
+    // uptime). serve/core/node 세 진입점이 이 함수로 수렴하므로 여기 한 곳이면 전부 커버한다. axum::serve
+    // 진입(아래) 이전 동기 기록이라 첫 헬스 요청 전에 항상 존재. best-effort(실패는 로그만, 기동 막지 않음).
+    {
+        let store = a2a_store.lock().unwrap_or_else(|e| e.into_inner());
+        match store.now().and_then(|n| store.set_config("broker_started_at", &n)) {
+            Ok(()) => {}
+            Err(e) => eprintln!("[serve] 브로커 기동 시각 기록 실패(무시): {e}"),
+        }
+    }
     // v2-45 P6a/P6b: 기동 housekeeping을 하나의 백그라운드 태스크로 던진다(서버 기동을 막지 않음,
     // gemini 리뷰). ① 미색인 종결 task를 mesh 기억에 백필(구 바이너리 완료분·유실 보완) → ② 그 뒤
     // 색인된 오래된 종결을 슬림화(history·completed 요청 비움, artifacts·실패사유 보존) + WAL 체크포인트.
@@ -507,9 +517,10 @@ async fn dashboard_roster_handler(
         .into_response()
 }
 
-/// GET /dashboard/health: mesh 건강 한눈 요약(read-only). 열린 task 수 + 미배달(no-consumer)/고착(stuck)
-/// 집계(tasks() MCP와 같은 임계 = classify_task_health 단일 소스) + 머신별 presence 스캐너 도달성.
-/// 브로커 uptime·WAL 크기는 store 표면 변경이 필요해 후속(설계 v2-47 #3 참조).
+/// GET /dashboard/health: mesh 건강 한눈 요약(read-only). 열린 task 수, 미배달(no-consumer)·고착(stuck)
+/// 집계(tasks() MCP와 같은 임계 = classify_task_health 단일 소스), 머신별 presence 스캐너 도달성,
+/// 브로커 uptime(기동 후 경과 초, broker_started_at config 기준), WAL 사이드카 크기(v2-47 #3).
+/// uptime·WAL은 임계 없는 raw 게이지다(task-health 아님).
 #[cfg(feature = "serve")]
 async fn dashboard_health_handler(
     axum::extract::State(store): axum::extract::State<Arc<Mutex<crate::store::sqlite::SqliteStore>>>,
@@ -529,6 +540,10 @@ async fn dashboard_health_handler(
         stuck: usize,
         scanners: Vec<ScannerHealth>,
         now: String,
+        /// 브로커(serve 프로세스) 기동 후 경과 초(broker_started_at config 기준). row 부재 시 0.
+        uptime_secs: i64,
+        /// WAL 사이드카(`<db>-wal`) 현재 바이트. 체크포인트 직후=0(정상).
+        wal_bytes: u64,
     }
     // 헬스는 "실패를 정상으로 위장하지 않는다"가 핵심(전부 0 = 정상처럼 보이는데 실은 조회 실패면 관제 오판).
     // 내부 쿼리 실패·spawn_blocking 패닉/취소는 Err로 모아 500으로 표면화 → 프론트가 "조회 실패"를 띄운다.
@@ -560,7 +575,14 @@ async fn dashboard_health_handler(
                 ScannerHealth { machine, last_heartbeat: a.last_heartbeat, age_secs, online }
             })
             .collect();
-        Ok(Health { open_tasks: open.len(), no_consumer, stuck, scanners, now })
+        // uptime = 기동 시각(config) 대비 경과. row 부재(기동 write 이전=사실상 불가)면 0, 조회
+        // 오류(DB 고장)는 ?로 500 표면화. WAL 크기는 부재=체크포인트됨=0, 실 IO 오류만 500(fail-visible).
+        let uptime_secs = store
+            .get_config("broker_started_at")?
+            .and_then(|s| crate::store::a2a::age_secs(&now, &s))
+            .unwrap_or(0);
+        let wal_bytes = store.wal_bytes()?;
+        Ok(Health { open_tasks: open.len(), no_consumer, stuck, scanners, now, uptime_secs, wal_bytes })
     })
     .await
     .unwrap_or_else(|e| Err(format!("spawn_blocking 실패: {e}")));

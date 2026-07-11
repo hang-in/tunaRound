@@ -78,13 +78,16 @@ export type ScannerHealth = {
   online: boolean
 }
 
-// 브로커 헬스 요약(GET /dashboard/health). 열린 task 수 + 미배달/고착 집계 + 스캐너 도달성.
+// 브로커 헬스 요약(GET /dashboard/health). 열린 task 수 + 미배달/고착 집계 + 스캐너 도달성
+// + 브로커 uptime(기동 후 경과 초) + WAL 사이드카 크기(바이트). uptime/WAL은 임계 없는 게이지.
 export type BrokerHealth = {
   open_tasks: number
   no_consumer: number
   stuck: number
   scanners: ScannerHealth[]
   now: string
+  uptime_secs: number
+  wal_bytes: number
 }
 
 // mesh 건강 요약을 가져온다. 실패는 던져서 호출부가 콘솔 로깅만 하도록 한다.

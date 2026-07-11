@@ -489,3 +489,17 @@
 - [ ] 워커 러너 `--runner opencode`(opencode run + stdin + --format json, 기존 러너 동형).
 - [ ] 감독 레인: 스캐너 opencode.db read-only 열거(보수 파서+버전 핀) → 수신 (a) tuna-broker MCP native 우선 검증(폴백 (b) relay형 prompt_async 주입) → human 신호 = chat.message 플러그인+prefix 필터(발화 조건 라이브 검증 선행).
 - [ ] 운용 규약: TUI --port 고정 + 머신당 포트 대역(다중 TUI 충돌 방지).
+
+## 세션23 v2-47 #3 후속: 브로커 uptime + WAL (feat/v2-47-health-uptime-wal)
+
+> 세션22가 무상태-추가로 남긴 헬스 패널을 store 표면 변경으로 확장. config 테이블 재사용(마이그레이션 불요). 사용자 방향 선택 2026-07-12.
+
+- [ ] store(sqlite.rs): db_path 필드(open=Some/open_memory=None) + get_config/set_config/wal_bytes 메서드
+- [ ] 기동(server.rs serve_http_mcp_on_listener): broker_started_at=now() 동기 기록(매 기동 덮어씀, best-effort, axum::serve 이전)
+- [ ] 핸들러(server.rs): Health에 uptime_secs/wal_bytes + 클로저 내 계산(`?`로 500 표면화) + doc "후속" 제거
+- [ ] frontend: BrokerHealth 타입 2필드(api.ts) + HealthPanel uptimeLabel/byteLabel + 가동·WAL 칩
+- [ ] 테스트: get_config/set_config 라운드트립 + wal_bytes(in-memory=0)
+- [ ] 백로그 문서(v2-47) #3 주석 "후속"→"완료" 갱신
+- [ ] 빌드+테스트+clippy(no-default 포함) green
+- [ ] 적대적 리뷰(워크플로우) → 실이슈 반영
+- [ ] 커밋 → (push 승인 후) PR → CI(clippy 3-OS·dashboard SPA·CodeRabbit) → 머지 → 배포 → 라이브 Chrome 검증
