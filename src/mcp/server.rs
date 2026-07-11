@@ -51,13 +51,28 @@ pub async fn serve_http_mcp_on_listener(
     let a2a_store_for_mcp = a2a_store.clone();
     // 대시보드 SSE/roster용 clone(같은 store = 같은 이벤트버스·로스터를 공유한다).
     let a2a_store_for_dash = a2a_store.clone();
-    // v2-45 P6a: 기동 시 미색인 종결 task를 mesh 기억에 백필(구 바이너리 완료분·유실 보완, best-effort).
-    // 백그라운드로 던져 서버 기동을 막지 않는다(gemini 리뷰: 백필 대량 시 기동/헬스체크 지연 방지).
-    // a2a_store는 mutex라 라이브 핸들러와 직렬화되어 동시 실행 안전하다.
-    if let Some(w) = &writer {
+    // v2-45 P6a/P6b: 기동 housekeeping을 하나의 백그라운드 태스크로 던진다(서버 기동을 막지 않음,
+    // gemini 리뷰). ① 미색인 종결 task를 mesh 기억에 백필(구 바이너리 완료분·유실 보완) → ② 그 뒤
+    // 색인된 오래된 종결을 슬림화(history·completed 요청 비움, artifacts·실패사유 보존) + WAL 체크포인트.
+    // 한 태스크로 묶어 백필→prune 순서를 지킨다(방금 색인된 오래된 task도 이번에 슬림화). a2a_store는
+    // mutex라 라이브 핸들러와 직렬화되어 동시 실행 안전. best-effort(실패는 다음 기동 재시도).
+    {
         let a2a = a2a_store.clone();
-        let w = w.clone();
-        tokio::task::spawn_blocking(move || crate::mcp::backfill_unindexed_terminal_tasks(&a2a, &w));
+        let w = writer.clone();
+        tokio::task::spawn_blocking(move || {
+            if let Some(w) = &w {
+                crate::mcp::backfill_unindexed_terminal_tasks(&a2a, w);
+            }
+            let store = a2a.lock().unwrap_or_else(|e| e.into_inner());
+            match store.prune_terminal_tasks(TERMINAL_RETAIN_DAYS) {
+                Ok(n) if n > 0 => eprintln!("[retention] 오래된 종결 task {n}건 슬림화"),
+                Ok(_) => {}
+                Err(e) => eprintln!("[retention] 슬림화 실패(무시): {e}"),
+            }
+            if let Err(e) = store.wal_checkpoint() {
+                eprintln!("[retention] WAL 체크포인트 실패(무시): {e}");
+            }
+        });
     }
     let a2a_router = crate::a2a_server::build_router(a2a_store, agent_card);
 
@@ -275,6 +290,11 @@ struct DashboardEventsQuery {
 /// 잘리면 스냅샷만 보내고 스트림을 정상 종료한다(catch-up 연쇄, 핸들러 주석 참조).
 #[cfg(feature = "serve")]
 const DASHBOARD_REPLAY_MAX: usize = 500;
+
+/// 종결 task 보존기간(일, v2-45 P6b). 이보다 오래된 색인 종결 task는 기동 시 슬림화된다. §5-5:
+/// 보존기간 > 재생 지평선 + 피드 창(50건)이라 슬림화가 재생·피드를 침해하지 않는다.
+#[cfg(feature = "serve")]
+const TERMINAL_RETAIN_DAYS: u32 = 30;
 
 /// application/x-www-form-urlencoded 값 디코딩('+' -> 공백, %XX -> 바이트). since의
 /// "YYYY-MM-DD HH:MM:SS"가 %20/+로 인코딩되어 오는 것을 원복한다. 불완전한 %시퀀스는 그대로 둔다.
