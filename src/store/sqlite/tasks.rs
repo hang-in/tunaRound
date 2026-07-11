@@ -215,6 +215,37 @@ impl SqliteStore {
             .map_err(|e| format!("sqlite: {e}"))
     }
 
+    /// 색인된(indexed_at NOT NULL) 종결 task 중 updated_at이 보존기간을 넘긴 것을 슬림화한다(v2-45 P6b
+    /// retention). history_json='[]'로 비우고, **completed는 message_json(원 요청)도 NULL**로 비운다
+    /// (요청은 이미 mesh 기억에 색인됨). **artifacts_json과 failed의 message_json(실패 사유)은 보존**한다
+    /// (§5-5: get_task 재조회·watch-results 전문 재조회 창구, 행 수명 내내). **행 삭제는 없다.**
+    /// 이미 슬림화된 행(history_json='[]')은 건너뛰어 재작업·재카운트를 피한다. 반환=슬림화한 행 수.
+    pub fn prune_terminal_tasks(&self, retain_days: u32) -> Result<usize, String> {
+        let cutoff = format!("-{retain_days} days");
+        // completed·failed를 한 원자적 UPDATE로 슬림화(봇 리뷰): history_json='[]'로 비우고, completed만
+        // message_json(원 요청)도 NULL로(CASE). failed의 message_json(실패 사유)과 artifacts_json은
+        // 보존(§5-5). WHERE의 OR 조건은 history가 이미 '[]'여도 completed에서 message_json이 남아 있으면
+        // 마저 정리해 경계 조건을 없앤다(완전 슬림 행은 재매칭 안 돼 멱등).
+        self.conn
+            .execute(
+                "UPDATE tasks \
+                 SET history_json='[]', \
+                     message_json=CASE WHEN state='completed' THEN NULL ELSE message_json END \
+                 WHERE state IN ('completed','failed') AND indexed_at IS NOT NULL \
+                   AND updated_at < datetime('now', ?1) \
+                   AND (history_json != '[]' OR (state='completed' AND message_json IS NOT NULL))",
+                [&cutoff],
+            )
+            .map_err(|e| format!("sqlite: {e}"))
+    }
+
+    /// WAL을 체크포인트하고 파일을 잘라 공간을 회수한다(v2-45 P6b: 슬림화 sweep 동반, 수동 정리 실측 해소).
+    pub fn wal_checkpoint(&self) -> Result<(), String> {
+        self.conn
+            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")
+            .map_err(|e| format!("sqlite: {e}"))
+    }
+
     /// 아직 색인되지 않은 종결(completed/failed) task를 오름차순으로 반환한다(v2-45 P6a 기동 백필).
     /// canceled·열린 task는 대상 아님("결과 있는 종결만 색인" 스코프). indexed_at은 DB 내부 컬럼이라
     /// Task wire에는 없으므로 WHERE 절로만 필터한다.
@@ -778,6 +809,72 @@ mod tests {
             assert_eq!(un2.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), vec!["t2"]);
             // 존재하지 않는 task_id 스탬프도 Ok(0행, best-effort).
             assert!(db.mark_task_indexed("nope").is_ok());
+        }
+
+        #[test]
+        fn prune_slims_old_indexed_terminals_preserving_artifacts_and_fail_reason() {
+            let db = SqliteStore::open_memory().unwrap();
+            let msg = |t: &str| Message {
+                message_id: "m".into(),
+                role: "user".into(),
+                parts: vec![Part { text: Some(t.into()), ..Default::default() }],
+                task_id: None,
+                context_id: None,
+            };
+            let old = "2020-01-01 00:00:00";
+            // t1: 오래된 completed·색인됨(history+요청 message+artifact).
+            let mut t1 = Task::new("t1", None, "win", "mac", old);
+            t1.state = TaskState::Completed;
+            t1.updated_at = old.into();
+            t1.history = vec![msg("요청1")];
+            t1.status_message = Some(msg("요청1"));
+            t1.artifacts = vec![Artifact {
+                artifact_id: "a".into(),
+                name: None,
+                parts: vec![Part { text: Some("결과1".into()), ..Default::default() }],
+            }];
+            db.create_task(&t1).unwrap();
+            db.mark_task_indexed("t1").unwrap();
+            // t2: 오래된 failed·색인됨(message_json=실패 사유).
+            let mut t2 = Task::new("t2", None, "win", "mac", old);
+            t2.state = TaskState::Failed;
+            t2.updated_at = old.into();
+            t2.history = vec![msg("요청2")];
+            t2.status_message = Some(msg("BLOCKED: 사유"));
+            db.create_task(&t2).unwrap();
+            db.mark_task_indexed("t2").unwrap();
+            // t3: 최근 completed·색인됨(보존기간 내 → 불변).
+            let mut t3 = Task::new("t3", None, "win", "mac", old);
+            t3.state = TaskState::Completed;
+            t3.updated_at = db.now().unwrap();
+            t3.history = vec![msg("요청3")];
+            db.create_task(&t3).unwrap();
+            db.mark_task_indexed("t3").unwrap();
+            // t4: 오래된 completed·미색인(indexed_at NULL → 불변).
+            let mut t4 = Task::new("t4", None, "win", "mac", old);
+            t4.state = TaskState::Completed;
+            t4.updated_at = old.into();
+            t4.history = vec![msg("요청4")];
+            db.create_task(&t4).unwrap();
+
+            assert_eq!(db.prune_terminal_tasks(30).unwrap(), 2, "오래되고 색인된 종결(t1·t2)만 슬림화");
+            let g1 = db.get_task("t1").unwrap().unwrap();
+            assert!(g1.history.is_empty(), "completed history 비움");
+            assert!(g1.status_message.is_none(), "completed 요청(message_json) 비움");
+            assert_eq!(g1.artifacts[0].parts[0].text.as_deref(), Some("결과1"), "artifacts 보존(§5-5)");
+            let g2 = db.get_task("t2").unwrap().unwrap();
+            assert!(g2.history.is_empty(), "failed history 비움");
+            assert_eq!(
+                g2.status_message.as_ref().unwrap().parts[0].text.as_deref(),
+                Some("BLOCKED: 사유"),
+                "failed 실패 사유 보존(§5-5)"
+            );
+            assert!(!db.get_task("t3").unwrap().unwrap().history.is_empty(), "보존기간 내 task 불변");
+            assert!(!db.get_task("t4").unwrap().unwrap().history.is_empty(), "미색인 task 불변");
+            // 재실행은 0건(이미 슬림, 멱등).
+            assert_eq!(db.prune_terminal_tasks(30).unwrap(), 0, "재실행은 0건(멱등)");
+            // WAL 체크포인트 호출도 성공(인메모리는 no-op이나 에러 없음).
+            assert!(db.wal_checkpoint().is_ok());
         }
 
         #[test]
