@@ -9,6 +9,16 @@ use crate::runner::{RunInput, Runner};
 /// task id의 고정 길이(SqliteStore::new_task_id = lower(hex(randomblob(16))) = 32 hex chars).
 const ID_LEN: usize = 32;
 
+/// 러너 실행 중 lease를 연장하는 주기(초). 한 사이클을 걸러도(연장 실패·지연) 2*주기가
+/// STUCK_WORKING_SECS(15분)를 넘지 않아야 거짓 stuck 표시가 안 뜬다(5분*2=10분<15분). 브로커
+/// CLAIM_LEASE_SECS(30분)보다도 훨씬 짧다(6배 여유). v2-49 #6.
+const LEASE_KEEPALIVE_SECS: u64 = 5 * 60;
+
+/// lease 연장 상한(회). 진행 신호 없이 무한 대기하는 고착 러너가 lease로 영원히 살아남지 못하게,
+/// 관대한 상한(36*5분=3시간) 뒤에는 연장을 멈춰 lease가 만료되도록 둔다(expire_stale_claims의
+/// requeue→fail 안전망 복원). 상한 아래의 정당한 장기 task는 영향받지 않는다. v2-49 #6 하드닝(적대 리뷰).
+const MAX_LEASE_EXTENSIONS: u32 = 36;
+
 /// poll_tasks 텍스트 한 블록에서 뽑아낸 필드(from_agent는 워커 루프에 불필요해 생략).
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParsedTask {
@@ -515,9 +525,43 @@ async fn run_one_pass(
         std::thread::spawn(move || {
             let _ = tx.send(runner2.run(&input));
         });
+        // v2-49 #6: 러너 실행 중 주기적으로 lease를 연장해, CLAIM_LEASE_SECS(30분)를 넘는 장기 task가
+        // expire_stale_claims에 실행 중 requeue되는 것을 막는다. rx 완료와 interval을 select!로 경합해
+        // 러너가 끝나면 즉시 연장을 멈춘다(client를 borrow만 하므로 clone 불요).
+        let run_result = {
+            let mut ticker = tokio::time::interval(Duration::from_secs(LEASE_KEEPALIVE_SECS));
+            // 노트북 절전·고부하로 tick이 밀려도 기본 Burst처럼 몰아치지 않게 Skip(밀린 tick을 버리고
+            // 다음 정상 tick만) - 깨어날 때 연장 상한을 몰아서 소진하는 것 방지(gemini 리뷰).
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            ticker.tick().await; // 최초 즉시 tick 소비(방금 claim해 lease가 신선함)
+            let mut extensions: u32 = 0;
+            tokio::pin!(rx);
+            loop {
+                tokio::select! {
+                    r = &mut rx => break r,
+                    _ = ticker.tick() => {
+                        // 상한 도달 후에는 연장을 멈춰, 진행 신호 없이 무한 대기하는 고착 러너가 lease로
+                        // 영원히 살아남지 못하게 한다(이후 lease 만료 → expire_stale_claims가 requeue/fail).
+                        if extensions < MAX_LEASE_EXTENSIONS {
+                            extensions += 1;
+                            // 연장 실패(이미 requeue/재claim/종료) = 이 워커의 소유권 상실. 로그만 남기고
+                            // 계속 진행한다(러너 결과는 complete 시 first-completer-wins 가드가 거른다).
+                            if let Err(e) = client.extend_lease(&t.id, agent).await {
+                                eprintln!("[work] task {} lease 연장 실패: {e}", t.id);
+                            } else if extensions == MAX_LEASE_EXTENSIONS {
+                                eprintln!(
+                                    "[work] task {} lease 연장 상한 도달 - 이후 연장 중단(고착 시 requeue/fail로 회수)",
+                                    t.id
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        };
         // 성공 -> complete_task(결과 artifact, state=completed). 실패 -> fail_task(사유, state=failed).
         // 실패를 completed로 위장하지 않아 dispatcher가 성패를 구분하고 재시도를 판단할 수 있다.
-        match rx.await {
+        match run_result {
             Ok(Ok(out)) => match client.complete_task(&t.id, &out.content, Some(agent)).await {
                 Ok(_) => eprintln!("[work] task {} complete 완료", t.id),
                 Err(e) => eprintln!("[work] task {} complete 실패: {e}", t.id),

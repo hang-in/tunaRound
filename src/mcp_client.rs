@@ -265,6 +265,18 @@ impl McpHttpClient {
     pub async fn get_task(&self, task_id: &str) -> Result<String, String> {
         self.call_tool("get_task", json!({ "task_id": task_id })).await
     }
+
+    /// extend_task_lease(task_id, agent) 얇은 래퍼(워커가 실행 중 자기 task의 lease를 주기 연장,
+    /// 장기 task requeue 방지, v2-49 #6). agent는 claimed_by와 일치해야 성공한다.
+    pub async fn extend_lease(&self, task_id: &str, agent: &str) -> Result<String, String> {
+        self.call_tool("extend_task_lease", json!({ "task_id": task_id, "agent": agent })).await
+    }
+
+    /// cancel_task(task_id, reason) 얇은 래퍼(잘못 보냈거나 더 필요 없는 열린 task 취소, `tunaround
+    /// task cancel`용).
+    pub async fn cancel_task(&self, task_id: &str, reason: Option<&str>) -> Result<String, String> {
+        self.call_tool("cancel_task", json!({ "task_id": task_id, "reason": reason })).await
+    }
 }
 
 /// SSE 프레이밍(`data: ...` 라인들) 안에서 JSON-RPC 응답 페이로드를 찾아 파싱한다. 서버(rmcp

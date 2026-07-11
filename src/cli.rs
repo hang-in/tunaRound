@@ -424,6 +424,14 @@ pub enum TaskAction {
         #[arg(long)]
         agent: Option<String>,
     },
+    /// 잘못 보냈거나 더 필요 없는 열린 task를 취소한다(-> canceled). 이미 종료된 task는 거부된다.
+    Cancel {
+        /// 취소할 task id.
+        task_id: String,
+        /// 취소 사유(선택, 로그·표시용).
+        #[arg(long)]
+        reason: Option<String>,
+    },
 }
 
 /// `codex-inject` 서브커맨드(worker 피처 전용) 옵션: codex app-server 라이브 thread에 turn/start로
