@@ -462,8 +462,8 @@
 
 > 2026-07-11 세션21 설계(병렬 조사 7 에이전트 기반). 사용자 방향 확정: 대시보드=관제탑 충실(직접 제어 제거·비확장) / ★=TUI 자리 기준(웹 신호 비채택) / Redis=전삭제. 고정 계약은 설계 §5.
 
-- [ ] P0 직접 제어 제거(독립 소수정): /dashboard/control route+핸들러+SSRF 가드 / ControlForm.tsx·sendControl·vite proxy / npm build. codex_inject::run은 유지(relay 사용).
-- [ ] P1 watch-results 재접속(클라이언트 전용): 재접속 루프(백오프 1s→30s) + seen·pending 루프 바깥 소유 + 청크 에러 경로 flush + 연속 실패 20회 초과 시 exit 1 유지.
+- [x] P0 직접 제어 제거(PR #57 머지, -305줄): /dashboard/control route+핸들러+전용 SSRF 가드(ws_target_is_loopback) / ControlForm.tsx·sendControl·vite proxy / README 현행화. codex_inject::run 유지(relay 사용). 라이브 확인=control 401(라우트 소멸).
+- [x] P1 watch-results 재접속(PR #58 머지): run_once 분해+백오프(1→30s)+InboxState 루프 바깥 소유+전 단절 경로 flush+연속 20회 초과만 exit 1. 봇리뷰 반영 2건=SeenSet 상한(FIFO 4096, CodeRabbit Major)·수립 시점 기준 순수 생존 측정(gemini). **라이브 재현 실증**: 배포 재기동 순간 구 바이너리 인박스가 "스트림 오류" exit 1로 즉사(=P1이 고친 결함 그대로) → 신판 재무장. 세션 poll 4개는 재기동 통과 생존(#56 동작 확인).
 - [ ] P2 서버 재생 기반+피드 스냅샷: 공용 질의 list_tasks_replay + envelope 헬퍼(state=completed만 "completed") + /dashboard/events `?replay=N`(전 상태)·`?since=TS&dispatcher=`(completed/failed만) chain + Feed `?replay=50`+history 중복 가드.
 - [ ] P3 watch-results 재생 클라이언트(P1·P2 뒤): 접속 시 since=워터마크 구독, 워터마크=서버 updatedAt만, >= + seen dedup, 상태 파일 영속(파일 없으면 라이브부터).
 - [ ] P4 ★ human_input_at 영속(스키마 v9=agent_human_input): write-through(DB 먼저) + 미등록 핑 선기록 + register/sync_presence 폴백 SELECT + sync_presence stale 제거 루프 DELETE + 7일 GC.
