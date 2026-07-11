@@ -59,7 +59,9 @@ def main() -> int:
             fd = os.open(str(rx), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
             os.close(fd)
             core = tuna_arm.broker_core()
-            tuna_bin = tuna_arm.cfg("TUNA_BIN", "tunaround")
+            # Monitor 커맨드는 Git Bash로 실행돼 백슬래시 경로가 증발한다(exit 127 실측
+            # 2026-07-11) - 슬래시 정규화 + 공백 경로 대비 작은따옴표(autoarm과 동일 규약).
+            tuna_bin = "'" + tuna_arm.cfg("TUNA_BIN", "tunaround").replace("\\", "/") + "'"
             print(json.dumps({
                 "hookSpecificOutput": {
                     "hookEventName": "UserPromptSubmit",
