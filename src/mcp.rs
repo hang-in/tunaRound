@@ -64,6 +64,15 @@ fn index_terminal_task(
     p: &TerminalIndexPayload,
 ) {
     let sid = format!("a2a:{}", p.task_id);
+    // 멱등 재색인(적대 리뷰 major): append_turn은 비멱등이고 append 커밋과 indexed_at 스탬프가 서로 다른
+    // 커넥션이라, 크래시(taskkill·WMI 재기동 상시)·부분실패로 스탬프 전 죽으면 백필이 turn을 재-append해
+    // 중복이 쌓인다. 재색인 전 이 세션의 기존 색인을 비워 delete-then-append로 멱등화한다(재실행=덮어쓰기).
+    {
+        let store = a2a_store.lock().unwrap_or_else(|e| e.into_inner());
+        if let Err(e) = store.delete_session_messages(&sid) {
+            eprintln!("[index] task {} 기존 색인 정리 실패(무시): {e}", p.task_id);
+        }
+    }
     let mut ok = true;
     if let Some(req) = &p.request_text
         && let Err(e) = writer.append_turn(&sid, &format!("a2a/{}", p.from_agent), req)
@@ -105,11 +114,17 @@ pub fn backfill_unindexed_terminal_tasks(
     }
     let n = tasks.len();
     for task in &tasks {
-        if let Some(payload) = build_terminal_index_payload(task) {
-            index_terminal_task(writer, a2a_store, &payload);
+        match build_terminal_index_payload(task) {
+            Some(payload) => index_terminal_task(writer, a2a_store, &payload),
+            None => {
+                // 결과 텍스트 없는 종결(레거시·expire→failed 등): 색인할 것이 없으니 스탬프만 해
+                // 목록에서 제외한다(적대 리뷰 minor: 미스탬프 시 매 기동 무한 재스캔·비수렴).
+                let store = a2a_store.lock().unwrap_or_else(|e| e.into_inner());
+                let _ = store.mark_task_indexed(&task.id);
+            }
         }
     }
-    eprintln!("[index] 기동 백필: 미색인 종결 task {n}건 색인 시도");
+    eprintln!("[index] 기동 백필: 미색인 종결 task {n}건 처리");
 }
 
 #[cfg(feature = "serve")]
@@ -749,6 +764,35 @@ mod tests {
         let mut cancel = Task::new("t3", None, "d", "m", "2026-07-11 09:00:00");
         cancel.state = TaskState::Canceled;
         assert!(build_terminal_index_payload(&cancel).is_none());
+    }
+
+    #[test]
+    fn backfill_stamps_result_less_terminal_to_converge() {
+        // 적대 리뷰 minor: 결과 텍스트 없는 종결(레거시·expire)은 payload None이라, 스탬프를 안 하면
+        // 매 기동 재스캔(비수렴). 백필이 None-payload도 mark_task_indexed로 스탬프해 수렴해야 한다.
+        struct FakeWriter;
+        impl crate::orchestrator::TranscriptWriter for FakeWriter {
+            fn append_turn(&self, _s: &str, _sp: &str, _c: &str) -> Result<u64, String> {
+                Ok(0)
+            }
+        }
+        let db = SqliteStore::open_memory().unwrap();
+        // completed인데 artifact 없음 → build_terminal_index_payload가 None.
+        let mut t = Task::new("t1", None, "win", "mac", "2026-07-11 09:00:00");
+        t.state = TaskState::Completed;
+        db.create_task(&t).unwrap();
+        assert_eq!(db.list_unindexed_terminal_tasks().unwrap().len(), 1);
+        let a2a = Arc::new(Mutex::new(db));
+        let writer: Arc<dyn TranscriptWriter> = Arc::new(FakeWriter);
+        backfill_unindexed_terminal_tasks(&a2a, &writer);
+        assert_eq!(
+            a2a.lock().unwrap().list_unindexed_terminal_tasks().unwrap().len(),
+            0,
+            "결과 없는 종결도 스탬프돼 재스캔 목록에서 빠짐(수렴)"
+        );
+        // 재백필도 no-op(수렴 유지).
+        backfill_unindexed_terminal_tasks(&a2a, &writer);
+        assert_eq!(a2a.lock().unwrap().list_unindexed_terminal_tasks().unwrap().len(), 0);
     }
 
     #[tokio::test]
