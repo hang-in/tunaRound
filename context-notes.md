@@ -9,6 +9,7 @@
   - **수정**: store `extend_lease(task_id, claimed_by)`(working+claimed_by 일치 시 lease+updated_at 갱신, 이벤트 미emit) + MCP `extend_task_lease` 도구 + client 래퍼 + 워커가 러너 실행 중 `tokio::select!`로 rx.await와 interval 경합해 주기 연장(LEASE_KEEPALIVE_SECS=600s=CLAIM_LEASE_SECS/3, client borrow 유지=clone 불요). updated_at 갱신은 의도(살아있으면 stuck 미표시).
 - **#4 cancel**: `store.try_cancel`(종료상태 가드) **이미 존재** → MCP `cancel_task` 도구 + client 래퍼 + `task cancel` CLI만 추가. **권한은 단순 유지**(토큰 게이트=단일소유). Codex의 sender/claimer/admin 다계층은 멀티테넌트 과투자라 비채택([[no-competitive-lens]]).
 - **비채택(재발명)**: await_task(SSE·watch-results), notify_sender(이벤트버스+watch-results), subscribe_tasks(SubscribeToTask SSE), task_inbox/outbox(poll+피드+search), reply/parent_task_id(결과가 같은 task로 회귀=역주소 문제 없음, 스레딩 YAGNI), release/task_events(니치·coarse 타임라인 있음). 교훈=[[tunaround-north-star]] 재발명 금지, 세션17 "A2A 워크플로우 이미 완성".
+- **적대 리뷰(2렌즈→검증) 확증 2건 반영(하드닝)**: ① 무조건 연장이 **고착 러너 안전망 제거**(진행 신호 없이 무한 대기 러너면 lease 영원히 갱신→requeue/fail·stuck 안 뜸) → **MAX_LEASE_EXTENSIONS=36(3h) 상한** 후 연장 중단으로 expire_stale_claims 안전망 복원. ② 600s 연장 vs 900s stuck 마진 300s라 한 사이클 걸러도 거짓 stuck → **LEASE_KEEPALIVE_SECS 600→300s**(2*300<900). refuted 3(updated_at replay 재정렬=cosmetic 1슬롯 / 고착=의도의 다른 인스턴스 / 기타). 고착 backstop은 러너 자체 idle_timeout(claude/codex/opencode)이 1차, 상한이 2차 방어.
 
 ## 2026-07-12 세션23: README 리프레시 + 문서 분리(온보딩·mesh) + 배포
 
