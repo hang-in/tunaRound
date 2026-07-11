@@ -1,480 +1,414 @@
-# A2A 작업 위임 사용법 (dispatcher · 코어 · 워커)
+# A2A 작업 위임 사용법
 
-> tunaRound 코어를 표준 A2A(Agent2Agent) 작업 브로커로 쓰는 실전 가이드입니다. 파트너 에이전트에게 작업을 맡기고(dispatcher), 워커가 자율로 처리하며(worker), 진행을 실시간으로 지켜보는(SSE) 전체 흐름을 다룹니다.
->
-> 설계 배경: [파트너 위임](../design/v2-a2a-partner-delegation_2026-07-02.md) · [스트리밍](../design/v2-a2a-streaming_2026-07-03.md) · [워커 데몬](../design/v2-a2a-worker-daemon_2026-07-03.md)
+이 문서는 tunaRound에서 다른 에이전트나 다른 머신에 작업을 맡기고 결과를 받는 방법을 설명합니다.
 
----
+처음 사용하는 경우에는 **빠른 시작**만 따라 하면 됩니다. 태그 라우팅, 라이브 세션 수신, 장애 진단 같은 내용은 실제로 필요할 때 뒤 절을 참고하세요.
 
-## 0. 세 역할
+> 전체 구조를 먼저 보고 싶다면 [mesh 아키텍처](mesh-architecture.md), 설치와 피처 설정은 [온보딩 가이드](onboarding.md)를 참고하세요.
 
-- **코어 (broker)**
-  `serve`로 띄운 상주 프로세스. 작업 큐(SQLite `tasks` 테이블)와 A2A 서버(`/a2a`, `/.well-known/agent-card.json`)를 노출합니다. 작업의 상태 전이 권위는 코어 하나뿐입니다.
-- **dispatcher**
-  코어에 작업을 던지고 결과를 받는 쪽. `SendMessage`(단발) 또는 `SendStreamingMessage`(SSE 실시간)로 던지고 `GetTask`로 확인합니다.
-- **worker**
-  자기 앞으로 온 작업을 처리하는 쪽. `tunaround work` 데몬이 poll → claim → 러너 실행 → complete를 사람 개입 없이 돕니다.
+## 먼저 알아둘 세 가지
 
-코어 하나에 dispatcher·worker가 여럿 붙을 수 있고, 작업은 `to_agent`(받는 워커 id)로 라우팅됩니다.
+| 역할 | 하는 일 |
+| --- | --- |
+| 코어 | 작업을 저장하고 상태를 관리하는 브로커입니다. `tunaround serve`로 실행합니다. |
+| 보내는 쪽 | 코어에 작업을 등록하고 결과를 확인합니다. 문서에서는 dispatcher라고 부릅니다. |
+| 받는 쪽 | 자기 앞으로 온 작업을 가져가 처리합니다. 보통 `tunaround work` 워커입니다. |
 
-### 어드레싱: UUID(라우팅) + 태그(발견)
+기본 흐름은 단순합니다.
 
-브로커는 본질적으로 **agent-id 라우팅 task 큐**입니다. `to_agent`는 큐의 subject이고, 그 id를 폴링하는 워커가 소비자입니다. 소비자가 없는 id로 던지면 작업이 조용히 영원히 `submitted`로 남습니다(세션9 실증: dispatcher id로 던져 폴러 없음). tunaRound는 이를 두 층으로 해결합니다.
-
-- **UUID = 라우팅 키.** 워커가 뜰 때 자가 발급(`--agent` 미지정 시 자동)하거나 사람이 읽기 쉬운 id(`win-worker`)를 직접 줍니다. task의 `to_agent`엔 항상 **구체 id 하나**가 남습니다.
-- **태그 = 발견 키.** 워커는 `--tags "machine=win,runner=claude,role=worker"`로 자기를 광고하고, dispatcher는 그 태그로 **발송 시점에 대상을 발견**(`to_selector`)합니다. 발송자가 문자열을 손으로 맞출 필요가 없어 오타-불일치(no-consumer)가 구조적으로 줄어듭니다. 상세는 §9.
-
-**태그 관례**(강제 아님, 표준키만 합의):
-
-- `machine`(win/mac/linux) · `runner`(claude/codex/opencode/llm/a2a) · `role`(session/worker/infra) · `project`(레포명) · `mode`(read/write). 자유 키도 허용됩니다.
-- **infra 규약(v2-44/46)**: 머신 상주 데몬은 `role=infra` + `purpose`(presence=스캐너 / codex-inject=relay)로 광고하고, uuid는 `{machine}-{용도}` 고정 이름(예: `win-presence-scan`, `mac-codex-relay`)을 씁니다. infra는 task 대상이 아니라 머신 도달성 신호(대시보드 헤더 도트)이며, GoalForm 등 대상 목록에서 제외됩니다. 세션은 스캐너가 `role=session,src=scan`으로 자동 동기화하므로 별도 등록이 불필요합니다. (구 `role=supervised`는 v2-46에서 alias까지 제거 - 더 이상 인식되지 않습니다.)
-- 예전 네이밍 규약(`{머신}-{역할}`)은 이제 **태그로 흡수**됩니다. `win-worker`라는 이름 대신 `machine=win,role=worker` 태그로 같은 정보를 라우팅 가능한 형태로 담습니다. 사람이 읽는 id는 `display_name`으로 따로 둘 수 있습니다.
-
-여전히 유효한 규칙:
-
-- **`to_agent`/셀렉터 대상은 폴링하는 워커만.** dispatcher id는 `from_agent` 전용이며 절대 대상이 되지 않습니다(던지는 쪽은 poll/claim을 하지 않으므로). 태그로도 dispatcher를 `role=worker`로 광고하지 않습니다.
-
-> 코어는 미배달을 표시로 알립니다: `submitted`가 오래 claim 안 되면 `get_task`/`tasks`/`poll` 출력에 `⚠no-consumer?`가, `working`이 오래 멈춰 있으면 `⚠stuck?`가 붙습니다(§8). 자동 전이(requeue)는 두지 않았습니다(semi-a2a: 사람이 재던짐 결정).
-
-> **표준 호환 범위 (정직하게):** 이 A2A는 A2A 프로토콜의 **구조를 차용**해 tunaRound 인스턴스끼리 위임하는 것이 목적입니다. JSON-RPC envelope·`GetTask`는 독립 A2A 클라이언트와 호환됨을 확인했으나(interop 스모크, context-notes 참조), (1) Agent Card가 인증 게이트 + 구식 단일-url 스키마라 표준 클라의 발견이 안 되고, (2) `SendMessage`가 브로커 라우팅 필드(`fromAgent`/`toAgent`)를 요구해 표준 클라가 task를 못 만듭니다. **임의의 제3자 표준 A2A 클라이언트와의 완전 호환은 비목표**이며, 필요해지면 표준↔브로커 번역 어댑터를 별도로 둡니다.
-
----
-
-## 1. 코어 띄우기
-
-```bash
-tunaround serve 0.0.0.0:8770 --token <TOKEN> --db ~/.tunaround/broker.db
+```text
+작업 등록 → 워커가 발견 → 워커가 선점 → 러너 실행 → 결과 등록
 ```
 
-- `--token`은 bearer 인증. 레포에 커밋하지 말고 각자 환경/설정에만 둡니다.
-- `serve`는 A2A 이벤트 버스(SSE 스트리밍용)를 자동으로 켭니다.
-- 같은 LAN이면 `0.0.0.0:<port>` + 사설 IP로 접속, 아니면 Tailscale/SSH 터널을 씁니다. 방화벽 인바운드 포트를 열어야 합니다.
-- 빌드: `cargo build --features "serve"`(스트리밍·A2A 포함). 워커 데몬까지 한 바이너리로 쓰려면 `--features "serve worker engines"`.
+작업 상태는 다음 순서로 바뀝니다.
 
-Agent Card로 코어가 뭘 지원하는지 확인(선택):
-
-```bash
-curl -s -H "Authorization: Bearer <TOKEN>" http://<코어-IP>:8770/.well-known/agent-card.json
-# -> capabilities: {"streaming": true, "pushNotifications": false}
-# -> buildFeatures: ["sqlite","mcp","serve","worker", ...]  # 이 코어가 컴파일된 피처(능력 발견용)
+```text
+submitted → working → completed
+                    └→ failed
 ```
 
-`buildFeatures`로 코어가 무슨 러너/기능을 할 수 있는지 알 수 있습니다(`engines`=http 러너, `a2a-out`=외부 표준 A2A 위임, `worker`=워커 클라이언트). dispatcher·doctor가 라우팅·진단에 참고합니다.
+사람이 작업 목표와 대상을 정하고, 발견·실행·완료 보고는 기계가 처리합니다. 사람 없이 계속 확장되는 자율 루프는 두지 않습니다.
 
 ---
 
-## 2. 워커 데몬 띄우기
+# 1. 빠른 시작
 
-워커는 코어의 `/mcp` 엔드포인트에 붙어 `poll_tasks` / `claim_task` / `complete_task`를 돕니다.
+아래 예시는 한 머신에서 코어와 Claude 워커를 띄운 뒤 작업 하나를 왕복시킵니다.
+
+## 1.1 코어 실행
 
 ```bash
-# win-worker 앞 작업을 Claude로 자율 처리 (15초 간격 상시 폴링)
+tunaround serve 0.0.0.0:8770 --token DEMO --db /tmp/broker.db
+```
+
+- `--token`은 브로커 접근용 bearer 토큰입니다.
+- 실제 토큰은 레포나 셸 히스토리에 남기지 말고 환경변수나 로컬 설정에 둡니다.
+- 다른 머신에서 접속할 때는 `127.0.0.1` 대신 코어 머신의 사설 IP를 씁니다.
+
+## 1.2 워커 실행
+
+다른 터미널에서 다음 명령을 실행합니다.
+
+```bash
 tunaround work \
-  --core http://<코어-IP>:8770/mcp \
-  --token <TOKEN> \
-  --agent win-worker \
+  --core http://127.0.0.1:8770/mcp \
+  --token DEMO \
+  --agent local-worker \
   --runner claude
 ```
 
-주요 옵션 (`tunaround work --help`):
+이 워커는 `local-worker` 앞으로 온 작업만 가져갑니다. 기본값은 읽기 전용입니다. 파일을 실제로 수정하게 하려면 `--write`를 명시해야 합니다.
 
-| 옵션 | 설명 |
-| --- | --- |
-| `--core <url>` | 코어의 **`/mcp`** URL (끝에 `/mcp` 포함). |
-| `--token <T>` | 코어 bearer 토큰. |
-| `--agent <id>` | 이 워커의 id. 이 id를 `to_agent`로 가진 작업만 집습니다. **생략 시 자가 uuid 생성**(로그에 출력). |
-| `--tags <k=v,..>` | 로스터 발견용 태그. dispatcher가 `to_selector`로 이 워커를 찾습니다(§9). 예: `machine=win,runner=claude,role=worker`. |
-| `--runner <claude\|codex\|opencode\|http>` | 작업을 실행할 러너 (기본 `claude`). |
-| `--model <m>` | 러너 모델 (선택). |
-| `--project-path <p>` | 러너가 작업할 디렉터리 (선택). 프로젝트별 격리에 사용. |
-| `--interval <secs>` | 폴링 간격 (기본 15). |
-| `--once` | 한 번만 폴링하고 종료 (테스트·수동용). |
-| `--write` | 러너를 쓰기 모드로 (기본은 읽기 전용 = behavioral read-only). |
-| `--http-base-url <url>` | `--runner http`일 때 LLM 엔드포인트 (예: `http://127.0.0.1:11434`, 끝에 `/v1` 붙이지 않음). |
+## 1.3 작업 등록
+
+```bash
+curl -s \
+  -H "Authorization: Bearer DEMO" \
+  -H "Content-Type: application/json" \
+  -X POST http://127.0.0.1:8770/a2a \
+  -d '{
+    "jsonrpc":"2.0",
+    "id":"1",
+    "method":"SendMessage",
+    "params":{
+      "message":{
+        "messageId":"m1",
+        "role":"user",
+        "parts":[{"text":"이 함수의 시간복잡도를 한 줄로 설명해줘"}]
+      },
+      "fromAgent":"my-dispatcher",
+      "toAgent":"local-worker"
+    }
+  }'
+```
+
+응답의 `result.id`가 작업 ID입니다.
+
+## 1.4 결과 확인
+
+```bash
+curl -s \
+  -H "Authorization: Bearer DEMO" \
+  -H "Content-Type: application/json" \
+  -X POST http://127.0.0.1:8770/a2a \
+  -d '{
+    "jsonrpc":"2.0",
+    "id":"2",
+    "method":"GetTask",
+    "params":{"id":"<task_id>"}
+  }'
+```
+
+완료된 작업은 `state`가 `completed`이고, 결과는 `artifacts`에 들어 있습니다.
 
 ---
 
-## 3. 이기종 파트너 (러너만 바꾸면 됨)
+# 2. 일반적인 사용
 
-같은 데몬을 어떤 러너로 띄우느냐가 파트너 종류입니다.
+## 2.1 워커 종류 바꾸기
+
+`tunaround work`는 실행할 러너만 바꾸면 Claude, Codex, OpenCode, 로컬 LLM을 같은 방식으로 사용할 수 있습니다.
 
 ```bash
-# Codex 워커
+# Codex
 tunaround work --core http://<코어-IP>:8770/mcp --token <TOKEN> \
   --agent codex-worker --runner codex
 
-# 로컬 LLM(Ollama, OpenAI 호환) 워커
+# OpenCode
+tunaround work --core http://<코어-IP>:8770/mcp --token <TOKEN> \
+  --agent opencode-worker --runner opencode
+
+# OpenAI 호환 HTTP 서버 또는 Ollama
 tunaround work --core http://<코어-IP>:8770/mcp --token <TOKEN> \
   --agent llm-worker --runner http \
   --http-base-url http://127.0.0.1:11434 --model qwen3.5:4b
 ```
 
-- `--runner http`는 `engines` 피처가 필요합니다(`cargo build --features "serve worker engines"`).
-- Ollama는 bearer 인증을 무시하므로 지금은 `--token`이 LLM 키로도 쓰입니다. 인증이 필요한 LLM 엔드포인트를 붙일 때는 키 분리가 필요합니다(후속 `--http-api-key`).
-- 로컬 모델이 콜드 상태면 첫 응답이 수십 초 걸릴 수 있습니다(모델 로드).
+| 옵션 | 설명 |
+| --- | --- |
+| `--core <url>` | 코어의 `/mcp` 주소입니다. |
+| `--token <token>` | 코어 접근 토큰입니다. |
+| `--agent <id>` | 이 워커가 받을 작업의 대상 ID입니다. 생략하면 UUID를 자동 생성합니다. |
+| `--runner <name>` | `claude`, `codex`, `opencode`, `http`, `a2a` 중 실행할 러너입니다. |
+| `--project-path <path>` | 러너가 작업할 디렉터리입니다. |
+| `--write` | 파일 변경을 허용합니다. 기본값은 읽기 전용입니다. |
+| `--interval <seconds>` | 작업 확인 간격입니다. 기본값은 15초입니다. |
+| `--once` | 한 번만 확인하고 종료합니다. 테스트할 때 사용합니다. |
 
-```bash
-# 외부 표준 A2A 에이전트를 워커로 (outbound: 우리가 표준 A2A로 그 에이전트에 위임)
-tunaround work --core http://<코어-IP>:8770/mcp --token <TOKEN> \
-  --agent bridge-worker --runner a2a \
-  --a2a-card http://some-agent.example/ --a2a-token <외부 에이전트 토큰>
-```
+러너는 해당 머신에 설치되고 로그인된 CLI를 사용합니다. `http` 러너는 지정한 LLM 서버를 사용합니다.
 
-- `--runner a2a`는 `a2a-out` 피처가 필요합니다(`cargo build --features "serve worker a2a-out"`). a2a-client로 `--a2a-card` URL의 agent-card를 발견해 **표준 A2A `SendMessage`로 위임**하고, 완료까지 `GetTask`를 폴링해 결과 artifact를 받아옵니다. 외부 표준 A2A 에이전트가 그대로 워커가 됩니다(독립 표준 서버 상대 왕복 실증). 반대 방향(제3자가 우리한테 던지기)은 비목표입니다(§0 호환 범위 참조).
+## 2.2 대화형 세션에서 작업 보내기
 
----
+Claude Code나 Codex에 코어를 MCP 서버로 등록하면 raw HTTP 대신 `send_task`, `get_task`, `list_agents` 도구를 사용할 수 있습니다.
 
-## 4. 작업 던지기 (dispatcher)
-
-### 4a. 단발: SendMessage + GetTask
-
-작업 생성:
-
-```bash
-curl -s -H "Authorization: Bearer <TOKEN>" -H "Content-Type: application/json" \
-  -X POST http://<코어-IP>:8770/a2a \
-  -d '{"jsonrpc":"2.0","id":"1","method":"SendMessage","params":{
-        "message":{"messageId":"m1","role":"user",
-                   "parts":[{"text":"이 함수의 시간복잡도를 한 줄로 설명해줘"}]},
-        "fromAgent":"my-dispatcher","toAgent":"win-worker"}}'
-# -> result.id = 생성된 task_id (32 hex)
-```
-
-결과 확인(워커가 처리하면 completed + artifact):
-
-```bash
-curl -s -H "Authorization: Bearer <TOKEN>" -H "Content-Type: application/json" \
-  -X POST http://<코어-IP>:8770/a2a \
-  -d '{"jsonrpc":"2.0","id":"1","method":"GetTask","params":{"id":"<task_id>"}}'
-# -> result.state = "completed", result.artifacts[0].parts[0].text = 워커의 결과
-```
-
-### 4b. 실시간: SendStreamingMessage (SSE)
-
-던지는 즉시 SSE 스트림이 열리고, 작업 생명주기가 프레임으로 흘러옵니다. `curl -N`(버퍼 끄기) 필수.
-
-```bash
-curl -N -s -H "Authorization: Bearer <TOKEN>" -H "Content-Type: application/json" \
-  -H "Accept: text/event-stream" \
-  -X POST http://<코어-IP>:8770/a2a \
-  -d '{"jsonrpc":"2.0","id":"s1","method":"SendStreamingMessage","params":{
-        "message":{"messageId":"m1","role":"user","parts":[{"text":"작업 지시..."}]},
-        "fromAgent":"my-dispatcher","toAgent":"win-worker"}}'
-```
-
-받게 되는 프레임(각 `data:` 줄은 JSON-RPC 응답, `result`는 StreamResponse):
-
-```
-data: {... "result":{"task":{... "state":"submitted" ...}}}          # 초기 스냅샷
-:                                                                     # keep-alive 하트비트
-data: {... "result":{"statusUpdate":{"status":{"state":"working"},"final":false,...}}}
-data: {... "result":{"artifactUpdate":{"artifact":{...결과...},"lastChunk":true,...}}}
-data: {... "result":{"statusUpdate":{"status":{"state":"completed"},"final":true,...}}}   # 여기서 종료
-```
-
-- `final:true` 프레임 뒤 스트림이 닫힙니다.
-- 워커가 느리면(예: 로컬 LLM 콜드, Codex) `curl --max-time`을 넉넉히 줍니다. 스트림이 끊겨도 작업은 코어에서 계속되며 `GetTask`나 `SubscribeToTask`로 이어 확인할 수 있습니다.
-- **재구독**: 이미 진행 중인 작업에 다시 붙으려면 `SubscribeToTask`(params `{"id":"<task_id>"}`)를 씁니다. 현재 스냅샷을 먼저 받고 이후 이벤트를 이어받습니다.
-
-### 4c. 대화형 에이전트가 dispatcher일 때 (MCP 도구)
-
-Claude Code·Codex 같은 대화형 세션이 코어를 MCP 서버로 등록하면, `send_task` / `get_task` MCP 도구로 던지고 확인할 수 있습니다(사람이 도구 호출을 승인). raw HTTP를 쓰기 싫을 때의 경로입니다.
-
-등록:
+Claude Code 등록 예시:
 
 ```bash
 claude mcp add --transport http tuna-core http://<코어-IP>:8770/mcp \
   --header "Authorization: Bearer <TOKEN>"
 ```
 
-등록 후 새 세션에서 `send_task from_agent=... to_agent=win-worker text="..."` → `get_task task_id=...`.
+새 세션에서 다음 흐름으로 사용합니다.
 
----
-
-## 5. 프로젝트별 라우팅
-
-작업 큐는 코어 db 하나에 평평하게 있고 `to_agent`로만 갈립니다. 프로젝트를 격리하려면 **프로젝트마다 워커 데몬을 따로** 띄우고 agent id와 작업 디렉터리를 분리합니다.
-
-```bash
-# 프로젝트 A 워커
-tunaround work --core ... --token ... --agent projA-worker --project-path /repos/A --runner claude
-# 프로젝트 B 워커
-tunaround work --core ... --token ... --agent projB-worker --project-path /repos/B --runner codex
+```text
+send_task from_agent=win-opus to_agent=mac-worker text="이 모듈의 오류 경로를 검토해줘"
+get_task task_id=<task_id>
 ```
 
-dispatcher는 `to_agent`를 `projA-worker` 또는 `projB-worker`로 지정해 라우팅합니다.
+사람이 보는 대화형 세션에서는 MCP 도구 호출 승인이 필요할 수 있습니다.
 
-**데몬 하나로 여러 프로젝트 배분 (`--context-map`):** 작업의 `context_id`를 프로젝트 키로 삼아, 워커 하나가 각 작업을 맞는 디렉터리에서 실행합니다.
+## 2.3 진행 상황을 실시간으로 보기
+
+`SendStreamingMessage`를 사용하면 작업 등록부터 완료까지 SSE로 상태를 받을 수 있습니다.
+
+```bash
+curl -N -s \
+  -H "Authorization: Bearer <TOKEN>" \
+  -H "Content-Type: application/json" \
+  -H "Accept: text/event-stream" \
+  -X POST http://<코어-IP>:8770/a2a \
+  -d '{
+    "jsonrpc":"2.0",
+    "id":"s1",
+    "method":"SendStreamingMessage",
+    "params":{
+      "message":{
+        "messageId":"m1",
+        "role":"user",
+        "parts":[{"text":"작업 지시"}]
+      },
+      "fromAgent":"my-dispatcher",
+      "toAgent":"win-worker"
+    }
+  }'
+```
+
+일반적으로 다음 순서의 이벤트가 옵니다.
+
+```text
+submitted → working → artifact → completed
+```
+
+스트림이 끊겨도 작업 자체는 코어에서 계속됩니다. 이후 `GetTask`로 확인하거나 `SubscribeToTask`로 다시 구독할 수 있습니다.
+
+## 2.4 프로젝트별로 워커 나누기
+
+프로젝트별로 작업 디렉터리를 격리하려면 워커를 따로 띄우는 방식이 가장 단순합니다.
+
+```bash
+tunaround work --core ... --token ... \
+  --agent project-a-worker --project-path /repos/A --runner claude
+
+tunaround work --core ... --token ... \
+  --agent project-b-worker --project-path /repos/B --runner codex
+```
+
+작업을 보낼 때 `to_agent`를 프로젝트에 맞는 워커로 지정합니다.
+
+워커 하나에서 여러 프로젝트를 처리하려면 `context_id`와 `--context-map`을 사용할 수 있습니다.
 
 ```bash
 tunaround work --core ... --token ... --agent shared-worker \
-  --context-map "projA=/repos/A,projB=/repos/B" --project-path /repos/default --runner claude
+  --context-map "projA=/repos/A,projB=/repos/B" \
+  --project-path /repos/default \
+  --runner claude
 ```
 
-dispatcher는 작업을 던질 때 `context_id`를 넣습니다(`SendMessage` params의 `message.contextId`, 또는 MCP `send_task`의 `context_id`). 워커는 그 값을 `--context-map`에서 찾아 project-path를 정하고, 매핑에 없으면 `--project-path`로 폴백합니다. 코어의 `poll_tasks` 출력에 `ctx=<context_id>`가 포함되어 워커가 라우팅에 씁니다.
+작업의 `context_id`가 맵에 있으면 해당 디렉터리를 사용하고, 없으면 `--project-path`로 돌아갑니다.
 
 ---
 
-## 6. 자율 수준 · 안전
+# 3. 태그로 워커 찾기
 
-- **semi-a2a (HITL):** 사람이 목표(작업)를 발행할 뿐, 발견·실행·완료·통지는 기계끼리 처리합니다. 사람 없이 무한히 도는 자동 토론 루프는 두지 않았습니다.
-- 워커 데몬은 **opt-in**(직접 `tunaround work`를 띄워야 동작)이고 러너는 **기본 읽기 전용**입니다. 파일을 실제로 고치게 하려면 `--write`.
-- 러너는 그 머신에 설치·로그인된 claude/codex/opencode에 의존합니다. `--runner http`는 지정한 LLM 엔드포인트에만 의존합니다.
-
----
-
-## 7. 빠른 로컬 왕복 (한 머신에서 검증)
-
-```bash
-# 1) 코어
-tunaround serve 0.0.0.0:8770 --token DEMO --db /tmp/broker.db &
-
-# 2) 작업 던지기(win-worker 앞), task_id 기록
-curl -s -H "Authorization: Bearer DEMO" -H "Content-Type: application/json" -X POST http://127.0.0.1:8770/a2a \
-  -d '{"jsonrpc":"2.0","id":"1","method":"SendMessage","params":{"message":{"messageId":"m1","role":"user","parts":[{"text":"broadcast 채널을 한 줄로 설명"}]},"fromAgent":"disp","toAgent":"win-worker"}}'
-
-# 3) 워커 한 번 돌리기(자율 발견->실행->완료)
-tunaround work --once --agent win-worker --runner claude --core http://127.0.0.1:8770/mcp --token DEMO
-
-# 4) 결과 확인
-curl -s -H "Authorization: Bearer DEMO" -H "Content-Type: application/json" -X POST http://127.0.0.1:8770/a2a \
-  -d '{"jsonrpc":"2.0","id":"1","method":"GetTask","params":{"id":"<task_id>"}}'
-```
-
----
-
-## 8. 미배달·고착 감지 (거버넌스)
-
-코어는 작업이 조용히 썩는 두 상황을 **표시로** 알립니다(자동 전이는 하지 않습니다 - semi-a2a: 사람이 재던짐 결정). A2A 스펙에 `expired` 같은 상태가 없어 상태를 바꾸는 대신 신호만 붙입니다.
-
-- **`⚠no-consumer?(N분)`**: `submitted`인데 오래(기본 5분 초과) claim이 안 된 작업. 폴링하는 워커가 없다는 뜻(잘못된 `to_agent`로 던졌거나 워커가 안 떠 있음). 세션9의 "dispatcher id로 던져 폴러 없음" 실패가 이 신호로 보입니다.
-- **`⚠stuck?(N분)`**: `working`인데 오래(기본 15분 초과) 갱신이 없는 작업. claim한 워커가 죽었을 가능성(프로세스 사망·세션 만료·self-disruption).
-
-어디서 보이나:
-
-| 도구/명령 | 대상 | no-consumer/stuck 표시 |
-| --- | --- | --- |
-| `get_task(task_id)` (MCP) | dispatcher가 자기 작업 확인 | 붙음 |
-| `tasks()` (MCP, 신규) | 브로커 운영자가 **전역** 열린 작업 조망(to_agent 무관) | 붙음 |
-| `poll_tasks(agent)` (MCP) | 워커가 자기 앞 작업 확인 | 붙음(워커 데몬은 자동 무시하고 claim) |
-
-폴러가 없는 작업은 아무도 `poll_tasks`를 안 하므로, **`tasks()`가 그런 no-consumer 작업까지 한눈에** 보여줍니다. 신호를 보면 사람이 취소(`CancelTask`)하거나 올바른 `to_agent`로 다시 던집니다.
-
-> 자동 재큐(claim TTL requeue)·하트비트는 두지 않았습니다(개인 2~3머신엔 과함, 후속). self-disruption(워커가 자기 클론을 갈아엎어 stuck)은 §2의 `--write` + 별도 작업 디렉터리로 애초에 막습니다: write 워커의 작업 디렉터리가 노드 실행 클론과 겹치면 코어가 거부합니다(별도 클론/워크트리 필요).
-
----
-
-## 9. 에이전트 레지스트리 (등록 · 발견 · 셀렉터 라우팅)
-
-`to_agent`로 문자열을 손으로 맞추는 대신, **워커가 태그로 자기를 광고하고 dispatcher가 태그로 발견**합니다. 로스터는 코어 인메모리라 코어를 재기동하면 비고, 워커가 heartbeat 실패를 감지해 자동 재등록합니다(영속 아님, 재등록으로 복원).
-
-### 9a. 워커 자동 등록
-
-`tunaround work`에 `--tags`를 주면 뜰 때 로스터에 자기 등록하고, 매 폴마다 heartbeat로 online을 유지합니다.
+고정된 `to_agent` 문자열을 직접 관리하기 어려우면 워커가 태그를 광고하게 할 수 있습니다.
 
 ```bash
 tunaround work \
-  --core http://<코어-IP>:8770/mcp --token <TOKEN> \
+  --core http://<코어-IP>:8770/mcp \
+  --token <TOKEN> \
   --tags "machine=win,runner=claude,role=worker,project=tunaround" \
   --runner claude
-# --agent 미지정 -> 자가 uuid 생성(로그: "[work] --agent 미지정 -> 자가 uuid 생성: <uuid>")
-# 등록됨(로그: "[work] 로스터 등록: 등록됨: uuid=<uuid> tags=4개")
 ```
 
-`--agent`로 사람이 읽는 id(`win-worker`)를 직접 줘도 됩니다(그 id가 uuid 자리에 들어갈 뿐).
+권장 태그는 다음과 같습니다.
 
-### 9b. dispatcher가 online 워커 발견 (MCP `list_agents`)
+| 키 | 예시 | 의미 |
+| --- | --- | --- |
+| `machine` | `win`, `mac`, `linux` | 워커가 실행 중인 머신 |
+| `runner` | `claude`, `codex`, `http` | 실제 실행 러너 |
+| `role` | `worker`, `session`, `infra` | 에이전트의 역할 |
+| `project` | `tunaround` | 담당 프로젝트 |
+| `mode` | `read`, `write` | 허용 작업 범위 |
 
+MCP의 `list_agents`로 현재 온라인 대상을 찾을 수 있습니다.
+
+```text
+list_agents
+list_agents selector="runner=claude,project=tunaround"
 ```
-list_agents                       # online 전부
-list_agents selector="runner=claude"   # 태그로 필터(부분집합 매칭)
-# -> [<uuid>] <display> tags: machine=win, runner=claude, role=worker (heartbeat=...)
+
+작업을 보낼 때 `to_agent` 대신 `to_selector`를 지정할 수도 있습니다.
+
+```text
+send_task from_agent=win-opus \
+  to_selector="runner=claude,project=tunaround" \
+  text="현재 변경분을 검토해줘"
 ```
 
-`heartbeat`가 90초(AGENT_TTL_SECS) 넘게 끊긴 워커는 목록에서 빠집니다.
+매칭 결과는 다음처럼 처리됩니다.
 
-### 9c. 태그로 작업 던지기 (`to_selector`)
-
-`send_task`(MCP) 또는 `SendMessage`(`/a2a`)에 `to_agent` 대신 `to_selector`를 줍니다. 코어가 **발송 시점에 매칭 online uuid로 해석**합니다.
-
-- MCP: `send_task from_agent=win-opus to_selector="runner=claude,project=tunaround" text="..."`
-- `/a2a`: `SendMessage` params에 `"toSelector":"runner=claude"` (그리고 `toAgent`는 생략).
-
-해석 결과:
-
-| 매칭 수 | 코어 동작 |
+| 매칭 수 | 동작 |
 | --- | --- |
-| 1개 | 그 uuid로 task 생성(정상 라우팅). task의 `to_agent`엔 구체 uuid가 남습니다. |
-| 0개 | **no-consumer 안내**(task 생성 안 함). "list_agents로 확인하세요". |
-| 2개+ | **후보 목록 반환**(task 생성 안 함). dispatcher가 `to_agent`로 하나를 골라 재요청(HITL). |
+| 1개 | 해당 워커로 작업을 보냅니다. |
+| 0개 | 작업을 만들지 않고 대상이 없다고 알립니다. |
+| 2개 이상 | 후보를 보여주고 사람이 하나를 고르게 합니다. |
 
-`to_agent`와 `to_selector`는 배타입니다(둘 다 주면 에러). **레거시 경로 불변**: `to_agent`에 문자열/uuid를 직접 주면 예전처럼 그 id로 exact-match 라우팅합니다(레지스트리 우회).
-
-> 다중 매칭을 코어가 자동 배정(부하분산)하지 않고 dispatcher에게 되돌리는 건 semi-a2a(사람이 대상 결정)에 맞춘 기본값입니다. 자동 배정은 후속(YAGNI).
+자동 부하분산은 하지 않습니다. 대상 선택 권한은 보내는 쪽에 남깁니다.
 
 ---
 
-## 10. codex 세션 수신 (codex-relay, v2-46)
+# 4. 라이브 세션을 mesh에 연결하기
 
-워커(§2·§3)는 **헤드리스**(fresh runner가 claim→처리→complete하고 끝)입니다. 반면 **codex 라이브 세션**은 사람이 보는 그 대화에 task와 답이 그대로 나타나야 합니다. claude 세션은 하네스(Monitor)로 스스로 수신하지만 codex는 그 메커니즘이 없어, **머신당 배달 데몬(codex-relay)** 이 대신 받아 세션 thread에 주입합니다.
+헤드리스 워커뿐 아니라 사람이 보고 있는 Claude Code·Codex 세션도 로스터에 올리고 작업 대상으로 사용할 수 있습니다.
 
-### 개념
+## 4.1 presence 스캐너
 
-로스터에 보이는 codex 세션(uuid=threadId)이 곧 주입 대상입니다. relay가 주기적으로 로컬 라이브 codex 세션들을 열거하고(스캐너와 같은 SoR=rollout 파일), 각 세션 앞 task를 **대리 claim**한 뒤 `codex app-server` ws로 그 세션 thread에 `turn/start`를 주입합니다. codex는 그 턴 안에서 tuna-broker MCP `complete_task`(불가 시 `fail_task`)를 native 호출해 마감합니다. 주입 실패(세션 소멸·타임아웃)는 relay가 `fail_task`로 전환해 dispatcher가 즉시 봅니다.
-
-구 경로(v2-37 sup: `{machine}-codex-sup` poll + 사설 글루 thread + .cmd 핸들러)는 v2-46에서 폐기됐습니다 - "sup"이라는 별도 정체성 없이, 세션 자체가 대상이고 relay는 익명 배달부입니다. 정본 설계: [v2-46 codex-relay](../design/v2-46-codex-relay_2026-07-11.md) (프로토콜 기반 = [v2-37 app-server](../design/v2-codex-live-supervisor-appserver_2026-07-05.md)).
-
-### 세팅 절차 (머신당 1회)
+머신마다 스캐너 하나를 띄우면 로컬의 Claude Code와 Codex 세션을 찾아 코어 로스터에 동기화합니다.
 
 ```bash
-# 1) app-server 기동(상주). 토큰 env 필수 - 없으면 tuna-broker MCP가 로드 안 돼
-#    codex가 raw HTTP로 자가구조하며 토큰을 낭비합니다(v2-37 §5.3).
-TUNA_BROKER_TOKEN=<TOKEN> codex app-server --listen ws://127.0.0.1:<PORT>
+export TUNA_BROKER_CORE=http://<코어-IP>:8770/mcp
+export TUNA_BROKER_TOKEN=<TOKEN>
 
-# 2) 사람이 보는 codex 세션을 app-server thread로 엽니다(이게 로스터에 뜨고 주입 대상이 됩니다).
-#    plain `codex --remote`(resume 없이)는 항상 새 thread를 만드니, 기존 세션은 반드시 resume으로 엽니다.
-codex resume <threadId> --remote ws://127.0.0.1:<PORT>
-#    id를 모르면 `codex resume --remote ws://...`(목록 picker) 또는 `codex resume --last --remote ...`(최신)를 씁니다.
-
-# 3) relay 기동(머신당 1개). core/token/machine은 ~/.tunaround/config env 폴백으로 읽습니다.
-tunaround codex-relay --ws ws://127.0.0.1:<PORT>
-# 자기 등록 = {machine}-codex-relay (tags: machine=<m>,role=infra,purpose=codex-inject).
-# 이 등록이 대시보드 머신 헤더의 "codex 주입" 도트이자 GoalForm codex 세션 카드의 유효 조건입니다.
-```
-
-### 동작
-
-1. 브로커에 codex 세션 앞 task 도착 → relay가 다음 폴(기본 15초)에 감지.
-2. relay가 `claim_task`(claimed_by=세션 uuid, runner=codex) 후 그 thread로 `turn/start` 주입(in-process, 핸들러 없음).
-3. 세션(codex)이 그 턴 안에서 답하고 `complete_task`를 native 호출.
-4. 사람이 그 세션을 보고 있으면 task 도착·처리·답이 실시간으로 보입니다. 안 보고 있어도 완료됩니다.
-
-사람 릴레이는 0입니다 - task 도착부터 완료 보고까지 사람 개입 없이 기계가 돕니다(no-shuttle).
-
-수동 디버그용으로 `tunaround codex-inject --ws <ws> --thread <threadId> --text "..."`(직지정, 실패 시 자가치유 없음) 또는 `--agent <id>`(글루 thread 파일 모드, 레거시)를 직접 쓸 수 있습니다.
-
-### exec-resume과의 구분
-
-이전(세션12)에는 `poll --on-task 'codex exec resume --last ...'`로 codex 감독을 우회했으나, 이건 **별개 프로세스(워커 패턴)**라 라이브 TUI가 아니었고 맥락이 매번 새로 열렸습니다(게다가 토큰 미전파로 186k 토큰 낭비). `exec resume`은 워커(헤드리스) 스코프에 남고, **감독 스코프는 app-server 경로**로 대체됩니다.
-
-### 승인
-
-`approvalPolicy: never`로 기동해도 MCP 도구 호출은 `mcpServer/elicitation/request`(ServerRequest)로 승인을 요청합니다 - approvalPolicy만으론 MCP 호출이 무프롬프트가 안 됩니다. `codex-inject`가 이 요청에 자동으로 `{action:"accept"}`를 응답해야 도구가 진행되고 턴이 완료됩니다(설계 §5.2). 감독의 행위 범위가 tuna-broker MCP 호출뿐이라 자동 accept는 안전합니다.
-
-### 플랫폼
-
-관리형 `remote-control`/`app-server daemon`은 Unix 전용이지만, raw `codex app-server --listen ws://`는 **크로스플랫폼**(Windows 포함)으로 확인됐습니다. Windows 감독 머신도 이 경로를 그대로 씁니다.
-
-## 11. presence 스캐너 (v2-44, 세션별 자동무장 훅 대체)
-
-**머신당 스캐너 데몬 1개**가 로컬 라이브 세션(claude jsonl + codex rollout)을 스캔해 브로커 로스터에 **일괄 동기화**한다(`report_presence`). v2-40 S1의 세션별 detached poll 무장·codex 래퍼는 폐지됐다(유령 poll·무장 경합·PATH 의존의 근원). 정본 [v2-44 설계](../design/v2-44-presence-scanner-and-roles_2026-07-11.md).
-
-### 기동 (머신당 1개)
-
-```bash
-# 코어 주소·토큰은 env로(TUNA_BROKER_CORE·TUNA_BROKER_TOKEN, argv 노출 금지).
 tunaround presence-scan --machine win
-# 옵션: --core <broker-mcp-url>(env 대신 명시) --stale-mins 240(활동 신선도 창) --interval 15 --once(테스트)
 ```
 
-- claude = `~/.claude/projects/*/*.jsonl`, codex = `~/.codex/sessions/**/rollout-*.jsonl`(originator=codex-tui만, exec 헤드리스 제외). temp cwd·자동화 세션은 필터.
-- **일괄 보고 = 전집합 diff**: 스캔에 없는 스캐너 소유(src=scan) 항목은 즉시 제거(유령 원천 차단). 수동 register(워커·infra) 항목은 건드리지 않는다.
-- 러너 프로세스가 확실히 0개면 그 러너 세션 전부 제거(재부팅·전원 종료 즉시 반영). per-session 프로세스 매핑은 후속.
+스캐너는 세션 존재 여부를 보고할 뿐, 그 세션이 자동으로 작업을 받게 하지는 않습니다. **로스터에 보이는 것과 작업을 수신하는 것은 별개입니다.**
 
-### 훅 (레포 `.claude/hooks/`, 전역 배포해 사용)
+Claude 세션은 Monitor 기반 폴링을 연결해야 하며, MCP가 없는 세션은 `tunaround task poll|claim|get|complete|fail` CLI를 사용할 수 있습니다.
 
-| 훅 | 역할 |
-|---|---|
-| SessionStart `tuna-autoarm.py` | **안내 ~5줄을 세션당 1회** 주입(마커 파일 보장). 무장 안 함. |
-| UserPromptSubmit `tuna-session-ping.py` | human-ping(총감독 ★ = 최신 사람입력 세션). 자동 이벤트 wake는 제외. |
-| SessionEnd `tuna-disarm.py` | deregister 핑(깨끗한 종료 즉시 반영) + 구식 detached poll 전환기 정리. |
+## 4.2 Codex 라이브 세션 수신
 
-훅 등록은 **전역(`~/.claude/settings.json`) 한 곳만**. 프로젝트 settings에 중복 등록하면 안내가 다중 주입된다(2026-07-11 3중 발화 실측). `TUNA_AUTOARM=1` + `~/.tunaround/config`(TOKEN·CORE·MACHINE)는 기존과 동일.
-
-### 수신 (presence와 분리)
-
-로스터에 뜨는 것(presence)과 task를 받는 것(수신)은 별개다. 받으려면 세션이 직접:
-`Monitor(command="tunaround poll --core <core> --agent <세션id> --interval 15", persistent=true)` → `TASK <id> ::` 도착 시 claim→답변→complete. MCP 미로드 세션은 `tunaround task poll|claim|get|complete|fail`(CLI, 0토큰 경로).
-
-### LAN 복제
-
-각 머신이 자기 스캐너를 공유 브로커(`--core` = 브로커 LAN 주소, 같은 토큰)로 돌리면 로스터 = 전 머신 라이브 세션. 스캐너 heartbeat 자체가 "그 머신에 A2A가 닿는가"의 도달성 신호다.
-
-## 12. 위임 행동 규약 (배정을 위임으로 - 책임의 이전)
-
-앞 절들은 작업을 **던지고 받는 배관**(코어·워커·SSE·watch-results)이다. 이 절은 그 배관 위에서 사람과 에이전트가 지켜야 할 **행동 규약**이다. 배관만 있고 규약이 없으면 총괄은 결국 매 작업을 손으로 지켜보게 되어, "던지고 자리를 떠도 되는" 상태에 도달하지 못한다.
-
-### 12a. 자율 층위 (실행 < 배정 < 위임 < 권한위임)
-
-같은 "일을 넘긴다"라도 총괄이 얼마나 쥐고 있는지에 따라 층이 다르다.
-
-| 층위 | 총괄이 넘긴 것 | 총괄이 여전히 쥔 것 | tunaRound 현황 |
-| --- | --- | --- | --- |
-| **실행** (execution) | 손 자체 | 무엇을·언제·어떻게·성패 판단 전부 | 수동 relay |
-| **배정** (assignment) | 실행 | **감시·실패 포착·재시도 판단** | 배관은 됨(§2~§9) |
-| **위임** (delegation) | 실행 + 결과 ownership | 목표 설정·에스컬레이션 수신만 | **이 절의 목표** |
-| **권한위임** (authority) | 실행 + ownership + **결정 권한** | 방향·경계만 | 후속(스코프 밖) |
-
-핵심 구분은 **배정 ≠ 위임**이다. 배정은 일을 넘겼지만 "잘 됐나, 실패했나, 다시 던질까"를 총괄이 계속 판단해야 한다(총괄이 지켜보는 데 묶임). 위임은 **결과에 대한 책임(ownership)까지** 넘겨, 총괄이 **지켜보는 것에서도 해방**된다. 위임이 성립하려면 두 절반이 다 있어야 한다.
-
-1. **결과 push 메커니즘**(기계적, 완료): 총괄이 폴링하지 않아도 완료·실패가 총괄에게 도달해야 한다. `tunaround watch-results`(§13 아래)가 이 절반이다 - 브로커 terminal 이벤트를 총괄 세션으로 push해 "던지고 자리를 떠도 결과가 깨운다".
-2. **위임 행동 규약**(behavioral, 이 절): 워커/관리자가 루틴 문제를 스스로 처리하고 막힐 때만 명확히 에스컬레이션해야, 총괄이 "침묵 = 진행 중, 신호 = 개입 필요"로 신뢰하고 손을 뗄 수 있다.
-
-메커니즘만 있고 규약이 없으면, 워커가 애매하게 멈추거나 조용히 실패해 총괄이 다시 능동 감시로 돌아간다(배정으로 후퇴). 규약만 있고 메커니즘이 없으면, 워커가 깔끔히 끝내도 총괄이 그 완료를 폴링해야 한다(역시 배정).
-
-### 12b. 워커·관리자 측 규약
-
-작업을 claim한 쪽(실무자 워커 또는 관리자)이 지킨다.
-
-- **루틴 문제는 자가 처리한다.** transient 실패(네트워크 순단·일시적 rate limit·재시도로 풀리는 것), 사소한 환경 차이, 예상 범위의 애매함은 스스로 재시도·판단해 진행한다. 매 사소한 것마다 총괄을 부르면 위임이 아니라 배정이다.
-- **완료/실패는 terminal state로 반드시 보고한다.** 성공은 `complete_task`(결과 artifact 포함), 실패는 `fail_task`(사유 포함). **침묵은 금지** - 총괄은 결과만 받으므로, 보고 없는 워커는 총괄에게 블랙홀이고 `⚠stuck?`으로만 뒤늦게 드러난다(§8).
-- **막힐 때만, 그러나 명확히 에스컬레이션한다.** 스스로 못 푸는 벽(권한 부족·모호한 요구·외부 의존 부재·스코프를 벗어난 결정)에 부딪히면 세 가지를 담아 보고한다.
-  1. **무엇이**: 어떤 작업의 어느 단계에서.
-  2. **왜 막혔는지**: 구체 원인(재현 가능한 형태로. "안 됨" 금지).
-  3. **뭐가 필요한지**: 총괄에게 요청하는 결정·리소스·권한.
-- **스코프를 벗어나지 않는다.** 배정된 task 범위의 파일·디렉터리만 손댄다(§8 self-disruption 가드와 같은 정신). 범위를 벗어나는 변경이 필요하면 그 자체가 에스컬레이션 사유다.
-
-실패·에스컬레이션도 **terminal 보고의 일종**이다. `fail_task`의 사유 필드에 위 세 가지를 담으면, watch-results가 이를 `RESULT <id> failed <- <worker> :: <사유>`로 총괄에게 push한다(§13). 즉 "막혔다"도 총괄이 자리를 떠 있어도 도달한다.
-
-### 12c. 총괄 측 규약
-
-- **매 작업을 능동 폴링하지 않는다.** watch-results 인박스가 terminal 결과를 push하므로, 총괄은 결과가 올 때까지 다른 일을 하거나 자리를 뜬다. 능동 `get_task` 폴링으로 돌아가는 순간 배정으로 후퇴한다.
-- **에스컬레이션에만 개입한다.** `failed` 결과나 명확한 에스컬레이션이 오면 그때 판단(재던짐·요구 명확화·권한 부여). 정상 `completed`는 확인만.
-- **규약을 task 지시에 심는다.** 위임받는 쪽이 이 규약을 알도록, 작업을 던질 때 아래 프리앰블(12d)을 지시문에 포함한다.
-
-### 12d. task 지시 프리앰블 (재사용 템플릿)
-
-작업을 던질 때(§4 `SendMessage`의 `parts[].text`, MCP `send_task`의 `text`) 실제 지시 앞에 이 프리앰블을 붙여 위임 규약을 주입한다.
-
-```text
-[위임 규약] 이 작업은 배정이 아니라 위임이다. 결과 ownership이 너에게 있다.
-- 루틴 문제(순단·일시 실패·사소한 모호함)는 스스로 재시도·판단해 진행하라.
-- 반드시 terminal 보고로 끝내라: 성공=complete_task(결과 포함), 실패=fail_task(사유 포함). 침묵 금지.
-- 스스로 못 푸는 벽에서만, 그러나 명확히 에스컬레이션하라 - (1)무엇이 (2)왜 막혔는지(재현 가능하게) (3)뭐가 필요한지를 fail_task 사유에 담아라.
-- 배정된 범위 밖 파일·디렉터리는 손대지 마라. 범위 확장이 필요하면 그것도 에스컬레이션 사유다.
-
-[작업]
-<실제 지시>
-```
-
-이 프리앰블은 워커(헤드리스)·감독(라이브) 양쪽에 같이 쓴다. 워커는 fail_task 사유로, 감독은 라이브 세션 대화 + fail_task로 에스컬레이션한다.
-
-## 13. 총괄 결과 인박스 (watch-results - 위임의 기계적 절반)
-
-§12의 위임이 성립하려면 총괄이 폴링하지 않아도 결과가 도달해야 한다. `watch-results`가 그 push 채널이다. 브로커의 `/dashboard/events` SSE(무인증, loopback 관측용)를 구독해 **내가 던진(fromAgent==dispatcher) task의 terminal(completed/failed)** 이벤트만 골라 stdout에 한 줄로 낸다.
+Codex 라이브 세션은 자체 수신 루프가 없으므로 머신마다 `codex-relay` 하나가 필요합니다.
 
 ```bash
-# 총괄이 던진(dispatcher=dashboard) task의 완료/실패만 인박스로 흘린다.
-tunaround watch-results --core http://127.0.0.1:8770 --dispatcher dashboard
-# -> RESULT 1c16d115 completed <- mac-claude-sup :: pong
-# -> RESULT 7a3f... failed <- 019f4d64(win codex 세션) :: (2) 브로커 토큰 만료로 claim 실패, 새 토큰 필요
+# 1. Codex app-server 실행
+TUNA_BROKER_TOKEN=<TOKEN> \
+  codex app-server --listen ws://127.0.0.1:<PORT>
+
+# 2. 기존 세션을 app-server thread로 열기
+codex resume <threadId> --remote ws://127.0.0.1:<PORT>
+
+# 3. relay 실행
+tunaround codex-relay --ws ws://127.0.0.1:<PORT>
 ```
 
-- `--core`는 **베이스 URL**이다(§1의 `serve` 주소, 끝에 `/mcp` 안 붙임). 내부적으로 `/dashboard/events`를 붙인다.
-- `--dispatcher`(기본 `dashboard`)가 `fromAgent`인 task만 알린다. 대시보드 goal 폼으로 던진 작업은 fromAgent=`dashboard`다. 빈 값이면 `fromAgent` 필터를 꺼서 모든 terminal(완료·실패)를 관측한다.
-- `completed`는 artifact 텍스트를, `failed`는 statusMessage(=fail_task 사유)를 160자로 잘라 보여준다. 즉 §12b의 에스컬레이션 3요소를 fail_task 사유에 담으면 여기로 그대로 push된다.
-- SSE가 끊기면 Err로 종료한다(exit 0이면 재기동 안 하는 감시자가 있어 Err가 안전). worker 피처 필요(`cargo build --features "serve worker"`).
+작업이 Codex 세션 앞으로 오면 relay가 대신 선점해 해당 thread에 주입합니다. Codex는 같은 턴 안에서 작업을 처리하고 `complete_task` 또는 `fail_task`로 결과를 보고합니다.
 
-### 상시 인박스 운영 (Monitor로 감싸기)
+새 thread가 생기는 것을 피하려면 기존 세션을 반드시 `resume`으로 여세요.
 
-총괄 세션(대화형 Claude/Codex)이 이 프로세스를 background로 띄우고 세션 하네스의 Monitor로 그 stdout을 감시하면, task를 던지고 자리를 떠도 `RESULT ...` 한 줄이 세션을 깨운다(브로커 db 폴링=셔틀 없이). 이것이 "던지고 자리 떠도 결과가 오는" 책임의 이전의 기계적 절반이다(행동 규약 절반은 §12). 라이브 실증: task 1c16d115를 dispatch 후 자리를 떠도 Monitor가 `RESULT ... completed <- mac-claude-sup :: pong`으로 깨움.
+---
+
+# 5. 운영과 장애 진단
+
+## 5.1 작업이 계속 `submitted`에 머무를 때
+
+다음 항목을 확인합니다.
+
+1. `to_agent`가 실제 워커 ID와 같은가
+2. 워커 프로세스가 실행 중인가
+3. 워커의 `--core` 주소가 `/mcp`로 끝나는가
+4. 코어와 워커가 같은 토큰을 쓰는가
+5. 태그 셀렉터를 썼다면 온라인 대상이 정확히 하나인가
+
+오랫동안 선점되지 않은 작업에는 `⚠no-consumer?` 표시가 붙습니다. 대개 대상 ID가 틀렸거나 워커가 떠 있지 않은 경우입니다.
+
+## 5.2 작업이 `working`에서 멈출 때
+
+오랫동안 갱신되지 않는 작업에는 `⚠stuck?` 표시가 붙습니다. 워커 프로세스가 죽었거나 러너가 응답하지 않는 경우를 먼저 확인합니다.
+
+현재 구현은 claim lease 만료 후 작업을 다시 `submitted`로 돌릴 수 있으며, 재시도 횟수가 상한을 넘으면 `failed`로 격리합니다. 같은 작업이 반복 실패한다면 자동 재시도보다 원인을 먼저 확인해야 합니다.
+
+## 5.3 어디서 상태를 볼 수 있나
+
+| 도구 | 용도 |
+| --- | --- |
+| `get_task(task_id)` | 특정 작업 상태와 결과 확인 |
+| `tasks()` | 코어 전체의 열린 작업 확인 |
+| `poll_tasks(agent)` | 특정 워커 앞으로 온 작업 확인 |
+| 웹 대시보드 | 로스터, 작업 피드, 완료·실패 상태 확인 |
+| `watch-results` | 자신이 보낸 작업의 완료·실패 알림 수신 |
+
+## 5.4 쓰기 워커의 작업 디렉터리
+
+`--write` 워커는 tunaRound 노드 자체가 실행 중인 클론과 같은 디렉터리에서 작업하지 않는 것이 안전합니다. 워커가 자기 실행 파일이나 실행 중인 작업 트리를 바꾸면 스스로 중단될 수 있습니다.
+
+프로젝트별 별도 클론이나 worktree를 사용하세요.
+
+## 5.5 토큰과 네트워크
+
+- 코어 토큰은 명령줄보다 환경변수나 `~/.tunaround/config`에 둡니다.
+- 토큰을 바꾸면 이미 실행 중인 데몬을 재기동해야 합니다.
+- 같은 LAN에서는 사설 IP를 사용합니다.
+- 외부 네트워크에서는 Tailscale이나 SSH 터널처럼 접근 범위를 제한하는 연결을 사용합니다.
+- 코어 포트를 공용 인터넷에 그대로 노출하지 않습니다.
+
+---
+
+# 6. 외부 A2A 에이전트에 위임하기
+
+`tunaround work --runner a2a`를 사용하면 외부 표준 A2A 에이전트를 tunaRound 워커처럼 연결할 수 있습니다.
+
+```bash
+tunaround work \
+  --core http://<코어-IP>:8770/mcp \
+  --token <TOKEN> \
+  --agent bridge-worker \
+  --runner a2a \
+  --a2a-card http://some-agent.example/ \
+  --a2a-token <외부-에이전트-토큰>
+```
+
+이 경로는 외부 Agent Card를 발견하고 표준 `SendMessage`로 작업을 넘긴 뒤 `GetTask`로 결과를 회수합니다.
+
+## 호환 범위
+
+| 방향 | 상태 |
+| --- | --- |
+| tunaRound → 외부 표준 A2A 에이전트 | 지원 |
+| 외부 표준 A2A 클라이언트 → tunaRound 브로커 | 비목표 |
+
+브로커 내부에는 `fromAgent`, `toAgent` 같은 라우팅 확장이 있고 Agent Card에도 인증 게이트가 있으므로, tunaRound 브로커 자체를 완전한 범용 A2A 서버로 보기는 어렵습니다. 필요할 경우 표준과 브로커 사이에 별도 번역 계층을 두는 방향입니다.
+
+---
+
+# 7. 작업 위임 규칙
+
+A2A 배관이 있다고 해서 작업이 자동으로 잘 나뉘는 것은 아닙니다. 여러 에이전트가 같은 레포에서 일할 때는 다음 규칙을 지키는 편이 안전합니다.
+
+1. 비단순 변경은 브랜치에서 처리합니다.
+2. 한 브랜치는 한 에이전트만 편집합니다.
+3. 병렬 작업은 worktree나 별도 클론으로 물리적으로 분리합니다.
+4. 작업 범위와 완료 조건을 task 본문에 적습니다.
+5. 공유 파일과 `main` 머지는 총괄 한 곳에서 관리합니다.
+6. 실패한 워커는 이유를 `fail_task`에 남깁니다.
+7. 완료 결과에는 변경 내용, 검증 결과, 남은 문제를 포함합니다.
+
+중요한 구분은 **배정과 위임이 다르다**는 점입니다.
+
+- 배정: 실행만 넘기고 사람이 계속 상태를 감시합니다.
+- 위임: 실행과 결과 정리까지 넘기고, 사람은 완료·실패 보고만 받습니다.
+
+`tunaRound`가 목표로 하는 기본 운영은 두 번째입니다. 작업을 보낸 사람이 계속 폴링하거나 수동으로 결과를 옮겨야 한다면 mesh의 이점이 줄어듭니다.
+
+---
+
+# 8. 관련 문서
+
+| 문서 | 내용 |
+| --- | --- |
+| [온보딩 가이드](onboarding.md) | 설치, 피처, 설정 파일, 토큰 관리 |
+| [mesh 아키텍처](mesh-architecture.md) | 코어·세션·워커·스캐너·relay의 관계 |
+| [맥·윈도우 운영](dev-mac-windows.md) | 두 머신을 실제로 연결하는 방법 |
+| [소스 빌드](../development/source-run.md) | 필요한 피처를 포함해 직접 빌드하는 방법 |
+
+세부 JSON-RPC 스키마와 구현 배경은 `docs/design/`의 A2A 관련 설계 문서에 남겨 두며, 일반 사용자는 이 문서만으로 기본 작업 위임을 시작할 수 있습니다.
