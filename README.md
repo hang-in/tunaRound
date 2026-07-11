@@ -168,11 +168,11 @@ tunaRound는 이 과정을 하나의 작업 흐름으로 묶습니다. 에이전
 - [온보딩 가이드](docs/reference/onboarding.md)
 - [mesh 아키텍처](docs/reference/mesh-architecture.md)
 - [A2A 작업 위임 사용법](docs/reference/a2a-usage.md)
-- [macOS ↔ Windows 구성](docs/reference/dev-mac-windows.md)
+- [macOS와 Windows 구성](docs/reference/dev-mac-windows.md)
 - [소스 빌드와 개발 실행](docs/development/source-run.md)
-- [개발 가이드](docs/reference/development-guidelines.md)
-- [버전 정책](docs/reference/versioning.md)
-- [현행 설계 스펙](docs/design/tunaRound-v1-design_2026-06-29.md)
+- [개발 규칙](docs/reference/development-guidelines.md)
+- [버전과 릴리스 정책](docs/reference/versioning.md)
+- [v1 설계 기록](docs/design/tunaRound-v1-design_2026-06-29.md)
 - [변경 내역](CHANGELOG.md)
 
 코드베이스를 AI 위키 형태로 탐색하려면 [DeepWiki](https://deepwiki.com/hang-in/tunaRound)를 사용할 수 있습니다.
