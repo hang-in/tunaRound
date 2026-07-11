@@ -123,6 +123,7 @@ impl SqliteStore {
             for sql in [
                 "DELETE FROM messages_fts WHERE session_id=?1",
                 "DELETE FROM message_vectors WHERE session_id=?1",
+                "DELETE FROM message_validity WHERE session_id=?1",
                 "DELETE FROM messages WHERE session_id=?1",
                 "DELETE FROM sessions WHERE id=?1",
             ] {

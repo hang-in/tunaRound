@@ -26,24 +26,27 @@ struct TerminalIndexPayload {
     runner: Option<String>,
     /// 원 요청문(history[0]). 없으면 결과만 색인.
     request_text: Option<String>,
-    /// 결과: completed=artifact 텍스트, failed=상태 메시지 텍스트.
-    result_text: String,
+    /// 결과: completed=artifact 텍스트, failed=상태 메시지 텍스트. 없으면 요청만 색인.
+    result_text: Option<String>,
 }
 
 /// 종결(completed/failed) task에서 색인 payload를 뽑는다(§5-7 네임스페이스용). 요청=history[0],
-/// 결과=completed면 artifact·failed면 status_message. 결과 텍스트가 없거나 비종결이면 None(색인 스킵).
+/// 결과=completed면 artifact·failed면 status_message. **비종결(canceled·열린)만 None**이다.
+/// 결과 텍스트가 없어도 요청문만 있으면 색인한다: 결과 없다고 None을 주면 백필이 색인 없이 indexed_at을
+/// 스탬프하고, P6b prune이 그걸 "mesh에 있음"으로 신뢰해 요청(history)을 영구 삭제해버리는 손실이 생긴다
+/// (적대 리뷰 confirmed). "indexed_at ⟹ 텍스트 내용이 mesh에(또는 애초에 없음)" 불변식을 지킨다.
 fn build_terminal_index_payload(task: &Task) -> Option<TerminalIndexPayload> {
+    if !matches!(task.state, TaskState::Completed | TaskState::Failed) {
+        return None; // canceled·열린 task는 색인 비대상(§4 P6a).
+    }
     let request_text =
         task.history.first().and_then(|m| m.parts.first()).and_then(|p| p.text.clone());
     let result_text = match task.state {
         TaskState::Completed => {
             task.artifacts.first().and_then(|a| a.parts.first()).and_then(|p| p.text.clone())
         }
-        TaskState::Failed => {
-            task.status_message.as_ref().and_then(|m| m.parts.first()).and_then(|p| p.text.clone())
-        }
-        _ => None, // "결과 있는 종결만 색인"(CancelTask·expire 비대상, §4 P6a).
-    }?;
+        _ => task.status_message.as_ref().and_then(|m| m.parts.first()).and_then(|p| p.text.clone()),
+    };
     Some(TerminalIndexPayload {
         task_id: task.id.clone(),
         from_agent: task.from_agent.clone(),
@@ -81,7 +84,9 @@ fn index_terminal_task(
         ok = false;
     }
     let result_speaker = p.runner.as_deref().unwrap_or(&p.to_agent);
-    if let Err(e) = writer.append_turn(&sid, &format!("a2a/{result_speaker}"), &p.result_text) {
+    if let Some(res) = &p.result_text
+        && let Err(e) = writer.append_turn(&sid, &format!("a2a/{result_speaker}"), res)
+    {
         eprintln!("[index] task {} 결과 색인 실패(무시): {e}", p.task_id);
         ok = false;
     }
@@ -385,9 +390,9 @@ impl TunaSearchServer {
                 if let (Some(writer), Some(a2a), Some(payload)) =
                     (self.writer.clone(), self.a2a_store.clone(), payload)
                 {
-                    tokio::task::spawn_blocking(move || index_terminal_task(&writer, &a2a, &payload))
-                        .await
-                        .ok();
+                    // best-effort·종결 응답과 독립: 색인을 백그라운드로 던지고 응답을 막지 않는다
+                    // (gemini 리뷰). 크래시로 미완료 시 재기동 백필이 멱등 재색인한다(delete-then-append).
+                    tokio::task::spawn_blocking(move || index_terminal_task(&writer, &a2a, &payload));
                 }
                 Ok(CallToolResult::success(vec![Content::text(t)]))
             }
@@ -424,9 +429,9 @@ impl TunaSearchServer {
                 if let (Some(writer), Some(a2a), Some(payload)) =
                     (self.writer.clone(), self.a2a_store.clone(), payload)
                 {
-                    tokio::task::spawn_blocking(move || index_terminal_task(&writer, &a2a, &payload))
-                        .await
-                        .ok();
+                    // best-effort·종결 응답과 독립: 색인을 백그라운드로 던지고 응답을 막지 않는다
+                    // (gemini 리뷰). 크래시로 미완료 시 재기동 백필이 멱등 재색인한다(delete-then-append).
+                    tokio::task::spawn_blocking(move || index_terminal_task(&writer, &a2a, &payload));
                 }
                 Ok(CallToolResult::success(vec![Content::text(t)]))
             }
@@ -745,7 +750,7 @@ mod tests {
         }];
         let p = build_terminal_index_payload(&done).unwrap();
         assert_eq!(p.request_text.as_deref(), Some("피드백 3건 정리해줘"));
-        assert_eq!(p.result_text, "정리 결과");
+        assert_eq!(p.result_text.as_deref(), Some("정리 결과"));
         assert_eq!(p.from_agent, "dashboard");
         assert_eq!(p.runner.as_deref(), Some("claude"));
         // failed: 결과=status_message(실패 사유).
@@ -759,8 +764,18 @@ mod tests {
             task_id: None,
             context_id: None,
         });
-        assert_eq!(build_terminal_index_payload(&fail).unwrap().result_text, "BLOCKED: 자료 없음");
-        // canceled·열린 task는 색인 대상 아님(§4 "결과 있는 종결만").
+        assert_eq!(
+            build_terminal_index_payload(&fail).unwrap().result_text.as_deref(),
+            Some("BLOCKED: 자료 없음")
+        );
+        // 결과 없어도 요청만 있으면 색인 대상(적대 리뷰: prune이 미색인 요청을 지우지 않게).
+        let mut req_only = Task::new("t2b", None, "d", "m", "2026-07-11 09:00:00");
+        req_only.state = TaskState::Completed;
+        req_only.history = vec![req.clone()]; // artifact 없음.
+        let ro = build_terminal_index_payload(&req_only).unwrap();
+        assert_eq!(ro.request_text.as_deref(), Some("피드백 3건 정리해줘"));
+        assert_eq!(ro.result_text, None, "결과 없음이어도 payload는 Some(요청 색인용)");
+        // canceled·열린 task만 None(색인 비대상).
         let mut cancel = Task::new("t3", None, "d", "m", "2026-07-11 09:00:00");
         cancel.state = TaskState::Canceled;
         assert!(build_terminal_index_payload(&cancel).is_none());
@@ -768,8 +783,8 @@ mod tests {
 
     #[test]
     fn backfill_stamps_result_less_terminal_to_converge() {
-        // 적대 리뷰 minor: 결과 텍스트 없는 종결(레거시·expire)은 payload None이라, 스탬프를 안 하면
-        // 매 기동 재스캔(비수렴). 백필이 None-payload도 mark_task_indexed로 스탬프해 수렴해야 한다.
+        // 결과·요청 텍스트가 전혀 없는 종결(레거시)도 백필이 스탬프해 매 기동 재스캔(비수렴)을 끊어야 한다.
+        // (요청만 있으면 색인되어 스탬프되고, 아무것도 없으면 색인 없이 스탬프 - 둘 다 수렴.)
         struct FakeWriter;
         impl crate::orchestrator::TranscriptWriter for FakeWriter {
             fn append_turn(&self, _s: &str, _sp: &str, _c: &str) -> Result<u64, String> {
