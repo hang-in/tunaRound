@@ -262,8 +262,9 @@ struct DashboardEventsQuery {
     dispatcher: Option<String>,
 }
 
-/// replay 상한. 재생은 피드 창(50건)용 표면이라 전 테이블 덤프 수준의 N을 막는다(원격 관전자도
-/// 무인증으로 붙는 엔드포인트라 방어적 상한).
+/// 재생 상한(replay·since 두 경로 공통). 재생은 피드 창(50건)용 표면이라 전 테이블 덤프 수준의
+/// N을 막는다(원격 관전자도 무인증으로 붙는 엔드포인트라 방어적 상한). since 경로는 이 상한에서
+/// 잘리면 스냅샷만 보내고 스트림을 정상 종료한다(catch-up 연쇄, 핸들러 주석 참조).
 #[cfg(feature = "serve")]
 const DASHBOARD_REPLAY_MAX: usize = 500;
 
@@ -313,7 +314,15 @@ fn parse_dashboard_events_query(query: &str) -> DashboardEventsQuery {
         let value = percent_decode(value);
         match key {
             "replay" => q.replay = value.parse().unwrap_or(0).min(DASHBOARD_REPLAY_MAX),
-            "since" if !value.is_empty() => q.since = Some(value),
+            // 'T'→' ' 정규화(P2 리뷰 이월, §5-3 하드닝): ISO8601("...T09:00:00")이 혼입되면
+            // 'T' > ' ' 사전순이라 updated_at >= since 비교가 왜곡된다. 말미 'Z'(UTC 표기)도
+            // DB 포맷에 없으므로 함께 걷어낸다. 정규화 후 빈 값은 "빈 since = None" 의미 유지.
+            "since" if !value.is_empty() => {
+                let norm = value.replace('T', " ").trim_end_matches('Z').to_string();
+                if !norm.is_empty() {
+                    q.since = Some(norm);
+                }
+            }
             "dispatcher" if !value.is_empty() => q.dispatcher = Some(value),
             _ => {}
         }
@@ -328,6 +337,8 @@ fn parse_dashboard_events_query(query: &str) -> DashboardEventsQuery {
 /// completed/failed만(watch-results 재생 표면, P3가 소비). **둘 다 지정되면 since 우선·replay 무시**
 /// (소비자가 다르다 - since는 인박스 재생 의미론이라 전 상태 스냅샷과 섞으면 계약이 흐려진다).
 /// 무파라미터 = 현행 그대로 라이브만(watch-results 무파라미터 구독 회귀 없음).
+/// since 스냅샷이 상한(DASHBOARD_REPLAY_MAX)에서 잘리면 라이브 없이 스냅샷만 보내고 정상 종료한다
+/// (클라이언트 재접속 연쇄가 이어받음, 본문 주석 참조).
 #[cfg(feature = "serve")]
 async fn dashboard_events_handler(
     axum::extract::State(store): axum::extract::State<Arc<Mutex<crate::store::sqlite::SqliteStore>>>,
@@ -348,31 +359,58 @@ async fn dashboard_events_handler(
     // 라이브가 같은 전이를 중복 운반할 수 있는데, 소비자(피드 updatedAt 가드·watch-results seen)가
     // dedup한다.
     let rx = sender.subscribe();
-    let snapshot: Vec<String> = if query.since.is_some() || query.replay > 0 {
+    let (snapshot, truncated): (Vec<String>, bool) = if query.since.is_some() || query.replay > 0 {
         // lock은 spawn_blocking 안에서 짧게 잡는다(roster 핸들러 패턴). SSE 스트림 안에서 lock 보유 금지.
         tokio::task::spawn_blocking(move || {
+            use crate::store::sqlite::ReplayLimit;
             let store = store.lock().unwrap_or_else(|e| e.into_inner());
-            let tasks = if let Some(since) = query.since.as_deref() {
+            if let Some(since) = query.since.as_deref() {
                 let dispatcher = query.dispatcher.as_deref().filter(|d| !d.is_empty());
-                store.list_tasks_replay(dispatcher, Some(since), &["completed", "failed"], None)
+                // since 경로에도 상한 적용(P2 리뷰 이월). 방향은 Oldest - 잘려도 오래된 것부터
+                // 이어받아야 클라이언트 워터마크가 앞에서부터 전진한다. 상한+1로 조회해 잘림을
+                // 모호하지 않게 판정한다(정확히 상한 개수인 스냅샷을 잘림으로 오판해 불필요한
+                // 재접속 연쇄를 만들지 않기 위해).
+                let mut tasks = store
+                    .list_tasks_replay(
+                        dispatcher,
+                        Some(since),
+                        &["completed", "failed"],
+                        ReplayLimit::Oldest(DASHBOARD_REPLAY_MAX + 1),
+                    )
+                    .unwrap_or_else(|e| {
+                        eprintln!("[dashboard] 재생 스냅샷 질의 실패(라이브만 제공): {e}");
+                        Vec::new()
+                    });
+                let truncated = tasks.len() > DASHBOARD_REPLAY_MAX;
+                tasks.truncate(DASHBOARD_REPLAY_MAX);
+                (tasks.iter().map(dashboard_envelope_json).collect(), truncated)
             } else {
                 // replay = 전 상태 스냅샷(canceled·열린 task 포함 - 피드는 전 상태 뷰).
-                store.list_tasks_replay(None, None, &[], Some(query.replay))
-            };
-            tasks
-                .unwrap_or_else(|e| {
-                    eprintln!("[dashboard] 재생 스냅샷 질의 실패(라이브만 제공): {e}");
-                    Vec::new()
-                })
-                .iter()
-                .map(dashboard_envelope_json)
-                .collect()
+                // replay 값은 파서에서 이미 상한으로 클램프됨 = 잘림 판정 불요(창 뷰 의미론).
+                let tasks = store
+                    .list_tasks_replay(None, None, &[], ReplayLimit::Newest(query.replay))
+                    .unwrap_or_else(|e| {
+                        eprintln!("[dashboard] 재생 스냅샷 질의 실패(라이브만 제공): {e}");
+                        Vec::new()
+                    });
+                (tasks.iter().map(dashboard_envelope_json).collect(), false)
+            }
         })
         .await
         .unwrap_or_default()
     } else {
-        Vec::new()
+        (Vec::new(), false)
     };
+    if truncated {
+        // 잘림 = 라이브를 chain하지 않고 스냅샷만 보낸 뒤 스트림을 정상 종료한다(P2 리뷰 이월).
+        // 잘린 스냅샷 뒤에 라이브를 붙이면 "상한 지점~현재" 구간의 종결이 이 접속에서 영영 안 보이는
+        // 갭이 생긴다. 종료하면 클라이언트(P1 재접속 루프)가 전진한 워터마크로 즉시 재접속
+        // = catch-up 연쇄로 갭 없이 따라잡는다.
+        let stream = futures_util::stream::iter(snapshot).map(|data| {
+            Ok::<_, std::convert::Infallible>(axum::response::sse::Event::default().data(data))
+        });
+        return axum::response::sse::Sse::new(stream).into_response();
+    }
     let stream = futures_util::stream::iter(snapshot)
         .chain(dashboard_event_json_stream(rx))
         .map(|data| {
@@ -1023,6 +1061,130 @@ mod tests {
             }
         }
 
+        /// v2-45 P3(P2 리뷰 이월): since 스냅샷이 상한(DASHBOARD_REPLAY_MAX)에서 잘리면 라이브를
+        /// chain하지 않고 스냅샷만 보낸 뒤 스트림을 정상 종료해야 한다. 이어서 클라이언트가 전진한
+        /// 워터마크로 재접속하면(P1 재접속 루프) 나머지가 오고 라이브까지 chain된다
+        /// = catch-up 연쇄 전체를 HTTP 레벨로 검증.
+        #[tokio::test]
+        async fn dashboard_events_since_truncation_ends_stream_then_catchup_chains() {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+            let port = listener.local_addr().unwrap().port();
+
+            // 상한+1건의 completed task를 초 단위로 구분된 updated_at으로 심는다(오래된 순 t-0000..).
+            let store = Arc::new(std::sync::Mutex::new(
+                crate::store::sqlite::SqliteStore::open_memory()
+                    .expect("in-memory sqlite")
+                    .with_task_events(),
+            ));
+            {
+                let s = store.lock().unwrap();
+                for i in 0..=DASHBOARD_REPLAY_MAX {
+                    let ts = format!("2026-07-11 09:{:02}:{:02}", i / 60, i % 60);
+                    let mut t = crate::store::a2a::Task::new(
+                        format!("t-{i:04}"),
+                        None,
+                        "win",
+                        "mac",
+                        ts,
+                    );
+                    t.state = TaskState::Completed;
+                    s.create_task(&t).unwrap();
+                }
+            }
+
+            let retriever = Arc::new(NullRetriever) as Arc<dyn crate::orchestrator::ContextRetriever>;
+            let store_for_server = store.clone();
+            tokio::spawn(async move {
+                let _ = serve_http_mcp_on_listener(
+                    listener, retriever, None, None, None, None, store_for_server,
+                )
+                .await;
+            });
+            tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+
+            fn complete_data_frames(body: &str) -> Vec<&str> {
+                let mut parts: Vec<&str> = body.split("\n\n").collect();
+                parts.pop(); // 마지막 조각은 아직 미완일 수 있다.
+                parts.into_iter().filter_map(|p| p.trim().strip_prefix("data: ")).collect()
+            }
+
+            // 1차 접속: 전 구간 since → 상한 초과라 잘림 = 정확히 상한 개수 프레임 후 EOF(정상 종료).
+            let mut resp = reqwest::get(format!(
+                "http://127.0.0.1:{port}/dashboard/events?since=2026-07-11%2009:00:00&dispatcher=win"
+            ))
+            .await
+            .expect("SSE 접속 실패");
+            assert_eq!(resp.status(), 200);
+            let mut body = String::new();
+            loop {
+                let chunk = tokio::time::timeout(std::time::Duration::from_secs(5), resp.chunk())
+                    .await
+                    .expect("잘림 스트림이 종료되지 않음(라이브 chain 잔존 의심)")
+                    .expect("chunk 읽기 실패");
+                let Some(chunk) = chunk else { break }; // EOF = 서버가 정상 종료함
+                body.push_str(&String::from_utf8_lossy(&chunk));
+            }
+            let frames: Vec<serde_json::Value> = complete_data_frames(&body)
+                .into_iter()
+                .map(|d| serde_json::from_str(d).expect("SSE data JSON 파싱 실패"))
+                .collect();
+            assert_eq!(frames.len(), DASHBOARD_REPLAY_MAX, "잘린 스냅샷 = 정확히 상한 개수");
+            assert_eq!(frames[0]["task"]["id"], "t-0000", "Oldest 방향 = 오래된 것부터");
+            let last = &frames[frames.len() - 1];
+            assert_eq!(last["task"]["id"], format!("t-{:04}", DASHBOARD_REPLAY_MAX - 1));
+            let watermark = last["task"]["updatedAt"].as_str().expect("updatedAt 필요").to_string();
+
+            // 2차 접속(전진한 워터마크): >= 경계라 마지막 1건 재전달 + 나머지 1건, 잘림 아님
+            // → 라이브 chain 생존(스냅샷 뒤 라이브 이벤트 도착).
+            let mut resp = reqwest::get(format!(
+                "http://127.0.0.1:{port}/dashboard/events?since={}&dispatcher=win",
+                watermark.replace(' ', "%20")
+            ))
+            .await
+            .expect("2차 SSE 접속 실패");
+            assert_eq!(resp.status(), 200);
+            let mut body = String::new();
+            while complete_data_frames(&body).len() < 2 {
+                let chunk = tokio::time::timeout(std::time::Duration::from_secs(5), resp.chunk())
+                    .await
+                    .expect("catch-up 프레임 타임아웃")
+                    .expect("chunk 읽기 실패")
+                    .expect("스트림 조기 종료(잘림 아니면 라이브 chain이어야 함)");
+                body.push_str(&String::from_utf8_lossy(&chunk));
+            }
+            let frames: Vec<serde_json::Value> = complete_data_frames(&body)
+                .into_iter()
+                .map(|d| serde_json::from_str(d).expect("SSE data JSON 파싱 실패"))
+                .collect();
+            assert_eq!(
+                frames[0]["task"]["id"],
+                format!("t-{:04}", DASHBOARD_REPLAY_MAX - 1),
+                "경계(>=) 재전달 - 클라이언트 seen이 dedup할 몫"
+            );
+            assert_eq!(frames[1]["task"]["id"], format!("t-{:04}", DASHBOARD_REPLAY_MAX));
+
+            // 라이브 chain 확인: 새 task 생성 이벤트가 같은 접속에 도착.
+            {
+                let s = store.lock().unwrap();
+                let msg = crate::store::a2a::Message {
+                    message_id: "m-live".into(),
+                    role: "user".into(),
+                    parts: vec![],
+                    task_id: None,
+                    context_id: None,
+                };
+                s.create_task_from_message("win", "live-after-catchup", msg).unwrap();
+            }
+            while !body.contains("live-after-catchup") {
+                let chunk = tokio::time::timeout(std::time::Duration::from_secs(5), resp.chunk())
+                    .await
+                    .expect("라이브 프레임 타임아웃")
+                    .expect("chunk 읽기 실패")
+                    .expect("스트림 조기 종료");
+                body.push_str(&String::from_utf8_lossy(&chunk));
+            }
+        }
+
         /// 무파라미터 구독은 현행 그대로 라이브 전용이어야 한다(watch-results 재기동 시 과거 재통지
         /// 회귀 금지 - 설계 §4 P2 항목 5).
         #[tokio::test]
@@ -1284,6 +1446,20 @@ mod tests {
         assert_eq!(q.dispatcher, None);
         // 알 수 없는 키는 무시.
         assert_eq!(parse_dashboard_events_query("foo=bar"), DashboardEventsQuery::default());
+    }
+
+    /// P2 리뷰 이월(§5-3 하드닝): ISO8601 'T' 구분자·말미 'Z'가 혼입돼도 DB datetime 포맷으로
+    /// 정규화된다('T' > ' ' 사전순 왜곡 방어).
+    #[cfg(feature = "serve")]
+    #[test]
+    fn parse_dashboard_events_query_normalizes_iso_since() {
+        let q = parse_dashboard_events_query("since=2026-07-11T09:00:00");
+        assert_eq!(q.since.as_deref(), Some("2026-07-11 09:00:00"));
+        let q = parse_dashboard_events_query("since=2026-07-11T09%3A00%3A00Z");
+        assert_eq!(q.since.as_deref(), Some("2026-07-11 09:00:00"));
+        // 정규화 후 빈 값(순수 'Z' 등)은 None 유지.
+        let q = parse_dashboard_events_query("since=Z");
+        assert_eq!(q.since, None);
     }
 
     #[cfg(feature = "serve")]
