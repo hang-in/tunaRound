@@ -97,9 +97,15 @@ fn is_db_datetime_19(s: &str) -> bool {
 /// 정규화한다('T'→공백, 소수초·'Z'·offset 절단). §5-3 계약: 'T' > ' ' 사전순 왜곡을 없애 로스터·영속
 /// 워터마크와 비교 가능하게 한다. 결과가 19자 DB 포맷이 아니면 None(오염 방어).
 pub fn normalize_iso_to_db_datetime(ts: &str) -> Option<String> {
+    // 날짜의 '-'와 타임존 offset '-'(-05:00)를 혼동하지 않게 먼저 날짜/시간을 분리한 뒤(공백 또는 'T'),
+    // 시간 부분만 소수초·'Z'·offset('+'/'-')에서 절단한다(gemini 리뷰: 음수 offset도 안전 처리).
     let replaced = ts.trim().replacen('T', " ", 1);
-    let core = replaced.split(['.', 'Z', '+']).next().unwrap_or(&replaced).trim();
-    if is_db_datetime_19(core) { Some(core.to_string()) } else { None }
+    let mut parts = replaced.split_whitespace();
+    let date = parts.next()?;
+    let time = parts.next()?;
+    let core_time = time.split(['.', 'Z', '+', '-']).next().unwrap_or(time).trim();
+    let core = format!("{date} {core_time}");
+    if is_db_datetime_19(&core) { Some(core) } else { None }
 }
 
 /// user_message가 사람 입력인지(= relay 기계 주입이 아닌지) 판정한다(§5-6 고정 계약). relay 주입은
@@ -596,6 +602,8 @@ mod tests {
         assert_eq!(normalize_iso_to_db_datetime("2026-07-11T09:00:00.894Z").as_deref(), Some("2026-07-11 09:00:00"));
         assert_eq!(normalize_iso_to_db_datetime("2026-07-11T09:00:00Z").as_deref(), Some("2026-07-11 09:00:00"));
         assert_eq!(normalize_iso_to_db_datetime("2026-07-11T09:00:00+09:00").as_deref(), Some("2026-07-11 09:00:00"));
+        // 음수 offset도 날짜의 '-'와 혼동 없이 처리(gemini 리뷰).
+        assert_eq!(normalize_iso_to_db_datetime("2026-07-11T09:00:00-05:00").as_deref(), Some("2026-07-11 09:00:00"));
         // 이미 DB 포맷이면 그대로.
         assert_eq!(normalize_iso_to_db_datetime("2026-07-11 09:00:00").as_deref(), Some("2026-07-11 09:00:00"));
         // 형태 불량은 None(오염 방어).

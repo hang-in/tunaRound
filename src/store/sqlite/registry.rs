@@ -9,15 +9,6 @@ use super::*;
 /// human_input_at 영속 행 보존기간(일). deregister/stale를 안 탄 고아 행을 이 기간 뒤 GC한다.
 const HUMAN_INPUT_RETAIN_DAYS: u32 = 7;
 
-/// 두 human_input_at(Option, DB datetime 포맷=사전순=시간순) 중 큰 값(§5-8 merge용 순수 헬퍼).
-fn max_opt_ts(a: Option<String>, b: Option<String>) -> Option<String> {
-    match (a, b) {
-        (Some(x), Some(y)) => Some(if x >= y { x } else { y }),
-        (Some(x), None) => Some(x),
-        (None, b) => b,
-    }
-}
-
 impl SqliteStore {
     // ---- 총감독 ★ 신호(human_input_at) 영속(v2-45 P4, agent_human_input 테이블) ----
 
@@ -117,7 +108,9 @@ impl SqliteStore {
             // write-through한다. 보고값 없음(claude)·불변이면 write 생략(P4의 N+1 회피 유지).
             let mem = roster.get(&s.uuid).and_then(|e| e.human_input_at.clone());
             let base = mem.or_else(|| self.load_human_input(&s.uuid));
-            let human_input_at = max_opt_ts(base.clone(), s.human_input_at.clone());
+            // Option<String>은 None < Some 순서(파생 Ord)라 std::cmp::max가 곧 max(base, 보고값)이다
+            // (DB datetime 포맷은 사전순=시간순, gemini 리뷰). 커스텀 헬퍼 대신 stdlib.
+            let human_input_at = std::cmp::max(base.clone(), s.human_input_at.clone());
             if human_input_at != base
                 && let Some(at) = &human_input_at
             {
