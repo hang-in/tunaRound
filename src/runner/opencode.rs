@@ -157,4 +157,31 @@ mod tests {
         assert_eq!(r.input_tokens, 8690);
         assert_eq!(r.output_tokens, 4);
     }
+
+    // 무출력으로 sleep하는 가짜 실행파일을 tmp에 만들어 경로를 돌려준다(OS별, 형제 러너 claude/codex와 동형).
+    #[cfg(unix)]
+    fn fake_sleep_bin(name: &str) -> String {
+        let p = std::env::temp_dir().join(format!("{name}.sh"));
+        std::fs::write(&p, "#!/bin/sh\nexec sleep 5\n").unwrap();
+        let _ = std::process::Command::new("chmod")
+            .args(["+x", p.to_str().unwrap()])
+            .status();
+        p.to_str().unwrap().to_string()
+    }
+    #[cfg(windows)]
+    fn fake_sleep_bin(name: &str) -> String {
+        // .cmd는 Command가 cmd.exe로 래핑 실행한다(rustc>=1.77.2). ping으로 무출력 sleep.
+        let p = std::env::temp_dir().join(format!("{name}.cmd"));
+        std::fs::write(&p, "@ping -n 6 127.0.0.1 > nul\r\n").unwrap();
+        p.to_str().unwrap().to_string()
+    }
+
+    #[test]
+    fn runner_propagates_timeout_via_helper() {
+        // watchdog idle 타임아웃 실경로 커버(형제 러너와 동형): 무출력 sleep 바이너리 → Timeout.
+        let bin = fake_sleep_bin("tuna_fake_sleep_opencode");
+        let r = OpencodeRunner::with_bin(&bin).with_idle_timeout(Duration::from_millis(150));
+        let input = RunInput { prompt: "x".into(), mode: RunMode::ReadOnly, ..Default::default() };
+        assert!(matches!(r.run(&input), Err(RunError::Timeout(_))));
+    }
 }
