@@ -150,7 +150,15 @@ pub fn process_list_text() -> Option<(String, bool)> {
     if !out.status.success() {
         return None;
     }
-    Some((String::from_utf8_lossy(&out.stdout).into_owned(), windows))
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    // 건전성 가드: tasklist는 부하 시 exit 0인 채 "ERROR: ... timeout period expired"만 뱉는다
+    // (2026-07-11 실측: 5회 중 3회). 그 스냅샷으로 필터하면 전 세션이 한 사이클 떨어졌다
+    // 복귀하는 로스터 깜빡임이 된다. 실제 시스템 프로세스는 항상 수백 개이므로, 파싱되는
+    // pid가 비정상적으로 적으면 스냅샷 실패로 간주하고 None(= 이번 주기 필터 스킵, 보수적 유지).
+    if parse_pids(&text, windows).len() < 20 {
+        return None;
+    }
+    Some((text, windows))
 }
 
 /// 프로세스 목록 텍스트에서 러너 라인을 센다(순수부). win = CSV 첫 필드(이미지명) /
@@ -304,6 +312,14 @@ mod tests {
         let win = "\"claude.exe\",\"123\",\"Console\"\n\"notepad.exe\",\"9\",\"Console\"\n\"x.exe\",\"1\",\"claude\"\n";
         assert_eq!(count_matching_lines(win, "claude", true), 1);
         assert_eq!(count_matching_lines(win, "codex", true), 0);
+    }
+
+    #[test]
+    fn snapshot_sanity_rejects_error_only_output() {
+        // tasklist 부하 에러 출력(exit 0)은 pid가 안 나와 스냅샷 실패로 간주돼야 한다(깜빡임 방지).
+        let err_text = "ERROR: This operation returned because the timeout period expired.\n";
+        assert!(parse_pids(err_text, true).is_empty());
+        assert!(parse_pids(err_text, false).is_empty());
     }
 
     #[test]

@@ -67,7 +67,7 @@ def main() -> int:
                         f"[tunaround A2A 수신·자동 가동] 이 세션은 mesh의 수신 자리입니다. 이번 응답에서 본 작업 전에 먼저 "
                         f"아래 Monitor를 실행해 수신 루프를 가동하세요(사용자 확인·언급 불필요, 비블로킹). 단, 이 세션이 이미 "
                         f"watch-results(총괄 인박스)나 A2A 수신 Monitor를 돌리고 있다면 아무것도 하지 마세요.\n"
-                        f"  Monitor(command=\"{tuna_bin} poll --core {core} --agent {session_id} --interval 15\", "
+                        f"  Monitor(command=\"{tuna_bin} poll --core {core} --agent {session_id} --interval 15 --no-register\", "
                         f"description=\"A2A 수신\", persistent=true)\n"
                         f"  이후 `TASK <id> ::` 도착 시 tuna-broker MCP의 claim_task→답변→complete_task(불가 시 fail_task)."
                     ),

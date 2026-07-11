@@ -268,6 +268,10 @@ pub struct PollArgs {
     /// 한 패스만 실행하고 종료(테스트·수동 실행용).
     #[arg(long)]
     pub once: bool,
+    /// 수신 전용 모드: 로스터 등록·heartbeat를 하지 않는다(v2-44: presence=머신 스캐너 소관.
+    /// 세션 수신 poll이 태그 없이 재등록해 스캐너 항목을 덮는 '기타' 유령·깜빡임 방지).
+    #[arg(long)]
+    pub no_register: bool,
     /// task 도착 시 실행할 명령(선택). `{id}`가 task id로 치환되고 TUNAROUND_TASK_ID/TUNAROUND_TASK_MSG
     /// 환경변수도 설정된다. Monitor가 없는 하네스(codex 등)의 0토큰 wake 글루.
     /// 예: --on-task 'codex exec resume --last "브로커 task {id}를 claim해서 처리하고 complete로 보고"'.

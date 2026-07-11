@@ -381,6 +381,7 @@ fn run_on_task(cmd: &str, id: &str, msg: &str) {
 /// (task는 claim 전까지 submitted로 남아 매 폴마다 재등장하므로 중복 알림을 막는다).
 /// run_worker_loop와 동일하게 로스터 자기 등록(1회) + 매 패스 heartbeat로 online을 유지한다
 /// (감독도 AGENT_TTL_SECS를 넘기지 않아야 to_selector 발견 대상에서 stale로 빠지지 않는다).
+#[allow(clippy::too_many_arguments)] // CLI 인자를 그대로 받는 배선 함수(구조체화는 T4.7에서).
 pub async fn run_poll_loop(
     client: &McpHttpClient,
     agent: &str,
@@ -389,6 +390,7 @@ pub async fn run_poll_loop(
     once: bool,
     on_task: Option<&str>,
     display_name: Option<&str>,
+    register: bool,
 ) -> Result<(), String> {
     use std::io::Write;
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -396,14 +398,21 @@ pub async fn run_poll_loop(
     // 로스터 자기 등록(1회). 실패해도 폴링은 계속한다(레지스트리 없는 구 코어 하위호환).
     // 등록 성공 시 last_heartbeat가 now로 세팅되므로 첫 패스의 heartbeat는 건너뛴다(중복 요청 회피,
     // once=true 시 특히. 리뷰 반영). 등록 실패 시엔 첫 패스에서 heartbeat로 online을 시도한다.
-    let mut skip_heartbeat = match client.register_agent(agent, tags.as_deref(), display_name).await {
-        Ok(msg) => {
-            eprintln!("[poll] 로스터 등록: {msg}");
-            true
-        }
-        Err(e) => {
-            eprintln!("[poll] 로스터 등록 실패(무시하고 폴링 계속): {e}");
-            false
+    // register=false = 수신 전용 모드(v2-44 이후 세션 수신 poll): presence는 머신 스캐너 소관이라
+    // 등록·heartbeat를 아예 안 한다. 태그 없는 재등록이 스캐너 항목을 덮어 '기타' 유령·깜빡임을
+    // 만들던 것 제거(2026-07-11 실측: 3d45a660 '기타' 등장).
+    let mut skip_heartbeat = if !register {
+        true
+    } else {
+        match client.register_agent(agent, tags.as_deref(), display_name).await {
+            Ok(msg) => {
+                eprintln!("[poll] 로스터 등록: {msg}");
+                true
+            }
+            Err(e) => {
+                eprintln!("[poll] 로스터 등록 실패(무시하고 폴링 계속): {e}");
+                false
+            }
         }
     };
 
@@ -411,6 +420,8 @@ pub async fn run_poll_loop(
         // online 유지. 코어가 재기동돼 로스터가 비었으면(미등록 응답) 재등록한다.
         if skip_heartbeat {
             skip_heartbeat = false;
+        } else if !register {
+            // 수신 전용: heartbeat도 스캐너 소관이라 보내지 않는다.
         } else {
             match client.heartbeat(agent).await {
                 Ok(resp) if needs_reregister(&resp) => {
