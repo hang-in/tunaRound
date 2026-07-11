@@ -2,6 +2,17 @@
 
 > 작업 중 결정과 근거. 계속 append. (규율 #7) 다음 세션이 결정을 재유도하지 않게.
 
+## 2026-07-12 세션22: v2-47 대시보드 관제탑 고도화 #1~#5 완주
+
+- **경위**: 세션21이 백로그로 문서화한 v2-47(docs/design/v2-47-dashboard-observatory-backlog)의 5개 주 항목을 권고 순서(1·2 → 3·4 → 5)대로 세 소 PR로 완주. 각 PR = 구현 → 적대적 리뷰(서브에이전트 1명) → CI → 머지 → WMI 스폰 배포 → Chrome 라이브 검증.
+- **결정·스코프(재론 금지)**:
+  - **#3 헬스 패널 = 무상태-추가.** 열린 task 건강(no-consumer/stuck)+머신별 스캐너 도달성만. **uptime·WAL은 후속**(SqliteStore path 필드 + config get/set 접근자 필요). 집계 임계는 `classify_task_health`(enum) 단일 소스=`tasks()` MCP와 동일(format.rs).
+  - **#4 알림 = non-terminal→terminal 관측 전이일 때만 발화.** `?replay=50` 과거 스냅샷·EventSource 재접속 re-send는 prev 없음/이미 terminal이라 무음. handleEvent는 refs(notifyOnRef/seenStateRef)만 읽어 useCallback([]) 안정 유지(Feed SSE 재구독 방지). tag=id 겹침.
+  - **#5 검색 = MCP search_context와 같은 retriever 재사용**(형태소+FTS). 별도 retriever-state 서브라우터를 axum .merge()(기존 store-state 핸들러 무영향, e2e 스모크로 배선 고정). **배포 바이너리는 semantic 미포함 → embedder(원격 Ollama) 없음 = 검색 네트워크 비의존**(semantic 켜면 물림, 주의). 결과를 **`speaker="a2a/*"`로 스코프**(비-a2a post_turn 전사 무인증 노출 차단). 탭 대신 자체 완결 SearchPanel 섹션.
+- **적대적 리뷰가 잡은 실이슈(반영)**: ① #67 index-as-key(MAJOR)→안정 키(updatedAt-state), 공백-only 빈 블록→trim. ② #68 헬스 spawn_blocking·쿼리 실패를 Health::default()(전부0)로 반환=고장을 정상 위장→500 표면화(CodeRabbit Minor). ③ #69 검색 surface=전체 messages/FTS(비-a2a 전사까지)→a2a 스코프+over-fetch.
+- **교훈(오진 방지)**: **main 브랜치 미보호 = 어떤 CI 체크도 기술적 머지 게이트 아님.** canonical = clippy 3-OS + dashboard SPA + CodeRabbit. **DeepSource JS/Rust는 자문성** - 파일 기존 idiom(top-level `function`·문자열 연결·`String::new()`, 전부 clippy 통과)을 따른 신규 코드도 diff 라인이면 재귀속해 fail시킴(기존 라인은 grandfathered). 선별 전환은 스타일 분열·전체 전환은 무관 코드 개작이라, 실질 이슈만 고치고 idiom minor는 문서화 후 머지(머지 후 기존 라인이 되어 재플래그 안 됨). 메모리 deepsource-python-fails-on-main에 추가. CodeRabbit 소요 편차 큼(1~6분).
+- **배포 위생**: 3회 모두 WMI 스폰(Invoke-CimMethod Win32_Process Create)으로 restart-win-mesh.ps1 -SourceBin 실행 = mesh.pids PID 선별 종료 + rename-swap, 세션 poll 무중단. 프론트 dist=gitignore(CI가 npm build로 임베드 검증), src만 커밋.
+
 ## 2026-07-11 세션21: v2-45 설계 확정 (mesh 영속·재생 아크) + 대시보드 정체성 결정
 
 - **경위**: 세션20 핸드오프 §3(B 아크)대로 설계 착수. 병렬 조사 워크플로우(recon 6영역+gap-check, 코드 근거 파일:라인 전수) 후 정본 docs/design/v2-45-mesh-persistence-and-replay_2026-07-11.md 작성. 사용자가 피드 리로드 전멸을 라이브로 재확인.
