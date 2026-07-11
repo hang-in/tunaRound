@@ -53,56 +53,79 @@ pub fn parse_result_line(data: &str, dispatcher: &str, seen: &mut HashSet<String
     Some((format!("RESULT {short} {state} <- {to} :: {}", extract_result_text(task)), state == "failed"))
 }
 
-/// 브로커 SSE를 구독해 dispatcher의 완료/실패 결과를 stdout으로 흘린다. 스트림이 끊기면 Err로 종료해
-/// 호출부(감시 도구)가 재기동하게 한다(exit 0이면 재기동 안 하는 감시자가 있어 Err가 안전).
-/// digest_secs>0이면 completed는 그 구간 동안 묶어 한 번에 낸다(총괄 wake 절약, v2-44 W5).
-/// failed는 digest와 무관하게 즉시 낸다(막힌 task는 총괄 판단이 급하다).
-pub async fn run(core: &str, dispatcher: &str, digest_secs: u64) -> Result<(), String> {
+/// 재접속을 포기하기 전까지 허용하는 연속 실패 횟수. 초과 시 run()이 Err를 반환해 호출부가
+/// exit(1)하게 한다(주소 오타 같은 영구 실패를 조용히 삼키지 않고 Monitor가 죽음을 알게 하는 정책).
+const MAX_CONSECUTIVE_FAILURES: u32 = 20;
+
+/// 재접속 지수 백오프 대기 시간(초): 연속 실패 1회=1s, 이후 2배씩(2→4→8→16), 상한 30s.
+fn backoff_secs(consecutive_failures: u32) -> u64 {
+    // 2^5=32는 상한 30을 넘으므로 지수를 5에서 멈추고 min으로 자른다(0회는 방어적으로 1s).
+    let exp = consecutive_failures.saturating_sub(1).min(5);
+    (1u64 << exp).min(30)
+}
+
+/// 재접속을 넘어 유지되는 인박스 상태(재접속 루프 바깥 소유): terminal dedup(seen)·digest 묶음(pending)·
+/// flush 예정 시각. 접속이 끊겨도 "이미 알린 task"와 "아직 못 알린 묶음"을 잃지 않는다.
+struct InboxState {
+    seen: HashSet<String>,
+    pending: Vec<String>,
+    flush_at: Option<tokio::time::Instant>,
+}
+
+/// digest로 묶인 completed 라인들을 한 번에 stdout으로 내보낸다(출력 burst 1회 = 총괄 wake 1회).
+fn flush_pending(pending: &mut Vec<String>) {
+    use std::io::Write;
+    if pending.is_empty() {
+        return;
+    }
+    for line in pending.drain(..) {
+        println!("{line}");
+    }
+    let _ = std::io::stdout().flush();
+}
+
+/// SSE 접속 1회분: 접속해 끊길 때까지 이벤트를 처리하고, 단절 사유를 돌려준다(정상 종료 없음).
+/// 2xx 스트림 수립에 성공하면 *connected=true(호출부가 백오프·실패 카운터를 리셋할 근거).
+/// state(seen·pending·flush_at)는 호출부(재접속 루프) 소유라 재접속을 넘어 유지된다.
+async fn run_once(
+    client: &reqwest::Client,
+    url: &str,
+    dispatcher: &str,
+    digest_secs: u64,
+    state: &mut InboxState,
+    connected: &mut bool,
+) -> String {
     use futures_util::StreamExt;
     use std::io::Write;
-    let url = format!("{}/dashboard/events", core.trim_end_matches('/'));
-    // connect timeout만 둔다(SSE 바디는 무한정 열려 있어야 하므로 전체 요청 timeout은 두지 않는다).
-    // TCP는 붙었는데 응답이 없는 상황(방화벽 drop)에서 send가 무한 대기하는 것을 막는다.
-    let client = reqwest::Client::builder()
-        .connect_timeout(std::time::Duration::from_secs(10))
-        .build()
-        .map_err(|e| format!("watch-results: 클라이언트 구성 실패: {e}"))?;
-    let resp = client
-        .get(&url)
-        .send()
-        .await
-        .map_err(|e| format!("watch-results: SSE 접속 실패({url}): {e}"))?;
+    let resp = match client.get(url).send().await {
+        Ok(r) => r,
+        Err(e) => return format!("SSE 접속 실패({url}): {e}"),
+    };
     if !resp.status().is_success() {
-        return Err(format!("watch-results: SSE 상태 {}", resp.status()));
+        return format!("SSE 상태 {}", resp.status());
     }
+    *connected = true;
     eprintln!("[watch-results] {url} 구독 시작 (dispatcher={dispatcher}, digest={digest_secs}s)");
-    let mut seen: HashSet<String> = HashSet::new();
     // 버퍼는 Vec<u8>로 유지한다. 청크마다 UTF-8 변환하면 멀티바이트 문자(한글 등)가 청크 경계에서
     // 깨지므로(U+FFFD 영구 손실), 개행(\n=ASCII)으로 완결된 라인만 변환한다.
+    // 접속마다 새로 시작한다(끊긴 접속의 반쪽 라인을 새 스트림에 이어 붙이면 오염).
     let mut buf: Vec<u8> = Vec::new();
     let mut stream = resp.bytes_stream();
-    // digest 대기 중인 completed 라인들. 첫 항목이 들어온 시점 + digest_secs에 한 번에 낸다.
-    let mut pending: Vec<String> = Vec::new();
-    let mut flush_at: Option<tokio::time::Instant> = None;
-    let flush = |pending: &mut Vec<String>| {
-        for line in pending.drain(..) {
-            println!("{line}");
-        }
-        let _ = std::io::stdout().flush();
-    };
     loop {
         tokio::select! {
             // digest 마감: 묶인 completed를 한 번에 내보낸다(출력 burst 1회 = 총괄 wake 1회).
-            _ = async { tokio::time::sleep_until(flush_at.unwrap()).await }, if flush_at.is_some() => {
-                flush(&mut pending);
-                flush_at = None;
+            _ = async { tokio::time::sleep_until(state.flush_at.unwrap()).await }, if state.flush_at.is_some() => {
+                flush_pending(&mut state.pending);
+                state.flush_at = None;
             }
             chunk = stream.next() => {
                 let Some(chunk) = chunk else {
-                    flush(&mut pending); // 종료 전 잔여분을 잃지 않는다.
-                    return Err("watch-results: SSE 스트림이 종료됨(재구독 필요)".to_string());
+                    return "SSE 스트림이 종료됨".to_string();
                 };
-                let chunk = chunk.map_err(|e| format!("watch-results: 스트림 오류: {e}"))?;
+                let chunk = match chunk {
+                    Ok(c) => c,
+                    Err(e) => return format!("스트림 오류: {e}"),
+                };
                 buf.extend_from_slice(&chunk);
                 while let Some(pos) = buf.iter().position(|&b| b == b'\n') {
                     let line_bytes: Vec<u8> = buf.drain(..=pos).collect();
@@ -111,13 +134,13 @@ pub async fn run(core: &str, dispatcher: &str, digest_secs: u64) -> Result<(), S
                     let Some(data) = line.trim_end().strip_prefix("data: ") else {
                         continue;
                     };
-                    let Some((out, is_failed)) = parse_result_line(data, dispatcher, &mut seen) else {
+                    let Some((out, is_failed)) = parse_result_line(data, dispatcher, &mut state.seen) else {
                         continue;
                     };
                     if digest_secs > 0 && !is_failed {
-                        pending.push(out);
-                        if flush_at.is_none() {
-                            flush_at = Some(tokio::time::Instant::now() + std::time::Duration::from_secs(digest_secs));
+                        state.pending.push(out);
+                        if state.flush_at.is_none() {
+                            state.flush_at = Some(tokio::time::Instant::now() + std::time::Duration::from_secs(digest_secs));
                         }
                     } else {
                         println!("{out}");
@@ -126,6 +149,48 @@ pub async fn run(core: &str, dispatcher: &str, digest_secs: u64) -> Result<(), S
                 }
             }
         }
+    }
+}
+
+/// 브로커 SSE를 구독해 dispatcher의 완료/실패 결과를 stdout으로 흘린다. 단절(접속 실패·비2xx·
+/// 스트림 종료·청크 오류) 시 pending을 flush한 뒤 지수 백오프(1s→30s 상한)로 재접속한다
+/// (브로커 재기동을 넘어 생존, v2-45 P1). 연속 MAX_CONSECUTIVE_FAILURES회 초과 실패 시에만
+/// Err로 종료해 호출부가 exit(1)하게 한다(주소 오타 같은 영구 실패는 Monitor가 죽음으로 알게).
+/// digest_secs>0이면 completed는 그 구간 동안 묶어 한 번에 낸다(총괄 wake 절약, v2-44 W5).
+/// failed는 digest와 무관하게 즉시 낸다(막힌 task는 총괄 판단이 급하다).
+pub async fn run(core: &str, dispatcher: &str, digest_secs: u64) -> Result<(), String> {
+    let url = format!("{}/dashboard/events", core.trim_end_matches('/'));
+    // connect timeout만 둔다(SSE 바디는 무한정 열려 있어야 하므로 전체 요청 timeout은 두지 않는다).
+    // TCP는 붙었는데 응답이 없는 상황(방화벽 drop)에서 send가 무한 대기하는 것을 막는다.
+    let client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| format!("watch-results: 클라이언트 구성 실패: {e}"))?;
+    // seen(dedup)·digest pending은 재접속을 넘어 유지한다(루프 바깥 소유, v2-45 P1 고정 계약).
+    let mut state = InboxState { seen: HashSet::new(), pending: Vec::new(), flush_at: None };
+    let mut consecutive_failures: u32 = 0;
+    loop {
+        let mut connected = false;
+        let reason = run_once(&client, &url, dispatcher, digest_secs, &mut state, &mut connected).await;
+        // 모든 단절 경로(접속 실패·비2xx·스트림 종료·청크 오류)에서 pending을 먼저 flush한다
+        // (digest 묶음 유실 방지). flush했으니 예정 시각도 지운다.
+        flush_pending(&mut state.pending);
+        state.flush_at = None;
+        if connected {
+            consecutive_failures = 0; // 2xx 스트림 수립까지 갔던 접속 = 실패 연쇄 리셋
+        }
+        consecutive_failures += 1;
+        if consecutive_failures > MAX_CONSECUTIVE_FAILURES {
+            return Err(format!(
+                "watch-results: 연속 {consecutive_failures}회 접속 실패, 재접속 포기(마지막 사유: {reason})"
+            ));
+        }
+        let wait = backoff_secs(consecutive_failures);
+        // 재접속 시도·사유는 stderr에만 기록한다(stdout은 RESULT 라인 계약 전용).
+        eprintln!(
+            "[watch-results] 단절: {reason} → {wait}s 후 재접속 (연속 실패 {consecutive_failures}/{MAX_CONSECUTIVE_FAILURES})"
+        );
+        tokio::time::sleep(std::time::Duration::from_secs(wait)).await;
     }
 }
 
@@ -184,5 +249,33 @@ mod tests {
         let e = ev("completed", "dashboard", "x", "dup1", Some("r"));
         assert!(parse_result_line(&e, "dashboard", &mut seen).is_some());
         assert!(parse_result_line(&e, "dashboard", &mut seen).is_none()); // 두 번째는 dedup
+    }
+
+    #[test]
+    fn backoff_grows_exponentially_to_cap() {
+        // 계약(v2-45 P1): 1s → 2 → 4 → 8 → 16 → 30 상한, 이후 30 유지.
+        assert_eq!(backoff_secs(1), 1);
+        assert_eq!(backoff_secs(2), 2);
+        assert_eq!(backoff_secs(3), 4);
+        assert_eq!(backoff_secs(4), 8);
+        assert_eq!(backoff_secs(5), 16);
+        assert_eq!(backoff_secs(6), 30);
+        assert_eq!(backoff_secs(7), 30);
+        assert_eq!(backoff_secs(u32::MAX), 30); // 오버플로 없이 상한 유지
+    }
+
+    #[test]
+    fn backoff_zero_failures_is_defensive_min() {
+        // 0회는 호출부에서 오지 않지만(항상 실패 후 호출) 방어적으로 최소값 1s.
+        assert_eq!(backoff_secs(0), 1);
+    }
+
+    #[test]
+    fn flush_pending_drains_all_lines() {
+        let mut pending = vec!["a".to_string(), "b".to_string()];
+        flush_pending(&mut pending);
+        assert!(pending.is_empty(), "flush 후 pending은 비어야 한다");
+        flush_pending(&mut pending); // 빈 상태 재호출도 안전(no-op)
+        assert!(pending.is_empty());
     }
 }
