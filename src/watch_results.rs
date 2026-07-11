@@ -64,6 +64,16 @@ fn backoff_secs(consecutive_failures: u32) -> u64 {
     (1u64 << exp).min(30)
 }
 
+/// 실패 연쇄 리셋에 필요한 접속 최소 생존 시간(초). 2xx 수립만으로 리셋하면 "수립 직후 즉시
+/// 닫히는" 브로커(크래시루프, 200 후 빈 바디를 주는 오설정 엔드포인트)가 카운터를 영원히
+/// 리셋해 포기(exit 1)가 불가능해지므로, 이 시간 이상 살았던 접속만 건강했던 것으로 본다.
+const MIN_HEALTHY_SECS: u64 = 30;
+
+/// 실패 연쇄 리셋 판정: 2xx 스트림 수립 + 최소 생존 시간을 넘긴 접속만 "건강했다".
+fn connection_was_healthy(connected: bool, lived: std::time::Duration) -> bool {
+    connected && lived >= std::time::Duration::from_secs(MIN_HEALTHY_SECS)
+}
+
 /// 재접속을 넘어 유지되는 인박스 상태(재접속 루프 바깥 소유): terminal dedup(seen)·digest 묶음(pending)·
 /// flush 예정 시각. 접속이 끊겨도 "이미 알린 task"와 "아직 못 알린 묶음"을 잃지 않는다.
 struct InboxState {
@@ -171,13 +181,14 @@ pub async fn run(core: &str, dispatcher: &str, digest_secs: u64) -> Result<(), S
     let mut consecutive_failures: u32 = 0;
     loop {
         let mut connected = false;
+        let attempt_started = tokio::time::Instant::now();
         let reason = run_once(&client, &url, dispatcher, digest_secs, &mut state, &mut connected).await;
         // 모든 단절 경로(접속 실패·비2xx·스트림 종료·청크 오류)에서 pending을 먼저 flush한다
         // (digest 묶음 유실 방지). flush했으니 예정 시각도 지운다.
         flush_pending(&mut state.pending);
         state.flush_at = None;
-        if connected {
-            consecutive_failures = 0; // 2xx 스트림 수립까지 갔던 접속 = 실패 연쇄 리셋
+        if connection_was_healthy(connected, attempt_started.elapsed()) {
+            consecutive_failures = 0; // 건강했던 접속(수립+최소 생존) 이후의 단절 = 새 실패 연쇄
         }
         consecutive_failures += 1;
         if consecutive_failures > MAX_CONSECUTIVE_FAILURES {
@@ -268,6 +279,19 @@ mod tests {
     fn backoff_zero_failures_is_defensive_min() {
         // 0회는 호출부에서 오지 않지만(항상 실패 후 호출) 방어적으로 최소값 1s.
         assert_eq!(backoff_secs(0), 1);
+    }
+
+    #[test]
+    fn healthy_connection_needs_establishment_and_min_lifetime() {
+        use std::time::Duration;
+        // 수립 실패는 생존 시간과 무관하게 실패 연쇄 유지.
+        assert!(!connection_was_healthy(false, Duration::from_secs(120)));
+        // 수립했어도 즉시 닫히면(크래시루프 브로커) 건강 아님 = 카운터가 계속 쌓여 포기 가능.
+        assert!(!connection_was_healthy(true, Duration::from_secs(1)));
+        assert!(!connection_was_healthy(true, Duration::from_secs(MIN_HEALTHY_SECS - 1)));
+        // 최소 생존을 넘긴 접속만 리셋 근거.
+        assert!(connection_was_healthy(true, Duration::from_secs(MIN_HEALTHY_SECS)));
+        assert!(connection_was_healthy(true, Duration::from_secs(3600)));
     }
 
     #[test]
