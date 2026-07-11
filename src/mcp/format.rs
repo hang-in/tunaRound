@@ -5,26 +5,42 @@ use crate::store::a2a::{Artifact, Message, Part};
 use crate::store::agents::{format_ambiguous_candidates, validate_send_target, AgentEntry, SendTarget};
 
 /// working이 이 초과 갱신정지면 stuck? 표시(claim 후 사망 의심).
-const STUCK_WORKING_SECS: i64 = 15 * 60;
+pub(crate) const STUCK_WORKING_SECS: i64 = 15 * 60;
 /// submitted가 이 초과 미claim이면 no-consumer? 표시(폴러 없음 의심).
-const NO_CONSUMER_SUBMITTED_SECS: i64 = 5 * 60;
+pub(crate) const NO_CONSUMER_SUBMITTED_SECS: i64 = 5 * 60;
 
-/// task의 미배달/고착 의심 주석을 만든다(표시 전용, 상태 전이·저장 없음). working은 updated_at(claim
-/// 시각) 기준 STUCK_WORKING_SECS 초과면 " ⚠stuck?(<분>m)", submitted는 created_at 기준
-/// NO_CONSUMER_SUBMITTED_SECS 초과면 " ⚠no-consumer?(<분>m)"을 붙인다. 그 외(다른 상태, 임계 이내,
-/// now 파싱 실패)는 빈 문자열.
-pub(crate) fn health_annotation(task: &crate::store::a2a::Task, now: &str) -> String {
+/// task 건강 분류(표시·집계 공용 단일 소스). 임계 이내·다른 상태·now 파싱 실패는 Ok.
+pub(crate) enum TaskHealth {
+    Ok,
+    /// submitted가 NO_CONSUMER_SUBMITTED_SECS 초과 미claim(폴러 없음 의심). 값=경과 초.
+    NoConsumer(i64),
+    /// working이 STUCK_WORKING_SECS 초과 갱신정지(claim 후 사망 의심). 값=경과 초.
+    Stuck(i64),
+}
+
+/// task를 건강 상태로 분류한다(health_annotation 표시와 헬스 패널 집계가 같은 임계를 쓰게 하는 단일 소스).
+pub(crate) fn classify_task_health(task: &crate::store::a2a::Task, now: &str) -> TaskHealth {
     use crate::store::a2a::age_secs;
     match task.state {
         TaskState::Working => match age_secs(now, &task.updated_at) {
-            Some(secs) if secs > STUCK_WORKING_SECS => format!(" ⚠stuck?({}m)", secs / 60),
-            _ => String::new(),
+            Some(secs) if secs > STUCK_WORKING_SECS => TaskHealth::Stuck(secs),
+            _ => TaskHealth::Ok,
         },
         TaskState::Submitted => match age_secs(now, &task.created_at) {
-            Some(secs) if secs > NO_CONSUMER_SUBMITTED_SECS => format!(" ⚠no-consumer?({}m)", secs / 60),
-            _ => String::new(),
+            Some(secs) if secs > NO_CONSUMER_SUBMITTED_SECS => TaskHealth::NoConsumer(secs),
+            _ => TaskHealth::Ok,
         },
-        _ => String::new(),
+        _ => TaskHealth::Ok,
+    }
+}
+
+/// task의 미배달/고착 의심 주석을 만든다(표시 전용, 상태 전이·저장 없음). 임계·판정은 classify_task_health
+/// 단일 소스를 재사용한다(그 외는 빈 문자열).
+pub(crate) fn health_annotation(task: &crate::store::a2a::Task, now: &str) -> String {
+    match classify_task_health(task, now) {
+        TaskHealth::Stuck(secs) => format!(" ⚠stuck?({}m)", secs / 60),
+        TaskHealth::NoConsumer(secs) => format!(" ⚠no-consumer?({}m)", secs / 60),
+        TaskHealth::Ok => String::new(),
     }
 }
 
@@ -482,6 +498,27 @@ mod tests {
         // 아주 오래 지났어도 종료 상태(completed)는 주석을 붙이지 않는다.
         let annotation = health_annotation(&task, "2026-07-03 09:00:00");
         assert_eq!(annotation, "", "종료 상태인데 주석이 붙음: {annotation}");
+    }
+
+    #[test]
+    fn classify_task_health_returns_variants_for_health_panel_counts() {
+        // 헬스 패널(/dashboard/health)이 no-consumer/stuck 집계에 의존하는 enum 계약을 잠근다.
+        let submitted = crate::store::a2a::Task::new("t1", None, "win", "mac", "2026-07-02 09:00:00");
+        assert!(
+            matches!(classify_task_health(&submitted, "2026-07-02 09:10:00"), TaskHealth::NoConsumer(secs) if secs == 600),
+            "submitted 10분 = NoConsumer(600) 여야 함",
+        );
+
+        let mut working = crate::store::a2a::Task::new("t2", None, "win", "mac", "2026-07-02 09:00:00");
+        working.state = TaskState::Working;
+        working.updated_at = "2026-07-02 09:00:00".into();
+        assert!(
+            matches!(classify_task_health(&working, "2026-07-02 09:20:00"), TaskHealth::Stuck(secs) if secs == 1200),
+            "working 20분 = Stuck(1200) 여야 함",
+        );
+
+        // 임계 이내는 Ok(집계 제외).
+        assert!(matches!(classify_task_health(&submitted, "2026-07-02 09:01:00"), TaskHealth::Ok));
     }
 
     // --- tasks 툴(list_all_tasks_text): 순수 함수 단위테스트 ---

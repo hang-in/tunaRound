@@ -138,6 +138,7 @@ pub async fn serve_http_mcp_on_listener(
     let mut dashboard = Router::new()
         .route("/dashboard/events", get(dashboard_events_handler))
         .route("/dashboard/roster", get(dashboard_roster_handler))
+        .route("/dashboard/health", get(dashboard_health_handler))
         .route("/dashboard/goal", axum::routing::post(dashboard_goal_handler))
         .route("/dashboard/human-ping", axum::routing::post(dashboard_human_ping_handler))
         .route("/dashboard/deregister", axum::routing::post(dashboard_deregister_handler));
@@ -496,6 +497,80 @@ async fn dashboard_roster_handler(
         body,
     )
         .into_response()
+}
+
+/// GET /dashboard/health: mesh 건강 한눈 요약(read-only). 열린 task 수 + 미배달(no-consumer)/고착(stuck)
+/// 집계(tasks() MCP와 같은 임계 = classify_task_health 단일 소스) + 머신별 presence 스캐너 도달성.
+/// 브로커 uptime·WAL 크기는 store 표면 변경이 필요해 후속(설계 v2-47 #3 참조).
+#[cfg(feature = "serve")]
+async fn dashboard_health_handler(
+    axum::extract::State(store): axum::extract::State<Arc<Mutex<crate::store::sqlite::SqliteStore>>>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    #[derive(serde::Serialize)]
+    struct ScannerHealth {
+        machine: String,
+        last_heartbeat: String,
+        age_secs: i64,
+        online: bool,
+    }
+    #[derive(serde::Serialize)]
+    struct Health {
+        open_tasks: usize,
+        no_consumer: usize,
+        stuck: usize,
+        scanners: Vec<ScannerHealth>,
+        now: String,
+    }
+    // 헬스는 "실패를 정상으로 위장하지 않는다"가 핵심(전부 0 = 정상처럼 보이는데 실은 조회 실패면 관제 오판).
+    // 내부 쿼리 실패·spawn_blocking 패닉/취소는 Err로 모아 500으로 표면화 → 프론트가 "조회 실패"를 띄운다.
+    let result: Result<Health, String> = tokio::task::spawn_blocking(move || {
+        use crate::mcp::format::{classify_task_health, TaskHealth};
+        let store = store.lock().unwrap_or_else(|e| e.into_inner());
+        let now = store.now()?;
+        let open = store.list_all_open_tasks()?;
+        let (mut no_consumer, mut stuck) = (0usize, 0usize);
+        for t in &open {
+            match classify_task_health(t, &now) {
+                TaskHealth::NoConsumer(_) => no_consumer += 1,
+                TaskHealth::Stuck(_) => stuck += 1,
+                TaskHealth::Ok => {}
+            }
+        }
+        // presence 스캐너(role=infra, purpose=presence)만 선별해 머신 도달성으로 노출한다
+        // (i64::MAX = 오프라인 스캐너 = 도달 불가 머신도 회색으로 보여준다).
+        let mut selector = BTreeMap::new();
+        selector.insert("role".to_string(), "infra".to_string());
+        selector.insert("purpose".to_string(), "presence".to_string());
+        let scanners = store
+            .list_agents(&selector, &now, i64::MAX)
+            .into_iter()
+            .map(|a| {
+                let age_secs = crate::store::a2a::age_secs(&now, &a.last_heartbeat).unwrap_or(-1);
+                let online = crate::store::agents::is_online(&a.last_heartbeat, &now, AGENT_TTL_SECS);
+                let machine = a.tags.get("machine").cloned().unwrap_or_else(|| a.uuid.clone());
+                ScannerHealth { machine, last_heartbeat: a.last_heartbeat, age_secs, online }
+            })
+            .collect();
+        Ok(Health { open_tasks: open.len(), no_consumer, stuck, scanners, now })
+    })
+    .await
+    .unwrap_or_else(|e| Err(format!("spawn_blocking 실패: {e}")));
+    match result {
+        Ok(health) => {
+            let body = serde_json::to_vec(&health).unwrap_or_else(|_| b"{}".to_vec());
+            (
+                axum::http::StatusCode::OK,
+                [(axum::http::header::CONTENT_TYPE, "application/json")],
+                body,
+            )
+                .into_response()
+        }
+        Err(e) => {
+            eprintln!("[dashboard/health] 조회 실패: {e}");
+            (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "health 조회 실패").into_response()
+        }
+    }
 }
 
 /// 로컬 write 엔드포인트(goal 등)의 local CSRF 방어. 브라우저가 붙이는 `Sec-Fetch-Site`가

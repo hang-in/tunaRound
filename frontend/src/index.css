@@ -245,6 +245,123 @@ body {
   color: var(--text-3);
   font-variant-numeric: tabular-nums;
 }
+/* 브라우저 알림 옵트인 토글(#4). 기본=회색 닷, on=accent. */
+.dash-notify {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font: inherit;
+  font-size: 12px;
+  color: var(--text-2);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 3px 11px;
+  margin-right: 12px;
+  cursor: pointer;
+  transition: color 0.12s, border-color 0.12s, background 0.12s;
+}
+.dash-notify .dash-badge-dot {
+  background: var(--text-3);
+}
+.dash-notify:hover {
+  color: var(--text);
+  border-color: var(--text-3);
+}
+.dash-notify.on {
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 40%, transparent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.dash-notify.on .dash-badge-dot {
+  background: var(--accent);
+}
+
+/* ---------- 브로커 헬스 패널(#3, read-only) ---------- */
+.health-panel {
+  flex: 1 1 100%;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px 18px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow);
+  padding: 12px 18px;
+}
+.health-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-2);
+  letter-spacing: 0.01em;
+}
+.health-metrics {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.health-metric {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+}
+.health-metric.warn {
+  color: var(--warn);
+  border-color: color-mix(in srgb, var(--warn) 35%, transparent);
+  background: color-mix(in srgb, var(--warn) 10%, transparent);
+}
+.health-metric.err {
+  color: var(--err);
+  border-color: color-mix(in srgb, var(--err) 35%, transparent);
+  background: color-mix(in srgb, var(--err) 10%, transparent);
+}
+.health-metric-label {
+  font-size: 11px;
+  color: var(--text-3);
+}
+.health-metric.warn .health-metric-label,
+.health-metric.err .health-metric-label {
+  color: inherit;
+}
+.health-metric-value {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  font-weight: 700;
+  color: inherit;
+  font-variant-numeric: tabular-nums;
+}
+.health-divider {
+  width: 1px;
+  align-self: stretch;
+  background: var(--border);
+}
+.health-scanners {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.health-scanner {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--text-2);
+  font-family: var(--font-mono);
+}
+.health-scanner-age {
+  font-size: 11px;
+  color: var(--text-3);
+}
+.health-empty {
+  font-size: 12px;
+  color: var(--text-3);
+}
 
 /* ---------- 본문 레이아웃 ---------- */
 .dash-main {

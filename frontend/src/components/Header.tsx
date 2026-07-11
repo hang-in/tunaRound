@@ -5,6 +5,10 @@ type Props = {
   brokerOk: boolean
   sseOpen: boolean
   remoteViewer: boolean
+  // 브라우저 알림 토글(옵트인). supported=false면(Notification API 없음) 버튼을 숨긴다.
+  notifySupported: boolean
+  notifyOn: boolean
+  onToggleNotify: () => void
 }
 
 // "오전/오후 h:mm:ss" 형식의 라이브 시계 문자열을 만든다(목업 clock 계산 그대로).
@@ -16,7 +20,14 @@ function formatClock(d: Date): string {
   return ampm + ' ' + h12 + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds())
 }
 
-export default function Header({ brokerOk, sseOpen, remoteViewer }: Props) {
+export default function Header({
+  brokerOk,
+  sseOpen,
+  remoteViewer,
+  notifySupported,
+  notifyOn,
+  onToggleNotify,
+}: Props) {
   const [now, setNow] = useState(() => new Date())
 
   useEffect(() => {
@@ -46,6 +57,18 @@ export default function Header({ brokerOk, sseOpen, remoteViewer }: Props) {
         </span>
         {remoteViewer ? <span className="dash-badge-warn">읽기 전용 관전</span> : null}
         <span className="dash-spacer" />
+        {notifySupported ? (
+          <button
+            type="button"
+            className={'dash-notify' + (notifyOn ? ' on' : '')}
+            onClick={onToggleNotify}
+            title={notifyOn ? 'task 완료/실패 데스크톱 알림 켜짐' : 'task 완료/실패 데스크톱 알림 받기'}
+            aria-pressed={notifyOn}
+          >
+            <span className="dash-badge-dot" />
+            {notifyOn ? '알림 켜짐' : '알림'}
+          </button>
+        ) : null}
         <span className="dash-clock">{formatClock(now)}</span>
       </div>
     </header>
