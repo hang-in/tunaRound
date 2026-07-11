@@ -209,6 +209,14 @@ export default function Roster({ rows, infra, pulses, autoBossUuid, onAddTarget 
                           <span className={`rst-chip role-${role}`}>{role}</span>
                         ) : null}
                         <span className="dash-spacer" />
+                        {!isBoss && s.humanInputAt ? (
+                          <span
+                            className="rst-last-star"
+                            title="이 세션에 사람이 마지막으로 입력한 시각(★가 거쳐간 자리). 현재 ★는 총괄 카드."
+                          >
+                            ★ {relativeTime(s.humanInputAt)}
+                          </span>
+                        ) : null}
                         <span className="rst-hb">{relativeTime(s.lastHeartbeat)}</span>
                         <span className="rst-caret" aria-hidden="true">
                           ▸

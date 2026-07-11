@@ -39,10 +39,17 @@
 - 가치: mesh 기억화의 가치가 사용자에게 보이는 지점 = P6a의 완성.
 - **구현(PR #69)**: `GET /dashboard/search?q=`(별도 retriever-state 서브라우터를 merge - 기존 store-state 핸들러 무영향). MCP search_context와 **같은 retriever**(형태소+FTS) 재사용. 배포 바이너리는 semantic 미포함이라 **embedder(원격 Ollama) 네트워크 비의존**. 프론트 `SearchPanel`(디바운스 400ms, speaker=`a2a/<agent>` 표시). 실패는 500으로 표면화(결과 없음 위장 안 함). 탭 네비게이션 대신 자체 완결 섹션.
 
-## 낮은 우선순위 (기록만)
+## 낮은 우선순위
 
-- ★ 이동 이력·세션 등장/소멸 타임라인(P4의 agent_human_input 테이블이 생기면 ★ 이력 데이터는 공짜).
-- 원격 관전 모드 다듬기(관전 뱃지 노출 강화·모바일 반응형). 원격=read-only 403 태세는 불변.
+### ★ 이동 이력·세션 등장/소멸 타임라인 (모디스트 버전 완료 / 진짜 타임라인 defer)
+
+- **가정 정정(세션23)**: "P4의 agent_human_input 테이블이 생기면 ★ 이력 데이터는 공짜"는 **틀렸다.** agent_human_input은 `(uuid PK, at)` = uuid당 최신 1행(단조 UPSERT)이고 세션 소멸(stale/deregister) 시 **DELETE** + 7일 GC라 과거를 능동적으로 버린다. 스키마 어디에도 세션 등장/소멸·★ 이동 event-log가 없다. 진짜 타임라인은 **새 append-only presence_events 테이블(스키마 v11) + 3~4곳 edge-detect 로깅 + endpoint + 패널**이 필요하고, **백필 불가(도입 시점부터 빈 상태로 시작)**이며, v9 주석의 "로스터 이력 비영속(유령 카드 방지, 설계 §2 비스코프)" 결정을 **뒤집는다** → 제품 결정 없이 단독 강행 부적절. **defer**(사용자가 영속 presence 감사를 명시적으로 원하고 "빈 상태 시작 + 스코프 반전"을 수용할 때).
+- **모디스트 버전(완료, 세션23)**: 기존 데이터(roster의 human_input_at + last_heartbeat)로 각 세션에 "★ 마지막 N분 전"을 표시(비-총괄 행) = 이력 테이블 없이 "★가 거쳐간 자리"를 한눈에. 순수 프론트(Roster.tsx). 진짜 "무엇이 언제 일어났나"는 이미 tasks 테이블(created_at/updated_at/state)이 피드(`?replay=50`)·검색(P6a)으로 노출한다.
+
+### 원격 관전 모드 다듬기 (완료, 세션23)
+
+- **뱃지 노출 강화 + 모바일 반응형.** 원격=read-only 403 태세는 불변. 관전 뱃지는 이미 있었고(Header `remoteViewer`), **eye 아이콘 + 안내 title 추가**로 강화. index.css에 폭 기반 `@media (max-width:640px)` 신설: 좁은 화면에서 로스터·피드 단일 컬럼 스택(min-width:0/flex-basis:100%) + 패딩 축소로 body 가로 오버플로 제거.
+- **옵션(비착수)**: `GET /dashboard/whoami {loopback}` 권위 신호. 현재 프론트는 hostname 휴리스틱(remoteViewer=!loopback host)으로 판정 - 대개 맞으나 SSH 터널·dual-stack에서 서버 게이트(to_canonical().is_loopback())와 어긋날 수 있다. "노출 강화"보다 "판정 정확화"라 원항목 스코프 밖 = 별도 소항목.
 
 ## 권고 순서
 
