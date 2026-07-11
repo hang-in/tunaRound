@@ -148,7 +148,7 @@ export default function App() {
         />
         <Roster rows={rows} infra={infra} pulses={pulses} autoBossUuid={autoBossUuid} onAddTarget={addGoalTarget} />
         <WorkerSection workers={workers} activeByAgent={activeByAgent} />
-        <Feed onConnectedChange={handleConnected} onEvent={handleEvent} />
+        <Feed onConnectedChange={handleConnected} onEvent={handleEvent} agents={agents} />
         <GoalForm
           agents={agents}
           remoteViewer={remoteViewer}

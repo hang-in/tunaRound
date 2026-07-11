@@ -28,22 +28,45 @@ $Core = $env:TUNA_BROKER_CORE  # 예: http://127.0.0.1:8770/mcp
 if (-not $Core) { throw "config에 TUNA_BROKER_CORE 없음: $ConfigPath (빈 --core로 데몬이 조용히 죽는다)" }
 $BaseUrl = $Core -replace '/mcp/?$', ''
 
-# 2. 기존 tunaround 프로세스 전부 종료.
-#    주의: 세션 수신 poll(Monitor)도 같이 죽는다. 살아있는 감독 세션은 재기동 후 poll을 다시 무장해야 한다.
+# 2. 기존 mesh 데몬 종료: 이전 실행이 기록한 mesh.pids의 PID만(tunaround 이름 검증 후) 죽인다.
+#    tunaround.exe 전수 종료는 다른 세션들의 수신 poll(Monitor)까지 죽이던 실측(luckyCAD
+#    "수십 분 후 exit 127" x3)이 있어 폐기. mesh.pids가 없으면(최초/마이그레이션) 포트 소유자를
+#    알 수 없어 한 번만 전수 종료로 폴백한다(그 1회는 세션 poll 재무장 필요).
 #    codex.exe는 죽이지 않는다(운영자의 보이는 codex 세션일 수 있음). app-server는 포트로 생존 판정.
-$procs = Get-Process tunaround -ErrorAction SilentlyContinue
-if ($procs) {
-    Write-Host "[mesh] tunaround 프로세스 $($procs.Count)개 종료"
-    $procs | Stop-Process -Force
+$PidsFile = Join-Path $TunaHome "mesh.pids"
+if (Test-Path $PidsFile) {
+    foreach ($meshPid in (Get-Content $PidsFile | Where-Object { $_ -match '^\d+$' })) {
+        $p = Get-Process -Id ([int]$meshPid) -ErrorAction SilentlyContinue
+        if ($p -and $p.ProcessName -eq 'tunaround') {
+            Write-Host "[mesh] 데몬 종료 PID=$meshPid"
+            Stop-Process -Id $p.Id -Force
+        }
+    }
+    Remove-Item $PidsFile -Force -ErrorAction SilentlyContinue
     Start-Sleep -Seconds 2
+} else {
+    $procs = Get-Process tunaround -ErrorAction SilentlyContinue
+    if ($procs) {
+        Write-Host "[mesh] mesh.pids 없음 - 전수 종료 폴백($($procs.Count)개, 세션 수신 poll은 재무장 필요)"
+        $procs | Stop-Process -Force
+        Start-Sleep -Seconds 2
+    }
 }
 
-# 3. (옵션) 새 바이너리 배포: 안정 경로 스왑(재빌드 != mesh 중단 원칙, 배포는 이 스크립트 경유만).
+# 3. (옵션) 새 바이너리 배포: rename-swap. 실행 중 exe도 rename은 되므로, 살아있는 세션 poll은
+#    옛 이미지(rename된 파일)로 계속 돌고 다음 재무장 때 새 빌드를 탄다(재배포 != 세션 수신 단절).
 if ($SourceBin) {
     if (-not (Test-Path $SourceBin)) { throw "SourceBin 없음: $SourceBin" }
     New-Item -ItemType Directory -Force $StableDir | Out-Null
+    # 이전 스왑 잔재 정리(아직 물고 있는 프로세스가 있으면 삭제가 실패해도 무해 - 다음 실행이 재시도).
+    Get-ChildItem $StableDir -Filter "tunaround-old-*.exe" -ErrorAction SilentlyContinue |
+        ForEach-Object { Remove-Item $_.FullName -Force -ErrorAction SilentlyContinue }
+    if (Test-Path $StableBin) {
+        $oldName = "tunaround-old-{0}.exe" -f (Get-Date -Format "yyyyMMddHHmmss")
+        Rename-Item $StableBin (Join-Path $StableDir $oldName)
+    }
     Copy-Item $SourceBin $StableBin -Force
-    Write-Host "[mesh] 바이너리 배포: $SourceBin -> $StableBin"
+    Write-Host "[mesh] 바이너리 배포(rename-swap): $SourceBin -> $StableBin"
 }
 if (-not (Test-Path $StableBin)) { throw "안정 바이너리 없음: $StableBin (최초엔 -SourceBin으로 배포)" }
 
@@ -69,7 +92,9 @@ function Test-Port([int]$Port) {
 }
 
 # 4. 브로커 기동 + listen 대기(watcher 레이스 회피, 세션13 실측).
-Start-Daemon "broker" $StableBin @("serve", "0.0.0.0:8770", "--db", $BrokerDb) | Out-Null
+#    이 스크립트가 띄운 데몬 PID를 모아 mesh.pids로 기록한다(다음 실행의 선별 종료 근거).
+$meshPids = @()
+$meshPids += (Start-Daemon "broker" $StableBin @("serve", "0.0.0.0:8770", "--db", $BrokerDb)).Id
 $ok = $false
 foreach ($i in 1..30) {
     if (Test-Port 8770) { $ok = $true; break }
@@ -96,18 +121,21 @@ if (Test-Port 8790) {
 }
 
 # 6. presence 스캐너(머신당 1, v2-44): core/token/machine은 config env 폴백.
-Start-Daemon "presence-scan" $StableBin @("presence-scan") | Out-Null
+$meshPids += (Start-Daemon "presence-scan" $StableBin @("presence-scan")).Id
 
 # 7. codex 배달 데몬(v2-46, 구 codex-sup poll+핸들러 대체): 로컬 codex 세션들 앞 task를
 #    대리 claim해 그 세션 thread로 in-process 주입. core/token/machine은 config env 폴백.
-Start-Daemon "codex-relay" $StableBin @("codex-relay", "--ws", "ws://127.0.0.1:8790") | Out-Null
+$meshPids += (Start-Daemon "codex-relay" $StableBin @("codex-relay", "--ws", "ws://127.0.0.1:8790")).Id
 
 # 8. 총괄 결과 인박스(watch-results, digest 60초).
-Start-Daemon "watch-results" $StableBin @("watch-results", "--core", $BaseUrl, "--dispatcher", "dashboard", "--digest", "60") | Out-Null
+$meshPids += (Start-Daemon "watch-results" $StableBin @("watch-results", "--core", $BaseUrl, "--dispatcher", "dashboard", "--digest", "60")).Id
+
+# 9. 기동 PID 기록(선별 종료 근거). app-server(codex.exe)는 종료 대상이 아니라 기록하지 않는다.
+$meshPids | Set-Content $PidsFile
 
 Start-Sleep -Seconds 3
 Write-Host "[mesh] 완료. 상태:"
 Write-Host ("  8770(broker): " + (Test-Port 8770))
 Write-Host ("  8790(app-server): " + (Test-Port 8790))
-Get-Process tunaround -ErrorAction SilentlyContinue | ForEach-Object { Write-Host ("  tunaround PID=" + $_.Id) }
-Write-Host "[mesh] 감독 세션 수신 poll은 각 세션에서 재무장 필요(훅이 새 세션엔 자동 주입)."
+Write-Host ("  mesh 데몬 PID: " + ($meshPids -join ", ") + " (mesh.pids 기록)")
+Write-Host "[mesh] 세션 수신 poll은 건드리지 않음(선별 종료). 전수 폴백이 떴던 경우에만 재무장 필요."
