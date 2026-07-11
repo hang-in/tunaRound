@@ -56,13 +56,14 @@ mesh·브로커가 필요 없습니다.
 2. **원격 REPL로 붙기**: `tunaround join http://<코어-IP>:8770/mcp --token <토큰>`.
 3. **워커 노드로 상주**:
    ```bash
-   tunaround init      # node.toml 생성(러너 자동 탐지: claude→codex→opencode)
-   #  → node.toml 의 core 를 원격 http://<코어-IP>:8770/mcp 로 수정, 토큰은 @env:TUNAROUND_TOKEN
-   export TUNAROUND_TOKEN=<토큰>     # (PowerShell: $env:TUNAROUND_TOKEN="<토큰>")
+   tunaround init --core http://<코어-IP>:8770/mcp --machine mac
+   #  → node.toml + ~/.tunaround/config(mesh·훅용)를 한 번에 스캐폴드. 러너 자동 탐지(claude→codex→opencode).
+   #  → 안내대로 ~/.tunaround/config 의 TUNA_BROKER_TOKEN 을 실제 토큰으로 채운다(node·doctor·데몬·훅 공용).
+   export TUNA_BROKER_TOKEN=<토큰>   # node/doctor를 직접 실행할 때(restart 스크립트는 config 파일에서 상속)
    tunaround doctor    # 코어 도달·토큰·러너 PATH·경로 프리플라이트
    tunaround node      # 브로커(self 또는 원격) + 워커 레인 상주
    ```
-   또는 저수준으로 `tunaround work --core http://<코어-IP>:8770/mcp --token <토큰> --agent <이름> --runner claude`.
+   `init`은 기존 `~/.tunaround/config`(실토큰 보유 가능)는 `--force` 없이 덮지 않고, 토큰은 placeholder만 넣습니다. node.toml만 원하면 `--no-mesh-config`. 저수준은 `tunaround work --core http://<코어-IP>:8770/mcp --token <토큰> --agent <이름> --runner claude`.
 
 `doctor`는 워커 노드 실패 모드(설정 파싱·코어 도달·토큰·러너 PATH·피처 가용성·프로젝트 경로·태그 형식·형태소 백엔드)를 잘 짚습니다. 다만 (1) 기본 빌드엔 `doctor`가 없고, (2) 토큰 부재는 WARN이라 doctor가 통과해도 `node`가 인증 실패할 수 있으며, (3) 로컬 REPL 경로·훅/mesh 계층은 검사하지 않습니다.
 
@@ -77,6 +78,8 @@ mesh·브로커가 필요 없습니다.
 | `~/.tunaround/config` | SessionStart 훅 · mesh 스크립트 | dotenv형 `TUNA_*`(BROKER_CORE·BROKER_TOKEN·MACHINE·BIN·AUTOARM) | 파일 우선 > env > 기본값 |
 
 `tunaround.toml` 프로파일은 `serve`/`mcp-search`/`reindex`에는 적용되지 않습니다. 값 우선순위는 `CLI 플래그 > 선택된 프로파일 > 기본값`이고, 토큰은 평문 대신 `search_token_env`(또는 node.toml의 `@env:NAME`)로 env 이름만 두는 쪽을 권장합니다. 예시는 레포 루트 `tunaround.toml.example`.
+
+**`tunaround init`이 node.toml + `~/.tunaround/config`를 한 번에 스캐폴드**합니다(위 §4). node.toml의 토큰 env 이름을 데몬·훅과 같은 `TUNA_BROKER_TOKEN`으로 통일하므로, mesh 쪽(`node.toml`·`~/.tunaround/config`)은 **토큰 하나(TUNA_BROKER_TOKEN)** 만 채우면 됩니다(`tunaround.toml`은 검색 전용이라 별개). 즉 "3종"이지만 최초 셋업은 init 한 번 + 토큰 한 번입니다.
 
 ## 6. 토큰 로테이션과 env (세 번째 함정)
 

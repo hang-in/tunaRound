@@ -90,7 +90,9 @@ pub fn run_init(args: &InitArgs) -> i32 {
                 .unwrap_or_else(|_| ".".to_string())
         })
         .replace('\\', "/"); // TOML 이중따옴표 이스케이프 회피(Windows 백슬래시 -> 슬래시).
-    let token_env = args.token_env.clone().unwrap_or_else(|| "TUNAROUND_TOKEN".to_string());
+    // 토큰 env 이름을 데몬·훅(TUNA_BROKER_TOKEN)과 통일한다: 예전 기본값 TUNAROUND_TOKEN은 node만
+    // 쓰던 별도 이름이라 "토큰 env가 둘"인 혼란을 만들었다. 이제 node.toml·데몬·훅·config가 한 이름을 쓴다.
+    let token_env = args.token_env.clone().unwrap_or_else(|| "TUNA_BROKER_TOKEN".to_string());
 
     let mut toml = format!("core = \"{core}\"\n");
     if core == "self" {
@@ -120,11 +122,94 @@ pub fn run_init(args: &InitArgs) -> i32 {
 
     println!("작성됨: {out}\n");
     print!("{toml}");
+
+    // mesh·훅용 ~/.tunaround/config(dotenv)도 한 번에 스캐폴드해 "설정 파일 3종"을 최초 1회로 압축한다.
+    // 기존 config는 실제 토큰을 담고 있을 수 있으므로 --force 없이는 절대 덮지 않는다(토큰 보존).
+    let config_written = if args.no_mesh_config {
+        false
+    } else {
+        scaffold_mesh_config(&core, args.machine.as_deref(), args.force)
+    };
+
     println!("\n다음 단계:");
-    println!("  1) 토큰: export {token_env}=<비밀토큰>  (Windows PowerShell: $env:{token_env}=\"...\")");
+    if config_written {
+        println!(
+            "  1) ~/.tunaround/config 의 TUNA_BROKER_TOKEN 을 실제 토큰으로 채우기(node·doctor·데몬·훅이 모두 이 토큰을 씁니다)"
+        );
+    } else {
+        println!(
+            "  1) 토큰: export {token_env}=<비밀토큰>  (Windows PowerShell: $env:{token_env}=\"...\")"
+        );
+    }
     println!("  2) 진단: tunaround doctor");
-    println!("  3) 상주: tunaround node   (백그라운드로 띄우면 set-and-forget)");
+    println!("  3) 상주: tunaround node   (mesh 전체는 restart 스크립트가 config를 읽어 데몬에 상속)");
     0
+}
+
+/// 이 머신 태그를 OS로 감지한다(win/mac/unix). --machine 플래그가 있으면 그 값을 그대로 쓴다.
+#[cfg(all(feature = "serve", feature = "worker"))]
+fn detect_machine(explicit: Option<&str>) -> String {
+    if let Some(m) = explicit {
+        return m.to_string();
+    }
+    if cfg!(target_os = "windows") {
+        "win".to_string()
+    } else if cfg!(target_os = "macos") {
+        "mac".to_string()
+    } else {
+        "unix".to_string()
+    }
+}
+
+/// ~/.tunaround/config(mesh·훅용 dotenv)의 내용을 만든다(순수 함수, 파일 IO 없음 - 테스트 용이).
+/// 토큰은 placeholder만 넣는다(실값 금지).
+#[cfg(all(feature = "serve", feature = "worker"))]
+fn mesh_config_content(broker_core: &str, machine: &str, bin: &str) -> String {
+    format!(
+        "# tunaRound mesh·훅 설정(tunaround init 자동 생성). 값을 채운 뒤 SessionStart 훅과 restart\n\
+         # 스크립트가 읽는다. 형식=KEY=VALUE, 우선순위=이 파일 > env > 기본값. 상세=docs/reference/onboarding.md\n\
+         TUNA_AUTOARM=1\n\
+         TUNA_BIN={bin}\n\
+         TUNA_BROKER_CORE={broker_core}\n\
+         TUNA_MACHINE={machine}\n\
+         # 브로커 인증 토큰(평문). 아래를 실제 토큰으로 바꾸세요. node.toml의 @env:TUNA_BROKER_TOKEN도\n\
+         # 이 이름을 씁니다. 파일 권한 제한 권장(mac/linux: chmod 600, Windows: icacls 본인만 R/W).\n\
+         TUNA_BROKER_TOKEN=여기에-실제-토큰-넣기\n"
+    )
+}
+
+/// ~/.tunaround/config(mesh·훅용 dotenv)를 스캐폴드한다. 이미 있으면(force 아님) 실토큰 보존 위해
+/// 건드리지 않고 false를 반환한다. 토큰은 실값을 쓰지 않고 placeholder만 넣어 사용자가 채우게 한다
+/// (토큰이 argv/명령 히스토리에 남지 않게). node.toml의 @env:TUNA_BROKER_TOKEN과 같은 이름이라
+/// restart 스크립트가 이 파일을 읽어 데몬 env로 상속하면 node·데몬·훅이 한 토큰을 공유한다.
+#[cfg(all(feature = "serve", feature = "worker"))]
+fn scaffold_mesh_config(core: &str, machine: Option<&str>, force: bool) -> bool {
+    let path = tunaround::config::expand_home("~/.tunaround/config");
+    if std::path::Path::new(&path).exists() && !force {
+        println!("\n참고: {path} 는 이미 있어 건드리지 않았습니다(실토큰 보존, 덮으려면 --force).");
+        return false;
+    }
+    // core=self면 브로커가 로컬이라 loopback URL, 아니면 넘겨받은 코어 URL을 그대로 쓴다.
+    let broker_core = if core == "self" { "http://127.0.0.1:8770/mcp" } else { core };
+    let machine = detect_machine(machine);
+    let bin = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.to_str().map(|s| s.to_string()))
+        .unwrap_or_else(|| "tunaround".to_string());
+    let content = mesh_config_content(broker_core, &machine, &bin);
+    if let Some(parent) = std::path::Path::new(&path).parent()
+        && !parent.as_os_str().is_empty()
+        && let Err(e) = std::fs::create_dir_all(parent)
+    {
+        eprintln!("[init] config 디렉터리 생성 실패 {}: {e}", parent.display());
+        return false;
+    }
+    if let Err(e) = std::fs::write(&path, &content) {
+        eprintln!("[init] config 쓰기 실패 {path}: {e}");
+        return false;
+    }
+    println!("\n작성됨: {path} (TUNA_BROKER_TOKEN 을 채우세요)");
+    true
 }
 
 /// 실행 파일이 PATH에 있는지 확인한다(Windows는 .exe/.cmd/.bat 확장자도 시도).
@@ -383,6 +468,62 @@ pub fn run_doctor(cfg_path: Option<&str>) -> i32 {
     } else {
         println!("\n{fails}개 항목 FAIL. 위를 고친 뒤 다시 진단하세요.");
         1
+    }
+}
+
+#[cfg(all(test, feature = "serve", feature = "worker"))]
+mod tests {
+    use super::*;
+    use crate::cli::InitArgs;
+
+    #[test]
+    fn detect_machine_uses_explicit_then_os() {
+        assert_eq!(detect_machine(Some("mac")), "mac");
+        assert_eq!(detect_machine(Some("win")), "win");
+        // 명시 없으면 OS 감지 - 셋 중 하나.
+        let m = detect_machine(None);
+        assert!(["win", "mac", "unix"].contains(&m.as_str()), "감지된 머신 태그: {m}");
+    }
+
+    #[test]
+    fn mesh_config_content_has_keys_and_placeholder_token() {
+        let c = mesh_config_content("http://127.0.0.1:8770/mcp", "mac", "/usr/local/bin/tunaround");
+        assert!(c.contains("TUNA_AUTOARM=1"), "autoarm 스위치 누락");
+        assert!(c.contains("TUNA_BROKER_CORE=http://127.0.0.1:8770/mcp"), "코어 URL 미보간");
+        assert!(c.contains("TUNA_MACHINE=mac"), "머신 태그 미보간");
+        assert!(c.contains("TUNA_BIN=/usr/local/bin/tunaround"), "bin 경로 미보간");
+        // 토큰은 placeholder만: 실값을 쓰지 않는다.
+        assert!(c.contains("TUNA_BROKER_TOKEN=여기에-실제-토큰-넣기"), "토큰 placeholder 누락");
+    }
+
+    #[test]
+    fn run_init_writes_node_toml_with_unified_token_env() {
+        // no_mesh_config=true로 실 ~/.tunaround/config는 절대 건드리지 않고 node.toml만 검증한다.
+        let out = std::env::temp_dir()
+            .join("tuna_init_test_node.toml")
+            .to_string_lossy()
+            .into_owned();
+        let _ = std::fs::remove_file(&out);
+        let args = InitArgs {
+            core: None,
+            listen: None,
+            agent: None,
+            runner: Some("claude".to_string()),
+            project: Some("/tmp/proj".to_string()),
+            token_env: None, // 기본값 = TUNA_BROKER_TOKEN(통일)
+            machine: None,
+            out: Some(out.clone()),
+            no_mesh_config: true,
+            force: false,
+        };
+        assert_eq!(run_init(&args), 0, "init 성공(0) 반환");
+        let written = std::fs::read_to_string(&out).unwrap();
+        assert!(
+            written.contains("token = \"@env:TUNA_BROKER_TOKEN\""),
+            "토큰 env 이름이 TUNA_BROKER_TOKEN으로 통일되어야 함: {written}"
+        );
+        assert!(written.contains("runner = \"claude\""), "러너 미기록: {written}");
+        let _ = std::fs::remove_file(&out);
     }
 }
 
