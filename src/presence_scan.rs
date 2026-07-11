@@ -371,6 +371,39 @@ pub fn parse_pids(text: &str, windows: bool) -> std::collections::HashSet<u32> {
         .collect()
 }
 
+/// 프로세스 목록에서 특정 러너(name) 이름 프로세스의 살아있는 PID 집합을 뽑는다(순수부, v2-45 P8
+/// 가드①: "pid 생존"과 "그 pid가 실제 claude"를 한 번에 판정 - 단순 pid 생존만으론 pid 재사용을
+/// 못 막는다). win CSV = 이미지명 필드가 name(.exe)인 행의 2번째 필드 pid / unix = pid 토큰 뒤
+/// argv 앞 3개 토큰의 **basename**이 name인 행의 pid. 매칭 규약은 count_matching_lines(이름 판정)와
+/// parse_pids(pid 추출)를 그대로 답습해 프로세스 게이트와 어긋나지 않게 한다.
+pub fn runner_pids(text: &str, name: &str, windows: bool) -> std::collections::HashSet<u32> {
+    let text = text.to_lowercase(); // 이름은 소문자 정규화, pid는 숫자라 무영향.
+    let needle = name.to_lowercase();
+    let exe = format!("{needle}.exe");
+    let matches_token = |tok: &str| {
+        let tok = tok.trim_matches('"').trim();
+        let base = std::path::Path::new(tok).file_name().and_then(|f| f.to_str()).unwrap_or(tok);
+        base == needle || base == exe
+    };
+    text.lines()
+        .filter_map(|l| {
+            if windows {
+                // CSV: [이미지명, pid, ...]. 이미지명이 러너면 pid를 취한다.
+                let mut fields = l.split(',');
+                if !fields.next().is_some_and(matches_token) {
+                    return None;
+                }
+                fields.next().map(|s| s.trim_matches('"').trim()).and_then(|p| p.parse::<u32>().ok())
+            } else {
+                // `ps -o pid=,args=`: 첫 토큰=pid, argv 앞 3개 basename이 러너면 그 pid를 취한다.
+                let mut toks = l.split_whitespace();
+                let pid = toks.next()?.parse::<u32>().ok()?;
+                toks.take(3).any(matches_token).then_some(pid)
+            }
+        })
+        .collect()
+}
+
 /// 세션 마커(.ctx)의 판독 결과. 훅(tuna_arm.write_marker)이 owner claude PID를 기록한다.
 #[derive(Debug, Clone, PartialEq)]
 pub enum MarkerState {
@@ -432,6 +465,118 @@ pub fn filter_dead_sessions(
         .into_iter()
         .filter(|s| is_session_live(&read_marker(marker_dir, &s.uuid), alive))
         .collect()
+}
+
+/// 마커-생존 유휴 세션 판정(순수부, v2-45 P8 가드①②). 입력=각 Pid 마커의 (uuid, owner_pid,
+/// marker_mtime), `claude_pids`=살아있는 claude pid 집합. 가드①=owner_pid ∈ claude_pids(죽었거나
+/// claude 아닌 pid 제외 - pid 재사용 방지), 가드②=같은 살아있는 pid를 여러 마커가 가리키면
+/// marker_mtime **최신** uuid만 인정(/clear 훅 실패로 남은 스테일 마커 유령의 구조적 해소).
+/// 반환=로스터에 유지할 uuid 집합.
+pub fn live_idle_marker_uuids(
+    markers: &[(String, u32, SystemTime)],
+    claude_pids: &std::collections::HashSet<u32>,
+) -> std::collections::HashSet<String> {
+    // pid → (그 pid를 가리키는 마커 중 mtime 최신 uuid, 그 mtime). 동률 mtime은 먼저 본 것 유지.
+    let mut best: std::collections::HashMap<u32, (&str, SystemTime)> = std::collections::HashMap::new();
+    for (uuid, pid, mtime) in markers {
+        if !claude_pids.contains(pid) {
+            continue; // 가드①: 죽었거나 claude 아님.
+        }
+        match best.get(pid) {
+            Some((_, cur)) if *cur >= *mtime => {} // 가드②: 이미 더 최신 마커가 있음.
+            _ => {
+                best.insert(*pid, (uuid.as_str(), *mtime));
+            }
+        }
+    }
+    best.values().map(|(u, _)| (*u).to_string()).collect()
+}
+
+/// projects_dir 하위(`<mangled-cwd>/<uuid>.jsonl`)에서 특정 uuid의 jsonl 경로를 찾는다(P8). 서브
+/// 디렉토리마다 `<uuid>.jsonl` 존재만 stat으로 확인해 첫 매치를 반환한다(전체 파일 열거 안 함).
+/// 살아남은 유휴 uuid(= 열린 세션 수, 소수)에 대해서만 호출된다. subdirs는 호출부가 projects_dir을
+/// 한 번만 읽어 넘긴다(유휴 세션마다 read_dir 시스템 콜 반복을 피한다, gemini 리뷰).
+fn find_session_jsonl(subdirs: &[PathBuf], uuid: &str) -> Option<PathBuf> {
+    let file = format!("{uuid}.jsonl");
+    for subpath in subdirs {
+        let candidate = subpath.join(&file);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+/// 유휴-열림 claude 세션을 로스터에 추가로 되살린다(v2-45 P8, 순수 additive). 마커(.ctx) owner pid가
+/// 살아있는 claude면 jsonl mtime 신선도 창(stale)과 무관하게 유지한다(240분 넘게 입력이 없어도 창이
+/// 열려 있으면 로스터에 남는다). 순수 판정(가드①②)은 [`live_idle_marker_uuids`]가, IO(마커 열거·
+/// jsonl 탐색)만 여기서 한다. `existing`에 이미 있는 uuid는 건너뛴다(신선도 창으로 이미 잡힘 = 기존
+/// 우선). 마커가 Pid가 아닌 것(NoMarker/Unknown/Dead=tombstone)은 대상이 아니다 - 가드③(마커 없음)은
+/// 기존 enumerate의 신선도 창 폴백이 처리하며 P8은 여기에 아무것도 더하지 않는다. codex는 마커가
+/// 없어 비대상(설계: rollout session_meta pid 정찰 후 후속).
+///
+/// **잔여 위험(pid 재사용, 적대 리뷰 confirmed minor)**: 크래시로 Pid 마커가 남은 세션의 pid를,
+/// 마커를 쓰지 않는 산 claude(headless·temp cwd·TUNA_AUTOARM 미설정)가 재사용하면 가드①(claude pid)이
+/// 통과하고 가드②(그 pid를 가리키는 마커가 스테일 하나뿐)도 밀어내지 못해 죽은 세션이 유령으로
+/// 되살아날 수 있다. 정상 /clear 경로는 SessionStart가 같은 pid에 더 최신 마커를 써 밀어내므로 안전하다.
+/// 근본 차단은 "그 pid 프로세스 시작시각 > 마커 mtime이면 재사용"인 시작시각 가드(win CIM CreationDate·
+/// unix ps lstart)이나, 케이스가 좁고(마커 없는 정확한 pid 재사용) 결과가 유휴 카드 1개라 후속 하드닝으로 남긴다.
+pub fn enumerate_idle_marker_sessions(
+    marker_dir: &Path,
+    projects_dir: &Path,
+    claude_pids: &std::collections::HashSet<u32>,
+    existing: &std::collections::HashSet<String>,
+    home: Option<&Path>,
+) -> Vec<LiveSession> {
+    // 1) 마커 열거: Pid 마커만 (uuid, owner_pid, marker_mtime)으로 수집.
+    let mut markers: Vec<(String, u32, SystemTime)> = Vec::new();
+    let Ok(entries) = std::fs::read_dir(marker_dir) else {
+        return Vec::new();
+    };
+    for e in entries.flatten() {
+        let path = e.path();
+        if path.extension().and_then(|x| x.to_str()) != Some("ctx") {
+            continue;
+        }
+        let Some(uuid) = path.file_stem().and_then(|s| s.to_str()) else { continue };
+        // 내용 파싱은 read_marker에 위임(Pid/Unknown/Dead/NoMarker 규약 공유). Pid만 P8 대상.
+        let MarkerState::Pid(pid) = read_marker(marker_dir, uuid) else { continue };
+        let Ok(meta) = e.metadata() else { continue };
+        let Ok(mtime) = meta.modified() else { continue };
+        markers.push((uuid.to_string(), pid, mtime));
+    }
+    // 2) 가드①②로 유지할 uuid 판정.
+    let keep = live_idle_marker_uuids(&markers, claude_pids);
+    // 3) 기존에 없는 uuid만 jsonl에서 project를 뽑아 LiveSession 생성(내부/자동화/temp cwd 필터 존중).
+    //    projects_dir 서브디렉토리 목록을 1회만 읽어 재사용한다(gemini 리뷰: 세션마다 read_dir 반복 회피).
+    let subdirs: Vec<PathBuf> = std::fs::read_dir(projects_dir)
+        .map(|rd| rd.flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect())
+        .unwrap_or_default();
+    let mut out: Vec<LiveSession> = Vec::new();
+    for uuid in keep {
+        if existing.contains(&uuid) {
+            continue; // 신선도 창으로 이미 잡힘(기존 우선, 중복 방지).
+        }
+        let Some(path) = find_session_jsonl(&subdirs, &uuid) else { continue };
+        let (cwd, first_user) = crate::discover::scan_jsonl_head(&path, 60);
+        // discover 열거와 같은 노이즈 필터(claude-mem observer·secall automation·temp 헤드리스) 존중.
+        if cwd.as_deref().is_some_and(crate::discover::is_internal_cwd)
+            || first_user.as_deref().is_some_and(crate::discover::is_automation_first_message)
+            || cwd.as_deref().is_some_and(is_temp_cwd)
+        {
+            continue;
+        }
+        let project = project_from_cwd_normalized(cwd.as_deref(), home);
+        out.push(LiveSession {
+            uuid,
+            runner: "claude".to_string(),
+            project,
+            // claude ★ 신호는 human-ping 훅 경로(enumerate_claude_live와 동일). jsonl age는 무시(유휴라 오래됨).
+            human_input_at: None,
+        });
+    }
+    out.sort_by(|a, b| a.uuid.cmp(&b.uuid)); // HashSet 순회의 비결정성을 없애 보고 payload를 안정화.
+    out
 }
 
 /// 프로세스 게이트: 해당 러너 프로세스가 확실히 0개면(count=Some(0)) 그 러너 세션을 전부 제외한다.
@@ -675,5 +820,128 @@ mod tests {
         let found2 = enumerate_codex_sessions(&dir, SystemTime::now(), Duration::from_secs(3600), None, Some(&mut cache));
         assert_eq!(found2[0].human_input_at.as_deref(), Some("2026-07-11 09:05:00"), "캐시 재사용도 동일 값");
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    // --- v2-45 P8: 유휴-열림 세션 로스터 유지 ---
+
+    #[test]
+    fn runner_pids_extracts_only_named_runner_pids() {
+        // unix: pid 토큰 뒤 argv basename이 claude인 행만(경로·node 래퍼 커버), 다른 러너/도구는 제외.
+        let unix = concat!(
+            "  11 claude --resume abc\n",
+            "  22 /usr/local/bin/claude\n",
+            "  33 node /home/u/.npm/bin/claude --flag\n",
+            "  44 codex app-server\n",
+            "  55 tunaround presence-scan\n",
+            "  66 ps -ax\n",
+        );
+        use std::collections::HashSet;
+        let pids = runner_pids(unix, "claude", false);
+        assert_eq!(pids, [11u32, 22, 33].into_iter().collect::<HashSet<_>>(), "claude 프로세스 pid만: {pids:?}");
+        assert_eq!(runner_pids(unix, "codex", false), [44u32].into_iter().collect::<HashSet<_>>());
+        // win CSV: 이미지명 필드가 claude(.exe)인 행의 2번째 필드 pid만. 뒤 필드의 우연 매칭은 무시.
+        let win = concat!(
+            "\"claude.exe\",\"123\",\"Console\"\n",
+            "\"node.exe\",\"9\",\"Console\"\n",
+            "\"x.exe\",\"1\",\"claude\"\n",
+            "\"CLAUDE.EXE\",\"456\",\"Console\"\n",
+        );
+        let pids = runner_pids(win, "claude", true);
+        assert_eq!(pids, [123u32, 456].into_iter().collect::<HashSet<_>>(), "이미지명=claude.exe 행만(대소문자 무관): {pids:?}");
+    }
+
+    #[test]
+    fn live_idle_guard1_excludes_dead_or_nonclaude_pids() {
+        use std::collections::HashSet;
+        let t = |n: u64| SystemTime::UNIX_EPOCH + Duration::from_secs(n);
+        let claude_pids: HashSet<u32> = [100u32, 200].into_iter().collect();
+        let markers = vec![
+            ("live".to_string(), 100u32, t(10)),   // 살아있는 claude pid → 유지.
+            ("dead".to_string(), 999u32, t(20)),   // 스냅샷에 없는 pid(죽음/비claude) → 제외(가드①).
+        ];
+        let keep = live_idle_marker_uuids(&markers, &claude_pids);
+        assert_eq!(keep, ["live".to_string()].into_iter().collect::<HashSet<_>>(), "가드①: 산 claude pid만: {keep:?}");
+    }
+
+    #[test]
+    fn live_idle_guard2_keeps_only_latest_marker_per_pid() {
+        use std::collections::HashSet;
+        let t = |n: u64| SystemTime::UNIX_EPOCH + Duration::from_secs(n);
+        let claude_pids: HashSet<u32> = [100u32].into_iter().collect();
+        // 같은 살아있는 pid를 3개 마커가 가리킴(= /clear 훅 실패로 남은 스테일 마커 유령).
+        let markers = vec![
+            ("stale-a".to_string(), 100u32, t(10)),
+            ("newest".to_string(), 100u32, t(30)),
+            ("stale-b".to_string(), 100u32, t(20)),
+        ];
+        let keep = live_idle_marker_uuids(&markers, &claude_pids);
+        assert_eq!(keep, ["newest".to_string()].into_iter().collect::<HashSet<_>>(), "가드②: mtime 최신 하나만: {keep:?}");
+    }
+
+    #[test]
+    fn enumerate_idle_revives_open_session_and_respects_filters() {
+        use std::collections::HashSet;
+        let base = std::env::temp_dir().join(format!("tuna-p8-{}", std::process::id()));
+        let marker_dir = base.join("markers");
+        let projects_dir = base.join("projects");
+        let proj = projects_dir.join("D--privateProject-tunaRound");
+        std::fs::create_dir_all(&marker_dir).unwrap();
+        std::fs::create_dir_all(&proj).unwrap();
+        // 유휴이지만 열려 있는 세션(마커 pid=100 산 claude, jsonl은 오래됨). 되살아나야 함.
+        std::fs::write(
+            proj.join("idle-1.jsonl"),
+            "{\"type\":\"summary\"}\n{\"type\":\"user\",\"cwd\":\"D:\\\\privateProject\\\\tunaRound\",\"message\":{\"content\":\"안녕\"}}\n",
+        ).unwrap();
+        std::fs::write(marker_dir.join("idle-1.ctx"), "100").unwrap();
+        // automation 세션(첫 user 메시지 <!-- 마커) - 마커 pid는 살아있어도 노이즈 필터로 제외돼야 함.
+        // (각 세션은 고유 owner pid를 가진다 - 가드②는 pid별 최신 하나만 남기므로 별도 pid를 준다.)
+        std::fs::write(
+            proj.join("auto-1.jsonl"),
+            "{\"type\":\"summary\"}\n{\"type\":\"user\",\"cwd\":\"D:\\\\privateProject\\\\tunaRound\",\"message\":{\"content\":\"<!-- secall:wiki -->\"}}\n",
+        ).unwrap();
+        std::fs::write(marker_dir.join("auto-1.ctx"), "200").unwrap();
+        // tombstone(dead)·unknown 마커는 P8 비대상(Pid만 대상, 가드③=마커없음은 기존 창 폴백).
+        std::fs::write(marker_dir.join("gone-1.ctx"), "dead").unwrap();
+        std::fs::write(marker_dir.join("unk-1.ctx"), "unknown").unwrap();
+        // jsonl 없는 마커(세션 파일 소멸)는 조용히 스킵.
+        std::fs::write(marker_dir.join("orphan.ctx"), "300").unwrap();
+
+        let claude_pids: HashSet<u32> = [100u32, 200, 300].into_iter().collect();
+        let existing: HashSet<String> = HashSet::new();
+        let found = enumerate_idle_marker_sessions(&marker_dir, &projects_dir, &claude_pids, &existing, None);
+        let uuids: Vec<&str> = found.iter().map(|s| s.uuid.as_str()).collect();
+        assert_eq!(uuids, vec!["idle-1"], "유휴 열림 세션만 되살림(automation·dead·unknown·orphan 제외): {uuids:?}");
+        assert_eq!(found[0].runner, "claude");
+        assert_eq!(found[0].project.as_deref(), Some("tunaRound"));
+        assert_eq!(found[0].human_input_at, None);
+
+        // 이미 신선도 창으로 잡힌(existing) uuid는 다시 추가하지 않는다(기존 우선).
+        let existing2: HashSet<String> = ["idle-1".to_string()].into_iter().collect();
+        let none = enumerate_idle_marker_sessions(&marker_dir, &projects_dir, &claude_pids, &existing2, None);
+        assert!(none.is_empty(), "existing에 있으면 중복 추가 안 함: {none:?}");
+
+        // pid가 죽으면(가드①) 되살리지 않는다.
+        let dead_pids: HashSet<u32> = HashSet::new();
+        let none2 = enumerate_idle_marker_sessions(&marker_dir, &projects_dir, &dead_pids, &existing, None);
+        assert!(none2.is_empty(), "산 claude pid 없으면 되살림 없음: {none2:?}");
+
+        std::fs::remove_dir_all(&base).ok();
+    }
+
+    #[test]
+    fn enumerate_idle_empty_when_no_markers() {
+        // 마커 디렉토리 자체가 없으면(가드③ 폴백 = 기존 enumerate 담당) 빈 결과.
+        use std::collections::HashSet;
+        let missing = std::env::temp_dir().join(format!("tuna-p8-none-{}", std::process::id()));
+        let claude_pids: HashSet<u32> = [100u32].into_iter().collect();
+        let existing: HashSet<String> = HashSet::new();
+        let found = enumerate_idle_marker_sessions(
+            &missing.join("markers"),
+            &missing.join("projects"),
+            &claude_pids,
+            &existing,
+            None,
+        );
+        assert!(found.is_empty());
     }
 }
