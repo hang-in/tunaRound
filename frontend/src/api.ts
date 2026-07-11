@@ -70,6 +70,32 @@ export async function fetchRoster(signal?: AbortSignal): Promise<Agent[]> {
   return (await res.json()) as Agent[]
 }
 
+// 머신별 presence 스캐너 도달성(GET /dashboard/health 의 요소).
+export type ScannerHealth = {
+  machine: string
+  last_heartbeat: string
+  age_secs: number
+  online: boolean
+}
+
+// 브로커 헬스 요약(GET /dashboard/health). 열린 task 수 + 미배달/고착 집계 + 스캐너 도달성.
+export type BrokerHealth = {
+  open_tasks: number
+  no_consumer: number
+  stuck: number
+  scanners: ScannerHealth[]
+  now: string
+}
+
+// mesh 건강 요약을 가져온다. 실패는 던져서 호출부가 콘솔 로깅만 하도록 한다.
+export async function fetchHealth(signal?: AbortSignal): Promise<BrokerHealth> {
+  const res = await fetch('/dashboard/health', { signal })
+  if (!res.ok) {
+    throw new Error('health 조회 실패: ' + res.status)
+  }
+  return (await res.json()) as BrokerHealth
+}
+
 
 // POST /dashboard/goal 성공 응답: 대상별로 생성된 task 를 알려준다.
 export type GoalCreated = { taskId: string; toAgent: string }
