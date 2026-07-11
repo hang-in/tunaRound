@@ -295,6 +295,10 @@ pub struct WatchResultsArgs {
     /// failed는 즉시 알린다(총괄 wake 절약, v2-44 W5).
     #[arg(long, default_value_t = 0)]
     pub digest: u64,
+    /// 재생 시작 시각 수동 오버라이드("YYYY-MM-DD HH:MM:SS" UTC, 'T' 구분자 허용). 지정 시 상태
+    /// 파일의 워터마크보다 우선한다. 생략 시 상태 파일(없으면 재생 없이 라이브부터, v2-45 P3).
+    #[arg(long)]
+    pub since: Option<String>,
 }
 
 /// `presence-scan` 서브커맨드(worker 피처 전용): 머신당 1개 상주하며 로컬 라이브 세션 전집합을

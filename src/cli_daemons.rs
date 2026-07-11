@@ -149,7 +149,12 @@ pub fn poll(rt: &tokio::runtime::Runtime, a: PollArgs) {
 
 /// watch-results <...>: 총괄이 던진 task의 완료/실패를 브로커 SSE로 받아 stdout으로 알린다(worker 피처).
 pub fn watch_results(rt: &tokio::runtime::Runtime, a: WatchResultsArgs) {
-    let result = rt.block_on(tunaround::watch_results::run(&a.core, &a.dispatcher, a.digest));
+    let result = rt.block_on(tunaround::watch_results::run(
+        &a.core,
+        &a.dispatcher,
+        a.digest,
+        a.since.as_deref(),
+    ));
     if let Err(e) = result {
         eprintln!("[watch-results] 오류: {e}");
         std::process::exit(1);
