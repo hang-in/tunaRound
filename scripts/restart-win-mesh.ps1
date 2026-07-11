@@ -21,9 +21,11 @@ $ConfigPath = Join-Path $TunaHome "config"
 if (-not (Test-Path $ConfigPath)) { throw "config 없음: $ConfigPath" }
 Get-Content $ConfigPath | Where-Object { $_ -match '^\s*TUNA_\w+\s*=' } | ForEach-Object {
     $k, $v = $_ -split '=', 2
-    Set-Item -Path "env:$($k.Trim())" -Value $v.Trim()
+    # 값에 따옴표가 있으면 자식 프로세스의 경로·URL 파싱이 깨지므로 벗긴다(봇리뷰 medium).
+    Set-Item -Path "env:$($k.Trim())" -Value $v.Trim().Trim("'").Trim('"')
 }
 $Core = $env:TUNA_BROKER_CORE  # 예: http://127.0.0.1:8770/mcp
+if (-not $Core) { throw "config에 TUNA_BROKER_CORE 없음: $ConfigPath (빈 --core로 데몬이 조용히 죽는다)" }
 $BaseUrl = $Core -replace '/mcp/?$', ''
 
 # 2. 기존 tunaround 프로세스 전부 종료.
@@ -46,10 +48,12 @@ if ($SourceBin) {
 if (-not (Test-Path $StableBin)) { throw "안정 바이너리 없음: $StableBin (최초엔 -SourceBin으로 배포)" }
 
 # 주의: 둘째 인자 이름을 $Args로 지으면 PowerShell 자동 변수와 충돌해 인자가 증발한다(실측: serve가 REPL로 폴백).
+# Start-Process -ArgumentList는 배열을 인용 없이 공백 join하므로(버전 불문 고질), 공백 인자는 직접 인용한다(봇리뷰 high).
 function Start-Daemon([string]$Name, [string]$Exe, [string[]]$ArgList) {
     $out = Join-Path $TunaHome "$Name.log"
     $err = Join-Path $TunaHome "$Name.err.log"
-    $p = Start-Process -FilePath $Exe -ArgumentList $ArgList -WindowStyle Hidden -PassThru `
+    $argString = ($ArgList | ForEach-Object { if ($_ -match '\s') { '"{0}"' -f $_ } else { $_ } }) -join ' '
+    $p = Start-Process -FilePath $Exe -ArgumentList $argString -WindowStyle Hidden -PassThru `
         -RedirectStandardOutput $out -RedirectStandardError $err
     Write-Host "[mesh] $Name 기동 PID=$($p.Id)"
     return $p

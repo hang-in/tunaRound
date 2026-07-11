@@ -189,14 +189,21 @@ fn output_with_deadline(
     });
     let end = std::time::Instant::now() + deadline;
     let status = loop {
-        match child.try_wait().ok()? {
-            Some(st) => break st,
-            None if std::time::Instant::now() >= end => {
+        match child.try_wait() {
+            Ok(Some(st)) => break st,
+            // 데드라인 초과와 try_wait 에러 모두 kill+wait로 정리해야 자식·reader
+            // 스레드가 안 샌다(봇리뷰: `?` 조기 반환은 자식을 산 채로 누수).
+            Ok(None) if std::time::Instant::now() >= end => {
                 let _ = child.kill();
                 let _ = child.wait();
                 return None; // reader 스레드는 파이프가 닫히며 스스로 끝난다.
             }
-            None => std::thread::sleep(Duration::from_millis(100)),
+            Ok(None) => std::thread::sleep(Duration::from_millis(100)),
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
         }
     };
     let stdout = reader.join().ok().flatten()?;
