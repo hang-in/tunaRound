@@ -60,8 +60,9 @@ mesh·브로커가 필요 없습니다.
    ```bash
    tunaround init --core http://<코어-IP>:8770/mcp --machine mac
    #  → node.toml + ~/.tunaround/config(mesh·훅용)를 한 번에 스캐폴드. 러너 자동 탐지(claude→codex→opencode).
-   #  → 안내대로 ~/.tunaround/config 의 TUNA_BROKER_TOKEN 을 실제 토큰으로 채운다(node·doctor·데몬·훅 공용).
-   export TUNA_BROKER_TOKEN=<토큰>   # node/doctor를 직접 실행할 때(restart 스크립트는 config 파일에서 상속)
+   #  → ~/.tunaround/config 의 TUNA_BROKER_TOKEN 을 편집기로 채운다(데몬·훅·restart 스크립트가 읽음).
+   #  → node/doctor를 직접 실행하려면 같은 토큰을 env로도: 셸에 타이핑 말고 프로파일(~/.zshrc 등)에
+   #    편집기로 export TUNA_BROKER_TOKEN=... 추가(히스토리 유출 방지). restart 스크립트로 띄우면 파일에서 상속.
    tunaround doctor    # 코어 도달·토큰·러너 PATH·경로 프리플라이트
    tunaround node      # 브로커(self 또는 원격) + 워커 레인 상주
    ```

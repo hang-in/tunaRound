@@ -36,11 +36,14 @@
    - (c) 합류:     `tunaround init --core http://<코어-IP>:8770/mcp --machine <감지값>`
                    코어 IP/주소는 나에게 물어본다.
    이 명령이 node.toml 과 ~/.tunaround/config 를 함께 만든다.
-4. 토큰은 절대 이 대화창에 붙여넣게 하지 마라(로그 유출 방지). 대신:
-   - 나에게 `~/.tunaround/config` 파일을 열어 TUNA_BROKER_TOKEN 값을 직접 채우라고 안내하거나,
-   - 셸에 `export TUNA_BROKER_TOKEN=<토큰>`(PowerShell `$env:TUNA_BROKER_TOKEN="..."`)을
-     내가 직접 입력하도록 안내한다.
-   토큰 값 자체를 너가 읽거나 커맨드 argv에 넣지 않는다.
+4. 토큰은 절대 이 대화창에도, 셸 명령에도 직접 입력하게 하지 마라(대화 로그·셸 히스토리 유출 방지).
+   오직 파일 편집으로만 안내한다:
+   - `~/.tunaround/config` 를 편집기로 열어 TUNA_BROKER_TOKEN 값을 채운다(데몬·훅·restart 스크립트가
+     이 파일을 직접 읽는다).
+   - node/doctor 를 직접 실행해야 하면, 셸에 `export`를 타이핑하지 말고 셸 프로파일(~/.zshrc 등)에
+     편집기로 `export TUNA_BROKER_TOKEN=...`을 추가하거나, restart 스크립트로 띄운다(스크립트가
+     config 파일에서 env로 상속하므로 히스토리에 안 남는다).
+   토큰 값 자체를 너가 읽거나 커맨드 argv/히스토리에 남기지 않는다.
 5. `tunaround doctor` 를 실행하고 결과(OK/WARN/FAIL)를 해석해 설명한다. 흔한 실패 처방:
    - 러너 not on PATH → 해당 CLI(claude/codex/opencode) 설치·로그인 안내
    - 코어 도달 불가 → 코어 IP·네트워크(같은 LAN이면 사설 IP, 아니면 터널)·토큰 확인
