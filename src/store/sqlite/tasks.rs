@@ -222,27 +222,21 @@ impl SqliteStore {
     /// 이미 슬림화된 행(history_json='[]')은 건너뛰어 재작업·재카운트를 피한다. 반환=슬림화한 행 수.
     pub fn prune_terminal_tasks(&self, retain_days: u32) -> Result<usize, String> {
         let cutoff = format!("-{retain_days} days");
-        // completed: history 비우고 원 요청(message_json)도 비운다(요청·결과 모두 색인됨, artifacts 보존).
-        let n1 = self
-            .conn
+        // completed·failed를 한 원자적 UPDATE로 슬림화(봇 리뷰): history_json='[]'로 비우고, completed만
+        // message_json(원 요청)도 NULL로(CASE). failed의 message_json(실패 사유)과 artifacts_json은
+        // 보존(§5-5). WHERE의 OR 조건은 history가 이미 '[]'여도 completed에서 message_json이 남아 있으면
+        // 마저 정리해 경계 조건을 없앤다(완전 슬림 행은 재매칭 안 돼 멱등).
+        self.conn
             .execute(
-                "UPDATE tasks SET history_json='[]', message_json=NULL \
-                 WHERE state='completed' AND indexed_at IS NOT NULL AND history_json != '[]' \
-                   AND updated_at < datetime('now', ?1)",
+                "UPDATE tasks \
+                 SET history_json='[]', \
+                     message_json=CASE WHEN state='completed' THEN NULL ELSE message_json END \
+                 WHERE state IN ('completed','failed') AND indexed_at IS NOT NULL \
+                   AND updated_at < datetime('now', ?1) \
+                   AND (history_json != '[]' OR (state='completed' AND message_json IS NOT NULL))",
                 [&cutoff],
             )
-            .map_err(|e| format!("sqlite: {e}"))?;
-        // failed: history만 비운다(message_json=실패 사유는 보존).
-        let n2 = self
-            .conn
-            .execute(
-                "UPDATE tasks SET history_json='[]' \
-                 WHERE state='failed' AND indexed_at IS NOT NULL AND history_json != '[]' \
-                   AND updated_at < datetime('now', ?1)",
-                [&cutoff],
-            )
-            .map_err(|e| format!("sqlite: {e}"))?;
-        Ok(n1 + n2)
+            .map_err(|e| format!("sqlite: {e}"))
     }
 
     /// WAL을 체크포인트하고 파일을 잘라 공간을 회수한다(v2-45 P6b: 슬림화 sweep 동반, 수동 정리 실측 해소).
