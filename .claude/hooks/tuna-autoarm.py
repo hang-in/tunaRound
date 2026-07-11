@@ -68,7 +68,9 @@ def main() -> int:
     core = broker_core()
     c = core.rstrip("/")
     base = c[:-4] if c.endswith("/mcp") else c
-    tuna_bin = cfg("TUNA_BIN", "tunaround")
+    # Monitor 커맨드는 Git Bash로 실행돼 백슬래시 경로가 증발한다(exit 127 실측 2026-07-11)
+    # - 슬래시 정규화 + 공백 경로 대비 작은따옴표.
+    tuna_bin = "'" + cfg("TUNA_BIN", "tunaround").strip("'\"").replace("\\", "/") + "'"
     # SessionStart에서 수신 지시를 냈으므로 ping의 1회 주입(.rx)은 불필요 - 중복 주입 방지.
     try:
         (state_dir() / f"{safe_id}.rx").touch()

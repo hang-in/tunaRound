@@ -139,18 +139,22 @@ pub fn enumerate_claude_live(
 /// 조회 실패는 None(판단 불가 = 게이트·마커 필터 모두 건너뜀 = 보수적 유지).
 pub fn process_list_text() -> Option<(String, bool)> {
     let windows = cfg!(target_os = "windows");
-    let out = if windows {
-        std::process::Command::new("tasklist").args(["/FO", "CSV", "/NH"]).output()
+    let mut cmd = if windows {
+        let mut c = std::process::Command::new("tasklist");
+        c.args(["/FO", "CSV", "/NH"]);
+        c
     } else {
         // `-c`(comm 축약)는 procps/busybox 미이식 + comm은 node 래퍼로 뜨는 러너를 놓친다
         // (놓치면 게이트가 산 세션을 전부 제거, 봇리뷰 Major). pid + 전체 argv로 뜬다.
-        std::process::Command::new("ps").args(["-ax", "-o", "pid=,args="]).output()
-    }
-    .ok()?;
-    if !out.status.success() {
+        let mut c = std::process::Command::new("ps");
+        c.args(["-ax", "-o", "pid=,args="]);
+        c
+    };
+    let (status, stdout) = output_with_deadline(&mut cmd, Duration::from_secs(10))?;
+    if !status.success() {
         return None;
     }
-    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    let text = String::from_utf8_lossy(&stdout).into_owned();
     // 건전성 가드(windows 한정): tasklist는 부하 시 exit 0인 채 "ERROR: ... timeout period
     // expired"만 뱉는다(2026-07-11 실측: 5회 중 3회). 그 스냅샷으로 필터하면 전 세션이 한
     // 사이클 떨어졌다 복귀하는 로스터 깜빡임이 된다. Windows 데스크톱 프로세스는 항상 수백
@@ -160,6 +164,50 @@ pub fn process_list_text() -> Option<(String, bool)> {
         return None;
     }
     Some((text, windows))
+}
+
+/// Command를 데드라인 안에서 실행하고 (status, stdout)을 돌려준다. 초과 시 kill 후 None.
+/// tasklist는 부하 시 에러 출력(#51 가드)뿐 아니라 출력 0으로 무한 행도 실측돼(2026-07-11,
+/// 15초+ 무응답) `.output()` 블로킹이 스캐너 루프 전체를 멈춘다 - 데드라인이 그 행을
+/// 스냅샷 실패(=이번 주기 필터 스킵, 보수적 유지)로 강등시킨다.
+fn output_with_deadline(
+    cmd: &mut std::process::Command,
+    deadline: Duration,
+) -> Option<(std::process::ExitStatus, Vec<u8>)> {
+    use std::io::Read;
+    let mut child = cmd
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .ok()?;
+    let mut pipe = child.stdout.take()?;
+    // 파이프는 별도 스레드로 읽는다(안 읽으면 자식이 파이프 가득참에 막혀 교착).
+    let reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        pipe.read_to_end(&mut buf).ok().map(|_| buf)
+    });
+    let end = std::time::Instant::now() + deadline;
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(st)) => break st,
+            // 데드라인 초과와 try_wait 에러 모두 kill+wait로 정리해야 자식·reader
+            // 스레드가 안 샌다(봇리뷰: `?` 조기 반환은 자식을 산 채로 누수).
+            Ok(None) if std::time::Instant::now() >= end => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None; // reader 스레드는 파이프가 닫히며 스스로 끝난다.
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(100)),
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    };
+    let stdout = reader.join().ok().flatten()?;
+    Some((status, stdout))
 }
 
 /// 프로세스 목록 텍스트에서 러너 라인을 센다(순수부). win = CSV 첫 필드(이미지명) /
