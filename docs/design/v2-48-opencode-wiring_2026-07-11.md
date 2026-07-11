@@ -2,11 +2,11 @@
 
 > 상태 = 백로그. **착수 = v2-45 아크 완료 후**(사용자 결정 2026-07-11 "권고대로 나중에 진행"). 정찰 근거 = 업스트림 공식 문서·소스(anomalyco/opencode v1.17.18, 2026-07-11 기준 - 레포가 sst에서 anomalyco로 이관됨). **착수 시점에 버전·스키마·API 재대조 필수**(아래 R2).
 >
-> **세션23 재대조·현황(2026-07-12)**: ① **워커 레인 = 이미 완성**(§2.1은 스테일). `src/runner/opencode.rs`(OpencodeRunner + `build_opencode_args` + `parse_opencode_stream`)가 커밋 7fedac2(2026-06-30)에 구현·배선(cli.rs `WorkRunner::Opencode`·cli_daemons 팩토리·roster·cli_node)·유닛테스트 완료. 세션23에 fixture 타임아웃 테스트 추가(형제 러너 동형). ② **CLI 재대조 = 드리프트 0**: 이 머신에 opencode **v1.17.18 설치**(정찰 버전과 동일), `opencode run [msg] --format json`(JSONL)·exit 1 계약 불변. ③ **감독 레인 = R2 확증, defer 유지**: opencode.db 마이그레이션 이슈가 1일 뒤에도 활성(세션 고아화·사용자 데이터손실·DB 손상 등 7+건) → 스캐너의 조용한-0 실패 위험 그대로. "몇 달 냉각 + 착수 시 재대조" 조건 미충족. ④ **잔여 폴리시(비착수)**: `RunMode::ReadOnly` 배선(opencode 안정 read-only 플래그 부재로 보류), 토큰 파싱 하드닝(본문은 text 이벤트에서 독립 누적돼 step_finish 드롭에 무손실이라 불요).
+> **세션23 재대조·현황(2026-07-12) - 아래 §0·§2.1·§4의 '향후 추가/작음' 서술은 워커 레인에 한해 이 배너 기준으로 갱신됨(워커=완료)**: ① **워커 레인 = 이미 완성**. `src/runner/opencode.rs`(OpencodeRunner + `build_opencode_args` + `parse_opencode_stream`)가 커밋 7fedac2(2026-06-30)에 구현·배선(cli.rs `WorkRunner::Opencode`·cli_daemons 팩토리·roster·cli_node)·유닛테스트 완료. 세션23에 fixture 타임아웃 테스트 추가(형제 러너 동형). ② **CLI 재대조 = 드리프트 0**: 이 머신에 opencode **v1.17.18 설치**(정찰 버전과 동일), `opencode run [msg] --format json`(JSONL)·exit 1 계약 불변. ③ **감독 레인 = R2 확증, defer 유지**: opencode.db 마이그레이션 이슈가 1일 뒤에도 활성(세션 고아화·사용자 데이터손실·DB 손상 등 7+건) → 스캐너의 조용한-0 실패 위험 그대로. "몇 달 냉각 + 착수 시 재대조" 조건 미충족. ④ **잔여 폴리시(비착수)**: `RunMode::ReadOnly` 배선(opencode 안정 read-only 플래그 부재로 보류), 토큰 파싱 하드닝(본문은 text 이벤트에서 독립 누적돼 step_finish 드롭에 무손실이라 불요).
 
 ## 0. 결론 요약
 
-- **워커 레인 = 난이도 낮음.** `opencode run`이 stdin 파이프·`--format json`·실패 exit 1을 갖춰 기존 러너와 동형 추가 가능.
+- **워커 레인 = 완료**(커밋 7fedac2, 세션23 재대조). `opencode run`이 `--format json`(JSONL)·실패 exit 1을 갖춰 기존 러너와 동형으로 이미 추가·테스트됨(프롬프트=positional arg).
 - **감독 레인 = 난이도 중간, codex보다 유리.** 세션 주입이 app-server ws 우회가 아니라 1급 문서화 REST(`POST /session/:id/prompt_async`, `/tui/submit-prompt`).
 - **랜덤 포트 함정 = 설정으로 해소**(후속 정찰로 확정). 남는 규약 = 머신당 포트 대역.
 - **최대 리스크 = 세션 저장 계층**(JSON→SQLite 전환 직후, 스키마 미안정) - 착수를 늦추는 실질 근거.
@@ -47,4 +47,4 @@
 
 1. v2-45 아크 완료 + opencode 스키마 냉각(마이그레이션 이슈 진정) 확인.
 2. 착수 시 §1 표 전체를 당시 버전으로 재대조(포트 플래그·API 경로·db 스키마).
-3. 순서 = 워커 러너(작음, 독립 PR) → 감독 레인(스캐너 열거 → 수신 (a) 검증 → human 신호 플러그인). 각 단계 라이브 스모크.
+3. 순서 = ~~워커 러너~~ **(완료, 세션23)** → **감독 레인(잔여, R2로 defer)**: 스캐너 열거 → 수신 (a) 검증 → human 신호 플러그인. 각 단계 라이브 스모크. 감독 레인 착수는 위 조건 1(스키마 냉각) 충족 후.
