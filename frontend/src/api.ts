@@ -36,6 +36,10 @@ export type Artifact = {
   parts: Part[]
 }
 
+// A2A 메시지(요청 원문·상태 메시지). parts[].text 에 사람이 읽는 텍스트가 담긴다.
+// history[0]=접수 당시 요청, state=failed 일 때 statusMessage=실패 사유.
+export type Message = { role?: string; parts?: Part[] }
+
 // 브로커 task 스냅샷.
 export type Task = {
   id: string
@@ -43,9 +47,9 @@ export type Task = {
   fromAgent: string
   toAgent: string
   state: string
-  statusMessage?: unknown
+  statusMessage?: Message
   artifacts: Artifact[]
-  history?: unknown[]
+  history?: Message[]
   runner?: string
   createdAt: string
   updatedAt: string
