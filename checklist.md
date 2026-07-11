@@ -504,3 +504,9 @@
 - [x] 적대적 리뷰(워크플로우 3렌즈→검증): 원시 3건 → 확증 0건(전부 기각, cosmetic·기존 코드). 코드 변경 없음
 - [x] 커밋 `7493376`(7파일 +180/-6)
 - [x] PR #70 → CI(clippy 3-OS·dashboard SPA·CodeRabbit 전부 pass) → 봇리뷰 실이슈 2건 반영(uptime 손상 500·wal 테스트) → 머지(`5fdfb4b`) → WMI 스폰 배포 → **라이브 Chrome 검증 완료**(가동 1분·WAL 0 B 칩 렌더, uptime_secs=7→증가·wal_bytes=0 실데이터). 문체 Minor 3건 스킵. DeepSource JS=자문성 fail(비게이트).
+
+## 세션23 잔여 3건 완주 (2026-07-12, "병렬 가능한건 병렬로, 순차로 모두 해결")
+
+- [x] **③ 스테일 브랜치 정리**: 머지분 전량 삭제(로컬 16 + 원격 다수, fetch --prune). session16 핸드오프 문서를 main 편입(`2e65e12`, CLAUDE.md dangling 참조 해소) 후 브랜치 삭제. 미머지 잔여 = `origin/feat/session17-roster-supervision`(v2-41 superseded, 비가역 유실 위험이라 단독삭제 안 함·삭제 권고).
+- [x] **② v2-48 opencode**(PR #71 머지 `56221c7`): 재대조 = 워커 러너 이미 완성(커밋 7fedac2)·opencode v1.17.18 설치·CLI 드리프트 0. fixture 타임아웃 테스트 추가 + 문서 §0/§2.1/§4 정정(+ CodeRabbit doc-consistency main 정리 `978d3f8`). 감독 레인은 R2(opencode.db 스키마 미안정, 마이그 이슈 7+건) 확증으로 defer.
+- [x] **① v2-47 낮은우선**(PR #72 머지 `1ecaa8b`·배포·라이브): ★ recency(비-총괄 "★ 마지막 N분 전", 라이브=luckyCAD ★1시간전·tunaRound ★40분전) + 관전 뱃지 eye 아이콘 강화 + 모바일 반응형 @media(≤640px 단일컬럼, CSSOM 확인=flex-basis:100%/min-width:0). 봇 오버플로 지적 2건 반영(.rst-title·.rst-runner-name 말줄임). 진짜 ★ 타임라인은 데이터 부재+"로스터 이력 비영속" 설계 반전이라 defer(문서화).
