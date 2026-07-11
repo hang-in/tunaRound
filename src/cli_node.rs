@@ -134,7 +134,7 @@ pub fn run_init(args: &InitArgs) -> i32 {
     println!("\n다음 단계:");
     if config_written {
         println!(
-            "  1) ~/.tunaround/config 의 TUNA_BROKER_TOKEN 을 실제 토큰으로 채우기(node·doctor·데몬·훅이 모두 이 토큰을 씁니다)"
+            "  1) ~/.tunaround/config 의 TUNA_BROKER_TOKEN 을 실제 토큰으로 채우기\n     (데몬·훅은 이 파일을 직접 읽습니다. node/doctor를 바로 실행하려면 같은 값을 export {token_env}=... 로도 설정하세요)"
         );
     } else {
         println!(
@@ -207,6 +207,13 @@ fn scaffold_mesh_config(core: &str, machine: Option<&str>, force: bool) -> bool 
     if let Err(e) = std::fs::write(&path, &content) {
         eprintln!("[init] config 쓰기 실패 {path}: {e}");
         return false;
+    }
+    // 실토큰이 담길 파일이라 유닉스에선 소유자만 R/W(0600)로 강제한다(다중 사용자 노출 차단, 봇 리뷰).
+    // Windows는 %USERPROFILE% ACL이 기본 사용자 스코프라 여기서 별도 강제 없이 파일 주석 안내로 둔다.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
     }
     println!("\n작성됨: {path} (TUNA_BROKER_TOKEN 을 채우세요)");
     true
