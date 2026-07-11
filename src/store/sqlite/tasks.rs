@@ -120,6 +120,70 @@ impl SqliteStore {
         rows.into_iter().map(TaskRow::into_task).collect()
     }
 
+    /// 과거 task를 재생(replay)용으로 조회하는 공용 질의(v2-45 P2, 설계 §3). 피드 스냅샷(?replay=N)과
+    /// watch-results 재생(?since=TS)이 이 하나로 수렴한다(질의 중복 설계 방지).
+    ///
+    /// - `from_agent`: Some이면 발신자 필터(watch-results의 dispatcher 의미. None=전체).
+    /// - `since`: Some이면 `updated_at >= ?` 필터. 포맷은 DB `datetime('now')` 그대로
+    ///   ("YYYY-MM-DD HH:MM:SS" UTC, 사전순 비교 가능). ISO8601 변환 금지(§5-3 고정 계약:
+    ///   'T' > ' ' 사전순 왜곡).
+    /// - `states`: 빈 배열이면 전 상태, 아니면 `state IN (...)` 필터.
+    /// - `limit`: Some(N)이면 "updated_at 기준 최근 N건"(DESC LIMIT로 끊고 뒤집어 반환).
+    ///
+    /// 반환은 항상 updated_at 오름차순(소비자 = SSE 선행 프레임이 시간순으로 흘러야 함). 같은 초의
+    /// tie는 rowid를 2차 키로 안정화한다.
+    pub fn list_tasks_replay(
+        &self,
+        from_agent: Option<&str>,
+        since: Option<&str>,
+        states: &[&str],
+        limit: Option<usize>,
+    ) -> Result<Vec<Task>, String> {
+        let mut clauses: Vec<String> = Vec::new();
+        let mut params: Vec<String> = Vec::new();
+        if let Some(agent) = from_agent {
+            params.push(agent.to_string());
+            clauses.push(format!("from_agent=?{}", params.len()));
+        }
+        if let Some(ts) = since {
+            params.push(ts.to_string());
+            clauses.push(format!("updated_at >= ?{}", params.len()));
+        }
+        if !states.is_empty() {
+            let placeholders: Vec<String> = states
+                .iter()
+                .map(|s| {
+                    params.push(s.to_string());
+                    format!("?{}", params.len())
+                })
+                .collect();
+            clauses.push(format!("state IN ({})", placeholders.join(", ")));
+        }
+        let where_sql = if clauses.is_empty() {
+            String::new()
+        } else {
+            format!(" WHERE {}", clauses.join(" AND "))
+        };
+        // limit는 "최근 N건"이므로 DESC로 끊은 뒤 Rust에서 뒤집어 오름차순 계약을 지킨다.
+        let order_sql = match limit {
+            Some(n) => format!(" ORDER BY updated_at DESC, rowid DESC LIMIT {n}"),
+            None => " ORDER BY updated_at ASC, rowid ASC".to_string(),
+        };
+        let sql = format!("SELECT {TASK_COLUMNS} FROM tasks{where_sql}{order_sql}");
+        let mut stmt = self.conn.prepare(&sql).map_err(|e| format!("sqlite: {e}"))?;
+        let rows: Vec<TaskRow> = stmt
+            .query_map(rusqlite::params_from_iter(params.iter()), task_row_from_sql)
+            .map_err(|e| format!("sqlite: {e}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| format!("sqlite: {e}"))?;
+        let mut tasks: Vec<Task> =
+            rows.into_iter().map(TaskRow::into_task).collect::<Result<Vec<_>, _>>()?;
+        if limit.is_some() {
+            tasks.reverse();
+        }
+        Ok(tasks)
+    }
+
     /// state와 동반 상태 메시지를 원자적으로 갱신한다(A2A TaskStatus 단위). status_message=None이면
     /// 이번 전이에 메시지가 없다는 뜻으로 message_json을 비운다(이전 값 보존 아님).
     pub fn update_task_state(
@@ -530,6 +594,82 @@ mod tests {
                 vec!["t1", "t2"],
                 "to_agent 필터 없이 열린 task 전부(agent 무관) + completed 제외"
             );
+        }
+
+        // --- v2-45 P2: list_tasks_replay(재생 공용 질의) 단위테스트 ---
+
+        /// updated_at이 서로 다른 재생용 task 4건을 심는다(상태·발신자 혼합).
+        /// t1=completed(win) < t2=failed(win) < t3=canceled(other) < t4=submitted(win).
+        fn seed_replay_tasks(db: &SqliteStore) {
+            let mut t1 = Task::new("t1", None, "win", "mac", "2026-07-11 09:00:00");
+            t1.state = TaskState::Completed;
+            let mut t2 = Task::new("t2", None, "win", "mac", "2026-07-11 09:01:00");
+            t2.state = TaskState::Failed;
+            let mut t3 = Task::new("t3", None, "other", "mac", "2026-07-11 09:02:00");
+            t3.state = TaskState::Canceled;
+            let t4 = Task::new("t4", None, "win", "mac", "2026-07-11 09:03:00");
+            for t in [&t1, &t2, &t3, &t4] {
+                db.create_task(t).unwrap();
+            }
+        }
+
+        fn ids(tasks: &[Task]) -> Vec<&str> {
+            tasks.iter().map(|t| t.id.as_str()).collect()
+        }
+
+        #[test]
+        fn list_tasks_replay_no_filters_returns_all_states_ascending() {
+            let db = SqliteStore::open_memory().unwrap();
+            seed_replay_tasks(&db);
+            let all = db.list_tasks_replay(None, None, &[], None).unwrap();
+            assert_eq!(ids(&all), vec!["t1", "t2", "t3", "t4"], "전 상태 + updated_at 오름차순");
+        }
+
+        #[test]
+        fn list_tasks_replay_limit_takes_most_recent_and_returns_ascending() {
+            let db = SqliteStore::open_memory().unwrap();
+            seed_replay_tasks(&db);
+            let recent = db.list_tasks_replay(None, None, &[], Some(2)).unwrap();
+            assert_eq!(ids(&recent), vec!["t3", "t4"], "최근 2건을 오름차순으로 반환(DESC LIMIT 후 뒤집기)");
+        }
+
+        #[test]
+        fn list_tasks_replay_since_is_inclusive_gte() {
+            let db = SqliteStore::open_memory().unwrap();
+            seed_replay_tasks(&db);
+            let from = db.list_tasks_replay(None, Some("2026-07-11 09:01:00"), &[], None).unwrap();
+            assert_eq!(ids(&from), vec!["t2", "t3", "t4"], "since는 >= (경계 포함, seen dedup은 소비자 몫)");
+        }
+
+        #[test]
+        fn list_tasks_replay_filters_states_and_from_agent() {
+            let db = SqliteStore::open_memory().unwrap();
+            seed_replay_tasks(&db);
+            // watch-results 의미론: completed/failed만 + dispatcher(from_agent) 필터.
+            let terminal =
+                db.list_tasks_replay(Some("win"), None, &["completed", "failed"], None).unwrap();
+            assert_eq!(ids(&terminal), vec!["t1", "t2"], "canceled(t3)·submitted(t4)·타 발신자 제외");
+        }
+
+        #[test]
+        fn list_tasks_replay_combined_since_states_dispatcher_limit() {
+            let db = SqliteStore::open_memory().unwrap();
+            seed_replay_tasks(&db);
+            let hit = db
+                .list_tasks_replay(
+                    Some("win"),
+                    Some("2026-07-11 09:01:00"),
+                    &["completed", "failed"],
+                    Some(10),
+                )
+                .unwrap();
+            assert_eq!(ids(&hit), vec!["t2"], "필터 4종 동시 적용");
+        }
+
+        #[test]
+        fn list_tasks_replay_empty_db_is_empty() {
+            let db = SqliteStore::open_memory().unwrap();
+            assert!(db.list_tasks_replay(None, None, &[], Some(50)).unwrap().is_empty());
         }
 
         #[test]
