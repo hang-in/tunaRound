@@ -198,6 +198,9 @@ pub fn presence_scan(rt: &tokio::runtime::Runtime, a: PresenceScanArgs) {
         let stale = std::time::Duration::from_secs(a.stale_mins.saturating_mul(60));
         let interval = a.interval.max(1);
         let mut last_report = String::new();
+        // codex 입력 신호 tail 스캔의 주기 간 캐시(uuid→(mtime, human_input_at)). mtime 무변경 rollout은
+        // 재스캔을 건너뛴다(v2-45 P5).
+        let mut codex_input_cache = tunaround::presence_scan::CodexInputCache::new();
         loop {
             let now = std::time::SystemTime::now();
             let mut sessions = Vec::new();
@@ -205,7 +208,13 @@ pub fn presence_scan(rt: &tokio::runtime::Runtime, a: PresenceScanArgs) {
                 sessions.extend(tunaround::presence_scan::enumerate_claude_live(dir, now, stale, home.as_deref()));
             }
             if let Some(dir) = &codex_dir {
-                sessions.extend(tunaround::presence_scan::enumerate_codex_sessions(dir, now, stale, home.as_deref()));
+                sessions.extend(tunaround::presence_scan::enumerate_codex_sessions(
+                    dir,
+                    now,
+                    stale,
+                    home.as_deref(),
+                    Some(&mut codex_input_cache),
+                ));
             }
             // tombstone(깨끗한 종료 확정)은 프로세스 스냅샷과 무관하게 항상 제거한다(v2-46:
             // 스냅샷 실패 주기에도 직전 종료 세션이 유령 B석으로 남지 않게).

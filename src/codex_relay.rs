@@ -27,11 +27,17 @@ pub fn relay_tags(machine: &str) -> String {
     format!("machine={machine},role=infra,purpose=codex-inject")
 }
 
+/// relay 주입 메시지의 고정 prefix(§5-6 고정 계약). presence 스캐너의 codex 입력 신호 필터
+/// (presence_scan::message_is_human_input)가 이 prefix로 시작하는 user_message를 "기계 주입"으로
+/// 판정해 human_input_at(총감독 ★)에서 제외한다. **이 문구를 바꾸면 P5 필터가 파손된다**(relay 주입이
+/// 사람 입력으로 오분류되어 ★가 codex로 잘못 이동). build_inject_text_uses_contract_prefix 테스트로 고정.
+pub const RELAY_INJECT_PREFIX: &str = "브로커 task ";
+
 /// 주입할 유저 턴 텍스트를 조립한다. relay가 이미 claim했으므로 claim 절차 지시는 없다
-/// (구 sup 핸들러 텍스트에서 "claim_task로 가져와"를 뺀 형태).
+/// (구 sup 핸들러 텍스트에서 "claim_task로 가져와"를 뺀 형태). 반드시 [`RELAY_INJECT_PREFIX`]로 시작한다.
 pub fn build_inject_text(task_id: &str, msg: &str) -> String {
     format!(
-        "브로커 task {task_id} 가 너에게 배달됐다(이미 claim됨). 아래 요청을 읽고 직접 답하라 \
+        "{RELAY_INJECT_PREFIX}{task_id} 가 너에게 배달됐다(이미 claim됨). 아래 요청을 읽고 직접 답하라 \
          (claim/complete는 처리 절차일 뿐이니 절차를 설명하지 말고 요청에 대한 실제 답을 내라). \
          그 답변 텍스트를 result로 complete_task(task_id={task_id})를 호출해 마감하라. \
          처리 불가면 fail_task로 사유를 보고하라.\n\n[요청]\n{msg}"
@@ -88,6 +94,7 @@ pub async fn run(opts: RelayOpts) -> Result<(), String> {
                 std::time::SystemTime::now(),
                 opts.stale,
                 opts.home.as_deref(),
+                None, // relay는 주입 대상 uuid만 필요 = 입력 신호 tail 스캔 생략(무비용).
             ),
             None => Vec::new(),
         };
@@ -179,5 +186,13 @@ mod tests {
         assert!(text.contains("complete_task"), "마감 지시 포함: {text}");
         assert!(text.contains("fail_task"), "실패 경로 지시 포함: {text}");
         assert!(!text.contains("claim_task로 가져와"), "claim 절차 지시는 없어야(대리 claim): {text}");
+    }
+
+    #[test]
+    fn build_inject_text_uses_contract_prefix() {
+        // §5-6 고정 계약: 주입 텍스트는 반드시 RELAY_INJECT_PREFIX로 시작한다(P5 스캐너 필터가 이걸로
+        // relay 주입을 사람 입력에서 배제). 이 테스트가 깨지면 P5 필터도 함께 갱신해야 한다.
+        let text = build_inject_text("abc123", "본문");
+        assert!(text.starts_with(RELAY_INJECT_PREFIX), "prefix 계약 위반: {text}");
     }
 }

@@ -431,6 +431,7 @@ impl TunaSearchServer {
                     runner: s.runner,
                     project: s.project,
                     display_name: s.display_name,
+                    human_input_at: s.human_input_at,
                 })
                 .collect();
             let (upserted, removed) = store.sync_presence(&machine, &entries, &now);

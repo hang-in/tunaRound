@@ -12,6 +12,9 @@ pub struct LiveSession {
     pub runner: String,
     /// 정규화된 프로젝트명(home 정규화 적용, 불명이면 None).
     pub project: Option<String>,
+    /// 스캐너가 관측한 마지막 사람 입력 시각(v2-45 P5, codex rollout user_message tail 스캔, DB datetime
+    /// 포맷). claude는 human-ping 훅이 별도 신호 경로라 None. 브로커 sync_presence가 max-merge한다.
+    pub human_input_at: Option<String>,
 }
 
 /// cwd가 홈 디렉토리 자체면 "home", 아니면 마지막 세그먼트. 훅의 project_from_cwd와 같은 규약
@@ -60,15 +63,99 @@ pub fn default_codex_sessions_dir() -> Option<PathBuf> {
     if expanded.starts_with("~/") { None } else { Some(PathBuf::from(expanded)) }
 }
 
+/// codex rollout tail 스캔 상한(256KB 역방향). 세션당 마지막 사람 입력 시각만 필요하므로 전체를 읽지 않는다.
+const CODEX_TAIL_BYTES: usize = 256 * 1024;
+
+/// 파일 끝에서 최대 max 바이트를 읽는다(역방향 tail). 앞쪽 경계에서 잘린 라인은 호출부가 JSON 파싱
+/// 실패로 자연 스킵한다. 파일 없음·IO 실패는 None.
+fn read_tail_bytes(path: &Path, max: usize) -> Option<Vec<u8>> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(path).ok()?;
+    let len = f.metadata().ok()?.len();
+    let start = len.saturating_sub(max as u64);
+    if start > 0 {
+        f.seek(SeekFrom::Start(start)).ok()?;
+    }
+    let mut buf = Vec::new();
+    f.read_to_end(&mut buf).ok()?;
+    Some(buf)
+}
+
+/// "YYYY-MM-DD HH:MM:SS"(19자, 공백 구분) 형태 검사(사전순=시간순 비교 안전 보장).
+fn is_db_datetime_19(s: &str) -> bool {
+    let b = s.as_bytes();
+    b.len() == 19
+        && b.iter().enumerate().all(|(i, &c)| match i {
+            4 | 7 => c == b'-',
+            10 => c == b' ',
+            13 | 16 => c == b':',
+            _ => c.is_ascii_digit(),
+        })
+}
+
+/// ISO8601 타임스탬프("2026-07-11T09:00:00.894Z")를 DB datetime 포맷("2026-07-11 09:00:00")으로
+/// 정규화한다('T'→공백, 소수초·'Z'·offset 절단). §5-3 계약: 'T' > ' ' 사전순 왜곡을 없애 로스터·영속
+/// 워터마크와 비교 가능하게 한다. 결과가 19자 DB 포맷이 아니면 None(오염 방어).
+pub fn normalize_iso_to_db_datetime(ts: &str) -> Option<String> {
+    let replaced = ts.trim().replacen('T', " ", 1);
+    let core = replaced.split(['.', 'Z', '+']).next().unwrap_or(&replaced).trim();
+    if is_db_datetime_19(core) { Some(core.to_string()) } else { None }
+}
+
+/// user_message가 사람 입력인지(= relay 기계 주입이 아닌지) 판정한다(§5-6 고정 계약). relay 주입은
+/// [`crate::codex_relay::RELAY_INJECT_PREFIX`]로 시작하므로 제외한다(그걸 사람 입력으로 세면 ★가
+/// codex 세션으로 잘못 이동한다).
+fn message_is_human_input(message: &str) -> bool {
+    !message.trim_start().starts_with(crate::codex_relay::RELAY_INJECT_PREFIX)
+}
+
+/// codex rollout tail에서 마지막 사람 입력(user_message) 시각을 뽑는다(v2-45 P5).
+/// `type=="event_msg" && payload.type=="user_message"` 줄 중 relay 주입 prefix가 아닌 것의 top-level
+/// timestamp 최대값을 DB datetime 포맷으로 정규화해 반환한다. 해당 입력이 없으면 None.
+pub fn parse_codex_last_user_input(path: &Path, max_tail: usize) -> Option<String> {
+    let tail = read_tail_bytes(path, max_tail)?;
+    let text = String::from_utf8_lossy(&tail);
+    let mut latest: Option<String> = None;
+    for line in text.lines() {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line.trim()) else { continue };
+        if v.get("type").and_then(|t| t.as_str()) != Some("event_msg") {
+            continue;
+        }
+        let Some(payload) = v.get("payload") else { continue };
+        if payload.get("type").and_then(|t| t.as_str()) != Some("user_message") {
+            continue;
+        }
+        let msg = payload.get("message").and_then(|m| m.as_str()).unwrap_or("");
+        if !message_is_human_input(msg) {
+            continue; // relay 기계 주입 = 사람 입력 아님.
+        }
+        let Some(ts) = v.get("timestamp").and_then(|t| t.as_str()) else { continue };
+        let Some(norm) = normalize_iso_to_db_datetime(ts) else { continue };
+        match &latest {
+            Some(cur) if norm.as_str() <= cur.as_str() => {}
+            _ => latest = Some(norm),
+        }
+    }
+    latest
+}
+
+/// codex rollout tail 스캔 캐시(uuid → (마지막 관측 mtime, human_input_at)). mtime 무변경이면 재스캔을
+/// 건너뛴다(전 주기 결과 재사용). presence 스캐너 데몬이 주기 간 소유한다.
+pub type CodexInputCache = std::collections::HashMap<String, (SystemTime, Option<String>)>;
+
 /// `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`을 재귀 스캔해 stale 이내 mtime의 라이브 TUI 세션을
 /// 낸다. originator가 codex-tui가 아닌 것(exec 등 헤드리스)은 제외(로스터=열린 TUI 세션 계약).
+/// `input_cache`가 Some이면 uuid별 최신 rollout tail에서 사람 입력 시각(human_input_at)을 mtime 캐시와
+/// 함께 스캔한다(P5). None이면 스캔을 생략한다(relay 등 uuid만 필요한 호출자 = 무비용).
 pub fn enumerate_codex_sessions(
     sessions_dir: &Path,
     now: SystemTime,
     stale: Duration,
     home: Option<&Path>,
+    mut input_cache: Option<&mut CodexInputCache>,
 ) -> Vec<LiveSession> {
-    let mut out = Vec::new();
+    // 후보 수집: (uuid, project, path, mtime). 같은 uuid의 rollout이 복수면 최신(mtime 최대)만 채택한다.
+    let mut cands: Vec<(String, Option<String>, PathBuf, SystemTime)> = Vec::new();
     let mut stack = vec![sessions_dir.to_path_buf()];
     // 디렉토리 깊이는 YYYY/MM/DD 고정이지만 방어적으로 상한을 둔다(심볼릭 링크 순환 등).
     let mut visited = 0usize;
@@ -102,11 +189,34 @@ pub fn enumerate_codex_sessions(
                 continue;
             }
             let project = project_from_cwd_normalized(cwd.as_deref(), home);
-            out.push(LiveSession { uuid, runner: "codex".to_string(), project });
+            cands.push((uuid, project, path, mtime));
         }
     }
+    // uuid별 최신 rollout만 남긴다(uuid asc, mtime desc로 정렬 후 dedup_by가 앞=최신을 유지).
+    cands.sort_by(|a, b| a.0.cmp(&b.0).then(b.3.cmp(&a.3)));
+    cands.dedup_by(|a, b| a.0 == b.0);
+    let mut out: Vec<LiveSession> = Vec::with_capacity(cands.len());
+    for (uuid, project, path, mtime) in cands {
+        let human_input_at = match input_cache.as_mut() {
+            None => None, // 스캔 불필요 호출(relay): uuid만 낸다.
+            Some(cache) => match cache.get(&uuid) {
+                // mtime 무변경 = rollout에 새 입력 없음 → 전 주기 결과 재사용(재스캔 스킵).
+                Some((cached_mtime, cached)) if *cached_mtime == mtime => cached.clone(),
+                _ => {
+                    let hi = parse_codex_last_user_input(&path, CODEX_TAIL_BYTES);
+                    cache.insert(uuid.clone(), (mtime, hi.clone()));
+                    hi
+                }
+            },
+        };
+        out.push(LiveSession { uuid, runner: "codex".to_string(), project, human_input_at });
+    }
+    // 이번 주기에 사라진 세션의 캐시 항목 정리(무한 성장 방지).
+    if let Some(cache) = input_cache.as_mut() {
+        let present: std::collections::HashSet<&str> = out.iter().map(|s| s.uuid.as_str()).collect();
+        cache.retain(|k, _| present.contains(k.as_str()));
+    }
     out.sort_by(|a, b| a.uuid.cmp(&b.uuid));
-    out.dedup_by(|a, b| a.uuid == b.uuid); // 같은 세션의 rollout이 복수면 1건만.
     out
 }
 
@@ -130,6 +240,8 @@ pub fn enumerate_claude_live(
             uuid: s.uuid,
             runner: "claude".to_string(),
             project: project_from_cwd_normalized(s.cwd.as_deref(), home).or(s.project),
+            // claude ★ 신호는 UserPromptSubmit 훅(→ human-ping) 경로라 스캐너는 보고하지 않는다.
+            human_input_at: None,
         })
         .collect()
 }
@@ -333,6 +445,7 @@ pub fn to_report_json(machine: &str, sessions: &[LiveSession]) -> serde_json::Va
                 "runner": s.runner,
                 "project": s.project,
                 "display_name": display,
+                "human_input_at": s.human_input_at,
             })
         })
         .collect();
@@ -425,7 +538,7 @@ mod tests {
 
     #[test]
     fn process_gate_drops_runner_only_when_zero() {
-        let s = |r: &str| LiveSession { uuid: r.to_string(), runner: r.to_string(), project: None };
+        let s = |r: &str| LiveSession { uuid: r.to_string(), runner: r.to_string(), project: None, human_input_at: None };
         let all = vec![s("claude"), s("codex")];
         // 확실한 0 → 해당 러너만 제거.
         let gated = apply_process_gate(all.clone(), "codex", Some(0));
@@ -451,11 +564,12 @@ mod tests {
             r#"{"type":"session_meta","payload":{"session_id":"exec-1","cwd":"/u/x/projA","originator":"codex exec"}}"#,
         );
         mk("not-a-rollout.jsonl", r#"{"type":"session_meta","payload":{"session_id":"zzz","originator":"codex-tui"}}"#);
-        let found = enumerate_codex_sessions(&dir, SystemTime::now(), Duration::from_secs(3600), None);
+        let found = enumerate_codex_sessions(&dir, SystemTime::now(), Duration::from_secs(3600), None, None);
         std::fs::remove_dir_all(&dir).ok();
         assert_eq!(found.len(), 1, "TUI 세션만: {found:?}");
         assert_eq!(found[0].uuid, "tui-1");
         assert_eq!(found[0].project.as_deref(), Some("projA"));
+        assert_eq!(found[0].human_input_at, None, "input_cache 없으면 신호 스캔 생략");
     }
 
     #[test]
@@ -464,9 +578,89 @@ mod tests {
             uuid: "u1".into(),
             runner: "claude".into(),
             project: Some("tunaRound".into()),
+            human_input_at: Some("2026-07-11 09:00:00".into()),
         }];
         let v = to_report_json("win", &sessions);
         assert_eq!(v[0]["uuid"], "u1");
         assert_eq!(v[0]["display_name"], "win-claude-tunaRound");
+        assert_eq!(v[0]["human_input_at"], "2026-07-11 09:00:00");
+    }
+
+    // --- v2-45 P5: codex 입력 신호 tail 스캔 ---
+
+    #[test]
+    fn normalize_iso_to_db_datetime_handles_t_frac_z_offset() {
+        assert_eq!(normalize_iso_to_db_datetime("2026-07-11T09:00:00.894Z").as_deref(), Some("2026-07-11 09:00:00"));
+        assert_eq!(normalize_iso_to_db_datetime("2026-07-11T09:00:00Z").as_deref(), Some("2026-07-11 09:00:00"));
+        assert_eq!(normalize_iso_to_db_datetime("2026-07-11T09:00:00+09:00").as_deref(), Some("2026-07-11 09:00:00"));
+        // 이미 DB 포맷이면 그대로.
+        assert_eq!(normalize_iso_to_db_datetime("2026-07-11 09:00:00").as_deref(), Some("2026-07-11 09:00:00"));
+        // 형태 불량은 None(오염 방어).
+        assert_eq!(normalize_iso_to_db_datetime("어제"), None);
+        assert_eq!(normalize_iso_to_db_datetime("2026-07-11T09:00"), None);
+    }
+
+    #[test]
+    fn message_is_human_input_excludes_relay_prefix() {
+        assert!(message_is_human_input("현재 WSL 설정 확인 바람"));
+        // relay 주입(build_inject_text prefix)은 사람 입력 아님(§5-6).
+        assert!(!message_is_human_input(&crate::codex_relay::build_inject_text("t1", "요청")));
+        assert!(!message_is_human_input("브로커 task abc 가 배달됐다"));
+    }
+
+    #[test]
+    fn parse_codex_last_user_input_takes_latest_human_message() {
+        let dir = std::env::temp_dir().join(format!("tuna-codex-input-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("rollout.jsonl");
+        let body = concat!(
+            r#"{"timestamp":"2026-07-11T09:00:00.100Z","type":"session_meta","payload":{"session_id":"s","originator":"codex-tui"}}"#, "\n",
+            r#"{"timestamp":"2026-07-11T09:01:00.200Z","type":"event_msg","payload":{"type":"user_message","message":"첫 질문"}}"#, "\n",
+            r#"{"timestamp":"2026-07-11T09:02:00.300Z","type":"event_msg","payload":{"type":"agent_message","message":"답변"}}"#, "\n",
+            r#"{"timestamp":"2026-07-11T09:03:00.400Z","type":"event_msg","payload":{"type":"user_message","message":"브로커 task xyz 가 배달됐다(이미 claim됨)"}}"#, "\n",
+            r#"{"timestamp":"2026-07-11T09:04:00.500Z","type":"event_msg","payload":{"type":"user_message","message":"둘째 질문"}}"#, "\n",
+        );
+        std::fs::write(&path, body).unwrap();
+        let got = parse_codex_last_user_input(&path, CODEX_TAIL_BYTES);
+        std::fs::remove_dir_all(&dir).ok();
+        // 마지막 사람 user_message(09:04)를 정규화해 반환. relay 주입(09:03)·agent_message는 제외.
+        assert_eq!(got.as_deref(), Some("2026-07-11 09:04:00"));
+    }
+
+    #[test]
+    fn parse_codex_last_user_input_none_when_only_relay() {
+        let dir = std::env::temp_dir().join(format!("tuna-codex-relay-only-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("rollout.jsonl");
+        let body = concat!(
+            r#"{"timestamp":"2026-07-11T09:03:00Z","type":"event_msg","payload":{"type":"user_message","message":"브로커 task xyz 가 배달됐다"}}"#, "\n",
+        );
+        std::fs::write(&path, body).unwrap();
+        let got = parse_codex_last_user_input(&path, CODEX_TAIL_BYTES);
+        std::fs::remove_dir_all(&dir).ok();
+        assert_eq!(got, None, "relay 주입만 있으면 사람 입력 없음");
+    }
+
+    #[test]
+    fn enumerate_with_cache_scans_input_and_skips_on_unchanged_mtime() {
+        let dir = std::env::temp_dir().join(format!("tuna-codex-cache-{}", std::process::id()));
+        let day = dir.join("2026").join("07").join("11");
+        std::fs::create_dir_all(&day).unwrap();
+        std::fs::write(
+            day.join("rollout-2026-07-11T01-aaa.jsonl"),
+            concat!(
+                r#"{"timestamp":"2026-07-11T09:00:00Z","type":"session_meta","payload":{"session_id":"tui-1","cwd":"/u/x/projA","originator":"codex-tui"}}"#, "\n",
+                r#"{"timestamp":"2026-07-11T09:05:00.123Z","type":"event_msg","payload":{"type":"user_message","message":"사람 입력"}}"#, "\n",
+            ),
+        ).unwrap();
+        let mut cache = CodexInputCache::new();
+        let found = enumerate_codex_sessions(&dir, SystemTime::now(), Duration::from_secs(3600), None, Some(&mut cache));
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].human_input_at.as_deref(), Some("2026-07-11 09:05:00"), "tail 스캔이 사람 입력 시각 추출");
+        // 캐시에 mtime+값 저장 → 같은 파일 재스캔 시 재사용(mtime 무변경).
+        assert!(cache.contains_key("tui-1"));
+        let found2 = enumerate_codex_sessions(&dir, SystemTime::now(), Duration::from_secs(3600), None, Some(&mut cache));
+        assert_eq!(found2[0].human_input_at.as_deref(), Some("2026-07-11 09:05:00"), "캐시 재사용도 동일 값");
+        std::fs::remove_dir_all(&dir).ok();
     }
 }
