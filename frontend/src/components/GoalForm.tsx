@@ -23,11 +23,7 @@ function WarnIcon() {
 }
 
 // 칩·드롭다운의 표시 이름 = project(로스터 타이틀과 동일 규약). 같은 project·runner 충돌은 uuid로 식별.
-// infra(codex 주입 경로)는 project가 없으므로 용도가 드러나는 고정 라벨.
 function agentTitle(a: Agent): string {
-  if (a.tags?.role === 'infra') {
-    return `${a.tags?.machine ?? '?'}-codex 주입`
-  }
   return a.tags?.project ?? a.display_name ?? a.uuid.slice(0, 8)
 }
 
@@ -37,14 +33,20 @@ export default function GoalForm({ agents, remoteViewer, selected, onChangeSelec
   const [status, setStatus] = useState('')
   const [pickerOpen, setPickerOpen] = useState(false)
 
-  // 목표 대상 = claude 세션 + codex 주입 infra. 제외 3종(전부 no-consumer 방지):
-  //   워커(work 데몬이 별도 소비) / presence 스캐너(task 처리 자리 아님) /
-  //   codex 세션·role 미지정 codex(자기 poll이 없어 수신 불가 - codex 경로는 codex-inject watcher만).
+  // 목표 대상 = claude 세션 + codex 세션(v2-46: 로스터에 보이는 그 세션이 곧 주입 대상).
+  // 제외(전부 no-consumer 방지): 워커(work 데몬이 별도 소비) / infra(스캐너·relay = 백엔드,
+  // 대상으로 노출하지 않음 - sup 정체성 폐기) / relay가 없는 머신의 codex 세션(배달부 부재).
+  const relayMachines = new Set(
+    agents
+      .filter((a) => a.online && a.tags?.role === 'infra' && a.tags?.purpose === 'codex-inject')
+      .map((a) => a.tags?.machine ?? '?'),
+  )
   const online = agents.filter((a) => {
-    if (!a.online || a.tags?.role === 'worker') return false
-    if (a.tags?.role === 'infra') return a.tags?.purpose === 'codex-inject'
-    // role 미지정도 세션 취급이므로 runner 기준으로 codex를 막는다(봇리뷰: undefined role 누락).
-    return a.tags?.runner !== 'codex'
+    if (!a.online || a.tags?.role === 'worker' || a.tags?.role === 'infra') return false
+    // codex 세션 = 그 머신에 codex-relay(purpose=codex-inject) online일 때만 유효 대상
+    // (role 미지정 codex도 동일 규칙 - 수신은 relay가 대리하므로 자기 poll 여부와 무관).
+    if (a.tags?.runner === 'codex') return relayMachines.has(a.tags?.machine ?? '?')
+    return true
   })
 
   if (remoteViewer) {

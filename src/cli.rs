@@ -61,6 +61,9 @@ pub enum Commands {
     /// A2A task 수동 조작 CLI: poll/claim/get/complete/fail(MCP 미로드 세션의 0토큰 경로, worker 피처).
     #[cfg(feature = "worker")]
     Task(TaskArgs),
+    /// 머신당 codex 배달 데몬: 로컬 codex 세션들 앞 task를 대리 claim해 그 세션 thread로 주입(v2-46, worker 피처).
+    #[cfg(feature = "worker")]
+    CodexRelay(CodexRelayArgs),
     /// 워커 노드 상주: node.toml대로 브로커(self)+자동 워커 레인들을 한 프로세스로(serve+worker 피처).
     #[cfg(all(feature = "serve", feature = "worker"))]
     Node(NodeArgs),
@@ -357,6 +360,41 @@ pub struct PresenceScanArgs {
     pub once: bool,
 }
 
+/// `codex-relay` 서브커맨드(worker 피처 전용): 머신당 1개 상주하는 codex 배달 데몬(설계 v2-46).
+/// 로컬 라이브 codex 세션들(uuid=threadId) 앞 task를 대리 claim해 그 세션 thread로 in-process 주입한다.
+/// sup 정체성·글루 thread·.cmd 핸들러의 대체.
+#[cfg(feature = "worker")]
+#[derive(Args, Debug)]
+pub struct CodexRelayArgs {
+    /// 코어 `/mcp` 절대 URL(예: http://127.0.0.1:8770/mcp). 생략 시 TUNA_BROKER_CORE env.
+    #[arg(long)]
+    pub core: Option<String>,
+    /// bearer 토큰(생략 시 TUNA_BROKER_TOKEN env 폴백. argv 노출 회피 권장).
+    #[arg(long)]
+    pub token: Option<String>,
+    /// codex app-server ws URL(기본 ws://127.0.0.1:8790, 로컬 무인증).
+    #[arg(long, default_value = "ws://127.0.0.1:8790")]
+    pub ws: String,
+    /// 이 relay의 머신 식별자(win|mac|unix). 생략 시 TUNA_MACHINE env 또는 빌드 타깃 OS.
+    #[arg(long)]
+    pub machine: Option<String>,
+    /// 스캔할 codex sessions 디렉토리(생략 시 ~/.codex/sessions).
+    #[arg(long)]
+    pub codex_dir: Option<String>,
+    /// 라이브로 간주할 활동 신선도 창(분, 기본 240. presence 스캐너와 동일 규약).
+    #[arg(long, default_value_t = 240)]
+    pub stale_mins: u64,
+    /// 폴 간격(초, 기본 15).
+    #[arg(long, default_value_t = 15)]
+    pub interval: u64,
+    /// 주입 1건의 turn/completed 대기 타임아웃(초, 기본 1800 = 워커 on-task 상한과 동일).
+    #[arg(long, default_value_t = 1800)]
+    pub inject_timeout: u64,
+    /// 한 패스만 실행하고 종료(테스트·수동 실행용).
+    #[arg(long)]
+    pub once: bool,
+}
+
 /// `task` 서브커맨드(worker 피처 전용): A2A task를 CLI로 조작한다(v2-44 W3). tuna-broker MCP가
 /// 안 붙은 세션(브로커 사후 기동 등)이 raw curl 대신 쓰는 0토큰 전송 경로.
 #[cfg(feature = "worker")]
@@ -424,8 +462,13 @@ pub struct CodexInjectArgs {
     #[arg(long)]
     pub ws: String,
     /// thread 영속 키. `~/.tunaround/codex-sup-<agent>.thread`에 threadId를 기록/재사용해 맥락을 누적한다.
+    /// --thread와 배타적(둘 중 하나 필수).
+    #[arg(long, conflicts_with = "thread", required_unless_present = "thread")]
+    pub agent: Option<String>,
+    /// threadId 직지정(v2-46): 영속 파일 없이 이 thread를 resume해 주입한다. 실패 시 새 thread
+    /// 자가치유 없이 즉시 실패(로스터에 보이는 세션 thread에만 답이 생기게).
     #[arg(long)]
-    pub agent: String,
+    pub thread: Option<String>,
     /// 주입할 유저 턴 텍스트(브로커 task 처리 지시 + task 메시지).
     #[arg(long)]
     pub text: String,

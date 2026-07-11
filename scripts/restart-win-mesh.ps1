@@ -90,9 +90,9 @@ if (Test-Port 8790) {
 # 6. presence 스캐너(머신당 1, v2-44): core/token/machine은 config env 폴백.
 Start-Daemon "presence-scan" $StableBin @("presence-scan") | Out-Null
 
-# 7. win-codex-sup 감독 poll(infra, codex-inject 글루 핸들러).
-$Handler = Join-Path $TunaHome "codex-sup-handle.cmd"
-Start-Daemon "codex-sup" $StableBin @("poll", "--core", $Core, "--agent", "win-codex-sup", "--tags", "machine=win,purpose=codex-inject,role=infra,runner=codex", "--on-task", $Handler) | Out-Null
+# 7. codex 배달 데몬(v2-46, 구 codex-sup poll+핸들러 대체): 로컬 codex 세션들 앞 task를
+#    대리 claim해 그 세션 thread로 in-process 주입. core/token/machine은 config env 폴백.
+Start-Daemon "codex-relay" $StableBin @("codex-relay", "--ws", "ws://127.0.0.1:8790") | Out-Null
 
 # 8. 총괄 결과 인박스(watch-results, digest 60초).
 Start-Daemon "watch-results" $StableBin @("watch-results", "--core", $BaseUrl, "--dispatcher", "dashboard", "--digest", "60") | Out-Null
