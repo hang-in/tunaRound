@@ -923,35 +923,6 @@ body {
   min-height: 76px;
   outline: none;
 }
-/* codex 제어 폼: ws 주소 입력(모노) + codex 응답 표시(pre) — v2-40 S4. */
-.control-ws-input {
-  width: 100%;
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  padding: 9px 12px;
-  font-family: var(--font-mono);
-  font-size: 13px;
-  color: var(--text);
-  outline: none;
-}
-.control-ws-input:focus {
-  border-color: var(--accent);
-}
-.control-answer {
-  margin: 0;
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  border-radius: var(--r-md);
-  padding: 12px 14px;
-  font-family: var(--font-mono);
-  font-size: 12.5px;
-  color: var(--text);
-  white-space: pre-wrap;
-  overflow-wrap: break-word;
-  max-height: 320px;
-  overflow: auto;
-}
 .goal-textarea:focus {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 16%, transparent);

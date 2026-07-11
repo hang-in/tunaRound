@@ -117,8 +117,7 @@ pub async fn serve_http_mcp_on_listener(
         .route("/dashboard/roster", get(dashboard_roster_handler))
         .route("/dashboard/goal", axum::routing::post(dashboard_goal_handler))
         .route("/dashboard/human-ping", axum::routing::post(dashboard_human_ping_handler))
-        .route("/dashboard/deregister", axum::routing::post(dashboard_deregister_handler))
-        .route("/dashboard/control", axum::routing::post(dashboard_control_handler));
+        .route("/dashboard/deregister", axum::routing::post(dashboard_deregister_handler));
     #[cfg(feature = "dashboard")]
     {
         // Vite base=/dashboard/라 에셋은 /dashboard/assets/*로 나가 events/roster와 경로 미충돌.
@@ -317,7 +316,7 @@ async fn dashboard_roster_handler(
         .into_response()
 }
 
-/// 로컬 write 엔드포인트(goal/control)의 local CSRF 방어. 브라우저가 붙이는 `Sec-Fetch-Site`가
+/// 로컬 write 엔드포인트(goal 등)의 local CSRF 방어. 브라우저가 붙이는 `Sec-Fetch-Site`가
 /// `cross-site`면 다른 사이트가 유도한 요청이므로 거부한다. 헤더가 없으면(curl 등 비브라우저) 허용.
 #[cfg(feature = "serve")]
 fn is_cross_site(headers: &axum::http::HeaderMap) -> bool {
@@ -325,35 +324,6 @@ fn is_cross_site(headers: &axum::http::HeaderMap) -> bool {
         headers.get("sec-fetch-site").and_then(|v| v.to_str().ok()),
         Some("cross-site")
     )
-}
-
-/// codex 제어(turn/start) 대상 ws가 loopback인지 검사한다(SSRF 방어: 브로커가 임의 원격 ws에
-/// 접속하지 않게). ws://127.0.0.1[:port] / localhost / [::1] / ::1 만 허용한다.
-#[cfg(feature = "serve")]
-fn ws_target_is_loopback(ws: &str) -> bool {
-    // 스킴 제거 후 authority(host[:port])만 취한다(경로/쿼리/프래그먼트 제거).
-    let after = ws
-        .strip_prefix("ws://")
-        .or_else(|| ws.strip_prefix("wss://"))
-        .unwrap_or(ws);
-    let authority = after.split(['/', '?', '#']).next().unwrap_or(after);
-    // userinfo(user:pass@) 제거: 마지막 @ 이후가 실제 host[:port]다. `ws://127.0.0.1:80@evil.com`처럼
-    // @ 앞을 host로 오인하면 loopback을 통과시키고 실제로는 evil.com에 접속해 SSRF 우회가 된다(CodeRabbit 지적).
-    let hostport = authority.rsplit('@').next().unwrap_or(authority);
-    // IPv6 대괄호 형태 [::1]:port 처리, 아니면 host:port에서 host.
-    let host = if let Some(rest) = hostport.strip_prefix('[') {
-        rest.split(']').next().unwrap_or(rest)
-    } else {
-        hostport.split(':').next().unwrap_or(hostport)
-    };
-    // FQDN 끝점(`localhost.`, `127.0.0.1.`) 제거 후 판정. 문자열 prefix(`starts_with("127.")`)는
-    // `127.0.0.1.evil.com` 같은 외부 도메인을 허용해 쓰지 않는다(gemini). localhost는 IP가 아니라 별도
-    // 허용(호스트명은 대소문자 무시). IpAddr::is_loopback은 IPv4 127.0.0.0/8 + IPv6 ::1을 모두 커버한다.
-    let host = host.trim_end_matches('.');
-    if host.eq_ignore_ascii_case("localhost") {
-        return true;
-    }
-    host.parse::<std::net::IpAddr>().map(|ip| ip.is_loopback()).unwrap_or(false)
 }
 
 /// 대시보드 쓰기 게이트(human-ping·deregister): loopback은 기존대로 무조건 신뢰,
@@ -552,90 +522,6 @@ async fn dashboard_goal_handler(
         bodyv,
     )
         .into_response()
-}
-
-
-/// POST /dashboard/control: 로컬(loopback) 총감독이 codex app-server 세션에 turn/start를 직접 주입한다
-/// (v2-40 S4). body = {"ws":"ws://127.0.0.1:8790","text":"지시","agent"?:"...","timeout"?:300}.
-/// 응답 = {"answer":"codex 최종답"} 또는 에러. 원격(비-loopback)은 403(관전 전용). 실제 주입은 worker 피처.
-#[cfg(feature = "serve")]
-async fn dashboard_control_handler(
-    axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<std::net::SocketAddr>,
-    headers: axum::http::HeaderMap,
-    body: axum::body::Bytes,
-) -> axum::response::Response {
-    use axum::response::IntoResponse;
-    // loopback만 제어 허용. 원격은 관전 전용(goal과 동일 신뢰 경계).
-    if !peer.ip().is_loopback() {
-        return (
-            axum::http::StatusCode::FORBIDDEN,
-            "원격 관전 모드: codex 제어는 로컬(loopback)에서만 가능합니다.",
-        )
-            .into_response();
-    }
-    // local CSRF 방어: 다른 사이트가 유도한 cross-site POST 거부.
-    if is_cross_site(&headers) {
-        return (axum::http::StatusCode::FORBIDDEN, "cross-site 요청 거부(local CSRF 방어).").into_response();
-    }
-    // agent·timeout은 worker 피처 빌드에서만 읽힌다(worker 없이 빌드하면 501). 조건부 DTO라 dead_code 허용.
-    #[derive(serde::Deserialize)]
-    #[cfg_attr(not(feature = "worker"), allow(dead_code))]
-    struct ControlReq {
-        ws: String,
-        text: String,
-        agent: Option<String>,
-        timeout: Option<u64>,
-    }
-    let req: ControlReq = match serde_json::from_slice(&body) {
-        Ok(r) => r,
-        Err(e) => return (axum::http::StatusCode::BAD_REQUEST, format!("잘못된 요청: {e}")).into_response(),
-    };
-    if req.ws.trim().is_empty() || req.text.trim().is_empty() {
-        return (axum::http::StatusCode::BAD_REQUEST, "ws와 text가 필요합니다.").into_response();
-    }
-    // SSRF 방어: 제어 대상 ws는 loopback만(브로커가 임의 원격 ws에 접속하지 않게).
-    if !ws_target_is_loopback(req.ws.trim()) {
-        return (
-            axum::http::StatusCode::FORBIDDEN,
-            "제어 대상 ws는 loopback(127.0.0.1/localhost/[::1])만 허용합니다.",
-        )
-            .into_response();
-    }
-    #[cfg(feature = "worker")]
-    {
-        let agent = req.agent.unwrap_or_else(|| "dashboard-control".to_string());
-        let timeout = req.timeout.unwrap_or(300);
-        // 제어 주입은 tuna-broker MCP 호출 자동승인(never) + workspace-write(감독 레시피와 동일).
-        let approval = crate::codex_appserver::ApprovalPolicy::Never;
-        let sandbox = crate::codex_appserver::SandboxMode::WorkspaceWrite;
-        match crate::codex_inject::run(&req.ws, &agent, None, &req.text, approval, sandbox, timeout, false)
-            .await
-        {
-            Ok(answer) => {
-                #[derive(serde::Serialize)]
-                struct Resp {
-                    answer: String,
-                }
-                let bodyv = serde_json::to_vec(&Resp { answer }).unwrap_or_else(|_| b"{}".to_vec());
-                (
-                    axum::http::StatusCode::OK,
-                    [(axum::http::header::CONTENT_TYPE, "application/json")],
-                    bodyv,
-                )
-                    .into_response()
-            }
-            Err(e) => (axum::http::StatusCode::BAD_GATEWAY, format!("codex 제어 실패: {e}")).into_response(),
-        }
-    }
-    #[cfg(not(feature = "worker"))]
-    {
-        let _ = req;
-        (
-            axum::http::StatusCode::NOT_IMPLEMENTED,
-            "worker 피처 없이 빌드됨: codex 제어(codex-inject) 비활성입니다.",
-        )
-            .into_response()
-    }
 }
 
 #[cfg(test)]
@@ -1047,30 +933,6 @@ mod tests {
             let body: serde_json::Value = resp.json().await.expect("agent card json 파싱");
             assert_eq!(body["name"], "tunaround-core");
         }
-    }
-
-    #[cfg(feature = "serve")]
-    #[test]
-    fn ws_target_is_loopback_accepts_only_local() {
-        assert!(ws_target_is_loopback("ws://127.0.0.1:8790"));
-        assert!(ws_target_is_loopback("ws://localhost:8790"));
-        assert!(ws_target_is_loopback("ws://[::1]:8790"));
-        assert!(ws_target_is_loopback("ws://127.0.0.5:9000/path"));
-        assert!(!ws_target_is_loopback("ws://192.168.1.50:8790"));
-        assert!(!ws_target_is_loopback("ws://evil.example.com:8790"));
-        assert!(!ws_target_is_loopback("ws://10.0.0.1"));
-        // SSRF 우회 방지: 127.로 시작하는 외부 도메인은 거부(IpAddr 파싱 실패).
-        assert!(!ws_target_is_loopback("ws://127.0.0.1.evil.com:8790"));
-        assert!(!ws_target_is_loopback("ws://127.0.0.1x:8790"));
-        // userinfo 우회 방지: @ 앞을 host로 오인하면 안 된다(실제 host는 @ 뒤).
-        assert!(!ws_target_is_loopback("ws://127.0.0.1:80@evil.com"));
-        assert!(!ws_target_is_loopback("ws://127.0.0.1@evil.com:8790"));
-        // 정상: userinfo가 붙어도 실제 host가 loopback이면 허용.
-        assert!(ws_target_is_loopback("ws://user@127.0.0.1:8790"));
-        // 대소문자 무시 + FQDN 끝점(.)도 loopback으로 인정.
-        assert!(ws_target_is_loopback("ws://LocalHost:8790"));
-        assert!(ws_target_is_loopback("ws://localhost.:8790"));
-        assert!(ws_target_is_loopback("ws://127.0.0.1.:8790"));
     }
 
     // 대시보드 전역 SSE 순수 스트림: Status/Completed 이벤트를 필터 없이 순서대로 JSON으로 내보내는지 검증한다.

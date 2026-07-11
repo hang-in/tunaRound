@@ -10,7 +10,6 @@ export default defineConfig({
       '/dashboard/events': { target: 'http://127.0.0.1:8770', changeOrigin: true },
       '/dashboard/roster': { target: 'http://127.0.0.1:8770', changeOrigin: true },
       '/dashboard/goal': { target: 'http://127.0.0.1:8770', changeOrigin: true },
-      '/dashboard/control': { target: 'http://127.0.0.1:8770', changeOrigin: true },
       '/a2a': { target: 'http://127.0.0.1:8770', changeOrigin: true },
     },
   },
