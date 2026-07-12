@@ -109,7 +109,11 @@ pub(crate) fn format_open_tasks(
         .map(|t| PollTaskDto {
             id: t.id.clone(),
             state: t.state.as_str().to_string(),
-            context_id: t.context_id.clone().filter(|c| c != "-"),
+            context_id: t
+                .context_id
+                .as_deref()
+                .filter(|c| *c != "-")
+                .map(String::from),
             msg: task_msg_text(t).to_string(),
         })
         .collect();
