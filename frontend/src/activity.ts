@@ -12,6 +12,7 @@ export type SessionRow = {
   project: string | null
   lastHeartbeat: string
   humanInputAt: string | null // 마지막 사람 프롬프트 시각(총감독 판정)
+  busy: boolean // 지금 일하는 중(working task 대상, v2-54). 로스터가 스피너로 표시.
   label: string // 표시 이름(displayName 또는 machine-runner-project). 충돌 시 -B/-C.
 }
 
@@ -58,6 +59,7 @@ export function buildRoster(agents: Agent[]): RosterView {
       project: a.tags?.project ?? null,
       lastHeartbeat: a.last_heartbeat,
       humanInputAt: a.human_input_at ?? null,
+      busy: a.busy ?? false,
       label: '',
     }))
   assignLabels(all) // 라벨 -B/-C 증분은 관리자·워커 통틀어 유일해야 한다.

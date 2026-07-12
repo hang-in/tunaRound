@@ -113,6 +113,13 @@ button { font-family: inherit; }
 .pill { font-size: 9.5px; padding: 1px 6px; border-radius: 20px; border: 1px solid var(--border); color: var(--muted); }
 .pill.on { color: var(--good); border-color: color-mix(in srgb, var(--good) 40%, var(--border)); }
 .star { color: var(--star); }
+/* ---------- "동작 중"(working task) 스피너: presence 초록 하트비트와 구분되는 accent 링(v2-54) ---------- */
+.spinner { width: 11px; height: 11px; flex: 0 0 auto; border-radius: 50%;
+  border: 1.5px solid color-mix(in srgb, var(--accent) 26%, transparent); border-top-color: var(--accent); }
+@media (prefers-reduced-motion: no-preference) {
+  .spinner { animation: spin .8s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+}
 .side-empty { margin-top: 10px; padding: 12px; border: 1px dashed var(--border); border-radius: 9px; font-size: 11.5px; color: var(--faint); text-align: center; }
 
 /* 로스터 행 확장 상세(uuid 복사·목표 추가). 목업엔 없지만 기존 동작 보존. */
