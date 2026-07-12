@@ -209,10 +209,18 @@ pub enum StepOutcome {
 }
 
 /// 한 발언 목록을 터미널 표시용 문자열로.
+/// 큐레이션 abstraction(v2-51)이 있으면(검색 결과 등) 원문 앞에 증류 요약을 표면화한다.
+/// 라운드 출력 발언은 abstraction=None이라 기존 표시 동작 불변.
 pub fn render(round: &[Utterance]) -> String {
     round
         .iter()
-        .map(|u| format!("## {}\n{}", u.speaker, u.content))
+        .map(|u| {
+            let body = match &u.abstraction {
+                Some(a) if !a.trim().is_empty() => format!("[요약] {}\n{}", a.trim(), u.content),
+                _ => u.content.clone(),
+            };
+            format!("## {}\n{}", u.speaker, body)
+        })
         .collect::<Vec<_>>()
         .join("\n\n")
 }
@@ -932,7 +940,7 @@ mod tests {
     impl crate::orchestrator::ContextRetriever for LongRetriever {
         fn retrieve(&self, _q: &str, _limit: usize) -> Result<Vec<Utterance>, String> {
             Ok((0..3)
-                .map(|i| Utterance { speaker: format!("s{i}"), content: "가".repeat(1200) })
+                .map(|i| Utterance::new(format!("s{i}"), "가".repeat(1200)))
                 .collect())
         }
     }
@@ -1010,7 +1018,7 @@ mod tests {
 
     #[test]
     fn render_formats_speaker_and_content() {
-        let utts = vec![Utterance { speaker: "claude/proposer".into(), content: "제안".into() }];
+        let utts = vec![Utterance { speaker: "claude/proposer".into(), content: "제안".into(), abstraction: None }];
         let out = render(&utts);
         assert!(out.contains("claude/proposer"));
         assert!(out.contains("제안"));
@@ -1218,8 +1226,8 @@ mod tests {
 
         let retriever = FakeRetriever {
             results: vec![
-                Utterance { speaker: "past/speaker".into(), content: dup_content },
-                Utterance { speaker: "past/other".into(), content: "고유 맥락 발언".into() },
+                Utterance { speaker: "past/speaker".into(), content: dup_content, abstraction: None },
+                Utterance { speaker: "past/other".into(), content: "고유 맥락 발언".into(), abstraction: None },
             ],
         };
         let s = s.with_retriever(Some(Box::new(retriever)));
@@ -1235,6 +1243,34 @@ mod tests {
         let s = session_with_two_seats(); // retriever 없음
         let result = s.retrieve_for("어떤 주제");
         assert!(result.is_empty(), "retriever 없으면 빈 결과");
+    }
+
+    /// 큐레이션(v2-51) 회귀 방지: annotation(abstraction)이 달린 현재-세션 active-path 발언이
+    /// 검색 히트로 돌아와도, content(raw)가 활성 경로와 일치하면 dedup으로 제외돼 **이중 주입되지 않아야** 한다.
+    /// (표면화를 retriever content에 하면 content가 변형돼 dedup이 깨졌던 실회귀를 못박는다.)
+    #[test]
+    fn annotated_active_path_hit_is_deduped_not_double_injected() {
+        struct AnnotatedRetriever { dup: String }
+        impl crate::orchestrator::ContextRetriever for AnnotatedRetriever {
+            fn retrieve(&self, _q: &str, _l: usize) -> Result<Vec<Utterance>, String> {
+                // finish가 실어 보내는 것과 동형: content=raw(활성 경로와 동일), abstraction=Some.
+                Ok(vec![Utterance {
+                    speaker: "past/speaker".into(),
+                    content: self.dup.clone(),
+                    abstraction: Some("증류 요약".into()),
+                }])
+            }
+        }
+        let mut s = session_with_two_seats(); // claude="제안", codex="리뷰"
+        let _ = s.step(Command::Message("초기 주제".into())); // 활성 경로에 "제안","리뷰"
+        let active = s.active_path();
+        let dup_content = active[0].content.clone(); // "제안"(활성 경로 발언)
+        let s = s.with_retriever(Some(Box::new(AnnotatedRetriever { dup: dup_content })));
+        let retrieved = s.retrieve_for("테스트 쿼리");
+        assert!(
+            retrieved.is_empty(),
+            "annotation 달린 active-path 발언이 dedup되지 않아 이중 주입됨: {retrieved:?}"
+        );
     }
 
     #[derive(Default)]
@@ -1291,7 +1327,7 @@ mod tests {
         impl crate::orchestrator::ContextRetriever for FakeRetriever {
             fn retrieve(&self, _q: &str, _l: usize) -> Result<Vec<Utterance>, String> { Ok(self.0.clone()) }
         }
-        let hits = vec![Utterance { speaker: "claude/proposer".into(), content: "검색 시스템 설계".into() }];
+        let hits = vec![Utterance { speaker: "claude/proposer".into(), content: "검색 시스템 설계".into(), abstraction: None }];
         let mut s = session_with_two_seats().with_retriever(Some(Box::new(FakeRetriever(hits))));
         match s.step(Command::Search("검색".into())) {
             StepOutcome::Print(t) => { assert!(t.contains("검색 시스템 설계")); assert!(t.contains("claude/proposer")); }

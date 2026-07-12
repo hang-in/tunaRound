@@ -217,7 +217,7 @@ pub fn run_round(
             pull,
         };
         let out = runner.run(&run_input)?;
-        same_round.push(Utterance { speaker: part.label(), content: out.content });
+        same_round.push(Utterance::new(part.label(), out.content));
     }
 
     Ok(same_round)

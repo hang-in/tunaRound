@@ -70,26 +70,32 @@ mod sqlite_retriever {
             .collect()
     }
 
-    /// anchors 문자열(콤마·공백 분리)의 토큰과 질의 토큰이 상호 포함(부분일치 포함)이면 매치.
-    /// anchors 비어있거나 질의 토큰 없으면 false(=미매치). 대소문자 무시(anchors도 소문자화).
+    /// 앵커/질의 토큰 최소 길이(2자 미만은 무시). 짧고 흔한 토큰("이", "a")이 광범위 매치로
+    /// 부스트를 오발화하는 것을 막는다.
+    const MIN_ANCHOR_TOKEN_LEN: usize = 2;
+
+    /// anchors 문자열(콤마·공백 분리) 토큰과 질의 토큰이 **완전일치**(토큰 경계)하면 매치.
+    /// 양쪽 모두 최소 길이 필터를 적용하고 부분일치(substring)는 쓰지 않는다(과매치 방지).
+    /// anchors 비었거나 유효 질의 토큰 없으면 false. 대소문자 무시(양쪽 소문자화).
     fn anchor_matches(anchors: &str, query_tokens: &[String]) -> bool {
-        if query_tokens.is_empty() {
-            return false;
-        }
         let anchor_toks: Vec<String> = anchors
             .split(|c: char| c == ',' || c.is_whitespace())
             .map(|t| t.trim().to_lowercase())
-            .filter(|t| !t.is_empty())
+            .filter(|t| t.chars().count() >= MIN_ANCHOR_TOKEN_LEN)
             .collect();
         if anchor_toks.is_empty() {
             return false;
         }
-        query_tokens.iter().any(|q| {
-            anchor_toks
-                .iter()
-                .any(|a| a == q || a.contains(q.as_str()) || q.contains(a.as_str()))
-        })
+        query_tokens
+            .iter()
+            .filter(|q| q.chars().count() >= MIN_ANCHOR_TOKEN_LEN)
+            .any(|q| anchor_toks.iter().any(|a| a == q))
     }
+
+    /// rerank 1차 staged 항목: (penalty, anchor_rank, session_id, msg_id, item, ts_approx, abstraction).
+    type RankStaged<T> = (u32, u8, String, u64, T, Option<i64>, Option<String>);
+    /// rerank 2차 scored 항목: (penalty, anchor_rank, session_id, msg_id, item, abstraction).
+    type RankScored<T> = (u32, u8, String, u64, T, Option<String>);
 
     /// penalty 기반 재랭크(안정 정렬로 같은 penalty 내 relevance 순서 보존).
     /// rejected 드롭 / superseded·stale +2 / 현재 세션 off-branch(버려진 분기) +1(step 5b) /
@@ -98,17 +104,19 @@ mod sqlite_retriever {
     /// created_at NULL(마이그레이션 기존행)은 recency 판단 유보(강등 없음).
     /// 큐레이션 앵커 부스트(v2-51)는 penalty를 침범하지 않는 **2차 정렬 키**(매치=0/미매치=1)로만
     /// 작용해, 같은 penalty tier 안에서만 매치를 앞세운다(rejected 드롭·superseded 강등 불침해).
+    /// 항목당 get_validity를 **1회만** 호출한다(핫패스 DB 왕복 절감). 반환 4번째 원소=큐레이션
+    /// abstraction(공백 제거 후 Some). finish가 이걸 Utterance.abstraction에 실어 재조회를 없앤다.
     fn rerank<T>(
         store: &SqliteStore,
         items: Vec<(String, u64, T)>,
         current_session: Option<&str>,
         query_tokens: &[String],
-    ) -> Vec<(String, u64, T)> {
-        // 1차: rejected 드롭 + 유효성/분기 penalty + 앵커 매치 + created_at(초 근사) 수집 + 후보 최신 타임스탬프 산출.
-        let mut staged: Vec<(u32, u8, String, u64, T, Option<i64>)> = Vec::new();
+    ) -> Vec<(String, u64, T, Option<String>)> {
+        // 1차: rejected 드롭 + 유효성/분기 penalty + 앵커 매치 + abstraction + created_at + 후보 최신 타임스탬프.
+        let mut staged: Vec<RankStaged<T>> = Vec::new();
         let mut max_ts: Option<i64> = None;
         for (sid, mid, v) in items {
-            let meta = store.get_validity(&sid, mid).ok().flatten();
+            let meta = store.get_validity(&sid, mid).ok().flatten(); // 항목당 유일 조회.
             let mut penalty = 0u32;
             match meta.as_ref().map(|m| m.valid_state.as_str()) {
                 Some("rejected") => continue, // 드롭.
@@ -124,40 +132,35 @@ mod sqlite_retriever {
                 Some(a) if anchor_matches(a, query_tokens) => 0u8,
                 _ => 1u8,
             };
+            let abstraction = meta
+                .and_then(|m| m.abstraction)
+                .filter(|a| !a.trim().is_empty());
             let ts = store.get_created_at(&sid, mid).ok().flatten().and_then(|s| parse_ts_approx(&s));
             if let Some(t) = ts {
                 max_ts = Some(max_ts.map_or(t, |m| m.max(t)));
             }
-            staged.push((penalty, anchor_rank, sid, mid, v, ts));
+            staged.push((penalty, anchor_rank, sid, mid, v, ts, abstraction));
         }
         // 2차: cross-session recency 강등(정책 A=보수). 다른 세션 && ts 존재 && 최신 대비 임계 초과 → +1.
         // 현재 세션·active·최신·created_at 미상은 불변(relevance/validity 우선 보존).
-        let mut scored: Vec<(u32, u8, String, u64, T)> = Vec::with_capacity(staged.len());
-        for (mut penalty, anchor_rank, sid, mid, v, ts) in staged {
+        let mut scored: Vec<RankScored<T>> = Vec::with_capacity(staged.len());
+        for (mut penalty, anchor_rank, sid, mid, v, ts, abstraction) in staged {
             if current_session != Some(sid.as_str())
                 && let (Some(t), Some(m)) = (ts, max_ts)
                 && m - t > RECENCY_STALE_SECS
             {
                 penalty += 1;
             }
-            scored.push((penalty, anchor_rank, sid, mid, v));
+            scored.push((penalty, anchor_rank, sid, mid, v, abstraction));
         }
         // 안정 정렬: penalty 1차, 앵커 매치 2차. 같은 (penalty, anchor_rank) 내 relevance 순서 보존.
-        scored.sort_by_key(|(p, ar, _, _, _)| (*p, *ar));
-        scored.into_iter().map(|(_, _, sid, mid, v)| (sid, mid, v)).collect()
+        scored.sort_by_key(|(p, ar, _, _, _, _)| (*p, *ar));
+        scored.into_iter().map(|(_, _, sid, mid, v, abstraction)| (sid, mid, v, abstraction)).collect()
     }
 
-    /// abstraction이 있으면 주입 텍스트 앞에 증류 요약을 얹는다(원문 보존·provenance 유지, v2-51).
-    /// 미설정·공백이면 원문 불변(기존 동작 불변).
-    fn surface_curation(abstraction: Option<&str>, content: &str) -> String {
-        match abstraction {
-            Some(a) if !a.trim().is_empty() => format!("[요약] {}\n{}", a.trim(), content),
-            _ => content.to_string(),
-        }
-    }
-
-    /// (session_id, msg_id, Utterance) 항목을 재랭크(유효성+분기+앵커) 후 abstraction 표면화 +
-    /// 세션 다양성 cap + limit으로 마무리한다.
+    /// (session_id, msg_id, Utterance) 항목을 재랭크(유효성+분기+앵커) 후 큐레이션 abstraction을
+    /// Utterance.abstraction 필드에 실어(content는 raw 유지) 세션 다양성 cap + limit으로 마무리한다.
+    /// 표면화("[요약] 증류문+원문")는 여기가 아니라 렌더 경계에서만 일어난다(이중 주입 방지, v2-51).
     fn finish(
         store: &SqliteStore,
         cands: Vec<(String, u64, Utterance)>,
@@ -166,13 +169,10 @@ mod sqlite_retriever {
         query_tokens: &[String],
     ) -> Vec<Utterance> {
         let reranked = rerank(store, cands, current_session, query_tokens);
-        // 큐레이션 표면화: abstraction 있으면 증류 요약을 앞세운다(원문 보존). 미설정이면 불변.
         let items: Vec<(String, Utterance)> = reranked
             .into_iter()
-            .map(|(sid, mid, mut u)| {
-                let abstraction =
-                    store.get_validity(&sid, mid).ok().flatten().and_then(|v| v.abstraction);
-                u.content = surface_curation(abstraction.as_deref(), &u.content);
+            .map(|(sid, _mid, mut u, abstraction)| {
+                u.abstraction = abstraction; // content는 raw 그대로(dedup 정상 작동).
                 (sid, u)
             })
             .collect();
@@ -207,7 +207,7 @@ mod sqlite_retriever {
             let Some(emb) = &self.embedder else {
                 let cands: Vec<(String, u64, Utterance)> = lex_hits
                     .into_iter()
-                    .map(|h| (h.session_id, h.msg_id, Utterance { speaker: h.speaker, content: h.content }))
+                    .map(|h| (h.session_id, h.msg_id, Utterance::new(h.speaker, h.content)))
                     .collect();
                 return Ok(finish(&store, cands, limit, current_session, &query_tokens));
             };
@@ -223,7 +223,7 @@ mod sqlite_retriever {
             // content_map에서 (sid, msg_id, Utterance) 후보를 만드는 폴백용 클로저.
             let cands_from_map = |m: HashMap<(String, u64), (String, String)>| -> Vec<(String, u64, Utterance)> {
                 m.into_iter()
-                    .map(|((sid, mid), (sp, ct))| (sid, mid, Utterance { speaker: sp, content: ct }))
+                    .map(|((sid, mid), (sp, ct))| (sid, mid, Utterance::new(sp, ct)))
                     .collect()
             };
 
@@ -253,10 +253,10 @@ mod sqlite_retriever {
             let mut cands: Vec<(String, u64, Utterance)> = Vec::with_capacity(fused.len());
             for key in fused {
                 let utt = if let Some((sp, ct)) = content_map.remove(&key) {
-                    Some(Utterance { speaker: sp, content: ct })
+                    Some(Utterance::new(sp, ct))
                 } else {
                     match store.get_message(&key.0, key.1) {
-                        Ok(Some((sp, ct))) => Some(Utterance { speaker: sp, content: ct }),
+                        Ok(Some((sp, ct))) => Some(Utterance::new(sp, ct)),
                         Ok(None) => None,
                         Err(e) => {
                             eprintln!("[tunaRound] get_message 실패(스킵): {e}");
@@ -707,8 +707,9 @@ mod tests {
     }
 
     #[test]
-    fn retrieve_surfaces_abstraction_in_content() {
-        // 큐레이션(v2-51): abstraction이 설정된 발언은 주입 텍스트에 증류 요약이 앞서고 원문도 보존된다.
+    fn retrieve_carries_abstraction_and_keeps_raw_content() {
+        // 큐레이션(v2-51): abstraction은 별도 필드로 실려 오고 content는 **원문 raw 그대로**여야 한다
+        // (repl의 content 기반 중복제거가 정상 작동해 이중 주입을 막는다). 표면화는 렌더 경계 담당.
         let dir = std::env::temp_dir();
         let path = dir.join("tuna_retriever_abstraction.db");
         let _ = std::fs::remove_file(&path);
@@ -724,7 +725,7 @@ mod tests {
                 |t| t.to_string(),
             )
             .unwrap();
-        // 사람이 남긴 증류 요약(abstraction). anchors는 None으로 두어 표면화만 검증.
+        // 사람이 남긴 증류 요약(abstraction). anchors는 None으로 두어 캐리만 검증.
         store_w.set_annotation("s", 1, Some("핵심 결정: 하이브리드 검색 채택"), None).unwrap();
         drop(store_w);
 
@@ -732,9 +733,10 @@ mod tests {
         let retriever = SqliteRetriever::new(store_r, Box::new(|t: &str| t.to_string()), None);
         let hits = retriever.retrieve("검색", 10).unwrap();
         assert_eq!(hits.len(), 1, "1건 반환: {hits:?}");
-        let c = &hits[0].content;
-        assert!(c.contains("핵심 결정: 하이브리드 검색 채택"), "abstraction 표면화 없음: {c}");
-        assert!(c.contains("원문 검색 구현 논의"), "원문 보존 없음: {c}");
+        // content는 원문 raw 그대로(표면화되지 않음).
+        assert_eq!(hits[0].content, "원문 검색 구현 논의", "content가 원문 raw가 아님: {:?}", hits[0].content);
+        // abstraction은 별도 필드로 실려 온다.
+        assert_eq!(hits[0].abstraction.as_deref(), Some("핵심 결정: 하이브리드 검색 채택"), "abstraction 캐리 안 됨");
 
         let _ = std::fs::remove_file(&path);
     }

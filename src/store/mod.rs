@@ -189,7 +189,7 @@ pub fn to_stored(transcript: &[Utterance]) -> Vec<StoredMessage> {
 pub fn from_stored(messages: &[StoredMessage]) -> Vec<Utterance> {
     messages
         .iter()
-        .map(|m| Utterance { speaker: m.speaker.clone(), content: m.content.clone() })
+        .map(|m| Utterance::new(m.speaker.clone(), m.content.clone()))
         .collect()
 }
 
@@ -234,7 +234,7 @@ pub fn path_to_root(messages: &[StoredMessage], head: Option<u64>) -> Vec<Uttera
         }
     }
     chain.reverse();
-    chain.iter().map(|m| Utterance { speaker: m.speaker.clone(), content: m.content.clone() }).collect()
+    chain.iter().map(|m| Utterance::new(m.speaker.clone(), m.content.clone())).collect()
 }
 
 /// 다음 메시지 id(max+1, 비어 있으면 1).
@@ -284,8 +284,8 @@ mod tests {
 
     fn utts() -> Vec<Utterance> {
         vec![
-            Utterance { speaker: "claude/proposer".into(), content: "제안".into() },
-            Utterance { speaker: "codex/reviewer".into(), content: "리뷰".into() },
+            Utterance { speaker: "claude/proposer".into(), content: "제안".into(), abstraction: None },
+            Utterance { speaker: "codex/reviewer".into(), content: "리뷰".into(), abstraction: None },
         ]
     }
 

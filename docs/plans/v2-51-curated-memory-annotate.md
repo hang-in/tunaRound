@@ -19,19 +19,21 @@
 - `store::retriever::SqliteAnnotationSink`(store.set_annotation 위임), 재export 추가.
 - REPL: `annotation_sink` 필드 + `with_annotation_sink` 빌더 + `mark_annotation` 처리(mark_validity 대칭). `--db` 없으면(sink None) 안내만.
 
-### abstraction 표면화 = 원문 앞에 증류 요약 얹기(대체 아님)
+### abstraction 표면화 = 렌더 경계에서만(retriever는 raw content 유지)
 
-`finish`에서 재랭크된 각 히트에 abstraction이 있으면 `content = "[요약] {abstraction}\n{원문}"`으로 표면화한다. 원문을 지우지 않아(정보 손실 없음·provenance 유지) 기존 검색 동작을 훼손하지 않고, 주입 프롬프트는 사람이 증류한 결정을 앞세운다. abstraction 미설정이면 content 불변 = 기존 테스트 전량 그대로 통과(additive).
+**핵심 결정(적대 리뷰 반영)**: 표면화를 retriever `finish`에서 content로 하면 이중 주입 실회귀가 난다. repl의 active-path 중복제거는 `a.content == u.content`(내용 완전일치)에 의존하는데, 변형된 content가 원문과 안 맞아 현재-세션 active 발언에 annotation을 달면 active 경로와 검색 맥락 양쪽에 이중 주입된다. 그래서 **`Utterance`에 `abstraction: Option<String>` 필드를 추가**하고, retriever는 **content를 원문 raw 그대로** 두고 abstraction만 필드에 실어 보낸다(dedup 정상 작동). **표면화("[요약] 증류문 + 원문")는 렌더 경계**(`prompt::join_utterances` 주입 시점·`repl::render` 표시 시점)에서만 일어난다. abstraction 미설정이면 완전 불변(additive).
 
 ### anchor 부스트 = penalty tier 내 2차 정렬 키(유효성 강등 불침해)
 
-`rerank`는 penalty(낮을수록 상위) 안정 정렬이다. anchor 부스트를 penalty에 직접 감산하면 superseded(+2)·off-branch(+1)·recency(+1) 강등을 넘어설 위험이 있다(자가 리뷰 지적). 그래서 **penalty를 1차, anchor_rank(매치=0/미매치=1)를 2차 키**로 삼아 `sort_by_key((penalty, anchor_rank))` 한다. 이러면 유효성/분기/recency 순서는 절대 불변이고, **같은 penalty tier 안에서만** anchor 매치가 앞선다(rejected 드롭·superseded 강등 무손상 보장). 쿼리 토큰은 raw query를 영숫자 경계로 분리·소문자화해 만들고, anchors는 콤마·공백으로 분리해 토큰 상호 포함 매치한다.
+`rerank`는 penalty(낮을수록 상위) 안정 정렬이다. anchor 부스트를 penalty에 직접 감산하면 superseded(+2)·off-branch(+1)·recency(+1) 강등을 넘어설 위험이 있다(자가 리뷰 지적). 그래서 **penalty를 1차, anchor_rank(매치=0/미매치=1)를 2차 키**로 삼아 `sort_by_key((penalty, anchor_rank))` 한다. 이러면 유효성/분기/recency 순서는 절대 불변이고, **같은 penalty tier 안에서만** anchor 매치가 앞선다(rejected 드롭·superseded 강등 무손상 보장). 쿼리 토큰은 raw query를 영숫자 경계로 분리·소문자화해 만들고, anchors는 콤마·공백으로 분리한다. 매치는 **토큰 완전일치**(2자 미만·부분일치 제외)라 짧고 흔한 토큰의 과매치를 막는다(적대 리뷰 반영). abstraction·anchors 조회는 rerank가 항목당 `get_validity`를 **1회만** 호출해 결과에 실어 나른다(핫패스 DB 왕복 중복 제거).
 
 ## 변경 범위
 
+- `src/types.rs`: `Utterance.abstraction: Option<String>` 필드 + `Utterance::new` 헬퍼(리터럴 대체).
 - `src/orchestrator/mod.rs`: `AnnotationSink` trait 신설.
-- `src/store/retriever.rs`: `SqliteAnnotationSink` + 재export / `rerank`에 query_tokens·anchor_rank 2차 키 / `finish`에 abstraction 표면화 / anchor 매치 헬퍼 / 단위 테스트 2건(표면화·부스트).
-- `src/repl/mod.rs`: `Command::Annotate` + 파싱(따옴표 존중) + `annotation_sink` 필드/빌더 + `mark_annotation` + 도움말 + 파싱 테스트.
+- `src/orchestrator/prompt.rs`: `join_utterances`가 abstraction을 주입 렌더 시점에 표면화.
+- `src/store/retriever.rs`: `SqliteAnnotationSink` + 재export / `rerank`가 query_tokens·anchor_rank 2차 키 + abstraction 캐리(단일 get_validity) / `finish`가 abstraction을 Utterance 필드로(content raw 유지) / anchor 완전일치 헬퍼 / 단위 테스트 2건(raw+abstraction 캐리·부스트).
+- `src/repl/mod.rs`: `Command::Annotate` + 파싱(따옴표 존중) + `annotation_sink` 필드/빌더 + `mark_annotation` + `render` 표면화 + 도움말 + 파싱/이중주입 방지 테스트.
 - `src/main.rs`: `--db` 시 annotation_sink 배선(validity_sink 옆).
 
 불변: 스키마(v10)·마이그레이션·`StoredMessage`·직렬화. abstraction 미설정 시 기존 검색 동작 완전 불변.

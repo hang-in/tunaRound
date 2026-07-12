@@ -10,6 +10,12 @@ fn join_utterances(utts: &[Utterance]) -> String {
     utts.iter()
         .map(|u| {
             let body: String = u.content.chars().take(MAX_ANSWER_LEN).collect();
+            // 큐레이션 표면화(v2-51): abstraction 있으면 증류 요약을 원문 앞에 얹는다. content(raw)는
+            // repl 중복제거용이라 불변이고, 표면화는 실제 주입되는 이 렌더 경계에서만 일어난다.
+            let body = match &u.abstraction {
+                Some(a) if !a.trim().is_empty() => format!("[요약] {}\n{}", a.trim(), body),
+                _ => body,
+            };
             format!("**[{}]**:\n{}", u.speaker, body)
         })
         .collect::<Vec<_>>()
@@ -121,7 +127,7 @@ mod tests {
 
     #[test]
     fn prompt_sequential_aware_includes_same_round_responses() {
-        let same = vec![Utterance { speaker: "claude/architect".into(), content: "API부터 잡자".into() }];
+        let same = vec![Utterance { speaker: "claude/architect".into(), content: "API부터 잡자".into(), abstraction: None }];
         let out = build_round_prompt(&p("codex", Some("reviewer")), "주제", ctx(&[], &same, &[], "", false, 0));
         assert!(out.contains("이번 라운드 다른 에이전트 답변"));
         assert!(out.contains("API부터 잡자"));
@@ -130,7 +136,7 @@ mod tests {
 
     #[test]
     fn prompt_includes_prior_rounds() {
-        let prior = vec![Utterance { speaker: "codex".into(), content: "지난 결론".into() }];
+        let prior = vec![Utterance { speaker: "codex".into(), content: "지난 결론".into(), abstraction: None }];
         let out = build_round_prompt(&p("claude", None), "주제", ctx(&prior, &[], &[], "", false, 0));
         assert!(out.contains("이전 라운드 응답"));
         assert!(out.contains("지난 결론"));
@@ -146,10 +152,23 @@ mod tests {
 
     #[test]
     fn prompt_includes_retrieved_context_section() {
-        let retrieved = vec![Utterance { speaker: "codex/reviewer".into(), content: "과거 분기 결론".into() }];
+        let retrieved = vec![Utterance { speaker: "codex/reviewer".into(), content: "과거 분기 결론".into(), abstraction: None }];
         let out = build_round_prompt(&p("claude", None), "주제", ctx(&[], &[], &retrieved, "", false, 0));
         assert!(out.contains("참고할 만한 과거 맥락"));
         assert!(out.contains("과거 분기 결론"));
+    }
+
+    #[test]
+    fn prompt_surfaces_retrieved_abstraction_and_keeps_raw() {
+        // 큐레이션(v2-51): 검색 맥락에 abstraction이 있으면 렌더 시점에 "[요약] 증류문"이 원문 앞에 표면화된다.
+        let retrieved = vec![Utterance {
+            speaker: "past".into(),
+            content: "원문 본문".into(),
+            abstraction: Some("증류 요약".into()),
+        }];
+        let out = build_round_prompt(&p("claude", None), "주제", ctx(&[], &[], &retrieved, "", false, 0));
+        assert!(out.contains("[요약] 증류 요약"), "abstraction 표면화 없음: {out}");
+        assert!(out.contains("원문 본문"), "원문 보존 없음: {out}");
     }
 
     #[test]
@@ -169,8 +188,8 @@ mod tests {
     #[test]
     fn prompt_carried_section_present_and_before_retrieved_and_prior() {
         // carried 있으면 섹션 존재, 이월 요약이 검색/prior보다 앞에 위치해야 한다.
-        let retrieved = vec![Utterance { speaker: "p".into(), content: "검색결과".into() }];
-        let prior = vec![Utterance { speaker: "p".into(), content: "이전발언".into() }];
+        let retrieved = vec![Utterance { speaker: "p".into(), content: "검색결과".into(), abstraction: None }];
+        let prior = vec![Utterance { speaker: "p".into(), content: "이전발언".into(), abstraction: None }];
         let carried = "초기 합의 요약";
         let out = build_round_prompt(&p("claude", None), "주제", ctx(&prior, &[], &retrieved, carried, false, 0));
         assert!(out.contains("이전 논의 요약(이월)"), "이월 섹션 없음");
@@ -187,8 +206,8 @@ mod tests {
     #[test]
     fn pull_prompt_includes_pointer_no_prior_no_retrieved() {
         // pull=true이면 포인터 섹션 포함, "이전 라운드 응답"·"참고할 만한 과거 맥락" 없음.
-        let prior = vec![Utterance { speaker: "codex".into(), content: "지난 결론".into() }];
-        let retrieved = vec![Utterance { speaker: "p".into(), content: "검색결과".into() }];
+        let prior = vec![Utterance { speaker: "codex".into(), content: "지난 결론".into(), abstraction: None }];
+        let retrieved = vec![Utterance { speaker: "p".into(), content: "검색결과".into(), abstraction: None }];
         let out = build_round_prompt(&p("claude", None), "주제", ctx(&prior, &[], &retrieved, "", true, 10));
         assert!(out.contains("read_transcript"), "포인터 없음");
         assert!(out.contains("search_context"), "search_context 포인터 없음");
@@ -200,7 +219,7 @@ mod tests {
     #[test]
     fn pull_prompt_preserves_carried_and_same_round_and_topic() {
         // pull=true여도 carried 이월 요약, same_round, topic은 유지.
-        let same = vec![Utterance { speaker: "codex".into(), content: "앞 발언".into() }];
+        let same = vec![Utterance { speaker: "codex".into(), content: "앞 발언".into(), abstraction: None }];
         let out = build_round_prompt(&p("claude", None), "이 설계 어떤가", ctx(&[], &same, &[], "합의 요약", true, 5));
         assert!(out.contains("이전 논의 요약(이월)"), "이월 섹션 없음");
         assert!(out.contains("합의 요약"), "carried 내용 없음");
@@ -212,7 +231,7 @@ mod tests {
     #[test]
     fn push_false_is_fully_behavior_preserving() {
         // pull=false(기본)이면 기존과 완전 동일. 포인터 없음.
-        let prior = vec![Utterance { speaker: "codex".into(), content: "결론".into() }];
+        let prior = vec![Utterance { speaker: "codex".into(), content: "결론".into(), abstraction: None }];
         let out = build_round_prompt(&p("claude", None), "주제", ctx(&prior, &[], &[], "", false, 99));
         assert!(out.contains("이전 라운드 응답"), "prior 섹션 없음");
         assert!(!out.contains("read_transcript"), "포인터가 push 모드에 나타남");
