@@ -3,7 +3,7 @@ use crate::orchestrator::{
     ContextMode, Participant, RoundInput, RunnerRegistry, Utterance, run_round,
 };
 use crate::runner::RunMode;
-use crate::store::{StoredMessage, StoredSession};
+use crate::store::StoredSession;
 
 /// 이월 요약 최대 바이트 수. 초과 시 최근 드롭 턴 우선 유지 + 생략 표기.
 const MAX_CARRY: usize = 1500;
@@ -285,11 +285,11 @@ struct RoundContext {
     full_path: Vec<Utterance>,
 }
 
-/// 한 토론 세션. 참가자 + in-store 트리(messages+head) + 러너 레지스트리를 보유한다.
+/// 한 토론 세션. 참가자 + 대화 트리 스냅샷(ConversationSnapshot) + 러너 레지스트리를 보유한다.
+/// v2-52 ⑤: 과거 messages:Vec<StoredMessage>+head 직보유를 중립 snapshot으로 대체(스키마 누수 차단).
 pub struct Session {
     participants: Vec<Participant>,
-    messages: Vec<StoredMessage>,
-    head: Option<u64>,
+    snapshot: crate::types::ConversationSnapshot,
     registry: Box<dyn RunnerRegistry>,
     session_id: String,
     indexer: Option<Box<dyn crate::store::indexer::MessageIndexer>>,
@@ -310,8 +310,7 @@ impl Session {
     pub fn new(participants: Vec<Participant>, registry: Box<dyn RunnerRegistry>) -> Self {
         Self {
             participants,
-            messages: Vec::new(),
-            head: None,
+            snapshot: crate::types::ConversationSnapshot::new(),
             registry,
             session_id: "default".to_string(),
             indexer: None,
@@ -333,8 +332,7 @@ impl Session {
     ) -> Self {
         Self {
             participants,
-            messages: Vec::new(),
-            head: None,
+            snapshot: crate::types::ConversationSnapshot::new(),
             registry,
             session_id,
             indexer,
@@ -397,8 +395,7 @@ impl Session {
     fn adopt_from_core(&mut self) {
         let Some(cs) = &self.core_sync else { return };
         if let Some(ss) = cs.load_session(&self.session_id) {
-            self.messages = ss.messages;
-            self.head = ss.head;
+            self.snapshot = ss.into();
         }
     }
 
@@ -541,13 +538,12 @@ impl Session {
     /// 저장된 트리 상태(파일 또는 SQLite 세션 load_session)를 인메모리 세션에 주입한다.
     /// main이 --session/파일 재개 시 호출(v2-45 P7: Redis 스냅샷 경로 제거).
     pub fn seed_from(&mut self, ss: StoredSession) {
-        self.messages = ss.messages;
-        self.head = ss.head;
+        self.snapshot = ss.into();
     }
 
     /// 활성 경로(root->head) 전사를 반환한다.
     fn active_path(&self) -> Vec<Utterance> {
-        crate::store::path_to_root(&self.messages, self.head)
+        self.snapshot.active_path()
     }
 
     /// round 발언들을 head에서 시작하는 체인으로 트리에 append하고 head를 옮긴다.
@@ -566,23 +562,10 @@ impl Session {
         }
 
         for u in round {
-            let id = crate::store::next_id(&self.messages);
-            self.messages.push(StoredMessage {
-                id,
-                parent_id: self.head,
-                speaker: u.speaker.clone(),
-                content: u.content.clone(),
-            });
-            self.head = Some(id);
+            self.snapshot.append(u.speaker.clone(), u.content.clone());
         }
         if let Some(idx) = &self.indexer {
-            idx.persist(
-                &self.session_id,
-                &StoredSession {
-                    messages: self.messages.clone(),
-                    head: self.head,
-                },
-            );
+            idx.persist(&self.session_id, &StoredSession::from(&self.snapshot));
         }
     }
 
@@ -593,7 +576,7 @@ impl Session {
 
     /// 트리 전체 메시지 수를 반환한다(분기 포함).
     pub fn message_count(&self) -> usize {
-        self.messages.len()
+        self.snapshot.node_count()
     }
 
     /// 활성 경로를 마크다운 결과 문서로 직렬화.
@@ -612,21 +595,12 @@ impl Session {
 
     /// 현재 트리를 상태 파일(JSON)로 저장한다.
     pub fn save_state(&self, path: &str) -> std::io::Result<()> {
-        crate::store::save_session(
-            &StoredSession {
-                messages: self.messages.clone(),
-                head: self.head,
-            },
-            path,
-        )
+        crate::store::save_session(&StoredSession::from(&self.snapshot), path)
     }
 
     /// 현재 인메모리 트리를 StoredSession으로 복제한다(--core seed를 코어 DB에 권위로 반영할 때 사용).
     pub fn to_stored(&self) -> StoredSession {
-        StoredSession {
-            messages: self.messages.clone(),
-            head: self.head,
-        }
+        StoredSession::from(&self.snapshot)
     }
 
     /// 상태 파일에서 트리를 로드해 세션을 복원한다. 레거시 bare-array 포맷도 지원한다.
@@ -638,8 +612,7 @@ impl Session {
         let ss = crate::store::load_session(path)?;
         Ok(Self {
             participants,
-            messages: ss.messages,
-            head: ss.head,
+            snapshot: ss.into(),
             registry,
             session_id: "default".to_string(),
             indexer: None,
@@ -768,10 +741,9 @@ impl Session {
                     Some(r) => StepOutcome::Print(r.debug_retrieve(&q, EXPLAIN_K, &self.session_id)),
                 }
             }
-            Command::Branches => StepOutcome::Print(crate::store::tree_summary(&self.messages, self.head)),
+            Command::Branches => StepOutcome::Print(self.snapshot.tree_summary()),
             Command::Checkout(id) => {
-                if self.messages.iter().any(|m| m.id == id) {
-                    self.head = Some(id);
+                if self.snapshot.checkout(id) {
                     StepOutcome::Print(format!("checkout #{id} (현재 분기 전환). 이어서 메시지를 보내면 분기됩니다."))
                 } else {
                     StepOutcome::Print(format!("그런 메시지가 없습니다: #{id}"))
@@ -795,7 +767,7 @@ impl Session {
         let Some(sink) = &self.annotation_sink else {
             return StepOutcome::Print("큐레이션 지정은 --db <경로>로 실행해야 합니다.".into());
         };
-        if !self.messages.iter().any(|m| m.id == id) {
+        if !self.snapshot.contains(id) {
             return StepOutcome::Print(format!("그런 발언이 없습니다: #{id}"));
         }
         match sink.set_annotation(&self.session_id, id, abstraction, anchors) {
@@ -821,7 +793,7 @@ impl Session {
         let Some(sink) = &self.validity_sink else {
             return StepOutcome::Print("유효성 지정은 --db <경로>로 실행해야 합니다.".into());
         };
-        if !self.messages.iter().any(|m| m.id == id) {
+        if !self.snapshot.contains(id) {
             return StepOutcome::Print(format!("그런 발언이 없습니다: #{id}"));
         }
         match sink.set_validity(&self.session_id, id, state, by) {
@@ -841,6 +813,7 @@ mod tests {
     use super::*;
     use crate::orchestrator::MapRegistry;
     use crate::runner::{RunError, RunInput, RunOutput, Runner};
+    use crate::store::StoredMessage; // 테스트 fixture(FakeCoreSync·seed_from)가 StoredSession 조립에 사용.
 
     struct FakeRunner {
         reply: String,
