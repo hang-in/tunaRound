@@ -66,6 +66,22 @@ pub struct PresenceUpsert {
     pub human_input_at: Option<String>,
 }
 
+/// presence 이벤트 이력 한 건(v2-50, presence_events 테이블). 세션 등장·소멸·사람입력의 raw edge.
+/// event_type = "appear" | "disappear" | "human_input". detail = disappear 사유(stale|deregister) 등.
+/// 순수 기록이라 ★-도출(총감독 판정)은 담지 않는다(프론트 activity.ts가 단일 소스).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PresenceEvent {
+    pub id: i64,
+    pub at: String,
+    pub event_type: String,
+    pub agent_uuid: String,
+    pub machine: Option<String>,
+    pub runner: Option<String>,
+    pub project: Option<String>,
+    pub display_name: Option<String>,
+    pub detail: Option<String>,
+}
+
 /// last_heartbeat가 now 기준 ttl_secs 이내면 online으로 판정한다. age_secs 파싱 실패(포맷 불량)는
 /// 검증 불가로 간주해 보수적으로 offline 처리한다.
 pub fn is_online(last_heartbeat: &str, now: &str, ttl_secs: i64) -> bool {

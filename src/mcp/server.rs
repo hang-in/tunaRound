@@ -151,6 +151,7 @@ pub async fn serve_http_mcp_on_listener(
         .route("/dashboard/events", get(dashboard_events_handler))
         .route("/dashboard/roster", get(dashboard_roster_handler))
         .route("/dashboard/health", get(dashboard_health_handler))
+        .route("/dashboard/presence-timeline", get(dashboard_presence_timeline_handler))
         .route("/dashboard/goal", axum::routing::post(dashboard_goal_handler))
         .route("/dashboard/human-ping", axum::routing::post(dashboard_human_ping_handler))
         .route("/dashboard/deregister", axum::routing::post(dashboard_deregister_handler));
@@ -601,6 +602,70 @@ async fn dashboard_health_handler(
         Err(e) => {
             eprintln!("[dashboard/health] 조회 실패: {e}");
             (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "health 조회 실패").into_response()
+        }
+    }
+}
+
+/// presence 타임라인 조회 상한(무인증 원격 관전자도 붙는 엔드포인트라 방어적 상한). limit 파라미터는
+/// 이 값으로 클램프된다(health의 DASHBOARD_REPLAY_MAX와 같은 방어 원칙).
+#[cfg(feature = "serve")]
+const PRESENCE_TIMELINE_MAX: usize = 500;
+
+/// GET /dashboard/presence-timeline?limit=&since=: presence 이벤트 이력(read-only, v2-50). 세션 등장
+/// (appear)·소멸(disappear, 사유 stale|deregister)·사람입력(human_input)의 raw edge를 최신순으로 돌려준다.
+/// health 핸들러 패턴(spawn_blocking + serde_json + fail-visible 500). 조회 실패를 정상 빈 배열로
+/// 위장하지 않는다(관제 오판 방지). limit 기본 100·상한 PRESENCE_TIMELINE_MAX, since는 옵션(at >= since).
+/// 백엔드는 raw 이벤트만 돌려주고 ★-도출(총감독 판정)은 프론트 activity.ts가 단일 소스로 유지한다.
+#[cfg(feature = "serve")]
+async fn dashboard_presence_timeline_handler(
+    axum::extract::State(store): axum::extract::State<Arc<Mutex<crate::store::sqlite::SqliteStore>>>,
+    uri: axum::http::Uri,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    // ?limit=&since= 파싱(events 핸들러와 동일: Query 추출기 미채택이라 Uri에서 직접 + percent_decode).
+    let mut limit = 100usize;
+    let mut since: Option<String> = None;
+    for pair in uri.query().unwrap_or("").split('&') {
+        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+        let value = percent_decode(value);
+        match key {
+            "limit" => {
+                if let Ok(n) = value.parse::<usize>() {
+                    limit = n;
+                }
+            }
+            // events 핸들러와 동일한 'T'→' '·말미 'Z' 정규화(ISO8601 혼입 시 사전순 왜곡 방지).
+            "since" if !value.is_empty() => {
+                let norm = value.replace('T', " ").trim_end_matches('Z').to_string();
+                if !norm.is_empty() {
+                    since = Some(norm);
+                }
+            }
+            _ => {}
+        }
+    }
+    let limit = limit.clamp(1, PRESENCE_TIMELINE_MAX);
+    // 조회 실패는 Err로 모아 500으로 표면화한다(전부 빈 배열 = 정상처럼 보이는데 실은 조회 실패면 오판).
+    let result: Result<Vec<crate::store::agents::PresenceEvent>, String> =
+        tokio::task::spawn_blocking(move || {
+            let store = store.lock().unwrap_or_else(|e| e.into_inner());
+            store.list_presence_events(since.as_deref(), limit)
+        })
+        .await
+        .unwrap_or_else(|e| Err(format!("spawn_blocking 실패: {e}")));
+    match result {
+        Ok(events) => {
+            let body = serde_json::to_vec(&events).unwrap_or_else(|_| b"[]".to_vec());
+            (
+                axum::http::StatusCode::OK,
+                [(axum::http::header::CONTENT_TYPE, "application/json")],
+                body,
+            )
+                .into_response()
+        }
+        Err(e) => {
+            eprintln!("[dashboard/presence-timeline] 조회 실패: {e}");
+            (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "presence-timeline 조회 실패").into_response()
         }
     }
 }
@@ -1451,6 +1516,80 @@ mod tests {
                 !body.contains("done-task"),
                 "무파라미터 구독에 과거 task가 재생되면 안 됨(회귀): {body}"
             );
+        }
+
+        #[tokio::test]
+        async fn dashboard_presence_timeline_returns_events() {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+            let port = listener.local_addr().unwrap().port();
+
+            let store = Arc::new(std::sync::Mutex::new(
+                crate::store::sqlite::SqliteStore::open_memory().expect("in-memory sqlite"),
+            ));
+            let up = |uuid: &str, runner: &str, project: Option<&str>, name: Option<&str>| {
+                crate::store::agents::PresenceUpsert {
+                    uuid: uuid.into(),
+                    runner: runner.into(),
+                    project: project.map(str::to_string),
+                    display_name: name.map(str::to_string),
+                    human_input_at: None,
+                }
+            };
+            {
+                let s = store.lock().unwrap();
+                // s1, s2 등장 → s1 사람입력(claude ping) → s2 소멸(stale).
+                s.sync_presence(
+                    "win",
+                    &[
+                        up("s1", "claude", Some("tunaRound"), Some("win-claude-tunaRound")),
+                        up("s2", "codex", None, None),
+                    ],
+                    "2026-07-12 10:00:00",
+                );
+                s.mark_human_input("s1", "2026-07-12 10:00:05");
+                s.sync_presence(
+                    "win",
+                    &[up("s1", "claude", Some("tunaRound"), Some("win-claude-tunaRound"))],
+                    "2026-07-12 10:00:15",
+                );
+            }
+
+            let retriever = Arc::new(NullRetriever) as Arc<dyn crate::orchestrator::ContextRetriever>;
+            let store_for_server = store.clone();
+            tokio::spawn(async move {
+                let _ = serve_http_mcp_on_listener(
+                    listener, retriever, None, None, None, None, store_for_server,
+                )
+                .await;
+            });
+            tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+
+            let resp = reqwest::get(format!("http://127.0.0.1:{port}/dashboard/presence-timeline"))
+                .await
+                .expect("presence-timeline 접속 실패");
+            assert_eq!(resp.status(), 200);
+            let body = resp.text().await.expect("본문");
+            let events: Vec<serde_json::Value> = serde_json::from_str(&body).expect("JSON 배열");
+            let types: Vec<&str> = events.iter().filter_map(|e| e["event_type"].as_str()).collect();
+            // appear(s1,s2) + human_input(s1) + disappear(s2 stale) = 4건.
+            assert_eq!(events.len(), 4, "이벤트 4건이어야: {body}");
+            assert!(types.contains(&"appear"));
+            assert!(types.contains(&"human_input"));
+            assert!(types.contains(&"disappear"));
+            // 최신순(at DESC): 마지막 이벤트(disappear s2 @10:00:15)가 배열 맨 앞.
+            assert_eq!(events[0]["event_type"].as_str(), Some("disappear"));
+            assert_eq!(events[0]["agent_uuid"].as_str(), Some("s2"));
+            assert_eq!(events[0]["detail"].as_str(), Some("stale"));
+
+            // limit 상한 반영.
+            let resp2 =
+                reqwest::get(format!("http://127.0.0.1:{port}/dashboard/presence-timeline?limit=1"))
+                    .await
+                    .expect("limit 접속 실패");
+            assert_eq!(resp2.status(), 200);
+            let ev2: Vec<serde_json::Value> =
+                serde_json::from_str(&resp2.text().await.expect("본문2")).expect("JSON2");
+            assert_eq!(ev2.len(), 1, "limit=1은 최신 1건만");
         }
 
         #[test]
