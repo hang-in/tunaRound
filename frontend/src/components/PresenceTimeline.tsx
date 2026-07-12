@@ -35,16 +35,22 @@ export default function PresenceTimeline() {
 
   useEffect(() => {
     let cancelled = false
-    const controller = new AbortController()
+    // in-flight 폴을 추적한다. 매 폴마다 직전 요청을 abort하고 새 컨트롤러를 만들어, 늦게 도착하는
+    // 옛 응답이 최신 데이터를 덮어쓰는 폴링 레이스를 막는다(gemini medium).
+    let inflight: AbortController | null = null
     const load = () => {
+      inflight?.abort()
+      const controller = new AbortController()
+      inflight = controller
       fetchPresenceTimeline(LIMIT, controller.signal)
         .then((list) => {
-          if (cancelled) return
+          if (cancelled || controller.signal.aborted) return
           setEvents(list)
           setOk(true)
         })
         .catch((err) => {
           if (err instanceof DOMException && err.name === 'AbortError') return
+          if (cancelled) return
           setOk(false)
           console.error('[presence-timeline] 조회 실패.', err)
         })
@@ -53,7 +59,7 @@ export default function PresenceTimeline() {
     const timer = window.setInterval(load, POLL_MS)
     return () => {
       cancelled = true
-      controller.abort()
+      inflight?.abort()
       window.clearInterval(timer)
     }
   }, [])

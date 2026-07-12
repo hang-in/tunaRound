@@ -300,7 +300,12 @@ impl SqliteStore {
                 .unwrap_or_default();
             self.log_presence_event("human_input", uuid, &tags, display_name.as_deref(), None, now);
         }
-        if let Some(entry) = self.agent_roster.borrow_mut().get_mut(uuid) {
+        // 인메모리 갱신도 전진(advanced)일 때만 한다(CodeRabbit MAJOR). advanced와 무관하게 항상
+        // 대입하면 과거·동일 시각 핑이 인메모리 ★를 과거로 되감아(★ 회귀) sync_presence의 max-merge와
+        // 어긋난다. persist_human_input은 이미 단조(WHERE >)라 DB는 안전하지만 인메모리만 뚫려 있었다.
+        if advanced
+            && let Some(entry) = self.agent_roster.borrow_mut().get_mut(uuid)
+        {
             entry.human_input_at = Some(now.to_string());
         }
         true
@@ -777,10 +782,22 @@ mod tests {
     fn mark_human_input_logs_only_on_advance() {
         let db = SqliteStore::open_memory().unwrap();
         db.register_agent("s1", tags(&[("machine", "win")]), None, "2026-07-12 10:00:00");
+        // 인메모리 ★ 값을 읽는 헬퍼(로스터 첫 항목). 온라인 판정용 now는 register보다 살짝 뒤로.
+        let star = |db: &SqliteStore| -> Option<String> {
+            db.list_agents(&BTreeMap::new(), "2026-07-12 10:00:20", 90)[0].human_input_at.clone()
+        };
         assert!(db.mark_human_input("s1", "2026-07-12 10:00:05")); // 전진(None→10:00:05)
+        assert_eq!(star(&db).as_deref(), Some("2026-07-12 10:00:05"), "첫 핑=전진 반영");
         assert!(db.mark_human_input("s1", "2026-07-12 10:00:05")); // 같은 시각 = 스킵
-        assert!(db.mark_human_input("s1", "2026-07-12 10:00:03")); // 과거 = 스킵
+        assert_eq!(star(&db).as_deref(), Some("2026-07-12 10:00:05"), "동일 핑은 인메모리 ★ 불변");
+        assert!(db.mark_human_input("s1", "2026-07-12 10:00:03")); // 과거 = 스킵(★ 회귀 방지)
+        assert_eq!(
+            star(&db).as_deref(),
+            Some("2026-07-12 10:00:05"),
+            "과거 핑은 인메모리 ★를 되감지 않음(MAJOR 회귀 방지)"
+        );
         assert!(db.mark_human_input("s1", "2026-07-12 10:00:10")); // 전진
+        assert_eq!(star(&db).as_deref(), Some("2026-07-12 10:00:10"), "새 핑엔 전진");
         let events = db.list_presence_events(None, 100).unwrap();
         let hi: Vec<&crate::store::agents::PresenceEvent> =
             events.iter().filter(|e| e.event_type == "human_input").collect();
