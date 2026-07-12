@@ -2,6 +2,17 @@
 
 > 작업 중 결정과 근거. 계속 append. (규율 #7) 다음 세션이 결정을 재유도하지 않게.
 
+## 2026-07-12 세션24: v2-48 재대조·기능2·품질게이트·대시보드 전면 재편·도그푸딩
+
+정본 = [세션24 핸드오프](docs/prompts/v2-handoff_2026-07-12_session24.md). 재론 금지 결정:
+- **버전=v0.5.0**(신규기능+스키마v11=minor). **릴리즈는 도그푸딩 후**(사용자 결정). CHANGELOG [Unreleased]에 presence 타임라인·/annotate 기록됨.
+- **리팩토링**: P0 품질게이트만 이번(clippy --all-targets·exec 이식성). 구조 P1-P2(main.rs·mcp.rs·store/sqlite/tasks.rs god파일 분리·task 문자열→JSON·store DTO·fmt 전역+CI)는 **v2-52 백로그 defer**(세션16식 전용 세션, mac 조율). 정본 docs/design/v2-52-refactoring-backlog_2026-07-12.md.
+- **대시보드 = 관제탑 3층 IArch**(헤더 액션 / 사이드바 로스터·본문 관제 / 푸터 상태). 로스터=사이드바(높이 경쟁 해소). 요약숫자=서버소스(health task_counts, 리로드 안정). 필터=검색+드롭다운. 목표=헤더 모달. 위임검색=헤더 omnisearch. 아이콘=lucide-react(이모지 금지). 테마 토글(OS+수동·localStorage·pre-paint). 그린닷=브레싱+하트비트.
+- **"피드 리로드 리셋"은 결함 아님**: replay=200으로 복원. 착시=클라 파생 요약숫자→서버소스화로 해소.
+- **v2-48 감독 레인 defer 유지**: 트립와이어=#34922(V2 스키마 GA) 종료 + 07-10/11 가시성 클러스터 해소 + 캐던스 둔화. 정본 v2-48 §0 배너.
+- **스키마 v11**(presence_events append-only). ★-도출은 프론트 activity.ts 단일소스(백엔드 raw 로깅만).
+- **호칭/철학 정정**: "사장님"·tunaRound "악기" 비유 안 씀. 실제=팔지않되 OSS 공개(메모리 갱신).
+
 ## 2026-07-12 세션23: 온보딩 단순화 - init 원커맨드 스캐폴드 + 토큰 env 통일
 
 - **경위**: 사용자 "설치 너무 복잡한거 아닌가?" → 정직 진단(본질=멀티머신 코어/토큰/네트워크 irreducible / 우발=피처 divergence·설정파일 3종·토큰 로테이션, 체감은 문서가 오버셀·실 반복비용은 1회성+restart 한 줄). 사용자 선택="init 확장(원커맨드 셋업)".
