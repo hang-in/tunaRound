@@ -2,6 +2,13 @@
 
 > 작업 중 결정과 근거. 계속 append. (규율 #7) 다음 세션이 결정을 재유도하지 않게.
 
+## 2026-07-13 세션27 후반: 대시보드 동작 스피너 + 러너 아이콘, 그리고 스피너 버그 #94
+
+사용자 아이디어(presence online 위에 "지금 일하는 중" 표시가 없다). 재론 금지:
+- **구현(PR #93 머지)**: 스피너=`/dashboard/roster` `busy` 필드(열린 `state=working` task의 to_agent 집합, `src/mcp/server.rs`). 색=accent(청록, presence 초록 하트비트와 구분). 러너 아이콘=프로젝트명 앞 RunnerIcon 복원(claude 스타버스트·codex 매듭, GoalForm과 동일). 뱃지 유지. WMI 재배포 v0.4.0 라이브.
+- **⚠ 라이브에서 버그 발견(이슈 #94, 수정은 다음 세션)**: `state=working`은 "지금 활동 중"의 나쁜 프록시. **FP**=claim 후 미완료로 working에 갇힌 stuck task가 lease 만료·requeue 전까지 to_agent를 영구 busy(실측 `t-978e` mac-codex 433s working, lease 미만료 → mac-codex 아무것도 안 하는데 스피너 계속). **FN**=roster 5초 폴이라 빠른 task(tiki-taka)는 working 창을 놓침. to_agent↔로스터 uuid 매칭 자체는 정상(실측). **수정 방향**=스피너를 라이브 SSE task 이벤트(Feed가 이미 `/dashboard/events` 구독)에서 실시간 도출(status=working 추가/종결 제거)+stale 타임아웃(stuck FP 해소). 대안=busy를 fresh-lease/최근 claim 제한+폴 축소(FP만).
+- **다음 세션 순서(사용자 지정)**: ① fable 5로 프로젝트 리뷰 먼저 → ② 스피너 #94 패치.
+
 ## 2026-07-12 세션27: 이슈 #88 = 시간창 게이트 정본화 (라이브 실측으로 #2 기각 확증)
 
 세션26이 WIP(브랜치 592121e)로 남기고 "#2 app-server를 다음 세션에서"로 넘긴 것을, 세션27에서 **착수 전 계약 고정**을 위해 라이브 codex app-server를 실측한 결과 **#2가 원리적으로 불가함을 확증**하고, 사용자가 **시간창 게이트를 정본으로 확정**. 재론 금지:

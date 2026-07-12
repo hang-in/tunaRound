@@ -582,7 +582,14 @@
 - [x] **라이브 실측(codex-cli 0.144.1)으로 #2 기각 확증**: (1) session_meta에 PID·프로세스 식별자 없음(#1 불가) (2) app-server `thread/list` status·`thread/loaded/list`는 인스턴스별(throwaway=전부 notLoaded) + 죽은 thread도 `thread/resume` 성공→`idle`/loaded로 오염(relay 주입이 유령을 loaded로 만듦=악화) (3) 사람 codex TUI는 VS Code 자체 app-server(ws 도달 불가)에 삶, Windows 관리형 daemon 없음. **깨끗한 per-thread 생존 신호가 도달 범위에 없음.**
 - [x] **사용자 결정=시간창 게이트 정본**(app-server 비의존, relay 자기유지 차단, 유령 수명 240→window bound). 게이트 doc에 실측 근거·원리적 잔여 명시 + fresh-churn 명시 테스트(codex_gate_fresh_churn_ghost_lingers) 추가.
 - [x] **수용된 잔여(재론 금지)**: 방금 쓰다 닫은 세션은 human_input 최근이라 살아있는 idle 세션과 시간만으론 구분 불가 → window 동안 잔존. 진짜 해결엔 아키텍처 전환(--remote attach 모델)이 필요하나 v2-46 방향과 상충이라 비채택.
-- [ ] 게이트(fmt·test 25 presence·clippy·worker단독) 재확인 → 적대 검증 → 봇 리뷰 → 머지(push 승인 후).
+- [x] 게이트 검증(597 lib·clippy·fmt·worker단독) → **적대 검증 3렌즈 GO**(blocker/major 0, "#2 viable" 반증 실패) → 봇 리뷰 → **PR #92 머지(e746b13) → 이슈 #88 CLOSED.**
+
+## 세션27: 대시보드 동작 스피너 + 러너 아이콘 (PR #93 머지·배포·버그 #94)
+
+- [x] 스피너(`busy`=working task의 to_agent, accent 링, presence 초록과 구분) + 러너 아이콘(RunnerIcon 복원, 프로젝트명 앞). 백엔드 `/dashboard/roster` busy 필드 + 프론트 Roster/activity/api. throwaway+mock 렌더 검증.
+- [x] 봇 리뷰 3건 반영(스피너 `role="img"`+`aria-label="작업 중"` a11y·dead working 클래스 제거). **PR #93 머지(84efe21).** DeepSource JS red=out-of-diff 자문성(머지 후 소멸).
+- [x] **WMI 스폰 재배포 v0.4.0 라이브**(broker 12320, 9/9 online) + 티키타카 테스트(mac-claude·win-codex 실제 왕복).
+- [ ] **⚠ 스피너 버그 #94(다음 세션)**: `state=working`이 "지금 활동 중"의 나쁜 프록시 → stuck task 영구 FP(`t-978e` mac-codex 7분+)+빠른 task 5초 폴 놓침 FN. 수정=SSE 실시간 도출+stale 타임아웃. **선행=fable 5 프로젝트 리뷰.**
 
 ## GPT 온보딩 답변 검토 (2026-07-12)
 
