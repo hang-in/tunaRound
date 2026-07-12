@@ -1,5 +1,5 @@
-// presence 타임라인 패널(v2-50): 세션 등장(appear)·소멸(disappear)·사람입력(human_input) 이력을
-// 최신순으로 보여준다(read-only, 관제탑 원칙). GET /dashboard/presence-timeline 를 5초 주기로 폴한다.
+// presence 타임라인(v2-50): 세션 등장(appear)·소멸(disappear)·사람입력(human_input)을 터미널 로그
+// 라인 스타일로 최신순 표시(목업 .log/.logline). GET /dashboard/presence-timeline 5초 폴(read-only). 폴 로직 보존.
 import { useEffect, useState } from 'react'
 import type { PresenceEvent } from '../api'
 import { fetchPresenceTimeline, relativeTime } from '../api'
@@ -7,26 +7,35 @@ import { fetchPresenceTimeline, relativeTime } from '../api'
 const POLL_MS = 5000
 const LIMIT = 100
 
-// 이벤트 종류별 표시(글리프 + 라벨 + CSS 클래스). appear=녹색·disappear=회색·human_input=★.
-function eventGlyph(type: PresenceEvent['event_type']): { icon: string; label: string; cls: string } {
+// 이벤트 종류별 표시(글리프+라벨+CSS 클래스). appear=녹색·disappear=회색·human_input=★금색.
+function eventGlyph(type: PresenceEvent['event_type']): { label: string; cls: string } {
   switch (type) {
     case 'appear':
-      return { icon: '+', label: '등장', cls: 'appear' }
+      return { label: '+ 등장', cls: 'appear' }
     case 'disappear':
-      return { icon: '−', label: '소멸', cls: 'disappear' }
+      return { label: '− 소멸', cls: 'disappear' }
     case 'human_input':
-      return { icon: '★', label: '사람입력', cls: 'human' }
+      return { label: '★ 입력', cls: 'human' }
     default:
-      return { icon: '·', label: type, cls: '' }
+      return { label: type, cls: '' }
   }
 }
 
-// 이벤트의 표시 이름(display_name 우선, 없으면 machine-runner 조합, 최후엔 uuid 축약).
+// 이벤트 표시 이름(display_name 우선, 없으면 machine-runner, 최후 uuid 축약).
 function eventName(e: PresenceEvent): string {
   if (e.display_name) return e.display_name
   const parts = [e.machine, e.runner].filter(Boolean)
   if (parts.length > 0) return parts.join('-')
   return e.agent_uuid.slice(0, 8)
+}
+
+// SQL UTC("YYYY-MM-DD HH:MM:SS")를 로컬 시계 HH:MM:SS로. 파싱 실패 시 원문 뒷부분.
+function clockOf(sqlUtc: string): string {
+  const t = Date.parse(sqlUtc.replace(' ', 'T') + 'Z')
+  if (Number.isNaN(t)) return sqlUtc.slice(11, 19)
+  const d = new Date(t)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds())
 }
 
 export default function PresenceTimeline() {
@@ -35,8 +44,7 @@ export default function PresenceTimeline() {
 
   useEffect(() => {
     let cancelled = false
-    // in-flight 폴을 추적한다. 매 폴마다 직전 요청을 abort하고 새 컨트롤러를 만들어, 늦게 도착하는
-    // 옛 응답이 최신 데이터를 덮어쓰는 폴링 레이스를 막는다(gemini medium).
+    // in-flight 폴 추적: 매 폴마다 직전 요청 abort → 늦게 온 옛 응답이 최신을 덮는 레이스 방지(gemini medium).
     let inflight: AbortController | null = null
     const load = () => {
       inflight?.abort()
@@ -65,35 +73,34 @@ export default function PresenceTimeline() {
   }, [])
 
   return (
-    <section className="timeline-section">
-      <div className="timeline-header">
-        <h2 className="section-title">presence 타임라인</h2>
-        <span className="timeline-hint">세션 등장·소멸 + 사람입력 이력(최신순)</span>
-        {/* 첫 로드 성공 후의 폴 실패도 가시화한다(백엔드 fail-visible 원칙과 일관): stale 스냅샷을
-            오류표식 없이 렌더하면 관전자가 최신으로 오판한다. events가 있어도 최신 폴이 실패면 경고. */}
+    <section className="card timeline">
+      <div className="head">
+        <h2>Presence 타임라인</h2>
         {!ok && events !== null ? (
-          <span className="timeline-stale" title="폴 갱신 실패 - 마지막 성공 스냅샷을 표시 중">
+          <span className="stale" title="폴 갱신 실패 - 마지막 성공 스냅샷을 표시 중">
             갱신 실패 · 마지막 성공 표시 중
           </span>
-        ) : null}
+        ) : (
+          <span className="count">등장·소멸·사람 입력</span>
+        )}
       </div>
-      <div className="timeline-list">
+      <div className="log">
         {events === null ? (
-          <div className="timeline-empty">{ok ? '조회 중…' : '조회 실패'}</div>
+          <div className="log-empty">{ok ? '조회 중…' : '조회 실패'}</div>
         ) : events.length === 0 ? (
-          <div className="timeline-empty">아직 기록된 presence 이벤트가 없습니다.</div>
+          <div className="log-empty">아직 기록된 presence 이벤트가 없습니다.</div>
         ) : (
           events.map((e) => {
             const g = eventGlyph(e.event_type)
             return (
-              <div className="timeline-row" key={e.id}>
-                <span className={'timeline-glyph ' + g.cls} title={g.label}>
-                  {g.icon}
+              <div className="logline" key={e.id}>
+                <span className="ts">{clockOf(e.at)}</span>
+                <span className={'ev ' + g.cls}>{g.label}</span>
+                <span className="who">{eventName(e)}</span>
+                <span className="tail">
+                  {e.detail ? e.detail + ' · ' : ''}
+                  {relativeTime(e.at)}
                 </span>
-                <span className="timeline-name">{eventName(e)}</span>
-                <span className="timeline-kind">{g.label}</span>
-                {e.detail ? <span className="timeline-detail">{e.detail}</span> : null}
-                <span className="timeline-rel">{relativeTime(e.at)}</span>
               </div>
             )
           })

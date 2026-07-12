@@ -1,52 +1,38 @@
-// 헤더 밑 요약 통계 4타일(온라인 관리자/진행중/완료/실패). 목업 "요약 통계" 섹션 이식.
+// 요약 통계 4타일(온라인 관리자/진행중/완료/실패). 목업 .tiles 이식. 진행중/완료/실패는 서버소스
+// (health.task_counts = tasks 테이블 라이브 집계)라 피드 리로드에 흔들리지 않는다(서버 집계 뱃지 표기).
+import type { BrokerHealth } from '../api'
 
 type Props = {
+  // roster online 관리자 수(클라 파생 - 유일하게 서버 집계 아님).
   onlineCount: number
-  totalSups: number
-  workingCount: number
-  completedCount: number
-  failedCount: number
+  // 서버 헬스(진행중/완료/실패). null이면(조회 전·실패) 대시로 표시.
+  health: BrokerHealth | null
 }
 
-export default function StatTiles({
-  onlineCount,
-  totalSups,
-  workingCount,
-  completedCount,
-  failedCount,
-}: Props) {
+// 서버 카운트가 아직 없을 때(health null) 대시로 표시(0 위장 금지).
+function n(v: number | undefined): string {
+  return v === undefined ? '–' : String(v)
+}
+
+export default function StatTiles({ onlineCount, health }: Props) {
+  const tc = health?.task_counts
   return (
-    <section className="stat-grid">
-      <div className="stat-tile">
-        <span className="stat-label">
-          <span className="stat-label-dot" style={{ background: 'var(--ok)' }} />
-          온라인 관리자
-        </span>
-        <span className="stat-value-row">
-          <span className="stat-value">{onlineCount}</span>
-          <span className="stat-total">/ {totalSups}</span>
-        </span>
+    <section className="tiles">
+      <div className="tile">
+        <div className="n">{onlineCount}</div>
+        <div className="k label">온라인 관리자</div>
       </div>
-      <div className="stat-tile">
-        <span className="stat-label">
-          <span className="stat-label-dot" style={{ background: 'var(--warn)' }} />
-          진행중 task
-        </span>
-        <span className="stat-value">{workingCount}</span>
+      <div className="tile srv good">
+        <div className="n">{n(tc?.working)}</div>
+        <div className="k label">진행 중</div>
       </div>
-      <div className="stat-tile">
-        <span className="stat-label">
-          <span className="stat-label-dot" style={{ background: 'var(--info)' }} />
-          완료 task
-        </span>
-        <span className="stat-value">{completedCount}</span>
+      <div className="tile srv">
+        <div className="n">{n(tc?.completed)}</div>
+        <div className="k label">완료</div>
       </div>
-      <div className="stat-tile">
-        <span className="stat-label">
-          <span className="stat-label-dot" style={{ background: 'var(--err)' }} />
-          실패
-        </span>
-        <span className="stat-value">{failedCount}</span>
+      <div className="tile srv err">
+        <div className="n">{n(tc?.failed)}</div>
+        <div className="k label">실패</div>
       </div>
     </section>
   )

@@ -1,11 +1,15 @@
-// 목표 제출: 선택된 대상 칩 + "+ 대상 추가" 드롭다운(머신별 그룹) + 프리셋(전체/win만/mac만/codex만).
-// 체크박스 나열 제거 리디자인. 선택 상태는 App이 소유(로스터 상세의 "이 세션에 목표"와 공유).
-import { useState } from 'react'
+// 목표 제출 모달(목업 .modal): 대상 칩 + "+ 대상 추가" 드롭다운(머신별) + 프리셋 + textarea + 제출.
+// 헤더 버튼이 오픈. 원격(remoteViewer)이면 폼 대신 관전 경고. Esc/스크림 클릭 닫기 + 오픈 시 textarea 포커스.
+// 선택 상태는 App이 소유(로스터 상세의 "이 세션에 목표"와 공유). loopback 제출/원격 403 태세 보존.
+import { useEffect, useRef, useState } from 'react'
+import { X } from 'lucide-react'
 import type { Agent } from '../api'
 import { relativeTime, sendGoal } from '../api'
 import { RunnerIcon } from './runnerIcons'
 
 type Props = {
+  open: boolean
+  onClose: () => void
   agents: Agent[]
   remoteViewer: boolean
   // 선택 상태(App 소유): uuid -> 선택 여부.
@@ -13,29 +17,33 @@ type Props = {
   onChangeSelected: (next: Record<string, boolean>) => void
 }
 
-function WarnIcon() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-      <path d="M7 1.5 13 12H1L7 1.5Z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
-      <path d="M7 5.5v3M7 10.2v0.1" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
-    </svg>
-  )
-}
-
 // 칩·드롭다운의 표시 이름 = project(로스터 타이틀과 동일 규약). 같은 project·runner 충돌은 uuid로 식별.
 function agentTitle(a: Agent): string {
   return a.tags?.project ?? a.display_name ?? a.uuid.slice(0, 8)
 }
 
-export default function GoalForm({ agents, remoteViewer, selected, onChangeSelected }: Props) {
+export default function GoalForm({ open, onClose, agents, remoteViewer, selected, onChangeSelected }: Props) {
   const [goal, setGoal] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [status, setStatus] = useState('')
   const [pickerOpen, setPickerOpen] = useState(false)
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null)
 
-  // 목표 대상 = claude 세션 + codex 세션(v2-46: 로스터에 보이는 그 세션이 곧 주입 대상).
-  // 제외(전부 no-consumer 방지): 워커(work 데몬이 별도 소비) / infra(스캐너·relay = 백엔드,
-  // 대상으로 노출하지 않음 - sup 정체성 폐기) / relay가 없는 머신의 codex 세션(배달부 부재).
+  // Esc 닫기 + 오픈 시 textarea 포커스(기본 포커스 트랩).
+  useEffect(() => {
+    if (!open) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+    }
+    document.addEventListener('keydown', onKey)
+    const t = window.setTimeout(() => textareaRef.current?.focus(), 0)
+    return () => {
+      document.removeEventListener('keydown', onKey)
+      window.clearTimeout(t)
+    }
+  }, [open, onClose])
+
+  // 목표 대상 = claude 세션 + codex 세션(v2-46). 제외: 워커/infra/relay 없는 머신의 codex.
   const relayMachines = new Set(
     agents
       .filter((a) => a.online && a.tags?.role === 'infra' && a.tags?.purpose === 'codex-inject')
@@ -44,25 +52,38 @@ export default function GoalForm({ agents, remoteViewer, selected, onChangeSelec
   )
   const online = agents.filter((a) => {
     if (!a.online || a.tags?.role === 'worker' || a.tags?.role === 'infra') return false
-    // codex 세션 = 그 머신에 codex-relay(purpose=codex-inject) online일 때만 유효 대상
-    // (role 미지정 codex도 동일 규칙 - 수신은 relay가 대리하므로 자기 poll 여부와 무관).
-    // machine 태그가 없으면 배달 경로를 확정할 수 없으므로 무효(미상끼리 오매칭 방지, 봇리뷰).
     if (a.tags?.runner === 'codex') return !!a.tags?.machine && relayMachines.has(a.tags.machine)
     return true
   })
 
+  if (!open) return null
+
+  // 스크림 클릭(모달 바깥)만 닫는다.
+  const onScrimClick = (e: React.MouseEvent) => {
+    if (e.target === e.currentTarget) onClose()
+  }
+
+  const header = (
+    <div className="mhd">
+      <h3>목표 제출</h3>
+      <button type="button" className="x" onClick={onClose} aria-label="닫기">
+        <X size={16} />
+      </button>
+    </div>
+  )
+
   if (remoteViewer) {
     return (
-      <section className="goal-section">
-        <div className="goal-head">
-          <h2 className="section-title">목표 제출</h2>
-          <span className="goal-hint">선택한 대상 각각에게 목표가 전달됩니다</span>
+      <div className="modal-scrim" onClick={onScrimClick} role="dialog" aria-modal="true" aria-label="목표 제출">
+        <div className="modal">
+          {header}
+          <div className="mbd">
+            <div className="goal-warning">
+              원격 관전 모드입니다 - 목표 제출은 로컬(총괄) 세션에서만 가능합니다.
+            </div>
+          </div>
         </div>
-        <div className="goal-warning">
-          <WarnIcon />
-          원격 관전 모드입니다 — 목표 제출은 로컬(총괄) 세션에서만 가능합니다.
-        </div>
-      </section>
+      </div>
     )
   }
 
@@ -112,109 +133,107 @@ export default function GoalForm({ agents, remoteViewer, selected, onChangeSelec
   )
 
   return (
-    <section className="goal-section">
-      <div className="goal-head">
-        <h2 className="section-title">목표 제출</h2>
-        <span className="goal-hint">선택한 대상 각각에게 독립 task로 전달됩니다</span>
-        <div className="gf-presets">
-          <span className="gf-preset-label">빠른 선택</span>
-          <button type="button" className="gf-preset" onClick={() => applyPreset(() => true)}>
-            전체
-          </button>
-          <button type="button" className="gf-preset" onClick={() => applyPreset((a) => a.tags?.machine === 'win')}>
-            win만
-          </button>
-          <button type="button" className="gf-preset" onClick={() => applyPreset((a) => a.tags?.machine === 'mac')}>
-            mac만
-          </button>
-          <button type="button" className="gf-preset" onClick={() => applyPreset((a) => a.tags?.runner === 'codex')}>
-            codex만
-          </button>
-          {picked.length > 0 ? (
-            <button type="button" className="gf-preset clear" onClick={() => onChangeSelected({})}>
-              비우기
-            </button>
-          ) : null}
-        </div>
-      </div>
-      <div className="goal-body">
-        <div className="gf-targets">
-          {picked.length === 0 ? <span className="gf-empty">대상 없음 — 프리셋이나 + 대상 추가로 선택하세요</span> : null}
-          {picked.map((a) => (
-            <span className="gf-chip" key={a.uuid}>
-              <RunnerIcon runner={a.tags?.runner ?? null} size={12} />
-              {agentTitle(a)}
-              <span className="gf-chip-sub">{a.tags?.machine ?? '?'}</span>
-              <button type="button" className="gf-chip-x" aria-label="대상 제거" onClick={() => toggleOne(a.uuid)}>
-                ×
+    <div className="modal-scrim" onClick={onScrimClick} role="dialog" aria-modal="true" aria-label="목표 제출">
+      <div className="modal">
+        {header}
+        <div className="mbd">
+          <div>
+            <div className="label lbl">대상</div>
+            <div className="chips">
+              {picked.length === 0 ? (
+                <span className="chip empty">대상 없음 - 프리셋이나 + 대상 추가로 선택하세요</span>
+              ) : null}
+              {picked.map((a) => (
+                <span className="chip" key={a.uuid}>
+                  <RunnerIcon runner={a.tags?.runner ?? null} size={12} />
+                  {agentTitle(a)}
+                  <span className="sub">{a.tags?.machine ?? '?'}</span>
+                  <button type="button" className="x" aria-label="대상 제거" onClick={() => toggleOne(a.uuid)}>
+                    <X size={12} />
+                  </button>
+                </span>
+              ))}
+              <button type="button" className="chip add" onClick={() => setPickerOpen((o) => !o)} aria-expanded={pickerOpen}>
+                + 대상 추가
               </button>
-            </span>
-          ))}
-          <button type="button" className="gf-add" onClick={() => setPickerOpen((o) => !o)} aria-expanded={pickerOpen}>
-            + 대상 추가
-          </button>
-        </div>
-
-        {pickerOpen ? (
-          <div className="gf-picker" role="listbox" aria-label="대상 선택">
-            {machines.map((m) => (
-              <div key={m}>
-                <div className="gf-picker-group">{m}</div>
-                {online
-                  .filter((a) => (a.tags?.machine ?? '기타') === m)
-                  .map((a) => {
-                    const isSel = Boolean(selected[a.uuid])
-                    return (
-                      <div
-                        key={a.uuid}
-                        className={`gf-picker-item${isSel ? ' checked' : ''}`}
-                        role="option"
-                        aria-selected={isSel}
-                        tabIndex={0}
-                        onClick={() => toggleOne(a.uuid)}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter' || e.key === ' ') {
-                            e.preventDefault()
-                            toggleOne(a.uuid)
-                          }
-                        }}
-                      >
-                        <RunnerIcon runner={a.tags?.runner ?? null} size={12} />
-                        {agentTitle(a)}
-                        {a.tags?.runner === 'codex' ? <span className="gf-item-runner">· codex</span> : null}
-                        <span className="gf-item-sub">{isSel ? '선택됨 ✓' : relativeTime(a.last_heartbeat)}</span>
-                      </div>
-                    )
-                  })}
-              </div>
-            ))}
-            <div className="gf-picker-note">오프라인 세션은 제외됩니다. 로스터 행의 &quot;이 세션에 목표&quot;로도 추가할 수 있습니다.</div>
+            </div>
           </div>
-        ) : null}
 
-        <textarea
-          className="goal-textarea"
-          rows={3}
-          placeholder="예: tunaround 저장소의 flaky 테스트를 찾아 원인 분석 후 수정 PR을 올려줘"
-          value={goal}
-          onChange={(e) => setGoal(e.target.value)}
-        />
-        <div className="goal-submit-row">
-          <span className="goal-summary">
-            {picked.length > 0 ? `${picked.length}개 대상 선택됨 — 각각 독립 task로 생성됩니다` : '대상을 선택하세요'}
-          </span>
-          <span className="dash-spacer" />
-          <button
-            type="button"
-            className={`goal-submit-btn${canSubmit && !submitting ? ' enabled' : ''}`}
-            disabled={!canSubmit || submitting}
-            onClick={onSubmit}
-          >
-            {picked.length > 0 ? `${picked.length}개 대상에게 목표 전달` : '목표 전달'}
-          </button>
+          <div className="gf-presets">
+            <span className="label">빠른 선택</span>
+            <button type="button" className="gf-preset" onClick={() => applyPreset(() => true)}>
+              전체
+            </button>
+            <button type="button" className="gf-preset" onClick={() => applyPreset((a) => a.tags?.machine === 'win')}>
+              win만
+            </button>
+            <button type="button" className="gf-preset" onClick={() => applyPreset((a) => a.tags?.machine === 'mac')}>
+              mac만
+            </button>
+            <button type="button" className="gf-preset" onClick={() => applyPreset((a) => a.tags?.runner === 'codex')}>
+              codex만
+            </button>
+            {picked.length > 0 ? (
+              <button type="button" className="gf-preset clear" onClick={() => onChangeSelected({})}>
+                비우기
+              </button>
+            ) : null}
+          </div>
+
+          {pickerOpen ? (
+            <div className="gf-picker" role="listbox" aria-label="대상 선택">
+              {machines.map((m) => (
+                <div key={m}>
+                  <div className="gf-picker-group">{m}</div>
+                  {online
+                    .filter((a) => (a.tags?.machine ?? '기타') === m)
+                    .map((a) => {
+                      const isSel = Boolean(selected[a.uuid])
+                      return (
+                        <button
+                          type="button"
+                          key={a.uuid}
+                          className={`gf-picker-item${isSel ? ' checked' : ''}`}
+                          role="option"
+                          aria-selected={isSel}
+                          onClick={() => toggleOne(a.uuid)}
+                        >
+                          <RunnerIcon runner={a.tags?.runner ?? null} size={12} />
+                          {agentTitle(a)}
+                          {a.tags?.runner === 'codex' ? <span className="runner">· codex</span> : null}
+                          <span className="sub">{isSel ? '선택됨 ✓' : relativeTime(a.last_heartbeat)}</span>
+                        </button>
+                      )
+                    })}
+                </div>
+              ))}
+              <div className="gf-picker-note">오프라인 세션은 제외됩니다. 로스터 행의 &quot;이 세션에 목표&quot;로도 추가할 수 있습니다.</div>
+            </div>
+          ) : null}
+
+          <textarea
+            ref={textareaRef}
+            rows={3}
+            placeholder="예: tunaround 저장소의 flaky 테스트를 찾아 원인 분석 후 수정 PR을 올려줘"
+            value={goal}
+            onChange={(e) => setGoal(e.target.value)}
+          />
+
+          <div className="mft">
+            <span className="label">
+              {picked.length > 0 ? `선택 ${picked.length}명 · 로컬 발행` : '대상을 선택하세요'}
+            </span>
+            <span className="spacer" />
+            <button type="button" className="btn ghost" onClick={onClose}>
+              취소
+            </button>
+            <button type="button" className="btn" disabled={!canSubmit || submitting} onClick={onSubmit}>
+              {submitting ? '제출 중…' : picked.length > 0 ? `${picked.length}명에게 제출` : '제출'}
+            </button>
+          </div>
+          {status ? <span className="status">{status}</span> : null}
         </div>
-        {status ? <span className="goal-status">{status}</span> : null}
       </div>
-    </section>
+    </div>
   )
 }

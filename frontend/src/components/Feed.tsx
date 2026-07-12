@@ -1,10 +1,14 @@
-// /dashboard/events SSE 를 구독해 task별로 묶은 카드로 표시하는 피드(상위 50 task 유지).
-// 한 task의 접수→진행중→완료(실패)를 같은 카드에서 갱신하고, 클릭하면 그 task의 이벤트 이력을 펼친다.
-import { useEffect, useMemo, useState, type CSSProperties } from 'react'
+// /dashboard/events SSE 를 구독해 task별로 묶은 카드로 표시하는 라이브 피드(상위 200 task 유지).
+// 접수→진행중→완료(실패)를 같은 카드에서 갱신하고, 클릭하면 그 task 상세(요청·결과·실패 사유·이력)를 펼친다.
+// 필터=검색 + 상태/머신/러너 드롭다운(체크박스 다중선택, 모두 클라이언트 측). 목업 .card.feed 이식.
+import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react'
+import { ChevronDown, Search } from 'lucide-react'
 import type { Agent, Part, Task, TaskEventMsg } from '../api'
 import { relativeTime } from '../api'
 
-const MAX_TASKS = 50
+// 리로드(=SSE 재접속) 시 선행 스냅샷 수와 유지 상한(v2-53: 50→200). 서버 clamp(500) 이내.
+const MAX_TASKS = 200
+const REPLAY = 200
 
 // task id 앞부분만 축약해 보여준다(목업 "t-"+4자리).
 function shortId(id: string): string {
@@ -13,31 +17,23 @@ function shortId(id: string): string {
 
 const STATE_LABEL: Record<string, string> = {
   submitted: '접수',
-  working: '진행중',
+  working: '진행',
+  input_required: '입력 대기',
   completed: '완료',
   failed: '실패',
   canceled: '취소',
 }
 
-const STATE_COLOR: Record<string, string> = {
-  submitted: 'var(--info)',
-  working: 'var(--warn)',
-  completed: 'var(--ok)',
-  failed: 'var(--err)',
-  canceled: 'var(--text-3)',
+// 상태를 목업 배지 클래스(.state.working/.completed/.failed/.canceled)로 매핑. 열린 상태는 working 톤.
+function stateClass(state: string): string {
+  if (state === 'completed') return 'completed'
+  if (state === 'failed') return 'failed'
+  if (state === 'canceled') return 'canceled'
+  return 'working'
 }
 
 // task id별로 최신 상태 + 받은 이벤트 이력을 누적한다.
 type TaskCard = { id: string; latest: TaskEventMsg; history: TaskEventMsg[] }
-
-function badgeStyle(state: string): CSSProperties {
-  const color = STATE_COLOR[state] ?? STATE_COLOR.submitted
-  return {
-    color,
-    background: 'color-mix(in srgb, ' + color + ' 12%, transparent)',
-    border: '1px solid color-mix(in srgb, ' + color + ' 26%, transparent)',
-  }
-}
 
 // task 스냅샷에서 표시할 텍스트(완료=아티팩트 결과, 그 외=원 메시지 일부).
 function taskText(msg: TaskEventMsg): string | undefined {
@@ -70,72 +66,54 @@ function failureText(task: Task): string {
   return task.state === 'failed' ? joinParts(task.statusMessage?.parts) : ''
 }
 
-// 중복 제거 + 첫 등장 순서 유지(필터 칩 후보값 산출용).
+// 중복 제거 + 첫 등장 순서 유지(필터 후보값 산출용).
 function distinct(values: string[]): string[] {
   return Array.from(new Set(values))
 }
 
-function ArrowIcon() {
-  return (
-    <svg width="12" height="12" viewBox="0 0 12 12" fill="none" style={{ flex: 'none' }}>
-      <path d="M2 6h7M6.5 3 9.5 6l-3 3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  )
-}
-
-function Chevron({ open }: { open: boolean }) {
-  return (
-    <svg
-      width="12"
-      height="12"
-      viewBox="0 0 12 12"
-      fill="none"
-      style={{ flex: 'none', transform: open ? 'rotate(90deg)' : 'none', transition: 'transform 0.15s' }}
-    >
-      <path d="M4.5 3 8 6l-3.5 3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  )
-}
-
-// 한 필터 차원의 칩 묶음. 후보가 2개 미만이면(동종 피드) 아예 렌더하지 않는다.
-function ChipGroup({
+// 필터 한 차원의 드롭다운 버튼 + 체크박스 메뉴(다중선택). selected가 비면 "전체"(무필터).
+function FilterDropdown({
   label,
-  values,
-  active,
-  onPick,
+  options,
+  selected,
+  open,
+  onOpen,
+  onToggleValue,
+  onClear,
   render,
 }: {
   label: string
-  values: string[]
-  active: string | null
-  onPick: (v: string | null) => void
+  options: string[]
+  selected: Set<string>
+  open: boolean
+  onOpen: () => void
+  onToggleValue: (v: string) => void
+  onClear: () => void
   render?: (v: string) => string
 }) {
-  // 활성값이 피드에서 사라져도(task 노후로 MAX_TASKS 밖) 해제 경로가 남게 후보에 포함한다.
-  const opts = active && !values.includes(active) ? [...values, active] : values
-  // 필터가 걸려 있지 않고 후보가 1개뿐이면(동종 피드) 칩 자체를 숨겨 잡음을 줄인다.
-  if (opts.length < 2 && active === null) return null
+  // 후보가 없으면(동종 피드) 버튼 자체를 숨긴다.
+  if (options.length === 0 && selected.size === 0) return null
+  const active = selected.size > 0
   return (
-    <div className="feed-chip-group">
-      <span className="feed-chip-label">{label}</span>
-      <button
-        type="button"
-        className={'feed-chip' + (active === null ? ' active' : '')}
-        onClick={() => onPick(null)}
-      >
-        전체
-      </button>
-      {opts.map((v) => (
-        <button
-          key={v}
-          type="button"
-          className={'feed-chip' + (active === v ? ' active' : '')}
-          onClick={() => onPick(active === v ? null : v)}
-        >
-          {render ? render(v) : v}
-        </button>
-      ))}
-    </div>
+    <button type="button" className={'ddbtn' + (active ? ' active' : '')} onClick={onOpen}>
+      {label}
+      {active ? <span className="cnt">{selected.size}</span> : null}
+      <ChevronDown size={13} />
+      {open ? (
+        <div className="ddmenu" onClick={(e) => e.stopPropagation()}>
+          <label>
+            <input type="checkbox" checked={selected.size === 0} onChange={onClear} />
+            전체
+          </label>
+          {options.map((v) => (
+            <label key={v}>
+              <input type="checkbox" checked={selected.has(v)} onChange={() => onToggleValue(v)} />
+              {render ? render(v) : v}
+            </label>
+          ))}
+        </div>
+      ) : null}
+    </button>
   )
 }
 
@@ -144,9 +122,9 @@ function DetailBlock({ label, text, tone }: { label: string; text: string; tone?
   if (!text.trim()) return null
   const toneClass = tone ? ' ' + tone : ''
   return (
-    <div className="feed-detail-block">
-      <span className={'feed-detail-label' + toneClass}>{label}</span>
-      <div className="feed-detail-body">{text}</div>
+    <div className="tdetail-block">
+      <span className={'tdetail-label' + toneClass}>{label}</span>
+      <div className="tdetail-body">{text}</div>
     </div>
   )
 }
@@ -157,18 +135,30 @@ type Props = {
   agents: Agent[]
 }
 
+type Dim = 'state' | 'machine' | 'runner'
+
 export default function Feed({ onConnectedChange, onEvent, agents }: Props) {
   const [cards, setCards] = useState<TaskCard[]>([])
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
-  // 관제 필터(모두 클라이언트 측, 서버 무변경). null=해당 차원 미필터.
-  const [stateFilter, setStateFilter] = useState<string | null>(null)
-  const [machineFilter, setMachineFilter] = useState<string | null>(null)
-  const [runnerFilter, setRunnerFilter] = useState<string | null>(null)
+  // 관제 필터(모두 클라이언트 측, 서버 무변경). 빈 Set = 해당 차원 무필터(전체).
+  const [stateFilter, setStateFilter] = useState<Set<string>>(new Set())
+  const [machineFilter, setMachineFilter] = useState<Set<string>>(new Set())
+  const [runnerFilter, setRunnerFilter] = useState<Set<string>>(new Set())
   const [query, setQuery] = useState('')
+  // 한 번에 하나의 드롭다운만 연다. 바깥 클릭으로 닫는다.
+  const [openDim, setOpenDim] = useState<Dim | null>(null)
+  const filterRef = useRef<HTMLDivElement | null>(null)
+
+  useEffect(() => {
+    if (openDim === null) return
+    const onDown = (e: MouseEvent) => {
+      if (filterRef.current && !filterRef.current.contains(e.target as Node)) setOpenDim(null)
+    }
+    document.addEventListener('mousedown', onDown)
+    return () => document.removeEventListener('mousedown', onDown)
+  }, [openDim])
 
   // 라우팅 id(uuid)를 로스터의 사람이 읽는 이름으로 바꾼다(호버에 원 id는 title로 유지).
-  // 로스터에 없으면(오프라인·과거 세션) uuid는 8자로 축약, 친숙명(dashboard 등)은 그대로.
-  // 이름 후보는 trim 후 ||로 고른다 - 빈 문자열 display_name/project가 빈 라벨로 렌더되지 않게(봇리뷰).
   const agentNames = useMemo(() => {
     const names = new Map<string, string>()
     for (const agent of agents) {
@@ -178,8 +168,11 @@ export default function Feed({ onConnectedChange, onEvent, agents }: Props) {
     }
     return names
   }, [agents])
-  const nameOf = (id: string) =>
-    agentNames.get(id) ?? (/^[0-9a-f][0-9a-f-]{11,}$/i.test(id) ? id.slice(0, 8) : id)
+  // 라우팅 id → 표시 이름(useCallback으로 안정화해 아래 memo 들의 deps 계약을 정확히 유지).
+  const nameOf = useCallback(
+    (id: string) => agentNames.get(id) ?? (/^[0-9a-f][0-9a-f-]{11,}$/i.test(id) ? id.slice(0, 8) : id),
+    [agentNames],
+  )
 
   // 워커(toAgent)의 머신·러너 태그를 로스터에서 조회한다(머신/러너 필터·표시용).
   const workerMeta = useMemo(() => {
@@ -189,29 +182,31 @@ export default function Feed({ onConnectedChange, onEvent, agents }: Props) {
     }
     return m
   }, [agents])
-  // 러너는 task 에 직접 실려오면 그 값을, 없으면 워커 태그로 보완한다.
-  const runnerOf = (t: Task) => t.runner || workerMeta.get(t.toAgent)?.runner || ''
-  const machineOf = (t: Task) => workerMeta.get(t.toAgent)?.machine || ''
+  const runnerOf = useCallback(
+    (t: Task) => t.runner || workerMeta.get(t.toAgent)?.runner || '',
+    [workerMeta],
+  )
+  const machineOf = useCallback((t: Task) => workerMeta.get(t.toAgent)?.machine || '', [workerMeta])
 
-  // 칩 후보값 - 현재 피드에 실제 존재하는 값만(동종 피드에선 자동으로 칩이 사라져 잡음이 없다).
+  // 필터 후보값 - 현재 피드에 실제 존재하는 값만.
   const states = useMemo(() => distinct(cards.map((c) => c.latest.task.state)), [cards])
   const machines = useMemo(
     () => distinct(cards.map((c) => machineOf(c.latest.task)).filter(Boolean)),
-    [cards, workerMeta],
+    [cards, machineOf],
   )
   const runners = useMemo(
     () => distinct(cards.map((c) => runnerOf(c.latest.task)).filter(Boolean)),
-    [cards, workerMeta],
+    [cards, runnerOf],
   )
 
-  // 필터 적용(상태·머신·러너 = 정확일치, 텍스트 = id·양끝 이름·요청/결과/실패 사유 부분일치).
+  // 필터 적용(상태·머신·러너 = Set 포함일치, 텍스트 = id·양끝 이름·요청/결과/실패 사유 부분일치).
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase()
     return cards.filter((c) => {
       const t = c.latest.task
-      if (stateFilter && t.state !== stateFilter) return false
-      if (machineFilter && machineOf(t) !== machineFilter) return false
-      if (runnerFilter && runnerOf(t) !== runnerFilter) return false
+      if (stateFilter.size > 0 && !stateFilter.has(t.state)) return false
+      if (machineFilter.size > 0 && !machineFilter.has(machineOf(t))) return false
+      if (runnerFilter.size > 0 && !runnerFilter.has(runnerOf(t))) return false
       if (q) {
         const hay = [
           shortId(t.id),
@@ -227,13 +222,11 @@ export default function Feed({ onConnectedChange, onEvent, agents }: Props) {
       }
       return true
     })
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cards, stateFilter, machineFilter, runnerFilter, query, workerMeta, agentNames])
+  }, [cards, stateFilter, machineFilter, runnerFilter, query, machineOf, runnerOf, nameOf])
 
   useEffect(() => {
-    // replay=50: 접속(리로드 포함) 시 최근 50 task 스냅샷을 라이브에 앞서 선행 수신한다
-    // (브라우저 리로드 = 피드 전멸이던 것 해소, v2-45 P2).
-    const source = new EventSource('/dashboard/events?replay=50')
+    // replay=200: 접속(리로드 포함) 시 최근 200 task 스냅샷을 라이브에 앞서 선행 수신한다(v2-53).
+    const source = new EventSource('/dashboard/events?replay=' + REPLAY)
     source.onopen = () => onConnectedChange(true)
     source.onmessage = (event) => {
       try {
@@ -243,7 +236,6 @@ export default function Feed({ onConnectedChange, onEvent, agents }: Props) {
           const existing = prev.find((c) => c.id === id)
           // EventSource 자동 재접속마다 스냅샷이 다시 오므로, 이미 반영된 것과 같은
           // updatedAt(+state)의 이벤트는 history에 다시 쌓지 않는다('N단계' 부풀림 방지).
-          // 카드 최신 상태 병합·맨 위 이동 자체는 유지한다.
           const duplicate =
             existing !== undefined &&
             existing.latest.task.updatedAt === msg.task.updatedAt &&
@@ -251,7 +243,7 @@ export default function Feed({ onConnectedChange, onEvent, agents }: Props) {
           const card: TaskCard = existing
             ? { id, latest: msg, history: duplicate ? existing.history : [...existing.history, msg] }
             : { id, latest: msg, history: [msg] }
-          // 방금 갱신된 task를 맨 위로, 상위 50 task만 유지.
+          // 방금 갱신된 task를 맨 위로, 상위 MAX_TASKS만 유지.
           return [card, ...prev.filter((c) => c.id !== id)].slice(0, MAX_TASKS)
         })
         onEvent(msg)
@@ -271,42 +263,66 @@ export default function Feed({ onConnectedChange, onEvent, agents }: Props) {
 
   const toggle = (id: string) => setExpanded((e) => ({ ...e, [id]: !e[id] }))
 
+  // Set 토글 헬퍼(불변 갱신).
+  const toggleIn = (setter: Dispatch<SetStateAction<Set<string>>>, v: string) =>
+    setter((prev) => {
+      const next = new Set(prev)
+      if (next.has(v)) next.delete(v)
+      else next.add(v)
+      return next
+    })
+
+  const countLabel =
+    visible.length === cards.length ? `${cards.length}건` : `${visible.length} / ${cards.length}건`
+
   return (
-    <section className="feed-section">
-      <div className="feed-header">
-        <h2 className="section-title">라이브 task 피드</h2>
-        <span className="feed-live">
-          <span className="dash-badge-dot blink" />
-          LIVE
-        </span>
-        <span className="dash-spacer" />
-        <span className="feed-count">
-          {visible.length === cards.length
-            ? cards.length + ' tasks'
-            : visible.length + ' / ' + cards.length + ' tasks'}
-        </span>
+    <section className="card feed">
+      <div className="head">
+        <h2>라이브 task 피드</h2>
+        <span className="count">{cards.length === 0 ? '대기 중' : countLabel}</span>
       </div>
       {cards.length > 0 ? (
-        <div className="feed-filter">
-          <input
-            type="search"
-            className="feed-filter-search"
-            placeholder="task 검색(id·이름·내용)"
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-          />
-          <ChipGroup
+        <div className="filter" ref={filterRef}>
+          <div className="search">
+            <Search size={14} />
+            <input
+              type="search"
+              placeholder="task 검색(id·이름·내용)"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+            />
+          </div>
+          <FilterDropdown
             label="상태"
-            values={states}
-            active={stateFilter}
-            onPick={setStateFilter}
+            options={states}
+            selected={stateFilter}
+            open={openDim === 'state'}
+            onOpen={() => setOpenDim((d) => (d === 'state' ? null : 'state'))}
+            onToggleValue={(v) => toggleIn(setStateFilter, v)}
+            onClear={() => setStateFilter(new Set())}
             render={(v) => STATE_LABEL[v] ?? v}
           />
-          <ChipGroup label="머신" values={machines} active={machineFilter} onPick={setMachineFilter} />
-          <ChipGroup label="러너" values={runners} active={runnerFilter} onPick={setRunnerFilter} />
+          <FilterDropdown
+            label="머신"
+            options={machines}
+            selected={machineFilter}
+            open={openDim === 'machine'}
+            onOpen={() => setOpenDim((d) => (d === 'machine' ? null : 'machine'))}
+            onToggleValue={(v) => toggleIn(setMachineFilter, v)}
+            onClear={() => setMachineFilter(new Set())}
+          />
+          <FilterDropdown
+            label="러너"
+            options={runners}
+            selected={runnerFilter}
+            open={openDim === 'runner'}
+            onOpen={() => setOpenDim((d) => (d === 'runner' ? null : 'runner'))}
+            onToggleValue={(v) => toggleIn(setRunnerFilter, v)}
+            onClear={() => setRunnerFilter(new Set())}
+          />
         </div>
       ) : null}
-      <div className="feed-list">
+      <div className="feed-body">
         {cards.length === 0 ? (
           <div className="feed-empty">task 이벤트 대기 중.</div>
         ) : visible.length === 0 ? (
@@ -318,61 +334,50 @@ export default function Feed({ onConnectedChange, onEvent, agents }: Props) {
             const isOpen = !!expanded[card.id]
             const text = taskText(card.latest)
             return (
-              <div className="feed-row" key={card.id}>
-                <div className="feed-row-inner">
-                  <button
-                    type="button"
-                    className="feed-card-head"
-                    onClick={() => toggle(card.id)}
-                    aria-expanded={isOpen}
-                  >
-                    <span className="feed-badge" style={badgeStyle(t.state)}>
-                      {label}
-                    </span>
-                    <span className="feed-shortid">{shortId(t.id)}</span>
-                    <span className="feed-route">
-                      <span title={t.fromAgent}>{nameOf(t.fromAgent)}</span>
-                      <ArrowIcon />
-                      <span title={t.toAgent}>{nameOf(t.toAgent)}</span>
-                    </span>
-                    <span className="dash-spacer" />
+              <div className="tcard" key={card.id}>
+                <button type="button" className="tl" onClick={() => toggle(card.id)} aria-expanded={isOpen}>
+                  <span className="tid">{shortId(t.id)}</span>
+                  <span className="route">
+                    <span title={t.fromAgent}>{nameOf(t.fromAgent)}</span>
+                    <span className="arrow">→</span>
+                    <span title={t.toAgent}>{nameOf(t.toAgent)}</span>
+                  </span>
+                  {card.history.length > 1 ? <span className="steps">{card.history.length}단계</span> : null}
+                  <span className="dash-spacer" />
+                  <span className="rel">{relativeTime(t.updatedAt)}</span>
+                  <span className={'state ' + stateClass(t.state)}>{label}</span>
+                  <span className={'caret' + (isOpen ? ' open' : '')}>
+                    <ChevronDown size={13} />
+                  </span>
+                </button>
+                {text && !isOpen ? <div className="desc">{text}</div> : null}
+                {isOpen ? (
+                  <div className="tcard-detail">
+                    <DetailBlock label="요청" text={requestText(t)} />
+                    {t.state === 'failed' ? (
+                      <DetailBlock label="실패 사유" text={failureText(t)} tone="err" />
+                    ) : (
+                      <DetailBlock label="결과" text={resultText(t)} tone="ok" />
+                    )}
                     {card.history.length > 1 ? (
-                      <span className="feed-steps">{card.history.length}단계</span>
+                      <div className="tdetail-history">
+                        {card.history.map((h) => {
+                          const ht = h.task
+                          const htext = taskText(h)
+                          return (
+                            <div className="throw" key={`${ht.updatedAt}-${ht.state}`}>
+                              <span className={'state small ' + stateClass(ht.state)}>
+                                {STATE_LABEL[ht.state] ?? ht.state}
+                              </span>
+                              <span className="rel">{relativeTime(ht.updatedAt)}</span>
+                              {htext ? <div className="htext">{htext}</div> : null}
+                            </div>
+                          )
+                        })}
+                      </div>
                     ) : null}
-                    <span className="feed-rel">{relativeTime(t.updatedAt)}</span>
-                    <Chevron open={isOpen} />
-                  </button>
-                  {text && !isOpen ? <div className="feed-text">{text}</div> : null}
-                  {isOpen ? (
-                    <div className="feed-detail">
-                      <DetailBlock label="요청" text={requestText(t)} />
-                      {t.state === 'failed' ? (
-                        <DetailBlock label="실패 사유" text={failureText(t)} tone="err" />
-                      ) : (
-                        <DetailBlock label="결과" text={resultText(t)} tone="ok" />
-                      )}
-                      {card.history.length > 1 ? (
-                        <div className="feed-history">
-                          {card.history.map((h) => {
-                            const ht = h.task
-                            const htext = taskText(h)
-                            // 카드 내 이력은 SSE 중복 가드가 (updatedAt, state) 유일성을 보장하므로
-                            // 그 조합을 안정 키로 쓴다(index 키 안티패턴 회피).
-                            return (
-                              <div className="feed-hrow" key={`${ht.updatedAt}-${ht.state}`}>
-                                <span className="feed-badge small" style={badgeStyle(ht.state)}>
-                                  {STATE_LABEL[ht.state] ?? ht.state}
-                                </span>
-                                <span className="feed-rel">{relativeTime(ht.updatedAt)}</span>
-                                {htext ? <div className="feed-htext">{htext}</div> : null}
-                              </div>
-                            )
-                          })}
-                        </div>
-                      ) : null}
-                    </div>
-                  ) : null}
-                </div>
+                  </div>
+                ) : null}
               </div>
             )
           })
