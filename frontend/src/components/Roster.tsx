@@ -4,57 +4,6 @@ import { useState } from 'react'
 import { relativeTime } from '../api'
 import type { SessionRow } from '../activity'
 
-// 태그 값별 색(워커 섹션 TagPill 재사용분). 알려진 값은 고정, 나머지는 해시 팔레트.
-const VALUE_COLOR: Record<string, string> = {
-  mac: '#6e7681',
-  win: '#0078d4',
-  linux: '#f0883e',
-  claude: '#c15f3c',
-  codex: '#10a37f',
-  gemini: '#4285f4',
-  supervised: '#2da44e',
-  infra: '#2da44e',
-  dispatcher: '#8250df',
-  worker: '#bf8700',
-  tunaround: '#d29922',
-}
-const PALETTE = ['#2f6fe4', '#8957e5', '#2da44e', '#d29922', '#c15f3c', '#10a37f', '#bf3989', '#57606a']
-
-function valueColor(v: string): string {
-  if (VALUE_COLOR[v]) return VALUE_COLOR[v]
-  let h = 0
-  for (let i = 0; i < v.length; i++) h = (h * 31 + v.charCodeAt(i)) >>> 0
-  return PALETTE[h % PALETTE.length]
-}
-
-// 머신 브랜드 글리프(워커 섹션 재사용). 로스터 본문은 목업 letter-glyph를 쓰지만 이 export는 유지한다.
-export function MachineGlyph({ machine }: { machine: string | undefined }) {
-  if (machine === 'mac') {
-    return (
-      <svg className="machine-glyph" width="13" height="13" viewBox="0 0 16 16" fill="currentColor" aria-label="mac">
-        <path d="M11.05 8.36c-.02-1.5 1.22-2.22 1.28-2.26-.7-1.02-1.79-1.16-2.17-1.18-.92-.09-1.8.54-2.27.54-.47 0-1.19-.53-1.96-.51-1.01.01-1.94.59-2.46 1.49-1.05 1.82-.27 4.52.75 6 .5.73 1.09 1.54 1.87 1.51.75-.03 1.03-.48 1.94-.48.9 0 1.16.48 1.95.47.81-.01 1.32-.74 1.81-1.47.57-.84.81-1.66.82-1.7-.02-.01-1.57-.6-1.59-2.38zM9.6 3.87c.41-.5.69-1.2.61-1.9-.59.02-1.31.4-1.74.9-.38.44-.71 1.15-.62 1.83.66.05 1.34-.33 1.75-.83z" />
-      </svg>
-    )
-  }
-  if (machine === 'win') {
-    return (
-      <svg className="machine-glyph win" width="12" height="12" viewBox="0 0 16 16" fill="currentColor" aria-label="win">
-        <path d="M0 2.25 6.5 1.35v6.4H0V2.25zM7.4 1.22 16 0v7.75H7.4V1.22zM0 8.55h6.5v6.4L0 14.05V8.55zM7.4 8.55H16V16l-8.6-1.2V8.55z" />
-      </svg>
-    )
-  }
-  return <span className="machine-glyph-none" aria-hidden="true" />
-}
-
-// 값만 표시하는 뱃지(워커 섹션 전용으로 유지).
-export function TagPill({ k, v }: { k: string; v: string }) {
-  return (
-    <span className="shield-v shield-solo" style={{ background: valueColor(v) }} title={k}>
-      {v}
-    </span>
-  )
-}
-
 type Props = {
   rows: SessionRow[]
   // uuid -> 방금 heartbeat 가 갱신돼 잠깐 강조할지 여부.

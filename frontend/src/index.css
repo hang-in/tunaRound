@@ -130,14 +130,17 @@ main { flex: 1 1 auto; min-width: 0; padding: 16px 20px calc(var(--ftr-h) + 24px
 .tile .k { margin-top: 3px; }
 .tile.srv::after { content: "서버 집계"; float: right; font-size: 9.5px; color: var(--faint);
   border: 1px solid var(--border-soft); border-radius: 5px; padding: 1px 5px; letter-spacing: .04em; }
-.tile.good .n { color: var(--good); } .tile.warn .n { color: var(--warn); } .tile.err .n { color: var(--err); }
+.tile.good .n { color: var(--good); } .tile.err .n { color: var(--err); }
+/* 서버소스 타일 stale(최신 health 폴 실패): 값을 디밍하고 뱃지를 "갱신 실패"로 교체(Footer와 일관, fail-visible). */
+.tile.stale .n { opacity: .5; }
+.tile.srv.stale::after { content: "갱신 실패"; color: var(--err);
+  border-color: color-mix(in srgb, var(--err) 40%, var(--border-soft)); }
 
 .card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
 .card > .head { display: flex; align-items: center; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--border-soft); }
 .card > .head h2 { margin: 0; font-size: 13.5px; font-weight: 700; letter-spacing: -.01em; }
 .card > .head .count { margin-left: auto; font-family: var(--mono); font-size: 12px; color: var(--faint); }
-.card > .head .hint { margin-left: auto; font-size: 11px; color: var(--faint); }
-.card > .head .stale { font-size: 11px; color: var(--warn); }
+.card > .head .stale { margin-left: auto; font-size: 11px; color: var(--warn); }
 
 .filter { display: flex; align-items: center; gap: 8px; padding: 9px 16px; border-bottom: 1px solid var(--border-soft); background: var(--panel-2); }
 .filter .search { flex: 1 1 auto; min-width: 120px; display: flex; align-items: center; gap: 6px;
@@ -194,7 +197,9 @@ main { flex: 1 1 auto; min-width: 0; padding: 16px 20px calc(var(--ftr-h) + 24px
 .logline .tail { color: var(--faint); margin-left: auto; white-space: nowrap; }
 .log-empty { padding: 16px; color: var(--faint); font-size: 12.5px; }
 
-footer.dash { position: fixed; bottom: 0; left: 0; right: 0; z-index: 25; height: var(--ftr-h);
+/* z-index는 헤더(20)보다 낮게 둔다: 헤더는 sticky+z20으로 스택 컨텍스트라 그 안의 omnisearch 드롭다운(z30)이
+   footer보다 위로 오게(안 그러면 헤더 앵커 드롭다운이 footer 뒤로 클립됨). 모달 스크림(z40)은 계속 footer 위. */
+footer.dash { position: fixed; bottom: 0; left: 0; right: 0; z-index: 12; height: var(--ftr-h);
   display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 0 20px;
   background: color-mix(in srgb, var(--panel) 92%, transparent); backdrop-filter: blur(9px); border-top: 1px solid var(--border); font-size: 12px; }
 .health { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
@@ -256,6 +261,8 @@ footer.dash { position: fixed; bottom: 0; left: 0; right: 0; z-index: 25; height
   .sidebar { flex: none; width: 100%; position: static; max-height: none; border-right: 0; border-bottom: 1px solid var(--border); }
   .tiles { grid-template-columns: repeat(2, 1fr); }
   .omnisearch { display: none; }
-  footer.dash { height: auto; flex-direction: column; align-items: flex-start; gap: 4px; padding: 7px 20px; }
-  main { padding-bottom: 84px; }
+  /* 좁은 화면에선 footer를 정상 흐름(static)으로 - 스캐너/메트릭이 여러 줄로 커져도 콘텐츠를 가리지 않는다
+     (fixed+height:auto가 고정 예약 84px를 넘겨 피드/타임라인 하단을 덮던 오버랩 제거). */
+  footer.dash { position: static; height: auto; flex-direction: column; align-items: flex-start; gap: 4px; padding: 7px 20px; }
+  main { padding-bottom: 24px; }
 }

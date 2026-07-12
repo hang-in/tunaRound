@@ -274,7 +274,7 @@ export default function App() {
           <Roster rows={rows} pulses={pulses} autoBossUuid={autoBossUuid} onAddTarget={addGoalTarget} />
         </aside>
         <main>
-          <StatTiles onlineCount={rows.length} health={health} />
+          <StatTiles onlineCount={rows.length} health={health} ok={healthOk} />
           <Feed onConnectedChange={handleConnected} onEvent={handleEvent} agents={agents} />
           <PresenceTimeline />
         </main>

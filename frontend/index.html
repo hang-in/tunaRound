@@ -5,6 +5,16 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>tunaRound 대시보드</title>
+    <!-- pre-paint 테마 세팅: React mount 전에 저장 테마를 dataset.theme에 반영해 FOUC(첫 페인트 OS테마→뒤집힘)를 없앤다.
+         저장값이 없으면 미설정(CSS @media prefers-color-scheme가 OS를 따른다). 키는 App THEME_KEY('tuna-theme')와 동일. -->
+    <script>
+      (function () {
+        try {
+          var t = localStorage.getItem('tuna-theme')
+          if (t === 'light' || t === 'dark') document.documentElement.dataset.theme = t
+        } catch (e) {}
+      })()
+    </script>
   </head>
   <body>
     <div id="root"></div>

@@ -28,18 +28,46 @@ export default function GoalForm({ open, onClose, agents, remoteViewer, selected
   const [status, setStatus] = useState('')
   const [pickerOpen, setPickerOpen] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
+  const modalRef = useRef<HTMLDivElement | null>(null)
+  const triggerRef = useRef<HTMLElement | null>(null)
 
-  // Esc 닫기 + 오픈 시 textarea 포커스(기본 포커스 트랩).
+  // 포커스 트랩: 오픈 시 트리거를 기억+textarea 포커스, Esc 닫기, Tab을 모달 안에 가둔다(첫↔끝 순환),
+  // 닫힐 때(cleanup) 트리거로 포커스 복원.
   useEffect(() => {
     if (!open) return
+    triggerRef.current = document.activeElement as HTMLElement | null
+    const focusables = (): HTMLElement[] => {
+      if (!modalRef.current) return []
+      const sel = 'button, [href], input, textarea, select, [tabindex]:not([tabindex="-1"])'
+      return Array.from(modalRef.current.querySelectorAll<HTMLElement>(sel)).filter(
+        (el) => !el.hasAttribute('disabled') && el.offsetParent !== null,
+      )
+    }
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose()
+      if (e.key === 'Escape') {
+        onClose()
+        return
+      }
+      if (e.key === 'Tab') {
+        const list = focusables()
+        if (list.length === 0) return
+        const first = list[0]
+        const last = list[list.length - 1]
+        if (e.shiftKey && document.activeElement === first) {
+          e.preventDefault()
+          last.focus()
+        } else if (!e.shiftKey && document.activeElement === last) {
+          e.preventDefault()
+          first.focus()
+        }
+      }
     }
     document.addEventListener('keydown', onKey)
     const t = window.setTimeout(() => textareaRef.current?.focus(), 0)
     return () => {
       document.removeEventListener('keydown', onKey)
       window.clearTimeout(t)
+      triggerRef.current?.focus?.() // 닫힐 때 원래 트리거(목표 제출 버튼)로 포커스 복원.
     }
   }, [open, onClose])
 
@@ -75,7 +103,7 @@ export default function GoalForm({ open, onClose, agents, remoteViewer, selected
   if (remoteViewer) {
     return (
       <div className="modal-scrim" onClick={onScrimClick} role="dialog" aria-modal="true" aria-label="목표 제출">
-        <div className="modal">
+        <div className="modal" ref={modalRef}>
           {header}
           <div className="mbd">
             <div className="goal-warning">

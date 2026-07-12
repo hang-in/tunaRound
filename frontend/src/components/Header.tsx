@@ -97,7 +97,9 @@ function Omnisearch() {
                 <button
                   type="button"
                   className={'hit' + (openIdx === i ? ' open' : '')}
-                  key={`${r.speaker}::${i}`}
+                  // speaker(a2a/<agent>)에는 "::"가 없어 speaker::content가 경계 모호성 없는 안정 키다
+                  // (index-as-key 지양, 레포 규약). 동일 화자·동일 content 중복은 드물고 leaf·전체 교체라 무해.
+                  key={`${r.speaker}::${r.content}`}
                   onClick={() => setOpenIdx((cur) => (cur === i ? null : i))}
                 >
                   <span className="who">{speakerName(r.speaker)}</span>
