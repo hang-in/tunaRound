@@ -2,6 +2,16 @@
 
 > 작업 중 결정과 근거. 계속 append. (규율 #7) 다음 세션이 결정을 재유도하지 않게.
 
+## 2026-07-12 세션26 후반: v2-52 ⑤ store DTO ↔ 도메인 경계
+
+계약 정본 = [v2-52 store DTO 계약](docs/design/v2-52-store-dto-contract_2026-07-12.md). 사용자 결정: ⑤ 먼저(④ task JSON 후순위) + 이 세션에서 바로 구현. 재론 금지 핵심:
+- **결합 무게중심 = repl `Session`**(messages+head 직보유·append 트리 상태머신 재구현·슬래시명령 raw msg_id). store 내부·retriever는 이미 중립(Vec<Utterance>만 냄). `Utterance`(types.rs)는 이미 중립 선례.
+- **핵심 기법 = serde 금지 중립 타입.** StoredSession/StoredMessage는 store에 직렬화·행매핑 DTO로 잔존, 중립 타입(MessageNode·BranchHead·ConversationSnapshot)은 serde 없어 와이어 포맷 누수 구조적 불가. 변환은 store/mod.rs `From` impl에 격리 → SQLite 내부 시그니처 불변 → 영속 오라클 손 안 대고 green.
+- **최소 계약(과설계 회피)**: Validity·SearchHit·msg_id 스칼라는 이미 중립이라 제외. MessageId=별칭(newtype 아님, 스칼라 plumbing 번짐 방지). BranchHead=minimal Copy newtype 유지(doc 정합). to_stored→snapshot 개명. 자유함수는 S6 삭제.
+- **S0 특성화 테스트 필수**: tree_summary/Command::Branches는 오라클 전무 → 착수 전 /branches 출력·/checkout 특성화 테스트 선보강(안 하면 포맷 회귀 조용히 통과).
+- **마이그레이션 안전**: S0~S6 각 단계 컴파일+테스트 green. Utterance 경계 오라클(retrieve·read_transcript·prompt)은 전 구간 불변 = 검색/랭킹/프롬프트 동작 불변 연속 증명.
+- **방법론**: understand 4렌즈 워크플로우 → Opus 대조검증(주장 실측 확인: Session 구조·append 재구현·CoreSync 반환형 전부 정확) → 계약 doc 고정 → S0~S6 직접 구현(단계별 green) → 적대 검증 → PR.
+
 ## 2026-07-12 세션26: 잠복 이슈 3건 (post_turn 계약·index race·embed timeout)
 
 세션25 핸드오프 §29가 남긴 pre-existing 잠복 3건. 사용자 선택="잠복 이슈 3건 수정"(트랙), 로드맵="이거 → v2-52 잔여 ④⑤(리팩토링 완결) → v0.5.0 릴리즈". 브랜치 `fix/post-turn-index-race-embed-timeout`. 재론 금지 설계 결정은 다음과 같다.

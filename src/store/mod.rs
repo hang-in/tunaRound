@@ -221,82 +221,70 @@ pub struct StoredSession {
     pub head: Option<u64>,
 }
 
-/// head에서 parent_id를 따라 root까지 거슬러 올라간 경로(루트->head 순)를 전사로 반환.
-/// HashMap O(1) 조회 + HashSet 순환 가드로 무한루프를 방지한다.
-pub fn path_to_root(messages: &[StoredMessage], head: Option<u64>) -> Vec<Utterance> {
-    use std::collections::{HashMap, HashSet};
-    let by_id: HashMap<u64, &StoredMessage> = messages.iter().map(|m| (m.id, m)).collect();
-    let mut chain: Vec<&StoredMessage> = Vec::new();
-    let mut seen: HashSet<u64> = HashSet::new();
-    let mut cur = head;
-    while let Some(id) = cur {
-        if !seen.insert(id) {
-            break; // 순환 가드
+// v2-52 ⑤: 영속 DTO(StoredSession, serde 有)↔ 중립 도메인(ConversationSnapshot, serde 無) 변환 경계.
+// 이 경계가 store 계층에만 있어 SQLite 스키마·와이어 포맷이 consumer로 새지 않는다. 저수준 SQLite 매핑
+// (SqliteStore::*)은 계속 StoredSession을 생산·소비하고(오라클 불변), 트레잇 래퍼가 여기서 변환한다.
+impl From<StoredSession> for crate::types::ConversationSnapshot {
+    fn from(ss: StoredSession) -> Self {
+        let nodes = ss
+            .messages
+            .into_iter()
+            .map(|m| crate::types::MessageNode {
+                id: m.id,
+                parent: m.parent_id,
+                speaker: m.speaker,
+                content: m.content,
+            })
+            .collect();
+        crate::types::ConversationSnapshot::from_parts(nodes, crate::types::BranchHead(ss.head))
+    }
+}
+
+impl From<&crate::types::ConversationSnapshot> for StoredSession {
+    fn from(snap: &crate::types::ConversationSnapshot) -> Self {
+        let messages = snap
+            .nodes()
+            .iter()
+            .map(|n| StoredMessage {
+                id: n.id,
+                parent_id: n.parent,
+                speaker: n.speaker.clone(),
+                content: n.content.clone(),
+            })
+            .collect();
+        StoredSession {
+            messages,
+            head: snap.head().tip(),
         }
-        match by_id.get(&id) {
-            Some(m) => {
-                chain.push(*m);
-                cur = m.parent_id;
-            }
-            None => break,
-        }
     }
-    chain.reverse();
-    chain
-        .iter()
-        .map(|m| Utterance::new(m.speaker.clone(), m.content.clone()))
-        .collect()
 }
 
-/// 다음 메시지 id(max+1, 비어 있으면 1).
-pub fn next_id(messages: &[StoredMessage]) -> u64 {
-    messages
-        .iter()
-        .map(|m| m.id)
-        .max()
-        .map(|m| m + 1)
-        .unwrap_or(1)
-}
+// v2-52 ⑤ S6: path_to_root·next_id·tree_summary 자유함수는 ConversationSnapshot 메서드
+// (active_path·append·tree_summary)로 흡수·삭제됨. 트리 순회·id 채번은 이제 도메인 타입에만 산다.
 
-/// 트리 요약 줄(id, parent, speaker, 본문 일부). /branches 표시용.
-pub fn tree_summary(messages: &[StoredMessage], head: Option<u64>) -> String {
-    if messages.is_empty() {
-        return "(빈 트리)".to_string();
-    }
-    let mut out = String::new();
-    for m in messages {
-        let marker = if Some(m.id) == head { "*" } else { " " };
-        let parent = m
-            .parent_id
-            .map(|p| p.to_string())
-            .unwrap_or_else(|| "-".into());
-        let snippet: String = m.content.chars().take(30).collect();
-        out.push_str(&format!(
-            "{marker} #{} (<-{parent}) {}: {}\n",
-            m.id, m.speaker, snippet
-        ));
-    }
-    out
-}
-
-/// StoredSession을 JSON으로 저장.
-pub fn save_session(s: &StoredSession, path: &str) -> std::io::Result<()> {
-    let json = serde_json::to_string_pretty(s)
+/// ConversationSnapshot을 JSON으로 저장한다. 와이어 포맷은 StoredSession(serde)이라 하위호환 불변이다
+/// (중립 타입은 serde 없음 → 직렬화 책임이 store 경계에만, v2-52 ⑤).
+pub fn save_session(snap: &crate::types::ConversationSnapshot, path: &str) -> std::io::Result<()> {
+    let ss = StoredSession::from(snap);
+    let json = serde_json::to_string_pretty(&ss)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     std::fs::write(path, json)
 }
 
-/// StoredSession 로드. 레거시 bare-array(head 없음)이면 head=마지막 id로 폴백.
-pub fn load_session(path: &str) -> std::io::Result<StoredSession> {
+/// ConversationSnapshot을 로드한다. 와이어=StoredSession 역직렬화(레거시 bare-array면 head=마지막 id
+/// 폴백) 후 중립 타입으로 변환. 하위호환 로직은 이 StoredSession 경계에만 존재한다.
+pub fn load_session(path: &str) -> std::io::Result<crate::types::ConversationSnapshot> {
     let s = std::fs::read_to_string(path)?;
-    if let Ok(ss) = serde_json::from_str::<StoredSession>(&s) {
-        return Ok(ss);
-    }
-    // 레거시 v1: bare [StoredMessage]
-    let messages: Vec<StoredMessage> = serde_json::from_str(&s)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    let head = messages.iter().map(|m| m.id).max();
-    Ok(StoredSession { messages, head })
+    let ss = if let Ok(ss) = serde_json::from_str::<StoredSession>(&s) {
+        ss
+    } else {
+        // 레거시 v1: bare [StoredMessage]
+        let messages: Vec<StoredMessage> = serde_json::from_str(&s)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        let head = messages.iter().map(|m| m.id).max();
+        StoredSession { messages, head }
+    };
+    Ok(ss.into())
 }
 
 #[cfg(test)]
@@ -320,84 +308,44 @@ mod tests {
     }
 
     #[test]
-    fn path_to_root_walks_parents() {
-        // 트리: 1 -> 2 -> 3, 그리고 2 -> 4 (분기)
-        let msgs = vec![
-            StoredMessage {
-                id: 1,
-                parent_id: None,
-                speaker: "a".into(),
-                content: "1".into(),
-            },
-            StoredMessage {
-                id: 2,
-                parent_id: Some(1),
-                speaker: "b".into(),
-                content: "2".into(),
-            },
-            StoredMessage {
-                id: 3,
-                parent_id: Some(2),
-                speaker: "c".into(),
-                content: "3".into(),
-            },
-            StoredMessage {
-                id: 4,
-                parent_id: Some(2),
-                speaker: "d".into(),
-                content: "4".into(),
-            },
-        ];
-        let path = path_to_root(&msgs, Some(3));
+    fn stored_session_snapshot_roundtrip_and_equivalence() {
+        // v2-52 ⑤: From 변환이 트리·head를 보존하고(round-trip) active_path가 순회를 보존하는지.
+        use crate::types::ConversationSnapshot;
+        let ss = StoredSession {
+            messages: vec![
+                StoredMessage {
+                    id: 1,
+                    parent_id: None,
+                    speaker: "a".into(),
+                    content: "1".into(),
+                },
+                StoredMessage {
+                    id: 2,
+                    parent_id: Some(1),
+                    speaker: "b".into(),
+                    content: "2".into(),
+                },
+                StoredMessage {
+                    id: 3,
+                    parent_id: Some(1),
+                    speaker: "c".into(),
+                    content: "3".into(),
+                },
+            ],
+            head: Some(3),
+        };
+        let snap: ConversationSnapshot = ss.clone().into();
+        // 라운드트립 = 원본 보존.
+        let back: StoredSession = (&snap).into();
+        assert_eq!(back, ss);
+        // From 변환 후 active_path가 트리 순회를 보존(head=3, parent=1 → [1, 3]).
         assert_eq!(
-            path.iter().map(|u| u.content.clone()).collect::<Vec<_>>(),
-            vec!["1", "2", "3"]
+            snap.active_path()
+                .iter()
+                .map(|u| u.content.clone())
+                .collect::<Vec<_>>(),
+            vec!["1", "3"]
         );
-        let branch = path_to_root(&msgs, Some(4));
-        assert_eq!(
-            branch.iter().map(|u| u.content.clone()).collect::<Vec<_>>(),
-            vec!["1", "2", "4"]
-        );
-        assert!(path_to_root(&msgs, None).is_empty());
-    }
-
-    #[test]
-    fn path_to_root_cycle_guard_terminates() {
-        // 순환: id=1.parent=Some(2), id=2.parent=Some(1). head=Some(1).
-        // 무한루프 없이 유계 반환(2개 이하).
-        let msgs = vec![
-            StoredMessage {
-                id: 1,
-                parent_id: Some(2),
-                speaker: "a".into(),
-                content: "1".into(),
-            },
-            StoredMessage {
-                id: 2,
-                parent_id: Some(1),
-                speaker: "b".into(),
-                content: "2".into(),
-            },
-        ];
-        let path = path_to_root(&msgs, Some(1));
-        // 순환이므로 결과 길이가 유한해야 함(2개 이하).
-        assert!(
-            path.len() <= 2,
-            "순환에서 유한 반환이어야 함: len={}",
-            path.len()
-        );
-    }
-
-    #[test]
-    fn next_id_is_max_plus_one() {
-        assert_eq!(next_id(&[]), 1);
-        let msgs = vec![StoredMessage {
-            id: 5,
-            parent_id: None,
-            speaker: "a".into(),
-            content: "x".into(),
-        }];
-        assert_eq!(next_id(&msgs), 6);
     }
 
     #[test]
@@ -421,10 +369,12 @@ mod tests {
         };
         let dir = std::env::temp_dir();
         let path = dir.join("tuna_session_rt.json");
-        save_session(&ss, path.to_str().unwrap()).unwrap();
+        // save/load는 ConversationSnapshot 경계이나 와이어 포맷=StoredSession이라 라운드트립 등가.
+        let snap: crate::types::ConversationSnapshot = ss.clone().into();
+        save_session(&snap, path.to_str().unwrap()).unwrap();
         let back = load_session(path.to_str().unwrap()).unwrap();
-        assert_eq!(back.messages, ss.messages);
-        assert_eq!(back.head, Some(2));
+        assert_eq!(StoredSession::from(&back), ss);
+        assert_eq!(back.head().tip(), Some(2));
     }
 
     #[test]
@@ -447,9 +397,9 @@ mod tests {
         let dir = std::env::temp_dir();
         let path = dir.join("tuna_legacy.json");
         save(&legacy, path.to_str().unwrap()).unwrap(); // 기존 bare-array 저장
-        let ss = load_session(path.to_str().unwrap()).unwrap();
-        assert_eq!(ss.messages.len(), 2);
-        assert_eq!(ss.head, Some(2)); // 마지막 id
+        let snap = load_session(path.to_str().unwrap()).unwrap();
+        assert_eq!(snap.node_count(), 2);
+        assert_eq!(snap.head().tip(), Some(2)); // 마지막 id로 폴백
     }
 
     #[test]

@@ -541,3 +541,18 @@
 - [x] **② index race 직렬화**(mcp/indexing.rs): a2a_store 락 하나로 delete→append→stamp 전체 직렬화(데드락 없음=락순서 a2a_store→writer 일관, backfill 비재진입). 테스트 concurrent_index_same_task_no_duplicate_turns(2스레드×40) + idempotent(공유 파일 DB). 적대 검증: 데드락 렌즈 전부 holds, race-closure holds.
 - [x] 게이트: cargo fmt --all clean + lib test 582 pass/0 fail + clippy --all-targets clean. 적대 검증 워크플로우(4렌즈+종합=GO, blocker/major 0).
 - [x] 커밋(af7582b fix·4cddf34 봇반영) → push → **PR #89** → canonical CI green(3-OS·dashboard·fmt·plan·CodeRabbit) + 봇 리뷰 처리(CodeRabbit 2 수정·gemini 트레이드오프 수용·DeepSource 자문성 비수정) → **머지 b93e277**(리팩토링 트랙 자율 승인). origin=main만.
+
+## 세션26 후반: v2-52 ⑤ store DTO ↔ 도메인 경계 (계약 고정 후 구현)
+
+> 계약 정본 docs/design/v2-52-store-dto-contract_2026-07-12.md. 브랜치 refactor/v2-52-store-dto. understand 워크플로우(4렌즈)+Opus 대조검증. 사용자: ⑤ 먼저 + 이 세션 구현.
+
+- [x] understand 페이즈(결합지도 4렌즈) + 계약 고정(중립 타입 serde금지·store From 격리·S0~S6·open Q 4결정). doc d3a787a.
+- [x] **S0 안전망**(00264b7): tree_summary 특성화 테스트 + STRONG 오라클 green 확인.
+- [x] **S1 순수 추가**(00264b7): types.rs 중립 타입(MessageNode·BranchHead·ConversationSnapshot+메서드) + store From 2개 + 유닛테스트(오라클 미러). 미배선=green 불변.
+- [x] **S2 REPL 내부 전환**(b339b5e): Session→snapshot. append/active_path/checkout/branches/contains 메서드화. 경계 From 유지(공개 시그니처 불변, 최대 누수 격리).
+- [x] **S3 CoreSync 뒤집기**(fdef188): load_session→Option<ConversationSnapshot>. store→orchestrator 역결합 제거.
+- [x] **S4 Indexer 뒤집기**(23ace06): persist(&ConversationSnapshot). REPL StoredSession 리터럴 제거.
+- [x] **S5 공개 fn+seed/snapshot 중립화**(c608427): 와이어=StoredSession·레거시 폴백 내부 유지. main·store_roundtrip·fixture 갱신. production repl StoredSession 완전 제거.
+- [x] **S6 자유함수 삭제**(5571106): path_to_root/next_id/tree_summary 삭제(retriever·cli_run→active_path). to_stored/from_stored/save/load(v1 포맷)은 유지. no-default·all-features clean.
+- [x] 적대 검증 워크플로우(등가·경계·회귀범위 3렌즈 12확인점 전부 holds) = **GO**. nit 3건(주석·doc 오지칭·커버리지 미세공백) 반영. lib 585 pass·clippy --all-targets·no-default·all-features clean.
+- [ ] 커밋 → PR → CI green+봇 리뷰 → 머지(리팩토링 트랙 자율 승인).

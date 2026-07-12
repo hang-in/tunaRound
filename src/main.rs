@@ -499,7 +499,7 @@ fn main() {
                     Ok(store) => match store.load_session(&sid) {
                         Ok(Some(ss)) => {
                             println!("(SQLite 세션 재개: {sid})");
-                            s.seed_from(ss);
+                            s.seed_from(ss.into()); // StoredSession → ConversationSnapshot(경계 변환).
                         }
                         Ok(None) => println!("(새 세션: {sid})"),
                         Err(e) => eprintln!("[session] 세션 로드 실패(새 세션으로 시작): {e}"),
@@ -566,7 +566,9 @@ fn main() {
             match tunaround::store::sqlite::SqliteStore::open(&db_str) {
                 Ok(store) => {
                     let tok = cli_run::build_index_tokenizer("core");
-                    if let Err(e) = store.save_session(&sid, &session.to_stored(), |t| tok(t)) {
+                    // 중립 snapshot → 영속 DTO(SqliteStore::save_session은 StoredSession 유지).
+                    let ss = tunaround::store::StoredSession::from(session.snapshot());
+                    if let Err(e) = store.save_session(&sid, &ss, |t| tok(t)) {
                         eprintln!("[core] seed 코어 DB 반영 실패: {e}");
                     }
                 }

@@ -149,7 +149,7 @@ pub(crate) fn run_observe(sid: String, db_path: Option<String>) {
     loop {
         match store.load_session(&sid) {
             Ok(Some(ss)) => {
-                let path = tunaround::store::path_to_root(&ss.messages, ss.head);
+                let path = tunaround::types::ConversationSnapshot::from(ss).active_path();
                 // /checkout으로 활성 경로가 짧아지면(분기 전환) 커서를 재동기화한다.
                 if path.len() < printed {
                     printed = 0;
