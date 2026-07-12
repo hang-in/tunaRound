@@ -1,6 +1,7 @@
 // A2A task/에이전트 목록을 사람이 읽는 텍스트로 조립하는 순수 포맷 헬퍼 모음.
 
 use super::*;
+use crate::a2a_wire::{PollTaskDto, encode_poll_json};
 use crate::store::a2a::{Artifact, Message, Part};
 use crate::store::agents::{
     AgentEntry, SendTarget, format_ambiguous_candidates, validate_send_target,
@@ -60,8 +61,20 @@ pub(crate) fn poll_tasks_text(store: &SqliteStore, agent: &str) -> Result<String
     Ok(format_open_tasks(agent, &tasks, &now))
 }
 
-/// task 목록을 `[id] from=... state=... msg=...` 줄들로 조립하는 순수 함수(SQLite 없이 테스트 가능).
-/// now는 health_annotation(표시 전용 stuck?/no-consumer? 주석)에 쓰인다.
+/// task의 표시/전달용 본문 텍스트(status_message 첫 텍스트, 없으면 "(본문 없음)"). human 블록과 JSON
+/// DTO가 동일 본문을 공유하도록 단일 소스로 뽑는다.
+fn task_msg_text(t: &crate::store::a2a::Task) -> &str {
+    t.status_message
+        .as_ref()
+        .and_then(|m| m.parts.first())
+        .and_then(|p| p.text.as_deref())
+        .unwrap_or("(본문 없음)")
+}
+
+/// task 목록을 워커 파싱용 `TASKS_JSON <json>` 프리픽스 라인 + 사람용 `[id] from=... state=... msg=...`
+/// 블록으로 조립하는 순수 함수(SQLite 없이 테스트 가능). now는 health_annotation(표시 전용 stuck?/
+/// no-consumer? 주석)에 쓰인다. v2-52 ④: JSON은 구 워커가 무시(첫 헤더 앞)하고 신 워커가 우선 파싱하는
+/// 하위호환 병존 형식이다. 빈 목록은 프리픽스 없이 안내 문구만(워커는 프리픽스 없으면 문자열 폴백).
 pub(crate) fn format_open_tasks(
     agent: &str,
     tasks: &[crate::store::a2a::Task],
@@ -70,15 +83,9 @@ pub(crate) fn format_open_tasks(
     if tasks.is_empty() {
         return format!("{agent} 앞 열린 task 없음");
     }
-    tasks
+    let human = tasks
         .iter()
         .map(|t| {
-            let msg = t
-                .status_message
-                .as_ref()
-                .and_then(|m| m.parts.first())
-                .and_then(|p| p.text.as_deref())
-                .unwrap_or("(본문 없음)");
             // ctx=<context_id>는 워커가 프로젝트별 라우팅(--context-map)에 쓴다. 없으면 "-".
             let ctx = t.context_id.as_deref().unwrap_or("-");
             let annotation = health_annotation(t, now);
@@ -89,11 +96,22 @@ pub(crate) fn format_open_tasks(
                 t.state.as_str(),
                 annotation,
                 ctx,
-                msg
+                task_msg_text(t)
             )
         })
         .collect::<Vec<_>>()
-        .join("\n\n")
+        .join("\n\n");
+    // v2-52 ④: 워커가 파싱하는 구조화 JSON을 프리픽스 라인으로 얹는다. state는 clean(주석 없음).
+    let dtos: Vec<PollTaskDto> = tasks
+        .iter()
+        .map(|t| PollTaskDto {
+            id: t.id.clone(),
+            state: t.state.as_str().to_string(),
+            context_id: t.context_id.clone(),
+            msg: task_msg_text(t).to_string(),
+        })
+        .collect();
+    format!("{}\n\n{human}", encode_poll_json(&dtos))
 }
 
 /// claim_task 순수 로직: task를 working으로 전이하고 확인 텍스트를 만든다. 대상 task가 없거나 이미

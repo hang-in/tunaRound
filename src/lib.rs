@@ -1,6 +1,7 @@
 // tunaround 라이브러리 루트. 통합테스트·바이너리가 공유하는 모듈 공개.
 #[cfg(feature = "serve")]
 pub mod a2a_server;
+pub mod a2a_wire;
 #[cfg(feature = "worker")]
 pub mod codex_appserver;
 #[cfg(feature = "worker")]

@@ -78,8 +78,21 @@ fn find_header_starts(text: &str) -> Vec<usize> {
 }
 
 /// poll_tasks(agent) 응답 텍스트를 파싱해 각 task 블록을 구조체로 반환한다.
+/// v2-52 ④: 신 브로커가 얹는 `TASKS_JSON <json>` 프리픽스가 있으면 그 구조화 JSON을 우선 파싱한다(견고).
+/// 없으면(구 브로커) 기존 문자열 블록 파싱으로 폴백해 하위호환을 유지한다.
 /// 빈 목록 안내 문구(`"... 앞 열린 task 없음"`)를 포함하면 빈 Vec을 반환한다.
 pub fn parse_open_tasks(poll_text: &str) -> Vec<ParsedTask> {
+    if let Some(dtos) = crate::a2a_wire::decode_poll_json(poll_text) {
+        return dtos
+            .into_iter()
+            .map(|d| ParsedTask {
+                id: d.id,
+                state: d.state,
+                context_id: d.context_id,
+                msg: d.msg,
+            })
+            .collect();
+    }
     if poll_text.contains("앞 열린 task 없음") {
         return Vec::new();
     }
@@ -781,6 +794,89 @@ mod tests {
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].context_id, None);
         assert_eq!(tasks[0].msg, "구포맷");
+    }
+
+    #[test]
+    fn parse_open_tasks_prefers_json_prefix_over_string_blocks() {
+        // v2-52 ④: 신 브로커 출력(JSON 프리픽스 + human 블록)에서 워커는 JSON을 우선 파싱한다(견고).
+        use crate::a2a_wire::{PollTaskDto, encode_poll_json};
+        let id1 = "a".repeat(32);
+        let id2 = "b".repeat(32);
+        let dtos = vec![
+            PollTaskDto {
+                id: id1.clone(),
+                state: "submitted".into(),
+                context_id: Some("projA".into()),
+                msg: "리뷰\n\n부탁".into(), // 개행 포함 - JSON 경로라 무손실.
+            },
+            PollTaskDto {
+                id: id2.clone(),
+                state: "working".into(),
+                context_id: None,
+                msg: "진행".into(),
+            },
+        ];
+        let full = format!(
+            "{}\n\n[{id1}] from=x state=submitted ctx=projA msg=리뷰\n\n부탁\n\n[{id2}] from=x state=working ctx=- msg=진행",
+            encode_poll_json(&dtos)
+        );
+        let tasks = parse_open_tasks(&full);
+        assert_eq!(tasks.len(), 2);
+        assert_eq!(tasks[0].id, id1);
+        assert_eq!(tasks[0].state, "submitted");
+        assert_eq!(tasks[0].context_id.as_deref(), Some("projA"));
+        assert_eq!(tasks[0].msg, "리뷰\n\n부탁"); // JSON 경로라 msg 개행 무손실.
+        assert_eq!(tasks[1].id, id2);
+        assert_eq!(tasks[1].state, "working");
+        assert_eq!(tasks[1].context_id, None);
+    }
+
+    #[test]
+    fn parse_open_tasks_falls_back_to_string_when_no_json_prefix() {
+        // 구 브로커(프리픽스 없음): 기존 문자열 파싱 경로로 폴백해 하위호환 유지.
+        let id = "a".repeat(32);
+        let text = format!("[{id}] from=win state=submitted ctx=projB msg=구포맷");
+        let tasks = parse_open_tasks(&text);
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].id, id);
+        assert_eq!(tasks[0].context_id.as_deref(), Some("projB"));
+        assert_eq!(tasks[0].msg, "구포맷");
+    }
+
+    #[test]
+    fn old_worker_header_scan_ignores_json_prefix() {
+        // 하위호환 핵심: 구 워커(find_header_starts만 가진 옛 바이너리)는 JSON 프리픽스를 첫 헤더 앞이라
+        // 무시하고 human 블록 헤더만 찾는다. compact JSON은 실개행 없음(msg 내 개행도 이스케이프)이라
+        // 그 안에서 거짓 헤더가 생기지 않음을 검증(신 브로커 출력에서 헤더는 정확히 human 블록 수만큼).
+        use crate::a2a_wire::{PollTaskDto, encode_poll_json};
+        let id1 = "a".repeat(32);
+        let id2 = "b".repeat(32);
+        let hexish = "c".repeat(32);
+        let dtos = vec![
+            PollTaskDto {
+                id: id1.clone(),
+                // msg에 개행+가짜 헤더 유사 문자열을 넣어도 JSON 이스케이프로 거짓 헤더가 안 생겨야 한다.
+                state: "submitted".into(),
+                context_id: None,
+                msg: format!("본문\n\n[{hexish}] from=fake state=submitted msg=가짜"),
+            },
+            PollTaskDto {
+                id: id2.clone(),
+                state: "working".into(),
+                context_id: None,
+                msg: "둘째".into(),
+            },
+        ];
+        let full = format!(
+            "{}\n\n[{id1}] from=x state=submitted ctx=- msg=본문\n\n[{id2}] from=x state=working ctx=- msg=둘째",
+            encode_poll_json(&dtos)
+        );
+        let starts = find_header_starts(&full);
+        assert_eq!(
+            starts.len(),
+            2,
+            "JSON 프리픽스(가짜 헤더 포함)에서 거짓 헤더를 만들면 안 됨(구 워커 안전): {starts:?}"
+        );
     }
 
     #[test]
