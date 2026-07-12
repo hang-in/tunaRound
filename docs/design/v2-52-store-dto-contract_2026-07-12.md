@@ -63,7 +63,7 @@ store 계층에 `From` impl로 격리(orphan rule: StoredSession 소유처 = sto
 1. **MessageId = 별칭**(newtype 아님). newtype는 CLI 파싱·append_turn 반환·writer·sink로 리플이 번지는 스칼라 plumbing이라 트리-shape 누수 해결과 무관. → 별칭 확정.
 2. **BranchHead = 유지**(minimal Copy newtype, `tip()`만). 설계 doc 명명 타입 정합 + cli_run observe 등가비교 명명. 비용 1필드 Copy 구조체로 미미.
 3. **`Session::to_stored` → `snapshot()` 개명**(의미 정확, cli_run seed 호출부 소폭 diff).
-4. **자유함수(path_to_root/next_id/tree_summary/to_stored/from_stored)**: S6에서 내부화/삭제(ConversationSnapshot 메서드가 대체), `store_roundtrip` 통합테스트를 중립 API로 재작성(같은 assert). tunaround는 소비되는 라이브러리가 아니라 공개표면 축소 무해.
+4. **자유함수**: **path_to_root/next_id/tree_summary만 S6에서 삭제**(ConversationSnapshot 메서드가 대체, 유닛테스트를 메서드 대상으로 재작성). **to_stored/from_stored/save/load는 유지**(구현 시 확정): 이들은 트리-shape 누수가 아니라 **v1 bare-array 파일 포맷**(Utterance↔StoredMessage + 바 배열 JSON)이고, `store_roundtrip` 통합테스트가 하위호환을 검증하는 데 쓴다. 삭제 대상은 consumer 누수를 만들던 트리 순회/채번 함수 3개로 국한.
 
 ## 7. 마이그레이션 (S0~S6, 각 단계 = 컴파일 + 전체 테스트 green, 한 번에 하나)
 
@@ -73,7 +73,7 @@ store 계층에 `From` impl로 격리(orphan rule: StoredSession 소유처 = sto
 - **S3 CoreSync 뒤집기**: `load_session -> Option<ConversationSnapshot>`. SqliteCoreSync + FakeCoreSync + adopt_from_core 갱신.
 - **S4 Indexer 뒤집기**: `persist(&ConversationSnapshot)`. REPL의 StoredSession 리터럴 조립 제거(`&self.snapshot` 전달).
 - **S5 공개 fn + seed_from/snapshot을 중립으로**: main 재개·cli_run observe(snapshot.active_path()/head()) 갱신. store_roundtrip 재작성.
-- **S6 자유함수 내부화**: path_to_root/next_id/tree_summary/to_stored/from_stored 삭제 또는 private 위임, 유닛테스트를 snapshot 메서드 대상으로 재작성(같은 assert). StoredSession/StoredMessage + serde + SQLite roundtrip은 영속 DTO로 잔존.
+- **S6 자유함수 내부화**: path_to_root/next_id/tree_summary 삭제(마지막 호출처 retriever·cli_run을 `ConversationSnapshot::from(ss).active_path()`로 전환), 유닛테스트를 snapshot 메서드 대상으로 재작성(같은 assert). to_stored/from_stored/save/load(v1 포맷)·StoredSession/StoredMessage + serde + SQLite roundtrip은 영속 DTO/하위호환으로 잔존.
 
 전 구간 Utterance 경계 오라클(retrieve 6종·read_transcript·prompt 13종)은 시그니처·assert 불변 = 랭킹/검색/프롬프트 동작 불변의 연속 증명.
 

@@ -546,12 +546,13 @@
 
 > 계약 정본 docs/design/v2-52-store-dto-contract_2026-07-12.md. 브랜치 refactor/v2-52-store-dto. understand 워크플로우(4렌즈)+Opus 대조검증. 사용자: ⑤ 먼저 + 이 세션 구현.
 
-- [x] understand 페이즈(결합지도 4렌즈) + 계약 고정(중립 타입 serde금지·store From 격리·S0~S6·open Q 4결정).
-- [ ] **S0 안전망**: tree_summary/Command::Branches 특성화 테스트 선보강 + STRONG 오라클 green 확인.
-- [ ] **S1 순수 추가**: types.rs 중립 타입(MessageNode·BranchHead·ConversationSnapshot+메서드) + store/mod.rs From 2개 + 유닛테스트(기존 오라클 미러). 아무도 안 씀=green 불변.
-- [ ] **S2 REPL 내부 전환**: Session 필드 → snapshot. append/active_path/checkout/branches/contains 메서드화. 경계 From 유지(공개 시그니처 불변).
-- [ ] **S3 CoreSync 뒤집기**: load_session→Option<ConversationSnapshot>. SqliteCoreSync+FakeCoreSync+adopt 갱신.
-- [ ] **S4 Indexer 뒤집기**: persist(&ConversationSnapshot). REPL StoredSession 리터럴 제거.
-- [ ] **S5 공개 fn+seed/snapshot 중립화**: main 재개·cli_run observe·store_roundtrip 재작성.
-- [ ] **S6 자유함수 내부화**: path_to_root/next_id/tree_summary/to_stored/from_stored 삭제·유닛 재작성. StoredSession/serde/SQLite roundtrip은 영속 DTO 잔존.
-- [ ] 적대 검증 + 게이트(fmt·test·clippy --all-targets) → 커밋 → PR → CI green+봇 → 머지.
+- [x] understand 페이즈(결합지도 4렌즈) + 계약 고정(중립 타입 serde금지·store From 격리·S0~S6·open Q 4결정). doc d3a787a.
+- [x] **S0 안전망**(00264b7): tree_summary 특성화 테스트 + STRONG 오라클 green 확인.
+- [x] **S1 순수 추가**(00264b7): types.rs 중립 타입(MessageNode·BranchHead·ConversationSnapshot+메서드) + store From 2개 + 유닛테스트(오라클 미러). 미배선=green 불변.
+- [x] **S2 REPL 내부 전환**(b339b5e): Session→snapshot. append/active_path/checkout/branches/contains 메서드화. 경계 From 유지(공개 시그니처 불변, 최대 누수 격리).
+- [x] **S3 CoreSync 뒤집기**(fdef188): load_session→Option<ConversationSnapshot>. store→orchestrator 역결합 제거.
+- [x] **S4 Indexer 뒤집기**(23ace06): persist(&ConversationSnapshot). REPL StoredSession 리터럴 제거.
+- [x] **S5 공개 fn+seed/snapshot 중립화**(c608427): 와이어=StoredSession·레거시 폴백 내부 유지. main·store_roundtrip·fixture 갱신. production repl StoredSession 완전 제거.
+- [x] **S6 자유함수 삭제**(5571106): path_to_root/next_id/tree_summary 삭제(retriever·cli_run→active_path). to_stored/from_stored/save/load(v1 포맷)은 유지. no-default·all-features clean.
+- [x] 적대 검증 워크플로우(등가·경계·회귀범위 3렌즈 12확인점 전부 holds) = **GO**. nit 3건(주석·doc 오지칭·커버리지 미세공백) 반영. lib 585 pass·clippy --all-targets·no-default·all-features clean.
+- [ ] 커밋 → PR → CI green+봇 리뷰 → 머지(리팩토링 트랙 자율 승인).

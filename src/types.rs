@@ -146,7 +146,7 @@ impl ConversationSnapshot {
         }
     }
 
-    /// 트리 요약 줄(/branches 표시용). store::tree_summary 포맷과 바이트 등가.
+    /// 트리 요약 줄(/branches 표시용). 과거 store::tree_summary(S6에서 삭제) 포맷과 바이트 등가 = 유일 소스.
     pub fn tree_summary(&self) -> String {
         if self.nodes.is_empty() {
             return "(빈 트리)".to_string();
@@ -225,7 +225,13 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["1", "2", "4"]
         );
-        // head=None이면 빈 경로.
+        // 노드가 있어도 head=None이면 빈 경로(구 path_to_root 오라클과 동형).
+        assert!(
+            ConversationSnapshot::from_parts(snap.nodes().to_vec(), BranchHead(None))
+                .active_path()
+                .is_empty()
+        );
+        // 빈 스냅샷도 빈 경로.
         assert!(ConversationSnapshot::new().active_path().is_empty());
     }
 
@@ -278,7 +284,7 @@ mod tests {
 
     #[test]
     fn tree_summary_matches_store_format() {
-        // store::tree_summary_characterization_format와 동일 포맷(바이트 등가).
+        // /branches 출력 포맷을 바이트 단위로 고정(과거 store 특성화 테스트가 이 메서드로 접혀 들어옴).
         let snap = ConversationSnapshot::from_parts(
             vec![
                 MessageNode {
