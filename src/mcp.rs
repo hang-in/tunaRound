@@ -1,151 +1,29 @@
-// 토론 맥락 검색 MCP 서버: rmcp stdio 서버로 search_context 툴 하나를 노출한다.
+// tunaRound MCP 서버: 검색·전사·A2A task·에이전트 레지스트리 툴을 노출한다.
+// 툴 정의는 토픽별 자식 서브모듈(mcp/{search,tasks,registry}.rs)에 named tool_router로 나뉘고,
+// 여기서 tool_router()가 그 라우터들을 합성한다(v2-52 분리). 종결 task 색인은 mcp/indexing.rs.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use rmcp::{
-    ErrorData as McpError, ServerHandler, ServiceExt,
-    handler::server::{router::tool::ToolRouter, wrapper::Parameters},
-    model::{CallToolResult, Content, ServerCapabilities, ServerInfo},
-    tool, tool_handler, tool_router,
+    ServerHandler, ServiceExt,
+    handler::server::router::tool::ToolRouter,
+    model::{ServerCapabilities, ServerInfo},
+    tool_handler,
 };
 
-use crate::orchestrator::{
-    ContextRetriever, RosterSeat, TranscriptReader, TranscriptWriter, Utterance,
-};
-use crate::store::a2a::{Task, TaskState};
+use crate::orchestrator::{ContextRetriever, RosterSeat, TranscriptReader, TranscriptWriter};
+use crate::store::a2a::TaskState;
 use crate::store::agents::{AGENT_TTL_SECS, parse_tags};
 use crate::store::sqlite::SqliteStore;
 
-// ---------------------------------------------------------------------------
-// v2-45 P6a: mesh 기억화 = 종결 task의 요청문+결과를 messages/FTS에 색인(search_context로 위임 이력 검색).
-// ---------------------------------------------------------------------------
-
-/// 종결 task 색인에 필요한 최소 정보(락 밖에서 writer로 색인하기 위해 락 안에서 미리 뽑는다).
-struct TerminalIndexPayload {
-    task_id: String,
-    from_agent: String,
-    to_agent: String,
-    runner: Option<String>,
-    /// 원 요청문(history[0]). 없으면 결과만 색인.
-    request_text: Option<String>,
-    /// 결과: completed=artifact 텍스트, failed=상태 메시지 텍스트. 없으면 요청만 색인.
-    result_text: Option<String>,
-}
-
-/// 종결(completed/failed) task에서 색인 payload를 뽑는다(§5-7 네임스페이스용). 요청=history[0],
-/// 결과=completed면 artifact·failed면 status_message. **비종결(canceled·열린)만 None**이다.
-/// 결과 텍스트가 없어도 요청문만 있으면 색인한다: 결과 없다고 None을 주면 백필이 색인 없이 indexed_at을
-/// 스탬프하고, P6b prune이 그걸 "mesh에 있음"으로 신뢰해 요청(history)을 영구 삭제해버리는 손실이 생긴다
-/// (적대 리뷰 confirmed). "indexed_at ⟹ 텍스트 내용이 mesh에(또는 애초에 없음)" 불변식을 지킨다.
-fn build_terminal_index_payload(task: &Task) -> Option<TerminalIndexPayload> {
-    if !matches!(task.state, TaskState::Completed | TaskState::Failed) {
-        return None; // canceled·열린 task는 색인 비대상(§4 P6a).
-    }
-    let request_text = task
-        .history
-        .first()
-        .and_then(|m| m.parts.first())
-        .and_then(|p| p.text.clone());
-    let result_text = match task.state {
-        TaskState::Completed => task
-            .artifacts
-            .first()
-            .and_then(|a| a.parts.first())
-            .and_then(|p| p.text.clone()),
-        _ => task
-            .status_message
-            .as_ref()
-            .and_then(|m| m.parts.first())
-            .and_then(|p| p.text.clone()),
-    };
-    Some(TerminalIndexPayload {
-        task_id: task.id.clone(),
-        from_agent: task.from_agent.clone(),
-        to_agent: task.to_agent.clone(),
-        runner: task.runner.clone(),
-        request_text,
-        result_text,
-    })
-}
-
-/// 종결 task 하나를 mesh 기억에 색인한다(v2-45 P6a). 네임스페이스(§5-7): session_id=`a2a:<task_id>`,
-/// speaker=`a2a/<agent>`(요청=from, 결과=to 또는 runner). writer는 자체 store 연결이라 a2a_store 락과
-/// 무관하다(락 순서: a2a_store 해제 후 호출). best-effort - 색인 실패는 종결을 되돌리지 않고 로그만 남기며
-/// indexed_at을 스탬프하지 않아 다음 백필이 재시도한다. 양쪽 turn이 성공해야 스탬프한다.
-fn index_terminal_task(
-    writer: &Arc<dyn TranscriptWriter>,
-    a2a_store: &Arc<Mutex<SqliteStore>>,
-    p: &TerminalIndexPayload,
-) {
-    let sid = format!("a2a:{}", p.task_id);
-    // 멱등 재색인(적대 리뷰 major): append_turn은 비멱등이고 append 커밋과 indexed_at 스탬프가 서로 다른
-    // 커넥션이라, 크래시(taskkill·WMI 재기동 상시)·부분실패로 스탬프 전 죽으면 백필이 turn을 재-append해
-    // 중복이 쌓인다. 재색인 전 이 세션의 기존 색인을 비워 delete-then-append로 멱등화한다(재실행=덮어쓰기).
-    {
-        let store = a2a_store.lock().unwrap_or_else(|e| e.into_inner());
-        if let Err(e) = store.delete_session_messages(&sid) {
-            eprintln!("[index] task {} 기존 색인 정리 실패(무시): {e}", p.task_id);
-        }
-    }
-    let mut ok = true;
-    if let Some(req) = &p.request_text
-        && let Err(e) = writer.append_turn(&sid, &format!("a2a/{}", p.from_agent), req)
-    {
-        eprintln!("[index] task {} 요청 색인 실패(무시): {e}", p.task_id);
-        ok = false;
-    }
-    let result_speaker = p.runner.as_deref().unwrap_or(&p.to_agent);
-    if let Some(res) = &p.result_text
-        && let Err(e) = writer.append_turn(&sid, &format!("a2a/{result_speaker}"), res)
-    {
-        eprintln!("[index] task {} 결과 색인 실패(무시): {e}", p.task_id);
-        ok = false;
-    }
-    if ok {
-        let store = a2a_store.lock().unwrap_or_else(|e| e.into_inner());
-        if let Err(e) = store.mark_task_indexed(&p.task_id) {
-            eprintln!(
-                "[index] task {} indexed_at 스탬프 실패(무시): {e}",
-                p.task_id
-            );
-        }
-    }
-}
-
-/// 기동 시 미색인 종결 task를 mesh 기억에 백필한다(v2-45 P6a). 구 바이너리 시절 완료분·색인 유실
-/// (expire_stale_claims 등)을 재기동 때 메운다. best-effort(개별 실패는 다음 기동이 재시도).
-pub fn backfill_unindexed_terminal_tasks(
-    a2a_store: &Arc<Mutex<SqliteStore>>,
-    writer: &Arc<dyn TranscriptWriter>,
-) {
-    let tasks = {
-        let store = a2a_store.lock().unwrap_or_else(|e| e.into_inner());
-        match store.list_unindexed_terminal_tasks() {
-            Ok(t) => t,
-            Err(e) => {
-                eprintln!("[index] 백필 조회 실패(무시): {e}");
-                return;
-            }
-        }
-    };
-    if tasks.is_empty() {
-        return;
-    }
-    let n = tasks.len();
-    for task in &tasks {
-        match build_terminal_index_payload(task) {
-            Some(payload) => index_terminal_task(writer, a2a_store, &payload),
-            None => {
-                // 결과 텍스트 없는 종결(레거시·expire→failed 등): 색인할 것이 없으니 스탬프만 해
-                // 목록에서 제외한다(적대 리뷰 minor: 미스탬프 시 매 기동 무한 재스캔·비수렴).
-                let store = a2a_store.lock().unwrap_or_else(|e| e.into_inner());
-                let _ = store.mark_task_indexed(&task.id);
-            }
-        }
-    }
-    eprintln!("[index] 기동 백필: 미색인 종결 task {n}건 처리");
-}
+mod indexing;
+// server.rs가 `crate::mcp::backfill_unindexed_terminal_tasks` 경로로 호출하므로 재노출(경로 유지).
+pub(crate) use indexing::backfill_unindexed_terminal_tasks;
+// 17개 #[tool] 메서드를 토픽별 서브모듈로 분리하고 named tool_router를 합성한다(동작 불변, v2-52).
+mod registry;
+mod search;
+mod tasks;
 
 #[cfg(feature = "serve")]
 mod server;
@@ -219,565 +97,11 @@ impl TunaSearchServer {
     }
 }
 
-#[tool_router]
 impl TunaSearchServer {
-    #[tool(description = "토론 맥락 검색: 과거·다른 분기의 관련 발언을 찾는다")]
-    async fn search_context(
-        &self,
-        Parameters(p): Parameters<SearchParams>,
-    ) -> Result<CallToolResult, McpError> {
-        // retrieve는 SQLite 락 + (semantic 시) 동기 임베딩 HTTP 호출이라 blocking이다.
-        // async executor 스레드를 막지 않도록 spawn_blocking으로 넘긴다.
-        let retriever = Arc::clone(&self.retriever);
-        let query = p.query;
-        let limit = p.limit.unwrap_or(10).min(50);
-        // retrieve Err(1차 검색 경로 DB 장애, R7) = success로 위장하지 않는다. R1 계약(isError=true)으로 반환해
-        // 클라(McpHttpClient::parse_jsonrpc_sse)가 "결과 없음"과 "검색 실패"를 구분하게 한다.
-        let outcome: Result<Vec<Utterance>, String> =
-            tokio::task::spawn_blocking(move || retriever.retrieve(&query, limit))
-                .await
-                .unwrap_or_else(|e| Err(format!("검색 태스크 실패: {e}")));
-        let hits = match outcome {
-            Ok(h) => h,
-            Err(e) => {
-                return Ok(CallToolResult::error(vec![Content::text(format!(
-                    "검색 실패: {e}"
-                ))]));
-            }
-        };
-        let text = if hits.is_empty() {
-            "검색 결과 없음".to_string()
-        } else {
-            hits.iter()
-                .map(|u| format!("[{}] {}", u.speaker, u.content))
-                .collect::<Vec<_>>()
-                .join("\n\n")
-        };
-        Ok(CallToolResult::success(vec![Content::text(text)]))
-    }
-
-    #[tool(
-        description = "현재 토론 전사를 읽는다(활성 경로). 검색이 아니라 통째 맥락이 필요할 때."
-    )]
-    async fn read_transcript(
-        &self,
-        Parameters(p): Parameters<TranscriptParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let Some(reader) = &self.reader else {
-            return Ok(CallToolResult::success(vec![Content::text(
-                "전사 리더 미연결".to_string(),
-            )]));
-        };
-        let sid = p.session_id.unwrap_or_else(|| self.default_session.clone());
-        // read_transcript Err(세션 로드 DB 장애, R7) = "전사 없음"으로 위장하지 않고 R1 계약으로 반환.
-        let utts = match reader.read_transcript(&sid, p.max_turns) {
-            Ok(u) => u,
-            Err(e) => {
-                return Ok(CallToolResult::error(vec![Content::text(format!(
-                    "전사 읽기 실패: {e}"
-                ))]));
-            }
-        };
-        let text = if utts.is_empty() {
-            "전사 없음".to_string()
-        } else {
-            utts.iter()
-                .map(|u| format!("[{}] {}", u.speaker, u.content))
-                .collect::<Vec<_>>()
-                .join("\n\n")
-        };
-        Ok(CallToolResult::success(vec![Content::text(text)]))
-    }
-
-    #[tool(description = "토론에 발언을 추가한다(원격 참가자가 코어 전사에 자기 턴을 씀).")]
-    async fn post_turn(
-        &self,
-        Parameters(p): Parameters<PostTurnParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let Some(writer) = &self.writer else {
-            return Ok(CallToolResult::success(vec![Content::text(
-                "전사 writer 미연결(post_turn 비활성)".to_string(),
-            )]));
-        };
-        let sid = p.session_id.unwrap_or_else(|| self.default_session.clone());
-        match writer.append_turn(&sid, &p.speaker, &p.content) {
-            Ok(id) => Ok(CallToolResult::success(vec![Content::text(format!(
-                "추가됨: session={sid} msg_id={id}"
-            ))])),
-            Err(e) => Ok(CallToolResult::success(vec![Content::text(format!(
-                "추가 실패: {e}"
-            ))])),
-        }
-    }
-
-    #[tool(description = "현재 토론 참가자(좌석) 구성을 조회한다.")]
-    async fn get_roster(
-        &self,
-        Parameters(_p): Parameters<RosterParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let text = match &self.roster {
-            None => "로스터 미연결".to_string(),
-            Some(seats) if seats.is_empty() => "참가자 없음".to_string(),
-            Some(seats) => seats
-                .iter()
-                .map(|s| match &s.role {
-                    Some(r) => format!("{} ({})", s.engine, r),
-                    None => s.engine.clone(),
-                })
-                .collect::<Vec<_>>()
-                .join("\n"),
-        };
-        Ok(CallToolResult::success(vec![Content::text(text)]))
-    }
-
-    #[tool(
-        description = "내 앞으로 온 A2A task 목록을 조회한다(열린 상태: submitted/working/input_required)."
-    )]
-    async fn poll_tasks(
-        &self,
-        Parameters(p): Parameters<PollTasksParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let Some(store) = self.a2a_store.clone() else {
-            return Ok(CallToolResult::success(vec![Content::text(
-                "A2A task 저장소 미구성(poll_tasks 비활성)".to_string(),
-            )]));
-        };
-        // SQLite 락 호출이라 blocking이다. a2a_store는 A2A JSON-RPC 엔드포인트(a2a_server::a2a_handler)와
-        // 동시에 경합할 수 있어 async executor 스레드를 막지 않도록 spawn_blocking으로 넘긴다(같은 관례).
-        let agent = p.agent;
-        let outcome = tokio::task::spawn_blocking(move || {
-            let store = store.lock().unwrap_or_else(|e| e.into_inner());
-            poll_tasks_text(&store, &agent)
-        })
-        .await
-        .unwrap_or_else(|e| Err(format!("작업 실패: {e}")));
-        let text = match outcome {
-            Ok(t) => t,
-            Err(e) => format!("조회 실패: {e}"),
-        };
-        Ok(CallToolResult::success(vec![Content::text(text)]))
-    }
-
-    #[tool(description = "task에 착수했음을 표시한다(submitted/input_required -> working).")]
-    async fn claim_task(
-        &self,
-        Parameters(p): Parameters<ClaimTaskParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let Some(store) = self.a2a_store.clone() else {
-            return Ok(CallToolResult::success(vec![Content::text(
-                "A2A task 저장소 미구성(claim_task 비활성)".to_string(),
-            )]));
-        };
-        let task_id = p.task_id;
-        let agent = p.agent;
-        let runner = p.runner;
-        let outcome = tokio::task::spawn_blocking(move || {
-            let store = store.lock().unwrap_or_else(|e| e.into_inner());
-            claim_task_text(&store, &task_id, agent.as_deref(), runner.as_deref())
-        })
-        .await
-        .unwrap_or_else(|e| Err(format!("작업 실패: {e}")));
-        // R1: 내부 실패(전이충돌 포함)를 success로 위장하지 않는다. isError=true라야 클라(McpHttpClient::
-        // parse_jsonrpc_sse)가 Err로 인식하고, 워커(run_one_pass)가 claim 실패로 보고 러너를 안 돌린다.
-        match outcome {
-            Ok(t) => Ok(CallToolResult::success(vec![Content::text(t)])),
-            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
-                "착수 실패: {e}"
-            ))])),
-        }
-    }
-
-    #[tool(
-        description = "task 결과를 보고하고 완료 처리한다(-> completed, 결과는 텍스트 Artifact로 저장)."
-    )]
-    async fn complete_task(
-        &self,
-        Parameters(p): Parameters<CompleteTaskParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let Some(store) = self.a2a_store.clone() else {
-            return Ok(CallToolResult::success(vec![Content::text(
-                "A2A task 저장소 미구성(complete_task 비활성)".to_string(),
-            )]));
-        };
-        let task_id = p.task_id;
-        let result = p.result;
-        let agent = p.agent;
-        let outcome = tokio::task::spawn_blocking(move || {
-            let store = store.lock().unwrap_or_else(|e| e.into_inner());
-            let text = complete_task_text(&store, &task_id, &result, agent.as_deref())?;
-            // v2-45 P6a: 종결 성공 후 색인 payload를 같은 락 안에서 구성(요청=history[0], 결과=artifact).
-            let payload = store
-                .get_task(&task_id)
-                .ok()
-                .flatten()
-                .as_ref()
-                .and_then(build_terminal_index_payload);
-            Ok::<_, String>((text, payload))
-        })
-        .await
-        .unwrap_or_else(|e| Err(format!("작업 실패: {e}")));
-        // R1: 내부 실패(전이충돌 포함)를 success로 위장하지 않는다(claim_task와 동일 사유).
-        match outcome {
-            Ok((t, payload)) => {
-                // a2a_store 락 해제 후 writer로 mesh 기억 색인(best-effort, 종결 응답과 독립).
-                if let (Some(writer), Some(a2a), Some(payload)) =
-                    (self.writer.clone(), self.a2a_store.clone(), payload)
-                {
-                    // best-effort·종결 응답과 독립: 색인을 백그라운드로 던지고 응답을 막지 않는다
-                    // (gemini 리뷰). 크래시로 미완료 시 재기동 백필이 멱등 재색인한다(delete-then-append).
-                    tokio::task::spawn_blocking(move || {
-                        index_terminal_task(&writer, &a2a, &payload)
-                    });
-                }
-                Ok(CallToolResult::success(vec![Content::text(t)]))
-            }
-            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
-                "완료 처리 실패: {e}"
-            ))])),
-        }
-    }
-
-    #[tool(
-        description = "task 실행이 실패했음을 보고한다(-> failed, 사유는 상태 메시지로 저장). completed와 구분되어 dispatcher가 실패를 인지한다."
-    )]
-    async fn fail_task(
-        &self,
-        Parameters(p): Parameters<FailTaskParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let Some(store) = self.a2a_store.clone() else {
-            return Ok(CallToolResult::success(vec![Content::text(
-                "A2A task 저장소 미구성(fail_task 비활성)".to_string(),
-            )]));
-        };
-        let task_id = p.task_id;
-        let reason = p.reason;
-        let agent = p.agent;
-        let outcome = tokio::task::spawn_blocking(move || {
-            let store = store.lock().unwrap_or_else(|e| e.into_inner());
-            let text = fail_task_text(&store, &task_id, &reason, agent.as_deref())?;
-            // v2-45 P6a: 종결 성공 후 색인 payload 구성(요청=history[0], 결과=실패 사유 status_message).
-            let payload = store
-                .get_task(&task_id)
-                .ok()
-                .flatten()
-                .as_ref()
-                .and_then(build_terminal_index_payload);
-            Ok::<_, String>((text, payload))
-        })
-        .await
-        .unwrap_or_else(|e| Err(format!("작업 실패: {e}")));
-        // R1: 내부 실패(전이충돌 포함)를 success로 위장하지 않는다(claim_task와 동일 사유).
-        match outcome {
-            Ok((t, payload)) => {
-                if let (Some(writer), Some(a2a), Some(payload)) =
-                    (self.writer.clone(), self.a2a_store.clone(), payload)
-                {
-                    // best-effort·종결 응답과 독립: 색인을 백그라운드로 던지고 응답을 막지 않는다
-                    // (gemini 리뷰). 크래시로 미완료 시 재기동 백필이 멱등 재색인한다(delete-then-append).
-                    tokio::task::spawn_blocking(move || {
-                        index_terminal_task(&writer, &a2a, &payload)
-                    });
-                }
-                Ok(CallToolResult::success(vec![Content::text(t)]))
-            }
-            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
-                "실패 처리 실패: {e}"
-            ))])),
-        }
-    }
-
-    #[tool(
-        description = "claim한 task의 lease를 연장한다(장시간 실행 중 requeue 방지, 워커가 주기 호출)."
-    )]
-    async fn extend_task_lease(
-        &self,
-        Parameters(p): Parameters<ExtendLeaseParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let Some(store) = self.a2a_store.clone() else {
-            return Ok(CallToolResult::success(vec![Content::text(
-                "A2A task 저장소 미구성(extend_task_lease 비활성)".to_string(),
-            )]));
-        };
-        let task_id = p.task_id;
-        let agent = p.agent;
-        let outcome = tokio::task::spawn_blocking(move || {
-            let store = store.lock().unwrap_or_else(|e| e.into_inner());
-            extend_lease_text(&store, &task_id, &agent)
-        })
-        .await
-        .unwrap_or_else(|e| Err(format!("작업 실패: {e}")));
-        // 대상이 아니면(종료·재claim) isError=true라야 워커가 Err로 인지한다(claim_task와 동일 계약).
-        match outcome {
-            Ok(t) => Ok(CallToolResult::success(vec![Content::text(t)])),
-            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
-                "lease 연장 실패: {e}"
-            ))])),
-        }
-    }
-
-    #[tool(
-        description = "열린 task를 취소한다(-> canceled). 잘못 보냈거나 더 필요 없는 task 정리용. 이미 종료된 task는 거부한다."
-    )]
-    async fn cancel_task(
-        &self,
-        Parameters(p): Parameters<CancelTaskParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let Some(store) = self.a2a_store.clone() else {
-            return Ok(CallToolResult::success(vec![Content::text(
-                "A2A task 저장소 미구성(cancel_task 비활성)".to_string(),
-            )]));
-        };
-        let task_id = p.task_id;
-        let reason = p.reason;
-        let outcome = tokio::task::spawn_blocking(move || {
-            let store = store.lock().unwrap_or_else(|e| e.into_inner());
-            cancel_task_text(&store, &task_id, reason.as_deref())
-        })
-        .await
-        .unwrap_or_else(|e| Err(format!("작업 실패: {e}")));
-        match outcome {
-            Ok(t) => Ok(CallToolResult::success(vec![Content::text(t)])),
-            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
-                "취소 실패: {e}"
-            ))])),
-        }
-    }
-
-    #[tool(
-        description = "다른 에이전트에게 새 A2A task를 위임한다(생성 즉시 submitted 상태, dispatcher용)."
-    )]
-    async fn send_task(
-        &self,
-        Parameters(p): Parameters<SendTaskParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let Some(store) = self.a2a_store.clone() else {
-            return Ok(CallToolResult::success(vec![Content::text(
-                "A2A task 저장소 미구성(send_task 비활성)".to_string(),
-            )]));
-        };
-        let SendTaskParams {
-            from_agent,
-            to_agent,
-            text,
-            context_id,
-            to_selector,
-        } = p;
-        let outcome = tokio::task::spawn_blocking(move || {
-            let store = store.lock().unwrap_or_else(|e| e.into_inner());
-            send_task_routed(
-                &store,
-                &from_agent,
-                to_agent.as_deref(),
-                to_selector.as_deref(),
-                &text,
-                context_id,
-            )
-        })
-        .await
-        .unwrap_or_else(|e| Err(format!("작업 실패: {e}")));
-        let text = match outcome {
-            Ok(t) => t,
-            Err(e) => format!("전송 실패: {e}"),
-        };
-        Ok(CallToolResult::success(vec![Content::text(text)]))
-    }
-
-    #[tool(
-        description = "이 에이전트를 브로커 로스터에 등록한다(uuid+태그, 워커/세션 자기 등록용)."
-    )]
-    async fn register_agent(
-        &self,
-        Parameters(p): Parameters<RegisterAgentParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let Some(store) = self.a2a_store.clone() else {
-            return Ok(CallToolResult::success(vec![Content::text(
-                "A2A task 저장소 미구성(register_agent 비활성)".to_string(),
-            )]));
-        };
-        let RegisterAgentParams {
-            uuid,
-            tags,
-            display_name,
-        } = p;
-        let outcome = tokio::task::spawn_blocking(move || {
-            let store = store.lock().unwrap_or_else(|e| e.into_inner());
-            let now = store.now()?;
-            let tags = match tags {
-                Some(s) => parse_tags(&s)?,
-                None => BTreeMap::new(),
-            };
-            let tags_len = tags.len();
-            store.register_agent(&uuid, tags, display_name, &now);
-            Ok::<String, String>(format!("등록됨: uuid={uuid} tags={tags_len}개"))
-        })
-        .await
-        .unwrap_or_else(|e| Err(format!("작업 실패: {e}")));
-        // R1: 등록 실패(now/parse_tags 오류)를 success로 위장하지 않는다(클라가 감지하게 isError).
-        match outcome {
-            Ok(t) => Ok(CallToolResult::success(vec![Content::text(t)])),
-            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
-                "등록 실패: {e}"
-            ))])),
-        }
-    }
-
-    #[tool(description = "로스터에 자기 존재를 갱신한다(online 유지, 주기 호출).")]
-    async fn heartbeat(
-        &self,
-        Parameters(p): Parameters<HeartbeatParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let Some(store) = self.a2a_store.clone() else {
-            return Ok(CallToolResult::success(vec![Content::text(
-                "A2A task 저장소 미구성(heartbeat 비활성)".to_string(),
-            )]));
-        };
-        let uuid = p.uuid;
-        let outcome = tokio::task::spawn_blocking(move || {
-            let store = store.lock().unwrap_or_else(|e| e.into_inner());
-            let now = store.now()?;
-            let ok = store.heartbeat_agent(&uuid, &now);
-            Ok::<String, String>(if ok {
-                format!("heartbeat 갱신: {uuid}")
-            } else {
-                format!("미등록 uuid={uuid}(register_agent 먼저 호출하세요)")
-            })
-        })
-        .await
-        .unwrap_or_else(|e| Err(format!("작업 실패: {e}")));
-        // R1: 실제 실패(now 오류)만 isError. "미등록..."은 클로저에서 Ok라 success로 남아 워커의
-        // 재등록 로직(needs_reregister)이 그 텍스트를 받는다(정상 흐름, 실패 아님).
-        match outcome {
-            Ok(t) => Ok(CallToolResult::success(vec![Content::text(t)])),
-            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
-                "heartbeat 실패: {e}"
-            ))])),
-        }
-    }
-
-    #[tool(description = "online 에이전트를 발견한다(selector 태그로 필터, dispatcher 라우팅용).")]
-    async fn list_agents(
-        &self,
-        Parameters(p): Parameters<ListAgentsParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let Some(store) = self.a2a_store.clone() else {
-            return Ok(CallToolResult::success(vec![Content::text(
-                "A2A task 저장소 미구성(list_agents 비활성)".to_string(),
-            )]));
-        };
-        let selector = p.selector;
-        let outcome = tokio::task::spawn_blocking(move || {
-            let store = store.lock().unwrap_or_else(|e| e.into_inner());
-            let now = store.now()?;
-            let sel = match selector {
-                Some(s) => parse_tags(&s)?,
-                None => BTreeMap::new(),
-            };
-            let agents = store.list_agents(&sel, &now, AGENT_TTL_SECS);
-            Ok::<String, String>(format_agents(&agents))
-        })
-        .await
-        .unwrap_or_else(|e| Err(format!("작업 실패: {e}")));
-        // R1: 조회 실패(now/parse_tags 오류)를 success로 위장하지 않는다(클라가 감지하게 isError).
-        match outcome {
-            Ok(t) => Ok(CallToolResult::success(vec![Content::text(t)])),
-            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
-                "조회 실패: {e}"
-            ))])),
-        }
-    }
-
-    #[tool(
-        description = "머신당 presence 스캐너가 라이브 세션 전집합을 일괄 보고한다(upsert+소유분 제거, v2-44)."
-    )]
-    async fn report_presence(
-        &self,
-        Parameters(p): Parameters<ReportPresenceParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let Some(store) = self.a2a_store.clone() else {
-            return Ok(CallToolResult::success(vec![Content::text(
-                "A2A task 저장소 미구성(report_presence 비활성)".to_string(),
-            )]));
-        };
-        let ReportPresenceParams { machine, sessions } = p;
-        let outcome = tokio::task::spawn_blocking(move || {
-            let store = store.lock().unwrap_or_else(|e| e.into_inner());
-            let now = store.now()?;
-            let entries: Vec<crate::store::agents::PresenceUpsert> = sessions
-                .into_iter()
-                .map(|s| crate::store::agents::PresenceUpsert {
-                    uuid: s.uuid,
-                    runner: s.runner,
-                    project: s.project,
-                    display_name: s.display_name,
-                    human_input_at: s.human_input_at,
-                })
-                .collect();
-            let (upserted, removed) = store.sync_presence(&machine, &entries, &now);
-            Ok::<String, String>(format!(
-                "presence 동기화(machine={machine}): upsert {upserted}건, 제거 {removed}건"
-            ))
-        })
-        .await
-        .unwrap_or_else(|e| Err(format!("작업 실패: {e}")));
-        // 동기화 실패(now 오류)를 success로 위장하지 않는다(R1 계약과 동일).
-        match outcome {
-            Ok(t) => Ok(CallToolResult::success(vec![Content::text(t)])),
-            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
-                "presence 동기화 실패: {e}"
-            ))])),
-        }
-    }
-
-    #[tool(
-        description = "위임한 A2A task의 상태를 조회한다(completed면 결과 텍스트도 함께 반환, dispatcher용)."
-    )]
-    async fn get_task(
-        &self,
-        Parameters(p): Parameters<GetTaskParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let Some(store) = self.a2a_store.clone() else {
-            return Ok(CallToolResult::success(vec![Content::text(
-                "A2A task 저장소 미구성(get_task 비활성)".to_string(),
-            )]));
-        };
-        let task_id = p.task_id;
-        let outcome = tokio::task::spawn_blocking(move || {
-            let store = store.lock().unwrap_or_else(|e| e.into_inner());
-            get_task_text(&store, &task_id)
-        })
-        .await
-        .unwrap_or_else(|e| Err(format!("작업 실패: {e}")));
-        let text = match outcome {
-            Ok(t) => t,
-            Err(e) => format!("조회 실패: {e}"),
-        };
-        Ok(CallToolResult::success(vec![Content::text(text)]))
-    }
-
-    #[tool(
-        description = "브로커 전역에서 열려 있는 A2A task를 to_agent 무관하게 전부 조회한다(운영자 조망용, 미배달/고착 의심 주석 포함)."
-    )]
-    async fn tasks(
-        &self,
-        Parameters(_p): Parameters<ListTasksParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let Some(store) = self.a2a_store.clone() else {
-            return Ok(CallToolResult::success(vec![Content::text(
-                "A2A task 저장소 미구성(tasks 비활성)".to_string(),
-            )]));
-        };
-        let outcome = tokio::task::spawn_blocking(move || {
-            let store = store.lock().unwrap_or_else(|e| e.into_inner());
-            let now = store.now()?;
-            list_all_tasks_text(&store, &now)
-        })
-        .await
-        .unwrap_or_else(|e| Err(format!("작업 실패: {e}")));
-        let text = match outcome {
-            Ok(t) => t,
-            Err(e) => format!("조회 실패: {e}"),
-        };
-        Ok(CallToolResult::success(vec![Content::text(text)]))
+    /// 세 서브모듈(search/tasks/registry)의 named tool_router를 `+`로 합성해 전체 툴 라우터를 만든다.
+    /// #[tool_handler] impl ServerHandler가 기본 라우터로 이 연관 함수를 호출한다(rmcp 1.8 규약).
+    pub(crate) fn tool_router() -> ToolRouter<Self> {
+        Self::search_router() + Self::tasks_router() + Self::registry_router()
     }
 }
 
@@ -846,6 +170,8 @@ pub async fn start_mcp_server(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::orchestrator::Utterance;
+    use crate::store::a2a::{Task, TaskState};
     use rmcp::handler::server::wrapper::Parameters;
 
     struct FakeRetriever(Vec<Utterance>);
@@ -899,7 +225,7 @@ mod tests {
                 ..Default::default()
             }],
         }];
-        let p = build_terminal_index_payload(&done).unwrap();
+        let p = indexing::build_terminal_index_payload(&done).unwrap();
         assert_eq!(p.request_text.as_deref(), Some("피드백 3건 정리해줘"));
         assert_eq!(p.result_text.as_deref(), Some("정리 결과"));
         assert_eq!(p.from_agent, "dashboard");
@@ -919,7 +245,7 @@ mod tests {
             context_id: None,
         });
         assert_eq!(
-            build_terminal_index_payload(&fail)
+            indexing::build_terminal_index_payload(&fail)
                 .unwrap()
                 .result_text
                 .as_deref(),
@@ -929,7 +255,7 @@ mod tests {
         let mut req_only = Task::new("t2b", None, "d", "m", "2026-07-11 09:00:00");
         req_only.state = TaskState::Completed;
         req_only.history = vec![req.clone()]; // artifact 없음.
-        let ro = build_terminal_index_payload(&req_only).unwrap();
+        let ro = indexing::build_terminal_index_payload(&req_only).unwrap();
         assert_eq!(ro.request_text.as_deref(), Some("피드백 3건 정리해줘"));
         assert_eq!(
             ro.result_text, None,
@@ -938,7 +264,7 @@ mod tests {
         // canceled·열린 task만 None(색인 비대상).
         let mut cancel = Task::new("t3", None, "d", "m", "2026-07-11 09:00:00");
         cancel.state = TaskState::Canceled;
-        assert!(build_terminal_index_payload(&cancel).is_none());
+        assert!(indexing::build_terminal_index_payload(&cancel).is_none());
     }
 
     #[test]
