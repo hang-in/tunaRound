@@ -137,7 +137,7 @@ pub struct RosterSeat {
 /// load_session은 외부 post_turn까지 포함한 최신 트리를, append_turn은 DB id 권위로 발언을 추가한다.
 /// 이 경계가 연결되면 REPL은 매 라운드 DB를 adopt해 외부 쓰기와 충돌·클로버 없이 공존한다.
 pub trait CoreSync: Send + Sync {
-    fn load_session(&self, session_id: &str) -> Option<crate::store::StoredSession>;
+    fn load_session(&self, session_id: &str) -> Option<crate::types::ConversationSnapshot>;
     fn append_turn(&self, session_id: &str, speaker: &str, content: &str) -> Result<u64, String>;
 }
 

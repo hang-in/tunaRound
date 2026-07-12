@@ -394,8 +394,8 @@ impl Session {
     /// core_sync 미연결이면 no-op(기존 동작 불변). DB에 세션 없으면 그대로 둔다.
     fn adopt_from_core(&mut self) {
         let Some(cs) = &self.core_sync else { return };
-        if let Some(ss) = cs.load_session(&self.session_id) {
-            self.snapshot = ss.into();
+        if let Some(snap) = cs.load_session(&self.session_id) {
+            self.snapshot = snap;
         }
     }
 
@@ -893,12 +893,12 @@ mod tests {
         }
     }
     impl crate::orchestrator::CoreSync for FakeCoreSync {
-        fn load_session(&self, _sid: &str) -> Option<StoredSession> {
+        fn load_session(&self, _sid: &str) -> Option<crate::types::ConversationSnapshot> {
             let db = self.db.lock().unwrap();
             if db.messages.is_empty() {
                 None
             } else {
-                Some(db.clone())
+                Some(db.clone().into())
             }
         }
         fn append_turn(&self, _sid: &str, speaker: &str, content: &str) -> Result<u64, String> {

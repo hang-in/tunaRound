@@ -473,9 +473,13 @@ mod sqlite_transcript {
     }
 
     impl crate::orchestrator::CoreSync for SqliteCoreSync {
-        fn load_session(&self, session_id: &str) -> Option<crate::store::StoredSession> {
+        fn load_session(&self, session_id: &str) -> Option<crate::types::ConversationSnapshot> {
             let store = self.store.lock().unwrap_or_else(|e| e.into_inner());
-            store.load_session(session_id).ok().flatten()
+            store
+                .load_session(session_id)
+                .ok()
+                .flatten()
+                .map(Into::into)
         }
         fn append_turn(
             &self,
