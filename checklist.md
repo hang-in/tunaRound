@@ -518,3 +518,16 @@
 - [x] init 원커맨드 온보딩 PR #75 `bda5542`(node.toml+~/.tunaround/config 스캐폴드·토큰 env 통일·AI 설치 안내). 봇 3건 반영(0600·문구·히스토리).
 - [x] v0.4.0 릴리즈: cargo release minor → 태그 v0.4.0 push → cargo-dist(run 29171411699, **다음 세션 발행 확인**). WMI 배포 0.4.0 라이브. 맥 알림 task a795e9c2.
 - [ ] (다음 세션) v2-48 opencode 감독 레인(스키마 재대조 후). session17 원격 브랜치 삭제.
+
+## 세션25: v2-52 리팩토링 백로그 clean 스윕 (main.rs·mcp.rs·tasks.rs 분리 + fmt + CI 게이트)
+
+> 정본 docs/design/v2-52-refactoring-backlog_2026-07-12.md. 전부 순수 코드 이동(동작 불변)+적대 diff 리뷰 등가 확인+CI green+봇 반영. 핸드오프 docs/prompts/v2-handoff_2026-07-12_session25.md.
+
+- [x] **① main.rs 분리**(PR #83 `c97d3e4`): 서브커맨드 dispatch·백엔드 빌더를 src/cli_run.rs로 추출(run_observe/reindex/mcp_search/serve_mcp/node + build_indexer/retriever/validity_sink/annotation_sink/participants). main.rs 1,160→618. 적대 리뷰 3슬라이스 등가.
+- [x] **dedup**(PR #84 `3d2754f`, #83 봇 제안): build_index_tokenizer(serve→sqlite)+build_query_tokenizer+build_embedder 팩토리로 5곳 통일. cli_run.rs 635→581.
+- [x] **② 전역 fmt + CI 게이트**(PR #85 `043dd0b`): cargo fmt --all(49파일) + 신규 fmt 잡(fmt --all --check) + clippy 2곳 --all-targets. 로컬 rustfmt 1.8.0 ↔ CI @stable 드리프트 0(게이트 통과 실증).
+- [x] **③ mcp.rs 분리**(PR #86 `6393cb2`): 17 rmcp #[tool]을 named tool_router 합성으로 mcp/{search,tasks,registry}.rs + indexing.rs. mcp.rs 1,660→983. 적대 리뷰 3슬라이스 등가.
+- [x] **⑥ tasks.rs 분리**(PR #87 `f795ba3`): store/sqlite/tasks.rs impl SqliteStore 21메서드를 tasks/{state,lease,replay}.rs. tasks.rs 1,880→1,341. 적대 리뷰 2슬라이스 등가.
+- [x] 스테일 브랜치 정리: 머지 origin 브랜치 전량 + 미머지 session17(v2-41 superseded 확인) 삭제. origin=main만.
+- [ ] **(defer, 전용 세션·계약 고정 먼저) ④ task 문자열→JSON**(mcp/format.rs·worker.rs, 라이브 mesh 프로토콜 동작 변경) / **⑤ store DTO**(orchestrator·repl·store 중립 도메인 타입, 아키텍처 변경). 사용자 결정 2026-07-12.
+- [ ] **(다음 세션 후보) 발견된 pre-existing 잠복 이슈 3건**: post_turn writer 실패 시 success 반환(R1 위반, quick win) / index_terminal_task delete-then-append race / OllamaEmbedder reqwest blocking 타임아웃 부재. 순수 이동 PR 범위 밖이라 미수정, 별도 처리.

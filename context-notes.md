@@ -2,6 +2,18 @@
 
 > 작업 중 결정과 근거. 계속 append. (규율 #7) 다음 세션이 결정을 재유도하지 않게.
 
+## 2026-07-12 세션25: v2-52 리팩토링 백로그 clean 스윕 (god파일 3개 분리 + fmt + CI 게이트)
+
+정본 = [세션25 핸드오프](docs/prompts/v2-handoff_2026-07-12_session25.md). 재론 금지:
+- **경위**: 세션24 백로그 v2-52의 clean 기계적 분리를 전부 완주. 사용자 지시="1(main.rs)→2(fmt) 하고 스테일 브랜치 정리도, 이어서 나머지 리팩토링도 쭉", 진행 방식="자율(push+PR+머지, 문제시만 보고)". PR #83~#87 5개 머지.
+- **핵심 기법(rmcp 1.8 named tool_router)**: `#[tool_router(router=이름, vis="pub(crate)")]`로 여러 impl 블록을 내고 `Self::a()+Self::b()`로 합성(Context7 검증). `#[tool_handler]`가 `Self::tool_router()`를 부르므로 그 이름 연관함수가 합성 반환. **서브모듈=부모의 자식이라 private 필드/메서드/const 그대로 접근**(위임 불요) - mcp.rs·tasks.rs 분리를 깔끔하게 만든 결정적 사실. 자유함수 god파일(main.rs)은 매크로 무관해 더 단순.
+- **④ task JSON·⑤ store DTO = defer(사용자 결정)**: ④=문자열 프로토콜→JSON(라이브 mesh 동작 변경, 다단계), ⑤=StoredSession/Utterance→중립 도메인 타입(핵심 토론 모델 아키텍처 변경, blast radius). 둘 다 doc이 "착수 전 계약 고정" 요구=순수 리팩토링과 다른 범주. 전용 세션에서 계약 고정 후.
+- **CI 게이트 강화**: fmt --all --check(ubuntu 1잡, 빌드 불요) + clippy --all-targets(테스트 코드 idiom). --all-features는 dashboard 서브피처 frontend/dist 빌드 의존이라 매트릭스 부적합→보류(feature-scoped --all-targets로 충족).
+- **fmt 결정성 확정**: 로컬 rustfmt 1.8.0-stable ↔ CI @stable 드리프트 없음(fmt 게이트 CI 통과로 실증). rustfmt 기본 포맷은 edition 내 stable 간 동일. PR 전 로컬 `cargo fmt --all` 습관.
+- **봇 false positive 2종 교훈**: (a) gemini "미사용 import" = child `use super::*` 소비 놓침(clippy -D warnings 통과=사용 증명). (b) gemini "private을 자식이 못 써 컴파일 에러" = **Rust descendant 프라이버시 오해**(CI 3-OS 빌드 통과가 반증). **둘 다 무시**(가시성 넓히면 불필요 확대). verbatim 이동 코드를 CodeRabbit/DeepSource가 "새 라인"이라 pre-existing 이슈로 재플래그하는 것도 동일(머지 후 소멸). [[deepsource-python-fails-on-main]] 계열.
+- **발견 잠복 이슈 3건(별도)**: post_turn writer 실패 시 success 반환(R1 위반)·index_terminal_task race·OllamaEmbedder 타임아웃 부재. 전부 verbatim 이동 pre-existing이라 순수 이동 PR 범위 밖(리팩토링≠버그수정), 핸드오프에 기록해 다음 세션 후보로.
+- **방법론**: 큰 기계적 이동(mcp.rs·tasks.rs)은 general-purpose 서브에이전트에 정밀 스펙 위임(테스트=강한 오라클) → 직접 검증(test·clippy·fmt 재실행) → 적대 diff 리뷰 워크플로우(원본 '-' vs 이동본 '+' 대조, verdict=equivalent) → 머지. main.rs·dedup·fmt는 직접. 각 PR: 커밋 → CI(canonical만 게이트, DeepSource 자문) + 봇리뷰 → 머지 → prune.
+
 ## 2026-07-12 세션24: v2-48 재대조·기능2·품질게이트·대시보드 전면 재편·도그푸딩
 
 정본 = [세션24 핸드오프](docs/prompts/v2-handoff_2026-07-12_session24.md). 재론 금지 결정:
