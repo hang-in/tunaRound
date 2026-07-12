@@ -230,7 +230,7 @@ mod tests {
 
     /// 무출력으로 수 초 도는 자식(idle 타임아웃 발화 검증용). Windows는 ping의 무출력 대기로 등가 재현.
     fn spec_idle_no_output(idle_ms: u64) -> ExecSpec {
-        #[cfg(unix)]
+        #[cfg(not(windows))]
         let (bin, args): (&str, &[&str]) = ("sh", &["-c", "exec sleep 5"]);
         // ping -n 6 = 약 5초 대기, 출력은 nul로 버려 stdout 무출력을 보장한다.
         #[cfg(windows)]
@@ -240,7 +240,7 @@ mod tests {
 
     /// 즉시 두 줄 출력 후 정상 종료(출력이 타이머를 리셋해 오탐 타임아웃이 없음을 검증).
     fn spec_two_lines(idle_ms: u64) -> ExecSpec {
-        #[cfg(unix)]
+        #[cfg(not(windows))]
         let (bin, args): (&str, &[&str]) = ("sh", &["-c", "printf 'line1\\nline2\\n'"]);
         #[cfg(windows)]
         let (bin, args): (&str, &[&str]) = ("cmd", &["/C", "echo line1&echo line2"]);
@@ -249,7 +249,7 @@ mod tests {
 
     /// 무출력으로 즉시 비정상 종료(Timeout 아닌 Spawn 오류로 분류되는지 검증).
     fn spec_nonzero_exit(idle_ms: u64) -> ExecSpec {
-        #[cfg(unix)]
+        #[cfg(not(windows))]
         let (bin, args): (&str, &[&str]) = ("sh", &["-c", "exit 3"]);
         #[cfg(windows)]
         let (bin, args): (&str, &[&str]) = ("cmd", &["/C", "exit 3"]);
