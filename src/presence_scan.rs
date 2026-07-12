@@ -15,6 +15,9 @@ pub struct LiveSession {
     /// 스캐너가 관측한 마지막 사람 입력 시각(v2-45 P5, codex rollout user_message tail 스캔, DB datetime
     /// 포맷). claude는 human-ping 훅이 별도 신호 경로라 None. 브로커 sync_presence가 max-merge한다.
     pub human_input_at: Option<String>,
+    /// 세션 생성시각(codex session_meta timestamp, DB datetime 포맷). 이슈 #88 게이트의 신규-미입력 세션
+    /// grace 신호(사람 입력 전이라도 최근 생성이면 유지). codex만 채우고 claude/idle/기타는 None.
+    pub created_at: Option<String>,
 }
 
 /// cwd가 홈 디렉토리 자체면 "home", 아니면 마지막 세그먼트. 훅의 project_from_cwd와 같은 규약
@@ -46,7 +49,13 @@ pub fn is_temp_cwd(cwd: &str) -> bool {
 }
 
 /// codex rollout jsonl의 session_meta 줄에서 (session_id, cwd, originator)를 뽑는다. 실패는 None.
-pub fn parse_codex_meta_line(line: &str) -> Option<(String, Option<String>, Option<String>)> {
+/// parse_codex_meta_line 반환: (session_id, cwd, originator, created_at). created_at은 이슈 #88 grace 신호.
+type CodexMeta = (String, Option<String>, Option<String>, Option<String>);
+
+/// enumerate_codex_sessions 후보: (uuid, project, path, mtime, created_at).
+type CodexCandidate = (String, Option<String>, PathBuf, SystemTime, Option<String>);
+
+pub fn parse_codex_meta_line(line: &str) -> Option<CodexMeta> {
     let v: serde_json::Value = serde_json::from_str(line.trim()).ok()?;
     if v.get("type").and_then(|t| t.as_str()) != Some("session_meta") {
         return None;
@@ -62,7 +71,14 @@ pub fn parse_codex_meta_line(line: &str) -> Option<(String, Option<String>, Opti
         .get("originator")
         .and_then(|o| o.as_str())
         .map(str::to_string);
-    Some((id, cwd, originator))
+    // 세션 생성시각(신규-미입력 세션 grace용, 이슈 #88). payload.timestamp(세션 시작) 우선, 없으면 라인
+    // top-level timestamp. ISO → DB datetime(normalize는 offset을 스트립·UTC 유지, 롤아웃은 Z=UTC).
+    let created_at = p
+        .get("timestamp")
+        .or_else(|| v.get("timestamp"))
+        .and_then(|t| t.as_str())
+        .and_then(normalize_iso_to_db_datetime);
+    Some((id, cwd, originator, created_at))
 }
 
 /// 기본 codex 세션 디렉토리(`~/.codex/sessions`). HOME 미확장이면 None.
@@ -126,6 +142,29 @@ pub fn normalize_iso_to_db_datetime(ts: &str) -> Option<String> {
     } else {
         None
     }
+}
+
+/// SystemTime을 UTC "YYYY-MM-DD HH:MM:SS" DB datetime으로 포맷한다(chrono 없이, 이슈 #88 게이트의
+/// threshold 계산용). UNIX epoch 초 → Howard Hinnant civil-from-days. human_input_at·created_at이
+/// normalize_iso_to_db_datetime(UTC 유지)로 만든 값과 같은 UTC·같은 포맷이라, DB datetime의
+/// 사전순=시간순 성질로 문자열 비교만으로 신선도를 판정한다(store::a2a::age_secs=sqlite-gated 회피).
+pub fn system_time_to_db_datetime(t: std::time::SystemTime) -> Option<String> {
+    let secs = t.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs() as i64;
+    let days = secs.div_euclid(86_400);
+    let tod = secs.rem_euclid(86_400);
+    let (hh, mm, ss) = (tod / 3600, (tod % 3600) / 60, tod % 60);
+    // civil_from_days(Hinnant): epoch days → (year, month, day).
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y0 = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y0 + 1 } else { y0 };
+    Some(format!("{y:04}-{m:02}-{d:02} {hh:02}:{mm:02}:{ss:02}"))
 }
 
 /// user_message가 사람 입력인지(= relay 기계 주입이 아닌지) 판정한다(§5-6 고정 계약). relay 주입은
@@ -194,8 +233,8 @@ pub fn enumerate_codex_sessions(
     home: Option<&Path>,
     mut input_cache: Option<&mut CodexInputCache>,
 ) -> Vec<LiveSession> {
-    // 후보 수집: (uuid, project, path, mtime). 같은 uuid의 rollout이 복수면 최신(mtime 최대)만 채택한다.
-    let mut cands: Vec<(String, Option<String>, PathBuf, SystemTime)> = Vec::new();
+    // 후보 수집: (uuid, project, path, mtime, created_at). 같은 uuid의 rollout이 복수면 최신(mtime 최대)만.
+    let mut cands: Vec<CodexCandidate> = Vec::new();
     let mut stack = vec![sessions_dir.to_path_buf()];
     // 디렉토리 깊이는 YYYY/MM/DD 고정이지만 방어적으로 상한을 둔다(심볼릭 링크 순환 등).
     let mut visited = 0usize;
@@ -227,7 +266,7 @@ pub fn enumerate_codex_sessions(
             let Some(first) = read_first_line(&path) else {
                 continue;
             };
-            let Some((uuid, cwd, originator)) = parse_codex_meta_line(&first) else {
+            let Some((uuid, cwd, originator, created_at)) = parse_codex_meta_line(&first) else {
                 continue;
             };
             if originator.as_deref() != Some("codex-tui") {
@@ -237,21 +276,31 @@ pub fn enumerate_codex_sessions(
                 continue;
             }
             let project = project_from_cwd_normalized(cwd.as_deref(), home);
-            cands.push((uuid, project, path, mtime));
+            cands.push((uuid, project, path, mtime, created_at));
         }
     }
     // uuid별 최신 rollout만 남긴다(uuid asc, mtime desc로 정렬 후 dedup_by가 앞=최신을 유지).
     cands.sort_by(|a, b| a.0.cmp(&b.0).then(b.3.cmp(&a.3)));
     cands.dedup_by(|a, b| a.0 == b.0);
     let mut out: Vec<LiveSession> = Vec::with_capacity(cands.len());
-    for (uuid, project, path, mtime) in cands {
+    for (uuid, project, path, mtime, created_at) in cands {
         let human_input_at = match input_cache.as_mut() {
             None => None, // 스캔 불필요 호출(relay): uuid만 낸다.
             Some(cache) => match cache.get(&uuid) {
                 // mtime 무변경 = rollout에 새 입력 없음 → 전 주기 결과 재사용(재스캔 스킵).
                 Some((cached_mtime, cached)) if *cached_mtime == mtime => cached.clone(),
                 _ => {
-                    let hi = parse_codex_last_user_input(&path, CODEX_TAIL_BYTES);
+                    let scanned = parse_codex_last_user_input(&path, CODEX_TAIL_BYTES);
+                    // human_input_at은 단조 증가(사람 입력 시각은 뒤로 안 감). 장기 자율작업으로 마지막
+                    // 사람 입력 이후 출력이 256KB tail 밖으로 밀리면 재스캔이 None이 되는데(#88 적대 검증
+                    // minor), 그때 이전 관측값을 유지해 살아있는 세션의 조기 드롭을 막는다. 유령은 relay
+                    // 주입이 human_input에 면역이라 값이 얼어붙어 있어 이 유지가 수명을 늘리지 않는다
+                    // (여전히 마지막 실입력 + window에서 드롭). 둘 다 Some이면 사전순 최댓값(단조 보장).
+                    let prev = cache.get(&uuid).and_then(|(_, v)| v.clone());
+                    let hi = match (scanned, prev) {
+                        (Some(s), Some(p)) => Some(if s >= p { s } else { p }),
+                        (s, p) => s.or(p),
+                    };
                     cache.insert(uuid.clone(), (mtime, hi.clone()));
                     hi
                 }
@@ -262,6 +311,7 @@ pub fn enumerate_codex_sessions(
             runner: "codex".to_string(),
             project,
             human_input_at,
+            created_at,
         });
     }
     // 이번 주기에 사라진 세션의 캐시 항목 정리(무한 성장 방지).
@@ -296,6 +346,7 @@ pub fn enumerate_claude_live(
             project: project_from_cwd_normalized(s.cwd.as_deref(), home).or(s.project),
             // claude ★ 신호는 UserPromptSubmit 훅(→ human-ping) 경로라 스캐너는 보고하지 않는다.
             human_input_at: None,
+            created_at: None, // codex 전용 grace 신호(claude는 마커 경로라 게이트 비대상).
         })
         .collect()
 }
@@ -644,6 +695,7 @@ pub fn enumerate_idle_marker_sessions(
             project,
             // claude ★ 신호는 human-ping 훅 경로(enumerate_claude_live와 동일). jsonl age는 무시(유휴라 오래됨).
             human_input_at: None,
+            created_at: None, // codex 전용 grace 신호(claude idle은 게이트 비대상).
         });
     }
     out.sort_by(|a, b| a.uuid.cmp(&b.uuid)); // HashSet 순회의 비결정성을 없애 보고 payload를 안정화.
@@ -664,6 +716,40 @@ pub fn apply_process_gate(
             .collect(),
         _ => sessions,
     }
+}
+
+/// codex 세션 사람활동 신선도 게이트(순수부, 이슈 #88). codex는 마커·PID가 없어 rollout mtime만으론 개별
+/// thread 생존을 못 가른다(relay가 죽은 thread를 resume하며 mtime을 갱신 → stale 창 무한 연장). human_input_at은
+/// relay 주입(RELAY_INJECT_PREFIX)에 면역이라 유령에선 얼어붙고, created_at은 신규-미입력 세션의 grace 신호다.
+/// codex 세션은 **사람입력 또는 생성이 min_active_db(= now-window, DB datetime) 이후**면 유지하고, 둘 다 그보다
+/// 오래됐거나 없으면 드롭한다(유령 배제). claude·워커·infra 등 비-codex는 무조건 통과(마커·별도 신호 경로).
+/// DB datetime은 고정폭이라 사전순=시간순 → 문자열 비교만으로 판정한다(store::a2a::age_secs=sqlite-gated 회피).
+/// upstream 필터라, 드롭된 uuid는 sync_presence의 stale 제거가 로스터·A2A·영속행까지 자동 GC한다.
+///
+/// **왜 시간창인가(2026-07-12 실측, codex-cli 0.144.1, 재론 금지)**: codex per-thread 생존을 읽을 깨끗한
+/// 신호가 도달 범위에 없다. (1) session_meta에 PID·프로세스 식별자가 없다(키=session_id·cwd·originator·
+/// source·cli_version·context_window뿐) → claude식 PID-마커 이식 불가. (2) app-server `thread/list` status와
+/// `thread/loaded/list`는 **그 인스턴스가 메모리에 로드한 것만** 반영(전역 아님)이고, 죽은 thread도
+/// `thread/resume`이 성공하며 `idle`/loaded가 된다 → relay 주입이 유령을 loaded로 만들어 오히려 악화. 사람의
+/// codex TUI는 별도(VS Code 자체) app-server에 살아 mesh app-server가 그 생존을 못 본다. 즉 이 시간창은
+/// **원리적 최선**이며 다음 두 성질을 준다: relay 자기유지 루프 차단(human_input 얼음) + 유령 수명 상한
+/// (stale_mins→window). **수용된 잔여**: 방금 쓰다 닫은 세션은 human_input이 최근이라 살아있는 idle 세션과
+/// 시간만으론 구분 불가 → window 동안 로스터에 잔존(codex_gate_fresh_churn_ghost_lingers 테스트가 명시).
+/// 부수 FP: window 넘게 입력 없는 살아있는 codex(장기작업 관전)는 드롭되나 다음 입력 시 ≤interval 자기치유.
+pub fn apply_codex_human_input_gate(
+    sessions: Vec<LiveSession>,
+    min_active_db: &str,
+) -> Vec<LiveSession> {
+    sessions
+        .into_iter()
+        .filter(|s| {
+            if s.runner != "codex" {
+                return true; // codex 전용 게이트.
+            }
+            let fresh = |ts: &Option<String>| ts.as_deref().is_some_and(|t| t >= min_active_db);
+            fresh(&s.human_input_at) || fresh(&s.created_at)
+        })
+        .collect()
 }
 
 /// report_presence의 sessions JSON 배열로 직렬화한다. display_name = {machine}-{runner}-{project|?}.
@@ -694,11 +780,19 @@ mod tests {
 
     #[test]
     fn codex_meta_line_parses_id_cwd_originator() {
-        let line = r#"{"timestamp":"t","type":"session_meta","payload":{"session_id":"abc-123","id":"abc-123","cwd":"C:\\Users\\me\\proj","originator":"codex-tui"}}"#;
-        let (id, cwd, orig) = parse_codex_meta_line(line).unwrap();
+        let line = r#"{"timestamp":"2026-07-11T09:00:05Z","type":"session_meta","payload":{"session_id":"abc-123","id":"abc-123","timestamp":"2026-07-11T09:00:00Z","cwd":"C:\\Users\\me\\proj","originator":"codex-tui"}}"#;
+        let (id, cwd, orig, created_at) = parse_codex_meta_line(line).unwrap();
         assert_eq!(id, "abc-123");
         assert_eq!(cwd.as_deref(), Some("C:\\Users\\me\\proj"));
         assert_eq!(orig.as_deref(), Some("codex-tui"));
+        // created_at = payload.timestamp(세션 시작) 우선, ISO→DB. 이슈 #88 grace 신호.
+        assert_eq!(created_at.as_deref(), Some("2026-07-11 09:00:00"));
+        // payload.timestamp 없으면 top-level로 폴백.
+        let no_payload_ts = r#"{"timestamp":"2026-07-11T10:00:00Z","type":"session_meta","payload":{"session_id":"x","originator":"codex-tui"}}"#;
+        assert_eq!(
+            parse_codex_meta_line(no_payload_ts).unwrap().3.as_deref(),
+            Some("2026-07-11 10:00:00")
+        );
         // session_meta가 아닌 줄은 None.
         assert!(parse_codex_meta_line(r#"{"type":"turn","payload":{}}"#).is_none());
     }
@@ -788,6 +882,7 @@ mod tests {
             runner: r.to_string(),
             project: None,
             human_input_at: None,
+            created_at: None,
         };
         let all = vec![s("claude"), s("codex")];
         // 확실한 0 → 해당 러너만 제거.
@@ -797,6 +892,142 @@ mod tests {
         // 조회 실패(None)·1개 이상 → 그대로.
         assert_eq!(apply_process_gate(all.clone(), "codex", None).len(), 2);
         assert_eq!(apply_process_gate(all, "codex", Some(3)).len(), 2);
+    }
+
+    fn codex_session(uuid: &str, hi: Option<&str>, ca: Option<&str>) -> LiveSession {
+        LiveSession {
+            uuid: uuid.into(),
+            runner: "codex".into(),
+            project: None,
+            human_input_at: hi.map(str::to_string),
+            created_at: ca.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn codex_human_input_gate_keeps_fresh_drops_ghost() {
+        // 이슈 #88: threshold(= now-window) = 2026-07-11 09:00:00. codex는 human_input 또는 created가
+        // 이 이후면 유지, 둘 다 stale/None이면 드롭. claude는 무조건 통과.
+        let threshold = "2026-07-11 09:00:00";
+        let sessions = vec![
+            // 유령: 사람입력·생성 둘 다 threshold 이전 → 드롭(핵심 케이스).
+            codex_session(
+                "ghost",
+                Some("2026-07-11 08:00:00"),
+                Some("2026-07-11 07:00:00"),
+            ),
+            // 활성: 최근 사람입력 → 유지.
+            codex_session(
+                "active",
+                Some("2026-07-11 09:30:00"),
+                Some("2026-07-11 06:00:00"),
+            ),
+            // 신규-미입력: 사람입력 None이나 최근 생성(grace) → 유지.
+            codex_session("new", None, Some("2026-07-11 09:10:00")),
+            // 신호 없음(둘 다 None) → 드롭.
+            codex_session("nosignal", None, None),
+            // claude는 게이트 비대상 → human/created None이어도 통과.
+            LiveSession {
+                uuid: "claude-s".into(),
+                runner: "claude".into(),
+                project: None,
+                human_input_at: None,
+                created_at: None,
+            },
+        ];
+        let kept: Vec<String> = apply_codex_human_input_gate(sessions, threshold)
+            .into_iter()
+            .map(|s| s.uuid)
+            .collect();
+        assert_eq!(kept, vec!["active", "new", "claude-s"]);
+    }
+
+    #[test]
+    fn codex_human_input_gate_boundary_is_inclusive() {
+        let threshold = "2026-07-11 09:00:00";
+        // 정확히 threshold(>= 비교) = 유지.
+        assert_eq!(
+            apply_codex_human_input_gate(
+                vec![codex_session("b", Some(threshold), None)],
+                threshold
+            )
+            .len(),
+            1
+        );
+        // threshold보다 1초 이전(created도 없음) = 드롭.
+        assert_eq!(
+            apply_codex_human_input_gate(
+                vec![codex_session("b", Some("2026-07-11 08:59:59"), None)],
+                threshold
+            )
+            .len(),
+            0
+        );
+    }
+
+    #[test]
+    fn codex_gate_drops_ghost_that_process_gate_kept_and_is_snapshot_independent() {
+        // apply_process_gate는 codex 프로세스≥1이면 유령도 통과(all-or-nothing). human_input 게이트가 그
+        // 뒤에서 유령을 드롭하는 협업을 못박는다. 게이트는 프로세스 count를 안 받으므로 스냅샷 실패 주기에도 동작.
+        let threshold = "2026-07-11 09:00:00";
+        let ghost = codex_session(
+            "ghost",
+            Some("2026-07-11 08:00:00"),
+            Some("2026-07-11 07:00:00"),
+        );
+        let fresh = codex_session("fresh", Some("2026-07-11 09:30:00"), None);
+        let after_proc = apply_process_gate(vec![ghost, fresh], "codex", Some(1));
+        assert_eq!(
+            after_proc.len(),
+            2,
+            "process_gate는 count>=1이면 유령도 유지"
+        );
+        let after_human: Vec<String> = apply_codex_human_input_gate(after_proc, threshold)
+            .into_iter()
+            .map(|s| s.uuid)
+            .collect();
+        assert_eq!(after_human, vec!["fresh"]);
+    }
+
+    #[test]
+    fn codex_gate_fresh_churn_ghost_lingers_documented_residual() {
+        // 이슈 #88의 원리적 잔여(재론 금지): 방금 쓰다 닫은 세션(=fresh-churn 유령)은 human_input이 최근이라
+        // 살아있는 idle 세션과 시간만으론 구분 불가 → window 동안 로스터에 잔존한다. 재현 데이터(2026-07-12):
+        // 유령 019f5547과 라이브 019f554b가 ~4분 간격 생성. 유령도 닫히기 직전 사람입력이 있었으므로 그 시각이
+        // window 이내면 게이트를 통과한다. 이 테스트는 "게이트가 #88을 완전 제거한다"는 오해를 막는 명세다.
+        let threshold = "2026-07-11 09:00:00"; // now-window.
+        // 유령: 닫히기 직전(threshold 이후) 사람입력 → 게이트 통과(=수용된 잔여, 드롭 안 됨).
+        let fresh_ghost = codex_session("fresh-ghost", Some("2026-07-11 09:20:00"), None);
+        // 라이브: 더 최근 입력 → 당연히 통과. 둘 다 남아 dispatcher/사용자가 유령을 고를 수 있다.
+        let live = codex_session("live", Some("2026-07-11 09:40:00"), None);
+        let kept: Vec<String> = apply_codex_human_input_gate(vec![fresh_ghost, live], threshold)
+            .into_iter()
+            .map(|s| s.uuid)
+            .collect();
+        assert_eq!(
+            kept,
+            vec!["fresh-ghost", "live"],
+            "fresh-churn 유령은 window 동안 잔존(원리적 한계): 게이트는 유령 수명 상한과 relay 자기유지 차단만 보장"
+        );
+    }
+
+    #[test]
+    fn system_time_to_db_datetime_formats_utc_civil() {
+        use std::time::{Duration, UNIX_EPOCH};
+        assert_eq!(
+            system_time_to_db_datetime(UNIX_EPOCH).as_deref(),
+            Some("1970-01-01 00:00:00")
+        );
+        // +1일 +1시간 +1분 +1초.
+        assert_eq!(
+            system_time_to_db_datetime(UNIX_EPOCH + Duration::from_secs(86_400 + 3661)).as_deref(),
+            Some("1970-01-02 01:01:01")
+        );
+        // 알려진 epoch 1700000000 = 2023-11-14 22:13:20 UTC(월/윤년 경계 civil 정확성).
+        assert_eq!(
+            system_time_to_db_datetime(UNIX_EPOCH + Duration::from_secs(1_700_000_000)).as_deref(),
+            Some("2023-11-14 22:13:20")
+        );
     }
 
     #[test]
@@ -841,6 +1072,7 @@ mod tests {
             runner: "claude".into(),
             project: Some("tunaRound".into()),
             human_input_at: Some("2026-07-11 09:00:00".into()),
+            created_at: None,
         }];
         let v = to_report_json("win", &sessions);
         assert_eq!(v[0]["uuid"], "u1");
@@ -972,6 +1204,48 @@ mod tests {
             "캐시 재사용도 동일 값"
         );
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn enumerate_cache_preserves_human_input_when_scrolled_out_of_tail() {
+        // 이슈 #88 적대 검증 minor: 장기 자율작업의 마지막 사람입력이 256KB tail 밖으로 밀려 재스캔이
+        // None이어도 캐시의 이전 관측값을 유지한다(살아있는 세션의 조기 드롭 방지, human_input 단조성).
+        // 캐시 mtime을 EPOCH로 심어 이번 주기 파일 mtime과 무조건 달라 rescan 경로를 강제한다.
+        let dir = std::env::temp_dir().join(format!("tuna-codex-persist-{}", std::process::id()));
+        let day = dir.join("2026").join("07").join("11");
+        std::fs::create_dir_all(&day).unwrap();
+        // 사람 입력(user_message) 없는 rollout → 재스캔 시 parse_codex_last_user_input=None.
+        std::fs::write(
+            day.join("rollout-2026-07-11T01-aaa.jsonl"),
+            concat!(
+                r#"{"timestamp":"2026-07-11T09:00:00Z","type":"session_meta","payload":{"session_id":"tui-1","cwd":"/u/x/projA","originator":"codex-tui"}}"#, "\n",
+                r#"{"timestamp":"2026-07-11T09:30:00Z","type":"event_msg","payload":{"type":"agent_message","message":"긴 출력"}}"#, "\n",
+            ),
+        )
+        .unwrap();
+        let mut cache = CodexInputCache::new();
+        // 이전 주기에 관측한 사람입력을 심는다(mtime=EPOCH ≠ 파일 mtime → rescan 발생).
+        cache.insert(
+            "tui-1".to_string(),
+            (
+                SystemTime::UNIX_EPOCH,
+                Some("2026-07-11 09:05:00".to_string()),
+            ),
+        );
+        let found = enumerate_codex_sessions(
+            &dir,
+            SystemTime::now(),
+            Duration::from_secs(3600),
+            None,
+            Some(&mut cache),
+        );
+        std::fs::remove_dir_all(&dir).ok();
+        assert_eq!(found.len(), 1);
+        assert_eq!(
+            found[0].human_input_at.as_deref(),
+            Some("2026-07-11 09:05:00"),
+            "재스캔이 None이어도 캐시의 이전 human_input_at 유지(단조)"
+        );
     }
 
     // --- v2-45 P8: 유휴-열림 세션 로스터 유지 ---

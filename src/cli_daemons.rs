@@ -215,6 +215,9 @@ pub fn presence_scan(rt: &tokio::runtime::Runtime, a: PresenceScanArgs) {
             .ok()
             .map(std::path::PathBuf::from);
         let stale = std::time::Duration::from_secs(a.stale_mins.saturating_mul(60));
+        // 이슈 #88: codex 세션 사람활동 신선도 window(사람입력/생성이 이보다 오래된 codex 유령 배제).
+        let codex_window =
+            std::time::Duration::from_secs(a.codex_human_window_mins.saturating_mul(60));
         let interval = a.interval.max(1);
         let mut last_report = String::new();
         // codex 입력 신호 tail 스캔의 주기 간 캐시(uuid→(mtime, human_input_at)). mtime 무변경 rollout은
@@ -251,6 +254,17 @@ pub fn presence_scan(rt: &tokio::runtime::Runtime, a: PresenceScanArgs) {
                 let marker_dir = h.join(".tunaround").join("autoarm");
                 sessions = tunaround::presence_scan::filter_tombstoned(sessions, &marker_dir);
                 last_idle = tunaround::presence_scan::filter_tombstoned(last_idle, &marker_dir);
+            }
+            // 이슈 #88: codex 전용 사람활동 신선도 게이트(스냅샷 비의존, filter_tombstoned와 같은 위치).
+            // codex는 마커·PID가 없어 종료된 유령 세션(rollout mtime이 relay resume으로 fresh)이
+            // apply_process_gate(러너 all-or-nothing)를 통과해 오라우팅됐다. human_input_at(relay 주입 면역)
+            // 또는 created_at(신규 grace)이 window 이내인 codex만 남긴다. threshold 계산 실패는 fail-open(미드롭).
+            if let Some(min_active) = now
+                .checked_sub(codex_window)
+                .and_then(tunaround::presence_scan::system_time_to_db_datetime)
+            {
+                sessions =
+                    tunaround::presence_scan::apply_codex_human_input_gate(sessions, &min_active);
             }
             // 프로세스 스냅샷 1회: 러너 카운트 게이트 + 마커 생존 판정이 공유한다.
             if let Some((proc_text, is_win)) = tunaround::presence_scan::process_list_text() {

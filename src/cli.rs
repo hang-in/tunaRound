@@ -329,6 +329,11 @@ pub struct PresenceScanArgs {
     /// 라이브로 간주할 활동 신선도 창(분, 기본 240). 개별 크래시 유령의 상한이기도 하다.
     #[arg(long, default_value_t = 240)]
     pub stale_mins: u64,
+    /// codex 세션 사람활동 신선도 창(분, 기본 60, 이슈 #88). codex는 마커·PID가 없어 종료된 유령 세션의
+    /// rollout mtime이 relay resume으로 fresh하게 유지될 수 있다. 사람입력(relay 주입 면역) 또는 세션 생성이
+    /// 이 창보다 오래된 codex 세션은 로스터·A2A 타깃에서 제외한다(claude 무영향). 라이브 튜닝 가능.
+    #[arg(long, default_value_t = 60)]
+    pub codex_human_window_mins: u64,
     /// 스캔·보고 간격(초, 기본 15 = heartbeat 간격과 동일).
     #[arg(long, default_value_t = 15)]
     pub interval: u64,
