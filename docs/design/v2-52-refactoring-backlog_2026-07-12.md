@@ -8,7 +8,10 @@
 
 - **clippy `--all-features --all-targets` 3 errors**: `src/runner/claude.rs:415`(항상 참 assertion 단순화) + "very complex type" 2건(`type` 별칭 factoring, 하나는 `src/repl/mod.rs:697` 부근). canonical CI가 `--all-targets`를 안 돌려(대부분 테스트 코드) 놓쳤습니다.
 - **exec.rs 테스트 이식성**: `src/runner/exec.rs`의 `spec()`(약 215행)가 `bin: "sh"`를 하드코딩해 sh 없는 clean Windows에서 `idle_no_output_triggers_timeout`·`output_then_exit_succeeds_no_false_timeout`·`nonzero_exit_is_spawn_error_not_timeout` 3건이 실패합니다. Git Bash sh가 있는 우리 머신·CI에서는 통과해 잠복해 있었습니다. OS 인지형 `spec()`(Unix=sh -c, Windows=cmd/powershell 등가) 또는 `#[cfg(unix)]` 게이트 + Windows 등가로 이식성을 확보합니다.
-- **프론트 `Feed.tsx` react-hooks 경고 4건**: `machineOf`·`runnerOf` 누락 dependency 추가, `workerMeta` 불필요 dependency 2건 제거.
+
+> 위 즉시-처리 브랜치는 **Rust 전용**입니다(clippy + exec 이식성). 프론트 항목은 아래 §1로 이관했습니다.
+
+- **(이관) 프론트 `Feed.tsx` react-hooks 경고 4건**: `machineOf`·`runnerOf` 누락 dependency 추가, `workerMeta` 불필요 dependency 2건 제거. build-passing 린트 경고(0.5.0는 그대로 나가도 무해)이고, 예정된 UI 수정 세션이 프론트 전체를 소유하므로 **그 UI 세션에서 처리**하도록 이관합니다.
 
 ## 1. Defer: 포맷·CI 강화 (mac 조율 필요)
 
@@ -44,7 +47,7 @@
 |---|---|---|
 | P0 | Windows exec 테스트 이식성 | 즉시(0.5.0) |
 | P0 | clippy `--all-targets` 3건 | 즉시(0.5.0) |
-| P0 | frontend hook 경고 | 즉시(0.5.0) |
+| P3 | frontend hook 경고(Feed.tsx) | defer(예정 UI 세션) |
 | P1 | `cargo fmt` 전역 + CI 게이트 | defer(mac 조율) |
 | P1 | `main.rs` command dispatch 분리 | defer |
 | P1 | `mcp.rs` 책임 분리 | defer |
