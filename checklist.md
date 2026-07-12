@@ -572,4 +572,5 @@
 ## v2-52 리팩토링 백로그 = 전체 완료 (2026-07-12)
 
 - [x] ① main.rs(#83) · ② fmt(#85) · ③ mcp.rs(#86) · ⑥ tasks.rs(#87) [세션25] / ⑤ store DTO(#90) · ④ task JSON Stage1(#91) [세션26]. 잔여=④ Stage4(문자열 파서 제거, mesh 전체 롤아웃+도그푸딩 후).
-- [ ] **다음 = v0.5.0 릴리즈**(도그푸딩 후 + 사용자 승인. 릴리즈 태그는 리팩토링 트랙 자율 예외 밖 = [[dogfood-before-release]]). 병합분(잠복3·⑤·④)을 mesh에 배포·검증 후 cargo release minor → v0.5.0 태그 → cargo-dist+brew.
+- [x] **배포·도그푸딩 시작(2026-07-12)**: 릴리즈 빌드(morphology mcp serve worker dashboard, semantic 제외) → WMI 스폰으로 restart-win-mesh.ps1 -SourceBin(rename-swap·PID 선별종료·내 세션 Monitor 생존) → broker 재기동(uptime 리셋). **④ 라이브 검증 성공**: poll 응답에 `TASKS_JSON [{...context_id:null...}]` 프리픽스 + human 블록 병존 확인(신 broker JSON emit + context "-"→null 정규화 + 하위호환). mesh 정상(mac·win 스캐너 online). 구 바이너리 세션 Monitor가 신 broker 폴링 = 하위호환 라이브.
+- [ ] **다음 = v0.5.0 태그**(며칠 도그푸딩 후 + 사용자 승인. 릴리즈 태그는 리팩토링 트랙 자율 예외 밖 = [[dogfood-before-release]]). cargo release minor → v0.5.0 태그 → cargo-dist+brew. CHANGELOG [Unreleased]→[0.5.0].
