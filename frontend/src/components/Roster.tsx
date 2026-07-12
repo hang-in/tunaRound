@@ -107,7 +107,7 @@ export default function Roster({ rows, pulses, autoBossUuid, onAddTarget }: Prop
                   <div key={s.uuid}>
                     <button
                       type="button"
-                      className={`srow${isBoss ? ' boss' : ''}${fresh ? ' fresh' : ''}${s.busy ? ' working' : ''}`}
+                      className={`srow${isBoss ? ' boss' : ''}${fresh ? ' fresh' : ''}`}
                       aria-expanded={open}
                       onClick={() => toggle(s.uuid)}
                     >
@@ -124,8 +124,9 @@ export default function Roster({ rows, pulses, autoBossUuid, onAddTarget }: Prop
                         {s.busy ? (
                           <span
                             className="spinner"
+                            role="img"
                             title="지금 task 처리 중"
-                            aria-label="working"
+                            aria-label="작업 중"
                           />
                         ) : null}
                         <span className="pill on">{s.runner ?? '?'}</span>
