@@ -15,7 +15,8 @@ use crate::store::agents::AgentEntry;
 // v8: tasks.runner(어떤 러너가 claim했는지 트레이스). Task wire 구조체에도 노출(runner 표시용).
 // v9: agent_human_input(총감독 ★ 신호 영속, 브로커 재기동마다 증발하던 것 해소. v2-45 P4).
 // v10: tasks.indexed_at(종결 task를 mesh 기억(messages/FTS)에 색인했는지 스탬프. v2-45 P6a).
-const CURRENT_SCHEMA_VERSION: u32 = 10;
+// v11: presence_events(세션 등장·소멸 + human_input 이력, read-only 타임라인. v2-50).
+const CURRENT_SCHEMA_VERSION: u32 = 11;
 
 // config 테이블 생성 SQL.
 const CREATE_CONFIG: &str = "CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT);";
@@ -119,6 +120,25 @@ CREATE TABLE IF NOT EXISTS agent_human_input (
     uuid TEXT PRIMARY KEY,
     at   TEXT NOT NULL
 );
+";
+
+// presence 이벤트 이력 테이블(v11, v2-50). agent_human_input(v9)이 "최신 ★ 단일 값"만 유지하는 것과
+// 달리, 이건 세션 등장(appear)·소멸(disappear)·사람입력(human_input)의 edge를 append-only 이력으로
+// 남긴다. detail=disappear 사유(stale|deregister) 등. 순수 raw 기록이라 ★-도출(총감독 판정) 로직은
+// 넣지 않는다(프론트 activity.ts가 단일 소스). 새 TABLE이라 IF NOT EXISTS로 fresh·기존 DB 모두 처리한다.
+const CREATE_PRESENCE_EVENTS: &str = "
+CREATE TABLE IF NOT EXISTS presence_events (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    at           TEXT NOT NULL,
+    event_type   TEXT NOT NULL,
+    agent_uuid   TEXT NOT NULL,
+    machine      TEXT,
+    runner       TEXT,
+    project      TEXT,
+    display_name TEXT,
+    detail       TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_presence_events_at ON presence_events(at);
 ";
 
 // tasks 컬럼 목록(고정 순서). SELECT/INSERT 양쪽에서 재사용해 컬럼 순서 불일치를 방지한다.
@@ -261,6 +281,10 @@ impl SqliteStore {
             // v9: 총감독 ★ 신호 영속 테이블(새 TABLE이라 IF NOT EXISTS로 fresh·기존 모두 처리).
             self.conn
                 .execute_batch(CREATE_AGENT_HUMAN_INPUT)
+                .map_err(|e| format!("sqlite: {e}"))?;
+            // v11: presence 이벤트 이력 테이블(새 TABLE+INDEX이라 IF NOT EXISTS로 fresh·기존 모두 처리).
+            self.conn
+                .execute_batch(CREATE_PRESENCE_EVENTS)
                 .map_err(|e| format!("sqlite: {e}"))?;
             // v3: 기존(v2) DB의 message_vectors엔 model_id가 없으므로 ADD COLUMN으로 보강한다.
             // fresh DB는 CREATE에 이미 있어 column_exists가 true → ALTER 생략. 기존 행은 NULL이라
@@ -411,7 +435,7 @@ mod tests {
             Some("2026-07-12 01:00:00")
         );
         // 마이그레이션이 기록한 schema_version도 같은 접근자로 읽힌다(테이블 공유).
-        assert_eq!(db.get_config("schema_version").unwrap().as_deref(), Some("10"));
+        assert_eq!(db.get_config("schema_version").unwrap().as_deref(), Some("11"));
     }
 
     #[test]
@@ -591,7 +615,51 @@ mod tests {
             .conn
             .query_row("SELECT value FROM config WHERE key='schema_version'", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(ver, "10", "schema_version가 최신(10)으로 갱신");
+        assert_eq!(ver, "11", "schema_version가 최신(11)으로 갱신");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn fresh_db_has_presence_events_table() {
+        let db = SqliteStore::open_memory().unwrap();
+        // 테이블이 있으면 count 조회가 성공한다(없으면 no such table 에러).
+        let cnt: i64 = db.conn.query_row("SELECT count(*) FROM presence_events", [], |r| r.get(0)).unwrap();
+        assert_eq!(cnt, 0, "v11 스키마에 presence_events 테이블 존재(빈 상태)");
+    }
+
+    #[test]
+    fn migration_v10_to_v11_adds_presence_events_and_preserves_tasks() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("tuna_mig_v10v11.db");
+        let _ = std::fs::remove_file(&path);
+        let p = path.to_str().unwrap();
+        // v10 스키마 수동 구성: presence_events 없음 + schema_version=10 + tasks 행 1건.
+        {
+            let conn = rusqlite::Connection::open(p).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE config(key TEXT PRIMARY KEY, value TEXT);
+                 CREATE TABLE tasks(task_id TEXT PRIMARY KEY, context_id TEXT, from_agent TEXT NOT NULL, \
+                     to_agent TEXT NOT NULL, state TEXT NOT NULL, message_json TEXT, artifacts_json TEXT, \
+                     history_json TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, \
+                     claimed_at TEXT, lease_expires_at TEXT, claimed_by TEXT, runner TEXT, \
+                     attempt_count INTEGER NOT NULL DEFAULT 0, indexed_at TEXT);
+                 INSERT INTO tasks(task_id,from_agent,to_agent,state,created_at,updated_at) \
+                     VALUES('t1','win','mac','completed','2026-07-11 09:00:00','2026-07-11 09:01:00');
+                 INSERT INTO config(key,value) VALUES('schema_version','10');",
+            )
+            .unwrap();
+        }
+        // open → migrate v10→v11(presence_events 테이블 생성).
+        let db = SqliteStore::open(p).unwrap();
+        let cnt: i64 = db.conn.query_row("SELECT count(*) FROM presence_events", [], |r| r.get(0)).unwrap();
+        assert_eq!(cnt, 0, "마이그레이션이 presence_events 테이블 추가(빈 상태)");
+        let tasks: i64 = db.conn.query_row("SELECT count(*) FROM tasks WHERE task_id='t1'", [], |r| r.get(0)).unwrap();
+        assert_eq!(tasks, 1, "기존 tasks 행 보존");
+        let ver: String = db
+            .conn
+            .query_row("SELECT value FROM config WHERE key='schema_version'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(ver, "11", "schema_version가 최신(11)으로 갱신");
         let _ = std::fs::remove_file(&path);
     }
 }

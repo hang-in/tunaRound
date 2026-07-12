@@ -113,6 +113,33 @@ export async function searchHistory(q: string, signal?: AbortSignal): Promise<Se
 }
 
 
+// presence 타임라인 이벤트 한 건(GET /dashboard/presence-timeline, v2-50). 세션 등장·소멸·사람입력의
+// raw edge. event_type = 'appear' | 'disappear' | 'human_input'. detail = disappear 사유(stale|deregister) 등.
+export type PresenceEvent = {
+  id: number
+  at: string
+  event_type: 'appear' | 'disappear' | 'human_input'
+  agent_uuid: string
+  machine: string | null
+  runner: string | null
+  project: string | null
+  display_name: string | null
+  detail: string | null
+}
+
+// presence 타임라인(최신순)을 가져온다. 실패는 던져서 호출부가 상태 표시하도록 한다.
+export async function fetchPresenceTimeline(
+  limit = 100,
+  signal?: AbortSignal,
+): Promise<PresenceEvent[]> {
+  const res = await fetch('/dashboard/presence-timeline?limit=' + limit, { signal })
+  if (!res.ok) {
+    throw new Error('presence-timeline 조회 실패: ' + res.status)
+  }
+  return (await res.json()) as PresenceEvent[]
+}
+
+
 // POST /dashboard/goal 성공 응답: 대상별로 생성된 task 를 알려준다.
 export type GoalCreated = { taskId: string; toAgent: string }
 type GoalResponse = { created: GoalCreated[]; errors?: unknown[] }
