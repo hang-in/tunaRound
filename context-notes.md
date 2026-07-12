@@ -2,6 +2,33 @@
 
 > 작업 중 결정과 근거. 계속 append. (규율 #7) 다음 세션이 결정을 재유도하지 않게.
 
+## 2026-07-12 세션27: 이슈 #88 = 시간창 게이트 정본화 (라이브 실측으로 #2 기각 확증)
+
+세션26이 WIP(브랜치 592121e)로 남기고 "#2 app-server를 다음 세션에서"로 넘긴 것을, 세션27에서 **착수 전 계약 고정**을 위해 라이브 codex app-server를 실측한 결과 **#2가 원리적으로 불가함을 확증**하고, 사용자가 **시간창 게이트를 정본으로 확정**. 재론 금지:
+
+- **실측 1 (session_meta PID 부재 → #1 불가)**: codex-cli 0.144.1 rollout의 session_meta 키 = session_id·id·timestamp·cwd·originator·cli_version·source(vscode)·thread_source·model_provider·base_instructions·history_mode·context_window뿐. **PID·프로세스 식별자 없음** → claude식 PID-마커 생존판정을 codex에 이식 불가.
+- **실측 2 (app-server loaded/list = 생존 신호 아님 → #2 불가, 핵심)**: 스키마(`ThreadLoadedListResponse` = "sessions currently loaded **in memory**")·라이브 프로브로 확증. (a) 라이브 mesh app-server(8790)에선 유령 019f5547=`notLoaded`, 라이브 019f554b=`idle`이라 판별되는 듯 보이나, (b) **별도 throwaway app-server(8799)는 라이브 세션 포함 전부 `notLoaded`** = status는 그 인스턴스가 로드한 것만 반영(전역 아님). (c) **결정타: throwaway에서 죽은 유령 019f5547을 `thread/resume`하니 성공 + `idle`/loaded로 표시.** codex는 디스크의 어떤 thread든 resume 성공시켜 loaded로 만든다 → relay가 유령에 오배달 task를 주입하면 그 유령이 곧 `idle`/loaded가 되어 라이브와 구분 불가 = **#88을 오히려 악화**. (resume은 turn 미실행이면 rollout 불변 확인.)
+- **실측 3 (아키텍처)**: 프로세스 커맨드라인 = PID 4544(mesh `app-server --listen ws://8790`) / PID 44852(**VS Code Codex 자체 app-server**, WindowsApps, `--listen` 없음=stdio/소켓, ws 도달 불가) / PID 37112·11048(`--remote ws://8790` attach 클라이언트). **사람의 codex TUI는 VS Code 자체 app-server에 살아 mesh app-server가 못 봄. Windows 관리형 daemon 없음(Unix 전용).** 도달 범위 app-server로 사람 TUI 생존을 못 읽음.
+- **결론 = 깨끗한 codex per-thread 생존 신호가 도달 범위에 없음.** 세션26 적대 검증의 "부분 완화" 직감이 실측으로 확증됨. **사용자 결정=시간창 게이트를 정본으로**(app-server 비의존, relay 자기유지 차단, 유령 수명 stale_mins→window bound). **수용된 잔여**: 방금 쓰다 닫은 세션은 human_input 최근이라 살아있는 idle과 시간만으론 구분 불가 → window 동안 잔존. 진짜 per-thread 생존엔 아키텍처 전환(supervised codex를 전부 `--remote ws://8790` attach시켜 8790 loaded/list를 canonical화)이 필요하나, v2-46 "독립 보이는 세션" 방향과 상충 + 사람이 매 세션 attach 필요 + VS Code 독립 TUI 미커버라 **비채택**(사용자 확인).
+- **세션27 변경**: 게이트 doc 주석에 위 실측 근거·원리적 잔여 명시 + 회귀 테스트 codex_gate_fresh_churn_ghost_lingers(fresh-churn 유령이 window 동안 잔존함을 명시=완전제거 오해 방지). 메커니즘·기본값(60분)·CLI는 세션26 그대로 유지. 실측 산출물=scratchpad(probe_appserver.py·codex-schema).
+- **적대 검증(3렌즈 반증→합성) = GO-WITH-NOTES, blocker/major 생존 0**: (렌즈1) "#2 viable" 반증 실패를 독립 확증(8790 loaded/list=relay-resume 자기오염+만료없음, throwaway 8799는 전 thread notLoaded=per-instance, ThreadStatus enum에 'closed' 없음, 전역 생존 RPC 0건, rollout 종료 tombstone 실측 0건). 시간창=원리적 상한 재확인. (렌즈2·3) 게이트 코드 정상(civil수학·경계·fail-open·claude passthrough·스냅샷 비의존·worker단독 확인).
+- **채택한 강화(minor 2, 세션27)**: 256KB tail 밖으로 밀린 라이브 장기세션의 human_input_at over-drop 방지 = 재스캔 None이어도 캐시의 이전 값 유지(단조, enumerate_codex_sessions rescan 분기). 유령엔 무영향(relay 면역이라 값 얼음 = 여전히 T+window 드롭). 테스트 enumerate_cache_preserves_human_input_when_scrolled_out_of_tail.
+- **수용·문서화한 minor(재론 금지)**: (a) normalize_iso_to_db_datetime의 offset 절단=codex rollout이 항상 Z(UTC) 실측이라 미발현 + shared 함수(P5 human_input도 소비)라 변경 시 회귀 위험 → 유지, codex 비-UTC 전환 시 재검토. (b) session_meta timestamp 부재 신규세션 즉시 드롭=codex 항상 timestamp 기록(실측) 가설적, mtime 폴백은 유령 되살림이라 비채택. (c) relay(codex_relay.rs)는 게이트 미적용 enumerate라 로스터↔relay divergence 있으나 로스터 to_selector 라우팅은 차단됨(직접 to_agent 유령 주소지정만 낭비, lease requeue 회수) → 저우선 수용. (d) codex idle 수명 240→window(60분) 단축·claude P8과 비대칭=의도된 tradeoff, window 튜닝 노브.
+
+## 2026-07-12 세션26 후반: 이슈 #88 codex presence 유령 오라우팅 fix
+
+브랜치 fix/issue-88-codex-presence-ghost. understand+design 워크플로우(4렌즈)+승인. 사용자: 지금 설계·수정, **승인+grace 포함**. 재론 금지:
+- **근본원인**: apply_process_gate가 count==0일 때만 codex 세션 전부 제거(runner all-or-nothing). codex app-server 프로세스 1개라도 있으면 종료 세션의 stale rollout(mtime 240분)도 online 유지 → 유령 UUID 오라우팅. codex는 마커·PID 없어 per-thread 생존 판정 경로 전무.
+- **핵심 통찰**: `human_input_at`은 이미 계산되고 **relay 주입(RELAY_INJECT_PREFIX)에 면역** → 유령은 human_input이 얼어붙음 = 유령 자기유지 루프(relay resume→mtime 갱신)를 끊는 유일한 기존 신호. mtime은 keep-신호로 쓰면 안 됨(유령이 항상 fresh).
+- **fix(승인)**: codex 전용 upstream 게이트 apply_codex_human_input_gate. codex는 `human_input_at OR created_at(신규세션 grace) >= (now-window)`면 유지, 아니면 드롭. **upstream에서 빼면 sync_presence stale 제거가 로스터·A2A 3경로·영속행까지 자동 GC** → store/registry/consumption/dashboard 무변경(북극성). claude 경로 무손상.
+- **grace 통합**: 별도 param 대신 human_input·created_at 둘 다 같은 window 비교(신규=created 최근이라 유지, 유령=둘 다 stale). created_at = session_meta 생성시각(payload/top-level timestamp, normalize_iso_to_db_datetime). parse_codex_meta_line 3→4튜플, LiveSession에 created_at 필드 추가.
+- **sqlite 비의존 구현**: age_secs(store::a2a, sqlite-gated)는 worker-alone 빌드 불가 → **DB datetime 사전순=시간순** 성질로 threshold 문자열 + 사전 비교. system_time_to_db_datetime(UTC civil, chrono 없음) 신설. normalize_iso_to_db_datetime은 offset 스트립(UTC 유지, 롤아웃=Z).
+- **CLI**: --codex-human-window-mins(기본 60, 라이브 튜닝). fail-open(threshold 계산 실패 시 미드롭, 라이브 presence 오버드롭 방지).
+- **#2/#4 defer**: app-server thread/loaded/list canonical + claim-time probe = net-new 프로토콜 + killed-TUI resume 라이브 실측 필요 + 사람 TUI 누락 리스크 → 전용 세션.
+- **회귀테스트**: 이슈 시나리오(구A stale·신B fresh, count≥1→A만 드롭) + None/fresh/boundary + claude passthrough + 스냅샷 비의존.
+- **⚠ 적대 검증 결과(중요, 재론 금지)**: 이 게이트는 **#88 부분 완화이지 완전 해결 아님**(검증 조건부 NO-GO). 배관(GC·타임존 UTC·civil 수학·삽입위치·claude무손상)은 전부 holds. 그러나 **(major) grace 절이 최근 유령을 살림**: #88 재현의 두 세션이 UUIDv7상 ~4분 간격 생성 → 유령 created_at이 60분 grace 창 안이라 통과(생성 60분 내 유령은 thread 죽어도 안 드롭). 회귀 테스트는 "이미 60분+ stale 유령"만 검증해 fresh-churn 누락. **더 근본**: grace 고쳐도 방금 쓰다 닫은 세션은 human_input 최근이라 활성과 구분 불가 → 60분 로스터 잔존(시간창의 원리적 한계). 실효=유령 수명 240→60분 bound + relay 자기유지 차단(부분 완화). **부수 FP**: 60분+ 미입력 살아있는 codex(장기작업 관전)가 A2A 타깃 드롭(codex엔 idle 부활 없음, claude만 P8). 입력 시 ≤15초 자기치유.
+- **사용자 결정(2026-07-12): 전체 해결(#2 app-server) 지금 → 그러나 핸드오프하고 다음 세션에서 이어감.** 이 브랜치의 시간창 게이트는 **#2가 supersede할 수 있음**(per-thread 생존 판정이 canonical이면 시간창 불요). 다음 세션 #2 = codex_appserver에 thread/loaded/list 빌더/파서 신규(설계 §2·§5.1 실측 존재) + **killed-TUI resume 거동 라이브 실측**(app-server가 잔존 rollout을 resume 성공시키면 못 거름) + 사람 TUI 누락 fallback(loaded-set은 이 app-server 로드분만) + relay claim 전 probe(#4). 착수 전 계약 고정.
+
 ## 2026-07-12 세션26 후반: v2-52 ④ task wire 프로토콜 구조화 (문자열→JSON, Stage 1)
 
 계약 정본 = [v2-52 task JSON 계약](docs/design/v2-52-task-json-contract_2026-07-12.md). 사용자: ⑤ 다음 ④, 지금 시작. 재론 금지:

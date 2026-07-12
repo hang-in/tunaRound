@@ -575,13 +575,14 @@
 - [x] **배포·도그푸딩 시작(2026-07-12)**: 릴리즈 빌드(morphology mcp serve worker dashboard, semantic 제외) → WMI 스폰으로 restart-win-mesh.ps1 -SourceBin(rename-swap·PID 선별종료·내 세션 Monitor 생존) → broker 재기동(uptime 리셋). **④ 라이브 검증 성공**: poll 응답에 `TASKS_JSON [{...context_id:null...}]` 프리픽스 + human 블록 병존 확인(신 broker JSON emit + context "-"→null 정규화 + 하위호환). mesh 정상(mac·win 스캐너 online). 구 바이너리 세션 Monitor가 신 broker 폴링 = 하위호환 라이브.
 - [ ] **다음 = v0.5.0 태그**(며칠 도그푸딩 후 + 사용자 승인. 릴리즈 태그는 리팩토링 트랙 자율 예외 밖 = [[dogfood-before-release]]). cargo release minor → v0.5.0 태그 → cargo-dist+brew. CHANGELOG [Unreleased]→[0.5.0].
 
-## 세션26 후반: 이슈 #88 codex presence 유령 (브랜치 fix/issue-88 @ 592121e)
+## 세션27: 이슈 #88 codex presence 유령 = 시간창 게이트 정본 (브랜치 fix/issue-88)
 
-> 정본 진입점 docs/prompts/v2-handoff_2026-07-12_session26.md. #88 상세는 브랜치의 context-notes.md #88 섹션.
+> 세션26이 WIP(592121e)로 남긴 것을 세션27에서 라이브 실측 후 정본화. 상세 context-notes.md #88 섹션.
 
-- [x] understand+design 워크플로우(4렌즈, 6접근 평가) + 시간창 게이트 구현(apply_codex_human_input_gate·created_at grace·system_time_to_db_datetime·CLI --codex-human-window-mins). lib 595 pass·clippy·worker단독 clean. **브랜치 WIP push=592121e.**
-- [x] 적대 검증 = **조건부 NO-GO**: 이 게이트는 #88 부분 완화(유령 수명 240→60분 bound + relay 자기유지 차단)이지 완전 해결 아님(grace가 최근 유령 살림, 방금 닫은 세션은 human_input 최근이라 60분 잔존=시간창 원리적 한계, 60분+ 미입력 live codex FP).
-- [ ] **(다음 세션) #88 전체 해결 = #2 app-server thread/loaded/list canonical** + rollout mtime fallback + killed-TUI resume 라이브 실측 + 사람 TUI 누락 fallback + relay claim 전 probe(#4). 착수 전 계약 고정. 시간창 게이트 supersede 가능.
+- [x] **라이브 실측(codex-cli 0.144.1)으로 #2 기각 확증**: (1) session_meta에 PID·프로세스 식별자 없음(#1 불가) (2) app-server `thread/list` status·`thread/loaded/list`는 인스턴스별(throwaway=전부 notLoaded) + 죽은 thread도 `thread/resume` 성공→`idle`/loaded로 오염(relay 주입이 유령을 loaded로 만듦=악화) (3) 사람 codex TUI는 VS Code 자체 app-server(ws 도달 불가)에 삶, Windows 관리형 daemon 없음. **깨끗한 per-thread 생존 신호가 도달 범위에 없음.**
+- [x] **사용자 결정=시간창 게이트 정본**(app-server 비의존, relay 자기유지 차단, 유령 수명 240→window bound). 게이트 doc에 실측 근거·원리적 잔여 명시 + fresh-churn 명시 테스트(codex_gate_fresh_churn_ghost_lingers) 추가.
+- [x] **수용된 잔여(재론 금지)**: 방금 쓰다 닫은 세션은 human_input 최근이라 살아있는 idle 세션과 시간만으론 구분 불가 → window 동안 잔존. 진짜 해결엔 아키텍처 전환(--remote attach 모델)이 필요하나 v2-46 방향과 상충이라 비채택.
+- [ ] 게이트(fmt·test 25 presence·clippy·worker단독) 재확인 → 적대 검증 → 봇 리뷰 → 머지(push 승인 후).
 
 ## GPT 온보딩 답변 검토 (2026-07-12)
 
