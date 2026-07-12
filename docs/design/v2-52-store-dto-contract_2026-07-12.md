@@ -1,3 +1,5 @@
+<!-- v2-52 ⑤ store DTO↔도메인 경계 리팩토링의 착수 전 고정 계약(중립 타입·변환 경계·S0~S6 마이그레이션). -->
+
 # v2-52 ⑤ Store DTO ↔ 도메인 경계: 착수 전 계약 (2026-07-12)
 
 > 정본 배경 = [v2-52 리팩토링 백로그 §2](v2-52-refactoring-backlog_2026-07-12.md). 이 문서는 "착수 전 계약(공개 API·테스트) 고정" 요구를 만족하는 **고정 계약**이다. understand 페이즈(4렌즈 결합지도 + 계약 초안, 워크플로우) + Opus 대조검증 산출.
@@ -20,7 +22,7 @@
 
 **핵심 원칙: serde derive 금지.** `StoredSession`/`StoredMessage`는 store에 **직렬화·행매핑 전용 DTO**로 잔존하고, 중립 타입은 serde를 갖지 않아 **와이어 포맷이 도메인에 새는 것이 구조적으로 불가**하다(이게 리팩토링의 요체). `Utterance`/`Validity`가 이미 serde 없는 선례.
 
-```
+```rust
 type MessageId = u64;   // 별칭(도메인 어휘만; newtype 승격은 §6 결정=별칭 유지)
 
 struct MessageNode { id: MessageId, parent: Option<MessageId>, speaker: String, content: String }
@@ -42,7 +44,7 @@ struct ConversationSnapshot { nodes: Vec<MessageNode>, head: BranchHead }   // d
 
 ## 4. 변환 경계
 
-store 계층에 `From` impl로 격리(orphan rule: StoredSession 소유처 = store/mod.rs):
+store 계층에 `From` impl로 격리(두 타입 모두 crate 로컬이라 orphan rule은 impl을 crate 어디든 허용 = 모듈 무관. store/mod.rs에 두는 것은 변환을 store에만 가두는 계층 경계 선택):
 - `impl From<StoredSession> for ConversationSnapshot` + `impl From<&ConversationSnapshot> for StoredSession`. types.rs 중립 타입은 StoredSession을 import하지 않음(중립 유지).
 - **저수준 SQLite 매핑은 시그니처 불변**: `SqliteStore::{load_session/save_session/append_turn/index_vectors}`는 계속 `StoredSession`/`u64` 생산·소비 → 그 강한 오라클(`session_roundtrip_preserves_tree_and_head`·`append_turn_chains`·orphan 정리)이 손 안 대고 green = 영속 불변의 연속 증명.
 - 변환은 그 한 겹 위(트레잇 래퍼)에서만: `SqliteCoreSync::load_session = store.load_session().map(Into::into)`, `SqliteIndexer::persist(&ConversationSnapshot)`는 내부에서 `StoredSession::from(snap)` 후 save. 공개 `store::load_session(path)`는 StoredSession deserialize(레거시 bare-array 폴백) 후 `.into()`.

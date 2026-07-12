@@ -567,7 +567,7 @@ fn main() {
                 Ok(store) => {
                     let tok = cli_run::build_index_tokenizer("core");
                     // 중립 snapshot → 영속 DTO(SqliteStore::save_session은 StoredSession 유지).
-                    let ss = tunaround::store::StoredSession::from(&session.snapshot());
+                    let ss = tunaround::store::StoredSession::from(session.snapshot());
                     if let Err(e) = store.save_session(&sid, &ss, |t| tok(t)) {
                         eprintln!("[core] seed 코어 DB 반영 실패: {e}");
                     }

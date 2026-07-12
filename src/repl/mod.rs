@@ -597,9 +597,10 @@ impl Session {
         crate::store::save_session(&self.snapshot, path)
     }
 
-    /// 현재 인메모리 대화 트리 스냅샷을 복제한다(--core seed를 코어 DB에 권위로 반영할 때 사용).
-    pub fn snapshot(&self) -> crate::types::ConversationSnapshot {
-        self.snapshot.clone()
+    /// 현재 인메모리 대화 트리 스냅샷 참조(--core seed를 코어 DB에 권위로 반영할 때 사용). 호출부가
+    /// StoredSession::from(&snapshot)으로 변환하므로 소유권이 불요 → 복제 없이 참조 반환(gemini 리뷰).
+    pub fn snapshot(&self) -> &crate::types::ConversationSnapshot {
+        &self.snapshot
     }
 
     /// 상태 파일에서 트리를 로드해 세션을 복원한다. 레거시 bare-array 포맷도 지원한다.
