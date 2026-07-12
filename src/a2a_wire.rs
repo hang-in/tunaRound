@@ -18,10 +18,12 @@ pub struct PollTaskDto {
 
 /// task 목록을 `TASKS_JSON <compact-json>` 한 줄로 인코딩한다(브로커 생산). compact(실개행 없음)라야
 /// 구 워커의 find_header_starts가 이 줄 안에서 거짓 헤더를 만들지 않는다(msg 내 개행도 `\n`으로 이스케이프됨).
-pub fn encode_poll_json(tasks: &[PollTaskDto]) -> String {
+/// 직렬화 실패 시 None(String/Option만이라 사실상 무오류지만, 실패 시 호출자가 프리픽스를 생략해 워커가
+/// 문자열로 폴백하도록 = 오도하는 빈 JSON으로 task를 은닉하지 않는다, 적대 리뷰 방어).
+pub fn encode_poll_json(tasks: &[PollTaskDto]) -> Option<String> {
     // serde_json::to_string(pretty 아님)은 실개행 없이 직렬화하므로 단일 라인이 보장된다.
-    let json = serde_json::to_string(tasks).unwrap_or_else(|_| "[]".to_string());
-    format!("{POLL_JSON_PREFIX}{json}")
+    let json = serde_json::to_string(tasks).ok()?;
+    Some(format!("{POLL_JSON_PREFIX}{json}"))
 }
 
 /// 응답 텍스트의 첫 줄이 POLL_JSON_PREFIX면 그 뒤 JSON을 디코드한다(워커 소비). 프리픽스가 없거나
@@ -52,7 +54,7 @@ mod tests {
                 msg: "진행".into(),
             },
         ];
-        let encoded = encode_poll_json(&tasks);
+        let encoded = encode_poll_json(&tasks).unwrap();
         assert!(encoded.starts_with(POLL_JSON_PREFIX));
         // compact = 단일 라인(구 워커 find_header_starts 안전): 프리픽스 뒤에 실개행이 없어야 한다.
         assert!(

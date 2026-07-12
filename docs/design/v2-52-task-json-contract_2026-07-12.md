@@ -27,7 +27,7 @@
 - JSON = `[{"id","state"(clean),"context_id":Option,"msg"}]`(워커가 필요로 하는 `ParsedTask` 필드와 1:1). state는 **주석 없는 clean state**(`t.state.as_str()`).
 - **구 워커 안전 근거**: `parse_open_tasks`의 `find_header_starts`는 `[<32hex>] from=` 헤더만 찾고 **첫 헤더 앞 내용은 어떤 블록에도 포함하지 않습니다**. JSON 프리픽스는 첫 human 헤더 **앞**에 오고, compact JSON은 실제 개행 없이(msg 내 `\n\n`도 `\\n\\n`로 이스케이프) 한 줄이라 `find_header_starts`가 그 안에서 거짓 헤더를 못 찾습니다 → 구 워커가 프리픽스를 무시하고 human 블록만 파싱.
 - **신 워커**: 첫 줄이 `TASKS_JSON ` 프리픽스면 JSON 디코드(견고), 아니면 기존 문자열 파싱으로 폴백.
-- **공유 DTO**: `store::a2a`(무-게이트, mcp·worker 양쪽 접근)에 `PollTaskDto` + `POLL_JSON_PREFIX` + `encode_poll_json`/`decode_poll_json` 정의(생산·소비 단일 소스).
+- **공유 DTO**: `crate::a2a_wire`(신규 무-게이트 crate 루트 모듈, serde만 의존 = mcp·worker·경량 워커 빌드 모두 접근. `store::a2a`는 sqlite-gated라 worker 단독 빌드가 못 써서 여기로 분리)에 `PollTaskDto` + `POLL_JSON_PREFIX` + `encode_poll_json`/`decode_poll_json` 정의(생산·소비 단일 소스).
 - **빈 목록**: 기존 `"{agent} 앞 열린 task 없음"` 유지(프리픽스 없음). 신 워커는 프리픽스 없으면 문자열 폴백 → `contains("앞 열린 task 없음")` → 빈 Vec. 구 워커도 동일.
 
 ## 4. 이 세션 범위 = 계약 ①②③ (Stage 1)
@@ -37,7 +37,7 @@
 
 ## 5. 고정 계약 (공개 API·테스트)
 
-- **신규 공개**: `store::a2a::PollTaskDto{id,state,context_id:Option<String>,msg}`(serde), `POLL_JSON_PREFIX`, `encode_poll_json(&[PollTaskDto])->String`, `decode_poll_json(&str)->Option<Vec<PollTaskDto>>`.
+- **신규 공개**: `a2a_wire::PollTaskDto{id,state,context_id:Option<String>,msg}`(serde), `POLL_JSON_PREFIX`, `encode_poll_json(&[PollTaskDto])->Option<String>`(직렬화 실패 시 None→프리픽스 생략), `decode_poll_json(&str)->Option<Vec<PollTaskDto>>`. **context_id "-"는 DTO에서 None으로 정규화**(문자열 경로 패리티).
 - **불변**: `format_open_tasks` 시그니처(추가 출력만), `parse_open_tasks` 시그니처(`&str -> Vec<ParsedTask>`), `ParsedTask`, poll_tasks MCP 툴 계약. 기존 문자열 파싱 테스트 전부 green 유지(폴백 경로).
 - **테스트**: encode/decode 라운드트립 / parse_open_tasks가 JSON 프리픽스 우선 / 프리픽스 없으면 문자열 폴백(기존 테스트) / 구 워커가 JSON 프리픽스를 무시하고 human 블록 파싱(프리픽스+블록 혼합 입력) / msg 내 `\n\n`·한글·브래킷이 JSON 경로에서 무손실 / 빈 목록.
 

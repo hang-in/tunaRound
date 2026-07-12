@@ -561,9 +561,10 @@
 > 계약 정본 docs/design/v2-52-task-json-contract_2026-07-12.md. 브랜치 refactor/v2-52-task-json. 사용자: 지금 ④ 시작. 스코프=poll_tasks↔parse_open_tasks 한 쌍(유일 파싱 프로토콜).
 
 - [x] 정찰(생산 format_open_tasks·소비 parse_open_tasks) + 계약 고정(JSON 프리픽스 병존·4조합 하위호환·Stage 1=①②③).
-- [ ] **DTO**: store::a2a에 PollTaskDto(serde) + POLL_JSON_PREFIX + encode/decode_poll_json + 라운드트립 테스트.
-- [ ] **생산**: format_open_tasks가 `TASKS_JSON <json>\n\n` 프리픽스 + 기존 human 블록. state=clean.
-- [ ] **소비**: parse_open_tasks가 JSON 프리픽스 우선(decode), 없으면 문자열 폴백. 기존 문자열 테스트 green 유지.
-- [ ] 테스트: JSON 우선·문자열 폴백·구 워커 프리픽스 무시(혼합)·msg 개행/한글 무손실·빈 목록. 게이트(fmt·test·clippy) + 적대 검증.
-- [ ] **④ 파서 제거는 defer**(post-rollout·도그푸딩). Stage 1까지가 이 세션. 완료 후 v0.5.0 릴리즈.
-- [ ] 커밋 → PR → CI green+봇 → 머지(리팩토링 트랙 자율).
+- [x] **DTO**: 무-게이트 src/a2a_wire.rs에 PollTaskDto(serde) + POLL_JSON_PREFIX + encode_poll_json(→Option)/decode_poll_json + 라운드트립 테스트. store::a2a는 sqlite-gated라 worker 단독 빌드 위해 분리.
+- [x] **생산**: format_open_tasks가 `TASKS_JSON <json>\n\n` 프리픽스 + 기존 human 블록. state=clean, context_id "-"→None 정규화(문자열 패리티), 직렬화 실패 시 프리픽스 생략.
+- [x] **소비**: parse_open_tasks가 JSON 프리픽스 우선(decode), 없으면 문자열 폴백. 기존 문자열 테스트 green 유지.
+- [x] 테스트 6: JSON 라운드트립·우선·문자열 폴백·구 워커 헤더 무시(가짜 헤더 msg)·context_id "-" 정규화·프리픽스 없음. 게이트(fmt·591 pass·clippy --all-targets·no-default·worker단독·all-features clean).
+- [x] 적대 검증 워크플로우(하위호환 4조합·등가 2렌즈 = GO, blocker/major 0). nit 4건(encode Option·context "-" 패리티·테스트주석·doc경로) 반영.
+- [ ] **④ 파서 제거는 defer**(post-rollout·도그푸딩). Stage 1까지가 이 세션.
+- [ ] 커밋 → PR → CI green+봇 → 머지(리팩토링 트랙 자율). 완료 후 리팩토링 종료 → v0.5.0 릴리즈.

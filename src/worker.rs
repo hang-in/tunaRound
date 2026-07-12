@@ -818,7 +818,7 @@ mod tests {
         ];
         let full = format!(
             "{}\n\n[{id1}] from=x state=submitted ctx=projA msg=리뷰\n\n부탁\n\n[{id2}] from=x state=working ctx=- msg=진행",
-            encode_poll_json(&dtos)
+            encode_poll_json(&dtos).unwrap()
         );
         let tasks = parse_open_tasks(&full);
         assert_eq!(tasks.len(), 2);
@@ -848,6 +848,8 @@ mod tests {
         // 하위호환 핵심: 구 워커(find_header_starts만 가진 옛 바이너리)는 JSON 프리픽스를 첫 헤더 앞이라
         // 무시하고 human 블록 헤더만 찾는다. compact JSON은 실개행 없음(msg 내 개행도 이스케이프)이라
         // 그 안에서 거짓 헤더가 생기지 않음을 검증(신 브로커 출력에서 헤더는 정확히 human 블록 수만큼).
+        // 이 테스트는 프리픽스 안전성만 잠근다: human 블록 자체의 msg 내 거짓 헤더는 이 PR이 안 바꾼
+        // 문자열 포맷의 pre-existing 성질(회귀 아님)이라 스코프 밖이다.
         use crate::a2a_wire::{PollTaskDto, encode_poll_json};
         let id1 = "a".repeat(32);
         let id2 = "b".repeat(32);
@@ -869,7 +871,7 @@ mod tests {
         ];
         let full = format!(
             "{}\n\n[{id1}] from=x state=submitted ctx=- msg=본문\n\n[{id2}] from=x state=working ctx=- msg=둘째",
-            encode_poll_json(&dtos)
+            encode_poll_json(&dtos).unwrap()
         );
         let starts = find_header_starts(&full);
         assert_eq!(
