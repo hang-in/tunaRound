@@ -221,6 +221,44 @@ pub struct StoredSession {
     pub head: Option<u64>,
 }
 
+// v2-52 ⑤: 영속 DTO(StoredSession, serde 有)↔ 중립 도메인(ConversationSnapshot, serde 無) 변환 경계.
+// 이 경계가 store 계층에만 있어 SQLite 스키마·와이어 포맷이 consumer로 새지 않는다. 저수준 SQLite 매핑
+// (SqliteStore::*)은 계속 StoredSession을 생산·소비하고(오라클 불변), 트레잇 래퍼가 여기서 변환한다.
+impl From<StoredSession> for crate::types::ConversationSnapshot {
+    fn from(ss: StoredSession) -> Self {
+        let nodes = ss
+            .messages
+            .into_iter()
+            .map(|m| crate::types::MessageNode {
+                id: m.id,
+                parent: m.parent_id,
+                speaker: m.speaker,
+                content: m.content,
+            })
+            .collect();
+        crate::types::ConversationSnapshot::from_parts(nodes, crate::types::BranchHead(ss.head))
+    }
+}
+
+impl From<&crate::types::ConversationSnapshot> for StoredSession {
+    fn from(snap: &crate::types::ConversationSnapshot) -> Self {
+        let messages = snap
+            .nodes()
+            .iter()
+            .map(|n| StoredMessage {
+                id: n.id,
+                parent_id: n.parent,
+                speaker: n.speaker.clone(),
+                content: n.content.clone(),
+            })
+            .collect();
+        StoredSession {
+            messages,
+            head: snap.head().tip(),
+        }
+    }
+}
+
 /// head에서 parent_id를 따라 root까지 거슬러 올라간 경로(루트->head 순)를 전사로 반환.
 /// HashMap O(1) 조회 + HashSet 순환 가드로 무한루프를 방지한다.
 pub fn path_to_root(messages: &[StoredMessage], head: Option<u64>) -> Vec<Utterance> {
@@ -359,6 +397,78 @@ mod tests {
             vec!["1", "2", "4"]
         );
         assert!(path_to_root(&msgs, None).is_empty());
+    }
+
+    #[test]
+    fn tree_summary_characterization_format() {
+        // S0 특성화(v2-52 ⑤): /branches 출력 포맷을 바이트 단위로 고정한다. ConversationSnapshot::
+        // tree_summary가 이 포맷을 등가로 흡수해야 한다. 포맷 = "{marker} #{id} (<-{parent}) {speaker}: {snippet}\n",
+        // head=* 마커·비head=공백·root parent="-"·snippet=본문 앞 30자.
+        let msgs = vec![
+            StoredMessage {
+                id: 1,
+                parent_id: None,
+                speaker: "a".into(),
+                content: "첫줄".into(),
+            },
+            StoredMessage {
+                id: 2,
+                parent_id: Some(1),
+                speaker: "b".into(),
+                content: "둘째".into(),
+            },
+        ];
+        let expected = "  #1 (<--) a: 첫줄\n* #2 (<-1) b: 둘째\n";
+        assert_eq!(tree_summary(&msgs, Some(2)), expected);
+        // 빈 트리.
+        assert_eq!(tree_summary(&[], None), "(빈 트리)");
+        // snippet은 본문 앞 30자로 절단(40 'x' → 30 'x').
+        let long = StoredMessage {
+            id: 1,
+            parent_id: None,
+            speaker: "s".into(),
+            content: "x".repeat(40),
+        };
+        assert_eq!(
+            tree_summary(std::slice::from_ref(&long), Some(1)),
+            format!("* #1 (<--) s: {}\n", "x".repeat(30))
+        );
+    }
+
+    #[test]
+    fn stored_session_snapshot_roundtrip_and_equivalence() {
+        // v2-52 ⑤: From 변환이 트리·head 보존(round-trip) + snapshot 메서드가 기존 자유함수와 등가(브릿지).
+        use crate::types::ConversationSnapshot;
+        let ss = StoredSession {
+            messages: vec![
+                StoredMessage {
+                    id: 1,
+                    parent_id: None,
+                    speaker: "a".into(),
+                    content: "1".into(),
+                },
+                StoredMessage {
+                    id: 2,
+                    parent_id: Some(1),
+                    speaker: "b".into(),
+                    content: "2".into(),
+                },
+                StoredMessage {
+                    id: 3,
+                    parent_id: Some(1),
+                    speaker: "c".into(),
+                    content: "3".into(),
+                },
+            ],
+            head: Some(3),
+        };
+        let snap: ConversationSnapshot = ss.clone().into();
+        // 라운드트립 = 원본 보존.
+        let back: StoredSession = (&snap).into();
+        assert_eq!(back, ss);
+        // 등가 브릿지: active_path == path_to_root, tree_summary 바이트 등가.
+        assert_eq!(snap.active_path(), path_to_root(&ss.messages, ss.head));
+        assert_eq!(snap.tree_summary(), tree_summary(&ss.messages, ss.head));
     }
 
     #[test]
