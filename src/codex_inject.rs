@@ -30,9 +30,19 @@ use crate::config::expand_home;
 fn safe_agent_filename(agent: &str) -> String {
     let safe: String = agent
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '-' | '_') { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_') {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
-    if safe.is_empty() { "default".to_string() } else { safe }
+    if safe.is_empty() {
+        "default".to_string()
+    } else {
+        safe
+    }
 }
 
 /// `--agent` 별 thread 영속 파일 경로(`~/.tunaround/codex-sup-<agent>.thread`, 설계 §5.1/§6).
@@ -122,11 +132,17 @@ pub fn decide_action(msg: &IncomingMessage, our_thread_id: &str) -> InjectAction
                     .and_then(|v| v.as_str())
                     .is_none_or(|t| t == our_thread_id);
                 if ours {
-                    let e =
-                        params.get("error").map(std::string::ToString::to_string).unwrap_or_default();
-                    let retry =
-                        params.get("willRetry").and_then(serde_json::Value::as_bool).unwrap_or(false);
-                    return InjectAction::Fail(format!("codex error 알림: {e} (willRetry={retry})"));
+                    let e = params
+                        .get("error")
+                        .map(std::string::ToString::to_string)
+                        .unwrap_or_default();
+                    let retry = params
+                        .get("willRetry")
+                        .and_then(serde_json::Value::as_bool)
+                        .unwrap_or(false);
+                    return InjectAction::Fail(format!(
+                        "codex error 알림: {e} (willRetry={retry})"
+                    ));
                 }
                 return InjectAction::Ignore;
             }
@@ -159,7 +175,10 @@ pub fn decide_action(msg: &IncomingMessage, our_thread_id: &str) -> InjectAction
 
 /// thread 영속 파일을 읽어 기존 threadId를 반환한다(없거나 빈 파일이면 None).
 fn read_persisted_thread_id(path: &str) -> Option<String> {
-    std::fs::read_to_string(path).ok().map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
+    std::fs::read_to_string(path)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 /// thread 영속 파일에 threadId를 기록한다(상위 디렉터리 없으면 생성).
@@ -178,9 +197,8 @@ fn persist_thread_id(path: &str, thread_id: &str) -> Result<(), String> {
 // ws IO (라이브 전용, 단위테스트 대상 아님 - T5에서 실측)
 // ---------------------------------------------------------------------------
 
-type WsStreamInner = tokio_tungstenite::WebSocketStream<
-    tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
->;
+type WsStreamInner =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
 type WsSink = futures_util::stream::SplitSink<WsStreamInner, Message>;
 type WsRead = futures_util::stream::SplitStream<WsStreamInner>;
 
@@ -247,7 +265,9 @@ async fn expect_response(
 ) -> Result<Value, String> {
     loop {
         let msg = recv_json(stream, deadline).await?;
-        let Some(incoming) = classify_message(&msg) else { continue };
+        let Some(incoming) = classify_message(&msg) else {
+            continue;
+        };
         if let IncomingMessage::Response { id, result, error } = &incoming {
             // 에러 응답은 id 일치 여부와 무관하게 즉시 실패로 surface한다(id:null 에러 응답이나 프록시가
             // id 타입을 바꿔 에코한 경우도 swallow되지 않게, 리뷰 findings).
@@ -282,7 +302,11 @@ async fn start_thread(
 ) -> Result<String, String> {
     *next_id += 1;
     let start_id = *next_id;
-    send_json(sink, &build_thread_start_request(start_id, Some(approval), Some(sandbox), cwd)).await?;
+    send_json(
+        sink,
+        &build_thread_start_request(start_id, Some(approval), Some(sandbox), cwd),
+    )
+    .await?;
     let resp = expect_response(sink, stream, start_id, deadline).await?;
     let tid = parse_thread_id(&resp)
         .ok_or_else(|| "codex-inject: thread/start 응답에서 thread id 파싱 실패".to_string())?;
@@ -329,34 +353,59 @@ pub async fn run(
 
     // 1. initialize
     let init_id = alloc_id!();
-    send_json(&mut sink, &build_initialize_request(init_id, "tunaround-inject", env!("CARGO_PKG_VERSION")))
-        .await?;
+    send_json(
+        &mut sink,
+        &build_initialize_request(init_id, "tunaround-inject", env!("CARGO_PKG_VERSION")),
+    )
+    .await?;
     expect_response(&mut sink, &mut stream, init_id, deadline).await?;
 
     // 2. thread 확보. 직지정 모드(v2-46)는 지정 threadId resume만(영속 파일·자가치유 없음),
     //    파일 모드는 기존 그대로(설계 §5.1: 글루가 thread를 소유, 영속 파일로 결정론 유지).
     if let Some(tid) = thread {
         let resume_id = alloc_id!();
-        send_json(&mut sink, &build_thread_resume_request(resume_id, tid, Some(approval), Some(sandbox)))
-            .await?;
+        send_json(
+            &mut sink,
+            &build_thread_resume_request(resume_id, tid, Some(approval), Some(sandbox)),
+        )
+        .await?;
         let resp = expect_response(&mut sink, &mut stream, resume_id, deadline)
             .await
             .map_err(|e| format!("codex-inject: --thread {tid} resume 실패(자가치유 없음): {e}"))?;
         let thread_id = parse_thread_id(&resp).unwrap_or_else(|| tid.to_string());
-        return pump_turn(&mut sink, &mut stream, &mut next_id, &thread_id, text, approval, deadline)
-            .await;
+        return pump_turn(
+            &mut sink,
+            &mut stream,
+            &mut next_id,
+            &thread_id,
+            text,
+            approval,
+            deadline,
+        )
+        .await;
     }
     let thread_path = thread_file_path(agent);
-    let existing = if force_new { None } else { read_persisted_thread_id(&thread_path) };
-    let cwd = std::env::current_dir().ok().map(|p| p.to_string_lossy().to_string());
+    let existing = if force_new {
+        None
+    } else {
+        read_persisted_thread_id(&thread_path)
+    };
+    let cwd = std::env::current_dir()
+        .ok()
+        .map(|p| p.to_string_lossy().to_string());
 
     let thread_id = if let Some(tid) = existing {
         let resume_id = alloc_id!();
-        send_json(&mut sink, &build_thread_resume_request(resume_id, &tid, Some(approval), Some(sandbox)))
-            .await?;
+        send_json(
+            &mut sink,
+            &build_thread_resume_request(resume_id, &tid, Some(approval), Some(sandbox)),
+        )
+        .await?;
         match expect_response(&mut sink, &mut stream, resume_id, deadline).await {
             Ok(resp) => parse_thread_id(&resp).unwrap_or_else(|| {
-                eprintln!("[codex-inject] thread/resume 응답에서 thread id 파싱 실패, 기존 {tid} 재사용");
+                eprintln!(
+                    "[codex-inject] thread/resume 응답에서 thread id 파싱 실패, 기존 {tid} 재사용"
+                );
                 tid.clone()
             }),
             // 서버 재기동·thread 만료로 죽은 threadId면 resume이 에러다. 수동 개입(.thread 삭제) 없이
@@ -364,7 +413,13 @@ pub async fn run(
             Err(e) => {
                 eprintln!("[codex-inject] thread/resume 실패({e}), 새 thread 시작(자가치유)");
                 start_thread(
-                    &mut sink, &mut stream, &mut next_id, approval, sandbox, cwd.as_deref(), deadline,
+                    &mut sink,
+                    &mut stream,
+                    &mut next_id,
+                    approval,
+                    sandbox,
+                    cwd.as_deref(),
+                    deadline,
                     &thread_path,
                 )
                 .await?
@@ -372,11 +427,27 @@ pub async fn run(
         }
     } else {
         start_thread(
-            &mut sink, &mut stream, &mut next_id, approval, sandbox, cwd.as_deref(), deadline, &thread_path,
+            &mut sink,
+            &mut stream,
+            &mut next_id,
+            approval,
+            sandbox,
+            cwd.as_deref(),
+            deadline,
+            &thread_path,
         )
         .await?
     };
-    pump_turn(&mut sink, &mut stream, &mut next_id, &thread_id, text, approval, deadline).await
+    pump_turn(
+        &mut sink,
+        &mut stream,
+        &mut next_id,
+        &thread_id,
+        text,
+        approval,
+        deadline,
+    )
+    .await
 }
 
 /// turn/start 전송 -> turn/completed까지 알림 펌프(승인은 handle_incoming이 자동응답).
@@ -394,12 +465,18 @@ async fn pump_turn(
 ) -> Result<String, String> {
     eprintln!("[codex-inject] thread={thread_id}로 turn/start 주입");
     *next_id += 1;
-    send_json(sink, &build_turn_start_request(*next_id, thread_id, text, Some(approval))).await?;
+    send_json(
+        sink,
+        &build_turn_start_request(*next_id, thread_id, text, Some(approval)),
+    )
+    .await?;
 
     let mut answer = String::new();
     loop {
         let msg = recv_json(stream, deadline).await?;
-        let Some(incoming) = classify_message(&msg) else { continue };
+        let Some(incoming) = classify_message(&msg) else {
+            continue;
+        };
         match handle_incoming(sink, &incoming, thread_id).await? {
             InjectAction::Complete => {
                 eprintln!("[codex-inject] turn/completed 수신, 종료");
@@ -440,17 +517,32 @@ mod tests {
         assert_eq!(safe_agent_filename(""), "default");
         // 경로 문자는 전부 _로 치환되어 네임스페이스를 못 벗어난다.
         let evil = safe_agent_filename("../../etc/passwd");
-        assert!(!evil.contains('/') && !evil.contains('.'), "경로 문자 잔존: {evil}");
-        assert!(!thread_file_path("../../etc/passwd").contains(".."), "경로 탈출 잔존");
+        assert!(
+            !evil.contains('/') && !evil.contains('.'),
+            "경로 문자 잔존: {evil}"
+        );
+        assert!(
+            !thread_file_path("../../etc/passwd").contains(".."),
+            "경로 탈출 잔존"
+        );
     }
 
     // -- 정책 파싱 -------------------------------------------------------------
 
     #[test]
     fn parse_approval_policy_accepts_all_variants() {
-        assert_eq!(parse_approval_policy("untrusted"), Ok(ApprovalPolicy::Untrusted));
-        assert_eq!(parse_approval_policy("on-failure"), Ok(ApprovalPolicy::OnFailure));
-        assert_eq!(parse_approval_policy("on-request"), Ok(ApprovalPolicy::OnRequest));
+        assert_eq!(
+            parse_approval_policy("untrusted"),
+            Ok(ApprovalPolicy::Untrusted)
+        );
+        assert_eq!(
+            parse_approval_policy("on-failure"),
+            Ok(ApprovalPolicy::OnFailure)
+        );
+        assert_eq!(
+            parse_approval_policy("on-request"),
+            Ok(ApprovalPolicy::OnRequest)
+        );
         assert_eq!(parse_approval_policy("never"), Ok(ApprovalPolicy::Never));
     }
 
@@ -462,8 +554,14 @@ mod tests {
     #[test]
     fn parse_sandbox_mode_accepts_all_variants() {
         assert_eq!(parse_sandbox_mode("read-only"), Ok(SandboxMode::ReadOnly));
-        assert_eq!(parse_sandbox_mode("workspace-write"), Ok(SandboxMode::WorkspaceWrite));
-        assert_eq!(parse_sandbox_mode("danger-full-access"), Ok(SandboxMode::DangerFullAccess));
+        assert_eq!(
+            parse_sandbox_mode("workspace-write"),
+            Ok(SandboxMode::WorkspaceWrite)
+        );
+        assert_eq!(
+            parse_sandbox_mode("danger-full-access"),
+            Ok(SandboxMode::DangerFullAccess)
+        );
     }
 
     #[test]
@@ -549,8 +647,14 @@ mod tests {
         assert_eq!(decide_action(&msg, "tid-1"), InjectAction::Ignore);
         // is_turn_completed 자체 파싱도 재확인(회귀 방지 겸용). turn_id는 turn.id에서.
         assert_eq!(
-            is_turn_completed("turn/completed", &json!({"threadId":"tid-OTHER","turn":{"id":"turn-9"}})),
-            Some(TurnCompleted { thread_id: "tid-OTHER".to_string(), turn_id: "turn-9".to_string() })
+            is_turn_completed(
+                "turn/completed",
+                &json!({"threadId":"tid-OTHER","turn":{"id":"turn-9"}})
+            ),
+            Some(TurnCompleted {
+                thread_id: "tid-OTHER".to_string(),
+                turn_id: "turn-9".to_string()
+            })
         );
     }
 
@@ -563,7 +667,10 @@ mod tests {
                 "item": { "type": "agentMessage", "id": "m1", "text": "완료 답변", "phase": "final_answer" }
             }),
         };
-        assert_eq!(decide_action(&msg, "tid-1"), InjectAction::PrintText("완료 답변".to_string()));
+        assert_eq!(
+            decide_action(&msg, "tid-1"),
+            InjectAction::PrintText("완료 답변".to_string())
+        );
     }
 
     #[test]
@@ -636,7 +743,11 @@ mod tests {
 
     #[test]
     fn decide_action_response_is_ignored() {
-        let msg = IncomingMessage::Response { id: json!(1), result: Some(json!({})), error: None };
+        let msg = IncomingMessage::Response {
+            id: json!(1),
+            result: Some(json!({})),
+            error: None,
+        };
         assert_eq!(decide_action(&msg, "tid-1"), InjectAction::Ignore);
     }
 
@@ -644,14 +755,24 @@ mod tests {
 
     #[test]
     fn persist_and_read_thread_id_roundtrip() {
-        let dir = std::env::temp_dir().join(format!("tunaround-codex-inject-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "tunaround-codex-inject-test-{}",
+            std::process::id()
+        ));
         let path = dir.join("nested").join("agent.thread");
         let path_str = path.to_string_lossy().to_string();
 
-        assert_eq!(read_persisted_thread_id(&path_str), None, "파일이 없으면 None");
+        assert_eq!(
+            read_persisted_thread_id(&path_str),
+            None,
+            "파일이 없으면 None"
+        );
 
         persist_thread_id(&path_str, "019f2f6d-thread-id").expect("중첩 디렉터리도 생성돼야 함");
-        assert_eq!(read_persisted_thread_id(&path_str).as_deref(), Some("019f2f6d-thread-id"));
+        assert_eq!(
+            read_persisted_thread_id(&path_str).as_deref(),
+            Some("019f2f6d-thread-id")
+        );
 
         // 정리(테스트 오염 방지, 실패해도 무해).
         let _ = std::fs::remove_dir_all(&dir);
@@ -659,7 +780,10 @@ mod tests {
 
     #[test]
     fn read_persisted_thread_id_treats_blank_file_as_none() {
-        let dir = std::env::temp_dir().join(format!("tunaround-codex-inject-blank-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "tunaround-codex-inject-blank-{}",
+            std::process::id()
+        ));
         let path = dir.join("agent.thread");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(&path, "   \n").unwrap();

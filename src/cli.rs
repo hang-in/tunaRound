@@ -14,7 +14,11 @@ pub const ENV_HOME: &str = "HOME";
 
 /// tunaRound CLI. 서브커맨드 없이 실행하면 기본 REPL(chat)로 동작한다(하위호환: 인자 없는 `tunaround` = 지금처럼 REPL).
 #[derive(Parser)]
-#[command(name = "tunaround", version, about = "tunaRound - 2-에이전트 설계 토론 REPL")]
+#[command(
+    name = "tunaround",
+    version,
+    about = "tunaRound - 2-에이전트 설계 토론 REPL"
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Commands>,
@@ -488,7 +492,6 @@ pub struct NodeArgs {
     pub config: Option<String>,
 }
 
-
 /// doctor 서브커맨드 인자.
 #[cfg(all(feature = "serve", feature = "worker"))]
 #[derive(Args, Debug)]
@@ -574,7 +577,10 @@ mod cli_tests {
                 assert_eq!(a.common.recent_turns, Some(3));
                 assert!(a.common.pull_context);
                 assert_eq!(a.common.session.as_deref(), Some("sid1"));
-                assert_eq!(a.common.search_url.as_deref(), Some("http://127.0.0.1:8770/mcp"));
+                assert_eq!(
+                    a.common.search_url.as_deref(),
+                    Some("http://127.0.0.1:8770/mcp")
+                );
                 assert_eq!(a.common.search_token.as_deref(), Some("tok"));
             }
             other => panic!("Chat 서브커맨드 기대, 실제: {other:?}"),
@@ -583,7 +589,8 @@ mod cli_tests {
 
     #[test]
     fn chat_observe_option_parses() {
-        let cli = Cli::try_parse_from(["tunaround", "chat", "--observe", "sess-9"]).expect("파싱 성공");
+        let cli =
+            Cli::try_parse_from(["tunaround", "chat", "--observe", "sess-9"]).expect("파싱 성공");
         match cli.command {
             Some(Commands::Chat(a)) => assert_eq!(a.observe.as_deref(), Some("sess-9")),
             other => panic!("Chat 서브커맨드 기대, 실제: {other:?}"),
@@ -595,7 +602,10 @@ mod cli_tests {
         // 설계 변경점: 기존엔 `tunaround state.json`이 통했으나, 서브커맨드 도입 후엔
         // `tunaround chat state.json`으로 명시해야 한다(인자 0개=chat만 하위호환 보장).
         let res = Cli::try_parse_from(["tunaround", "state.json"]);
-        assert!(res.is_err(), "서브커맨드 없는 bare positional은 이제 에러여야 함");
+        assert!(
+            res.is_err(),
+            "서브커맨드 없는 bare positional은 이제 에러여야 함"
+        );
     }
 
     #[test]
@@ -628,8 +638,16 @@ mod cli_tests {
     #[cfg(feature = "serve")]
     #[test]
     fn serve_parses_addr_db_and_token() {
-        let cli = Cli::try_parse_from(["tunaround", "serve", "127.0.0.1:8770", "--db", "x.db", "--token", "T"])
-            .expect("파싱 성공");
+        let cli = Cli::try_parse_from([
+            "tunaround",
+            "serve",
+            "127.0.0.1:8770",
+            "--db",
+            "x.db",
+            "--token",
+            "T",
+        ])
+        .expect("파싱 성공");
         match cli.command {
             Some(Commands::Serve(a)) => {
                 assert_eq!(a.addr, "127.0.0.1:8770");
@@ -668,8 +686,15 @@ mod cli_tests {
     #[cfg(feature = "mcp")]
     #[test]
     fn mcp_search_parses_db_and_session_id() {
-        let cli = Cli::try_parse_from(["tunaround", "mcp-search", "--db", "x.db", "--session-id", "sid-7"])
-            .expect("파싱 성공");
+        let cli = Cli::try_parse_from([
+            "tunaround",
+            "mcp-search",
+            "--db",
+            "x.db",
+            "--session-id",
+            "sid-7",
+        ])
+        .expect("파싱 성공");
         match cli.command {
             Some(Commands::McpSearch(a)) => {
                 assert_eq!(a.db.as_deref(), Some("x.db"));
@@ -719,12 +744,18 @@ mod cli_tests {
     #[cfg(feature = "worker")]
     #[test]
     fn poll_tags_is_optional() {
-        let cli = Cli::try_parse_from(["tunaround", "poll", "--core", "http://x/mcp", "--agent", "a"])
-            .expect("파싱 성공");
+        let cli = Cli::try_parse_from([
+            "tunaround",
+            "poll",
+            "--core",
+            "http://x/mcp",
+            "--agent",
+            "a",
+        ])
+        .expect("파싱 성공");
         match cli.command {
             Some(Commands::Poll(a)) => assert_eq!(a.tags, None),
             other => panic!("Poll 서브커맨드 기대, 실제: {other:?}"),
         }
     }
 }
-

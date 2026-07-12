@@ -53,7 +53,11 @@ const LOANWORD_GROUPS: &[&[&str]] = &[
 pub fn loanword_aliases(token: &str) -> Vec<String> {
     for group in LOANWORD_GROUPS {
         if group.contains(&token) {
-            return group.iter().filter(|&&t| t != token).map(|s| s.to_string()).collect();
+            return group
+                .iter()
+                .filter(|&&t| t != token)
+                .map(|s| s.to_string())
+                .collect();
         }
     }
     Vec::new()
@@ -69,7 +73,10 @@ pub fn assemble_fts_query(tokens: Vec<String>) -> String {
     toks.extend(aliases);
     toks.sort();
     toks.dedup();
-    toks.into_iter().map(|t| format!("{t}*")).collect::<Vec<_>>().join(" OR ")
+    toks.into_iter()
+        .map(|t| format!("{t}*"))
+        .collect::<Vec<_>>()
+        .join(" OR ")
 }
 
 /// 폴백 질의용 FTS5 표현: raw 토큰(`tokenize_fallback`) 기반으로 `assemble_fts_query`에 위임.
@@ -126,10 +133,16 @@ mod tests {
     fn fallback_query_uses_alias_and_or_rule() {
         // 폴백 질의 경로가 alias 확장 + OR 결합을 정상 경로와 동일하게 낸다.
         let q = super::fallback_fts_query("임베딩");
-        assert!(q.contains("임베딩*") && q.contains("embedding*"), "폴백 alias 확장 실패: {q}");
+        assert!(
+            q.contains("임베딩*") && q.contains("embedding*"),
+            "폴백 alias 확장 실패: {q}"
+        );
         assert!(q.contains(" OR "), "폴백 OR 결합 실패: {q}");
         // 공백 join(AND) 회귀 방지: 순수 공백 구분 토큰이 남으면 안 된다(전부 OR로 연결).
-        assert!(!q.split(" OR ").any(|seg| seg.contains(' ')), "OR 밖 공백 잔존: {q}");
+        assert!(
+            !q.split(" OR ").any(|seg| seg.contains(' ')),
+            "OR 밖 공백 잔존: {q}"
+        );
     }
 
     #[test]

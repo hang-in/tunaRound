@@ -30,9 +30,9 @@ pub fn work(rt: &tokio::runtime::Runtime, a: WorkArgs) {
     let runner: std::sync::Arc<dyn tunaround::runner::Runner + Send + Sync> = match a.runner {
         WorkRunner::Claude => std::sync::Arc::new(tunaround::runner::claude::ClaudeRunner::new()),
         WorkRunner::Codex => std::sync::Arc::new(tunaround::runner::codex::CodexRunner::new()),
-        WorkRunner::Opencode => {
-            std::sync::Arc::new(tunaround::runner::opencode::OpencodeRunner::new().with_model(a.model.clone()))
-        }
+        WorkRunner::Opencode => std::sync::Arc::new(
+            tunaround::runner::opencode::OpencodeRunner::new().with_model(a.model.clone()),
+        ),
         #[cfg(feature = "engines")]
         WorkRunner::Http => {
             let base_url = match &a.http_base_url {
@@ -62,7 +62,10 @@ pub fn work(rt: &tokio::runtime::Runtime, a: WorkArgs) {
                     std::process::exit(1);
                 }
             };
-            std::sync::Arc::new(tunaround::runner::a2a::A2ARunner::new(card, a.a2a_token.clone()))
+            std::sync::Arc::new(tunaround::runner::a2a::A2ARunner::new(
+                card,
+                a.a2a_token.clone(),
+            ))
         }
         #[cfg(not(feature = "a2a-out"))]
         WorkRunner::A2a => {
@@ -84,7 +87,10 @@ pub fn work(rt: &tokio::runtime::Runtime, a: WorkArgs) {
         None => std::collections::HashMap::new(),
     };
 
-    let agent_id = a.agent.clone().unwrap_or_else(tunaround::worker::generate_agent_uuid);
+    let agent_id = a
+        .agent
+        .clone()
+        .unwrap_or_else(tunaround::worker::generate_agent_uuid);
     if a.agent.is_none() {
         eprintln!("[work] --agent 미지정 -> 자가 uuid 생성: {agent_id}");
     }
@@ -100,8 +106,12 @@ pub fn work(rt: &tokio::runtime::Runtime, a: WorkArgs) {
 
     let result = rt.block_on(async {
         // 브로커 토큰은 --token 우선, 없으면 TUNA_BROKER_TOKEN env 폴백(argv 노출 회피, serve/poll과 동일 계약).
-        let broker_token = a.token.clone().or_else(|| std::env::var(ENV_BROKER_TOKEN).ok());
-        let client = tunaround::mcp_client::McpHttpClient::connect(a.core.clone(), broker_token).await?;
+        let broker_token = a
+            .token
+            .clone()
+            .or_else(|| std::env::var(ENV_BROKER_TOKEN).ok());
+        let client =
+            tunaround::mcp_client::McpHttpClient::connect(a.core.clone(), broker_token).await?;
         tunaround::worker::run_worker_loop(
             &client,
             runner,
@@ -127,7 +137,10 @@ pub fn work(rt: &tokio::runtime::Runtime, a: WorkArgs) {
 pub fn poll(rt: &tokio::runtime::Runtime, a: PollArgs) {
     let result = rt.block_on(async {
         // 토큰은 --token 우선, 없으면 TUNA_BROKER_TOKEN env 폴백(argv 노출 회피용).
-        let token = a.token.clone().or_else(|| std::env::var(ENV_BROKER_TOKEN).ok());
+        let token = a
+            .token
+            .clone()
+            .or_else(|| std::env::var(ENV_BROKER_TOKEN).ok());
         let client = tunaround::mcp_client::McpHttpClient::connect(a.core.clone(), token).await?;
         tunaround::worker::run_poll_loop(
             &client,
@@ -169,7 +182,10 @@ pub fn presence_scan(rt: &tokio::runtime::Runtime, a: PresenceScanArgs) {
             .clone()
             .or_else(|| std::env::var(ENV_BROKER_CORE).ok())
             .ok_or_else(|| "--core 또는 TUNA_BROKER_CORE가 필요합니다".to_string())?;
-        let token = a.token.clone().or_else(|| std::env::var(ENV_BROKER_TOKEN).ok());
+        let token = a
+            .token
+            .clone()
+            .or_else(|| std::env::var(ENV_BROKER_TOKEN).ok());
         // 브로커보다 먼저/직후에 떠도 죽지 않게 접속을 재시도한다(기동 순서 취약성 제거).
         // --once(테스트)는 즉시 실패를 반환해 문제를 숨기지 않는다.
         let mut client = loop {
@@ -182,7 +198,10 @@ pub fn presence_scan(rt: &tokio::runtime::Runtime, a: PresenceScanArgs) {
                 }
             }
         };
-        let machine = a.machine.clone().unwrap_or_else(tunaround::discover::default_machine);
+        let machine = a
+            .machine
+            .clone()
+            .unwrap_or_else(tunaround::discover::default_machine);
         let projects_dir = match a.projects_dir.clone() {
             Some(p) => Some(std::path::PathBuf::from(tunaround::config::expand_home(&p))),
             None => tunaround::discover::default_projects_dir(),
@@ -209,7 +228,12 @@ pub fn presence_scan(rt: &tokio::runtime::Runtime, a: PresenceScanArgs) {
             let now = std::time::SystemTime::now();
             let mut sessions = Vec::new();
             if let Some(dir) = &projects_dir {
-                sessions.extend(tunaround::presence_scan::enumerate_claude_live(dir, now, stale, home.as_deref()));
+                sessions.extend(tunaround::presence_scan::enumerate_claude_live(
+                    dir,
+                    now,
+                    stale,
+                    home.as_deref(),
+                ));
             }
             if let Some(dir) = &codex_dir {
                 sessions.extend(tunaround::presence_scan::enumerate_codex_sessions(
@@ -232,21 +256,28 @@ pub fn presence_scan(rt: &tokio::runtime::Runtime, a: PresenceScanArgs) {
             if let Some((proc_text, is_win)) = tunaround::presence_scan::process_list_text() {
                 // 게이트: 러너 프로세스가 확실히 0개면 그 러너 세션 전부 죽음(재부팅 즉시 반영).
                 for runner in ["claude", "codex"] {
-                    let count = tunaround::presence_scan::count_matching_lines(&proc_text, runner, is_win);
-                    sessions = tunaround::presence_scan::apply_process_gate(sessions, runner, Some(count));
+                    let count =
+                        tunaround::presence_scan::count_matching_lines(&proc_text, runner, is_win);
+                    sessions =
+                        tunaround::presence_scan::apply_process_gate(sessions, runner, Some(count));
                 }
                 // 마커 생존: 훅이 기록한 owner PID가 죽었으면 유령(/clear·창닫기·크래시) → 즉시 제외.
                 if let Some(h) = &home {
                     let marker_dir = h.join(".tunaround").join("autoarm");
                     let alive = tunaround::presence_scan::parse_pids(&proc_text, is_win);
-                    sessions = tunaround::presence_scan::filter_dead_sessions(sessions, &marker_dir, &alive);
+                    sessions = tunaround::presence_scan::filter_dead_sessions(
+                        sessions,
+                        &marker_dir,
+                        &alive,
+                    );
                 }
                 // P8: 유휴-열림 claude 세션 되살리기(순수 additive). 마커 owner pid가 살아있는 claude면
                 // 신선도 창(stale, 기본 240분)과 무관하게 로스터에 유지한다. 프로세스 스냅샷이 있는 주기
                 // 에만 수행(스냅샷 실패 주기엔 추가 안 함 = 보수적). 마커 없음/codex는 비대상(기존 창 폴백).
                 if let (Some(h), Some(pdir)) = (&home, &projects_dir) {
                     let marker_dir = h.join(".tunaround").join("autoarm");
-                    let claude_pids = tunaround::presence_scan::runner_pids(&proc_text, "claude", is_win);
+                    let claude_pids =
+                        tunaround::presence_scan::runner_pids(&proc_text, "claude", is_win);
                     let existing: std::collections::HashSet<String> =
                         sessions.iter().map(|s| s.uuid.clone()).collect();
                     // 스냅샷 성공 주기에만 유휴 세트를 재계산해 캐시에 담는다(아래에서 dedup 후 추가).
@@ -264,14 +295,23 @@ pub fn presence_scan(rt: &tokio::runtime::Runtime, a: PresenceScanArgs) {
             {
                 let present: std::collections::HashSet<String> =
                     sessions.iter().map(|s| s.uuid.clone()).collect();
-                sessions.extend(last_idle.iter().filter(|s| !present.contains(&s.uuid)).cloned());
+                sessions.extend(
+                    last_idle
+                        .iter()
+                        .filter(|s| !present.contains(&s.uuid))
+                        .cloned(),
+                );
             }
             // 스캐너 자신도 로스터에 등록(설계 v2-44 §3: 스캐너 heartbeat = 머신 도달성 신호).
             // register는 last_heartbeat를 now로 덮으므로 매 주기 호출 = heartbeat 겸용.
             let self_uuid = format!("{machine}-presence-scan");
             let self_tags = format!("machine={machine},role=infra,purpose=presence");
             if let Err(e) = client
-                .register_agent(&self_uuid, Some(&self_tags), Some(&format!("{machine}-스캐너")))
+                .register_agent(
+                    &self_uuid,
+                    Some(&self_tags),
+                    Some(&format!("{machine}-스캐너")),
+                )
                 .await
             {
                 eprintln!("[presence-scan] 자기 등록 실패(무시): {e}");
@@ -290,7 +330,8 @@ pub fn presence_scan(rt: &tokio::runtime::Runtime, a: PresenceScanArgs) {
                     // 재접속을 시도해 다음 주기부터 새 세션으로 복구한다.
                     eprintln!("[presence-scan] 보고 실패(재접속 시도): {e}");
                     if let Ok(c) =
-                        tunaround::mcp_client::McpHttpClient::connect(core.clone(), token.clone()).await
+                        tunaround::mcp_client::McpHttpClient::connect(core.clone(), token.clone())
+                            .await
                     {
                         client = c;
                     }
@@ -327,7 +368,10 @@ pub fn task_cli(rt: &tokio::runtime::Runtime, a: TaskArgs) {
             .clone()
             .or_else(|| std::env::var(ENV_BROKER_CORE).ok())
             .ok_or_else(|| "--core 또는 TUNA_BROKER_CORE가 필요합니다".to_string())?;
-        let token = a.token.clone().or_else(|| std::env::var(ENV_BROKER_TOKEN).ok());
+        let token = a
+            .token
+            .clone()
+            .or_else(|| std::env::var(ENV_BROKER_TOKEN).ok());
         let client = tunaround::mcp_client::McpHttpClient::connect(core, token).await?;
         let out = match &a.action {
             TaskAction::Poll { agent } => client.poll_tasks(agent).await?,
@@ -335,11 +379,21 @@ pub fn task_cli(rt: &tokio::runtime::Runtime, a: TaskArgs) {
                 client.claim_task(task_id, Some(agent), None).await?
             }
             TaskAction::Get { task_id } => client.get_task(task_id).await?,
-            TaskAction::Complete { task_id, result, agent } => {
+            TaskAction::Complete {
+                task_id,
+                result,
+                agent,
+            } => {
                 let text = arg_or_stdin(result)?;
-                client.complete_task(task_id, &text, agent.as_deref()).await?
+                client
+                    .complete_task(task_id, &text, agent.as_deref())
+                    .await?
             }
-            TaskAction::Fail { task_id, reason, agent } => {
+            TaskAction::Fail {
+                task_id,
+                reason,
+                agent,
+            } => {
                 let text = arg_or_stdin(reason)?;
                 client.fail_task(task_id, &text, agent.as_deref()).await?
             }
@@ -375,7 +429,14 @@ pub fn codex_inject(rt: &tokio::runtime::Runtime, a: CodexInjectArgs) {
     // clap이 --agent/--thread 배타·최소 1개를 보장한다(required_unless_present).
     let agent = a.agent.as_deref().unwrap_or("");
     let result = rt.block_on(tunaround::codex_inject::run(
-        &a.ws, agent, a.thread.as_deref(), &a.text, approval, sandbox, a.timeout, a.new,
+        &a.ws,
+        agent,
+        a.thread.as_deref(),
+        &a.text,
+        approval,
+        sandbox,
+        a.timeout,
+        a.new,
     ));
     if let Err(e) = result {
         eprintln!("[codex-inject] 오류: {e}");
@@ -392,8 +453,14 @@ pub fn codex_relay(rt: &tokio::runtime::Runtime, a: CodexRelayArgs) {
             .clone()
             .or_else(|| std::env::var(ENV_BROKER_CORE).ok())
             .ok_or_else(|| "--core 또는 TUNA_BROKER_CORE가 필요합니다".to_string())?;
-        let token = a.token.clone().or_else(|| std::env::var(ENV_BROKER_TOKEN).ok());
-        let machine = a.machine.clone().unwrap_or_else(tunaround::discover::default_machine);
+        let token = a
+            .token
+            .clone()
+            .or_else(|| std::env::var(ENV_BROKER_TOKEN).ok());
+        let machine = a
+            .machine
+            .clone()
+            .unwrap_or_else(tunaround::discover::default_machine);
         let codex_dir = match a.codex_dir.clone() {
             Some(p) => Some(std::path::PathBuf::from(tunaround::config::expand_home(&p))),
             None => tunaround::presence_scan::default_codex_sessions_dir(),
@@ -421,4 +488,3 @@ pub fn codex_relay(rt: &tokio::runtime::Runtime, a: CodexRelayArgs) {
         std::process::exit(1);
     }
 }
-

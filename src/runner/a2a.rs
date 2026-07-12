@@ -3,8 +3,8 @@
 use super::{RunError, RunInput, RunOutput, Runner};
 use a2a_client::A2AClient;
 use a2a_types::{
-    part::Content, send_message_response::Payload, GetTaskRequest, Message, Part, Role,
-    SendMessageRequest, Task, TaskState,
+    GetTaskRequest, Message, Part, Role, SendMessageRequest, Task, TaskState, part::Content,
+    send_message_response::Payload,
 };
 use std::time::Duration;
 
@@ -24,7 +24,11 @@ pub struct A2ARunner {
 impl A2ARunner {
     /// `card_url`: 외부 에이전트 카드 발견 base URL. `auth_token`: 그 에이전트 인증(코어 --token과 별개).
     pub fn new(card_url: String, auth_token: Option<String>) -> Self {
-        Self { card_url, auth_token, timeout_secs: DEFAULT_TIMEOUT_SECS }
+        Self {
+            card_url,
+            auth_token,
+            timeout_secs: DEFAULT_TIMEOUT_SECS,
+        }
     }
 
     /// task 완료 폴링 타임아웃(초)을 바꾼다(테스트/설정용).
@@ -63,12 +67,20 @@ impl A2ARunner {
         if content.trim().is_empty() {
             return Err(RunError::Empty("A2A 응답 내용이 비었음".to_string()));
         }
-        Ok(RunOutput { content, input_tokens: 0, output_tokens: 0 })
+        Ok(RunOutput {
+            content,
+            input_tokens: 0,
+            output_tokens: 0,
+        })
     }
 
     /// task가 완료 상태(Completed)가 될 때까지 GetTask로 폴링한다. 실패/취소/거부는 즉시 에러,
     /// 타임아웃이면 RunError::Timeout.
-    async fn await_task_completion(&self, client: &A2AClient, mut task: Task) -> Result<String, RunError> {
+    async fn await_task_completion(
+        &self,
+        client: &A2AClient,
+        mut task: Task,
+    ) -> Result<String, RunError> {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(self.timeout_secs);
         loop {
             let state = task
@@ -78,8 +90,9 @@ impl A2ARunner {
                 .unwrap_or(TaskState::Unspecified);
             match state {
                 TaskState::Completed => {
-                    return extract_task_content(&task)
-                        .ok_or_else(|| RunError::Empty("A2A task 완료했지만 내용 없음".to_string()));
+                    return extract_task_content(&task).ok_or_else(|| {
+                        RunError::Empty("A2A task 완료했지만 내용 없음".to_string())
+                    });
                 }
                 TaskState::Failed | TaskState::Rejected | TaskState::Canceled => {
                     return Err(RunError::Agent(format!(
@@ -172,7 +185,12 @@ pub fn extract_message_content(message: &Message) -> Option<String> {
 }
 
 fn message_text(message: &Message) -> Option<String> {
-    let joined = message.parts.iter().filter_map(part_text).collect::<Vec<_>>().join("\n");
+    let joined = message
+        .parts
+        .iter()
+        .filter_map(part_text)
+        .collect::<Vec<_>>()
+        .join("\n");
     if joined.trim().is_empty() {
         None
     } else {
@@ -247,7 +265,10 @@ mod tests {
     #[test]
     fn extract_task_content_prefers_artifact_text() {
         let task = completed_task_with_artifact("아티팩트 결과");
-        assert_eq!(extract_task_content(&task).as_deref(), Some("아티팩트 결과"));
+        assert_eq!(
+            extract_task_content(&task).as_deref(),
+            Some("아티팩트 결과")
+        );
     }
 
     #[test]
@@ -268,7 +289,10 @@ mod tests {
     #[test]
     fn extract_message_content_reads_text_parts() {
         let msg = agent_message("응답 텍스트");
-        assert_eq!(extract_message_content(&msg).as_deref(), Some("응답 텍스트"));
+        assert_eq!(
+            extract_message_content(&msg).as_deref(),
+            Some("응답 텍스트")
+        );
     }
 
     #[test]

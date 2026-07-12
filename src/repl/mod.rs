@@ -1,5 +1,7 @@
 // 터미널 REPL. 명령 파싱·렌더·세션 step. I/O는 main.rs.
-use crate::orchestrator::{run_round, ContextMode, Participant, RoundInput, RunnerRegistry, Utterance};
+use crate::orchestrator::{
+    ContextMode, Participant, RoundInput, RunnerRegistry, Utterance, run_round,
+};
 use crate::runner::RunMode;
 use crate::store::{StoredMessage, StoredSession};
 
@@ -33,20 +35,36 @@ pub enum Command {
     Message(String),
     Save(Option<String>),
     Conclude(Option<String>),
-    Only { engine: String, text: String },
-    Write { engine: String, text: String },
-    Debate { turns: usize, topic: String },
+    Only {
+        engine: String,
+        text: String,
+    },
+    Write {
+        engine: String,
+        text: String,
+    },
+    Debate {
+        turns: usize,
+        topic: String,
+    },
     Search(String),
     /// 검색 디버그: 질의→토큰화→히트 bm25/유효성 표시.
     Explain(String),
     Branches,
     Checkout(u64),
     /// 발언을 superseded로 표시(선택적으로 대체 발언 id). 유효성 지정(HITL).
-    Supersede { id: u64, by: Option<u64> },
+    Supersede {
+        id: u64,
+        by: Option<u64>,
+    },
     /// 발언을 rejected로 표시(검색에서 제외).
     Reject(u64),
     /// 발언에 큐레이션(증류 요약 abstraction·검색 앵커 anchors)을 남긴다(둘 중 하나만도 허용).
-    Annotate { id: u64, abstraction: Option<String>, anchors: Option<String> },
+    Annotate {
+        id: u64,
+        abstraction: Option<String>,
+        anchors: Option<String>,
+    },
     Help,
     Quit,
     Noop,
@@ -159,7 +177,11 @@ pub fn parse_command(line: &str) -> Command {
                         if abstraction.is_none() && anchors.is_none() {
                             Command::Message(line.to_string())
                         } else {
-                            Command::Annotate { id, abstraction, anchors }
+                            Command::Annotate {
+                                id,
+                                abstraction,
+                                anchors,
+                            }
                         }
                     }
                 }
@@ -175,14 +197,21 @@ pub fn parse_command(line: &str) -> Command {
                         let first = it.next().unwrap_or("");
                         match first.parse::<usize>() {
                             Ok(n) => {
-                                let topic = it.next().map(|s| s.trim().to_string()).unwrap_or_default();
+                                let topic =
+                                    it.next().map(|s| s.trim().to_string()).unwrap_or_default();
                                 if topic.is_empty() {
                                     Command::Message(line.to_string()) // 숫자만, 주제 없음
                                 } else {
-                                    Command::Debate { turns: n.clamp(1, MAX_TURNS), topic }
+                                    Command::Debate {
+                                        turns: n.clamp(1, MAX_TURNS),
+                                        topic,
+                                    }
                                 }
                             }
-                            Err(_) => Command::Debate { turns: DEFAULT_TURNS, topic: rest.to_string() },
+                            Err(_) => Command::Debate {
+                                turns: DEFAULT_TURNS,
+                                topic: rest.to_string(),
+                            },
                         }
                     }
                 }
@@ -279,7 +308,20 @@ pub struct Session {
 
 impl Session {
     pub fn new(participants: Vec<Participant>, registry: Box<dyn RunnerRegistry>) -> Self {
-        Self { participants, messages: Vec::new(), head: None, registry, session_id: "default".to_string(), indexer: None, retriever: None, recent_turns: None, core_sync: None, validity_sink: None, annotation_sink: None, context_mode: ContextMode::Push }
+        Self {
+            participants,
+            messages: Vec::new(),
+            head: None,
+            registry,
+            session_id: "default".to_string(),
+            indexer: None,
+            retriever: None,
+            recent_turns: None,
+            core_sync: None,
+            validity_sink: None,
+            annotation_sink: None,
+            context_mode: ContextMode::Push,
+        }
     }
 
     /// indexer 배선 생성자. SQLite 색인 활성화용.
@@ -289,11 +331,27 @@ impl Session {
         session_id: String,
         indexer: Option<Box<dyn crate::store::indexer::MessageIndexer>>,
     ) -> Self {
-        Self { participants, messages: Vec::new(), head: None, registry, session_id, indexer, retriever: None, recent_turns: None, core_sync: None, validity_sink: None, annotation_sink: None, context_mode: ContextMode::Push }
+        Self {
+            participants,
+            messages: Vec::new(),
+            head: None,
+            registry,
+            session_id,
+            indexer,
+            retriever: None,
+            recent_turns: None,
+            core_sync: None,
+            validity_sink: None,
+            annotation_sink: None,
+            context_mode: ContextMode::Push,
+        }
     }
 
     /// retriever를 설정하는 빌더 메서드(단일 적용, self를 소비 후 반환).
-    pub fn with_retriever(mut self, retriever: Option<Box<dyn crate::orchestrator::ContextRetriever>>) -> Self {
+    pub fn with_retriever(
+        mut self,
+        retriever: Option<Box<dyn crate::orchestrator::ContextRetriever>>,
+    ) -> Self {
         self.retriever = retriever;
         self
     }
@@ -317,13 +375,19 @@ impl Session {
     }
 
     /// 유효성 지정 sink를 설정하는 빌더 메서드(--db 시 배선). None이면 /supersede·/reject 안내만.
-    pub fn with_validity_sink(mut self, sink: Option<Box<dyn crate::orchestrator::ValiditySink>>) -> Self {
+    pub fn with_validity_sink(
+        mut self,
+        sink: Option<Box<dyn crate::orchestrator::ValiditySink>>,
+    ) -> Self {
         self.validity_sink = sink;
         self
     }
 
     /// 큐레이션 지정 sink를 설정하는 빌더 메서드(--db 시 배선). None이면 /annotate 안내만.
-    pub fn with_annotation_sink(mut self, sink: Option<Box<dyn crate::orchestrator::AnnotationSink>>) -> Self {
+    pub fn with_annotation_sink(
+        mut self,
+        sink: Option<Box<dyn crate::orchestrator::AnnotationSink>>,
+    ) -> Self {
         self.annotation_sink = sink;
         self
     }
@@ -383,7 +447,11 @@ impl Session {
         let mut kept: Vec<&str> = Vec::new();
         let mut used: usize = 0;
         for line in lines.iter().rev() {
-            let extra = if kept.is_empty() { line.len() } else { 1 + line.len() };
+            let extra = if kept.is_empty() {
+                line.len()
+            } else {
+                1 + line.len()
+            };
             if used + extra > budget {
                 break;
             }
@@ -423,12 +491,19 @@ impl Session {
         let carried = self.carry_forward_digest_from_path(&full_path);
         let transcript_len = full_path.len();
         let prior = self.prior_from_path(full_path.clone());
-        RoundContext { prior, carried, transcript_len, full_path }
+        RoundContext {
+            prior,
+            carried,
+            transcript_len,
+            full_path,
+        }
     }
 
     /// retrieve_for의 path 파라미터 버전. active_path 재호출 없이 호출 가능.
     fn retrieve_for_from_path(&self, topic: &str, active: &[Utterance]) -> Vec<Utterance> {
-        let Some(r) = &self.retriever else { return Vec::new(); };
+        let Some(r) = &self.retriever else {
+            return Vec::new();
+        };
         // retrieve_ctx Err(1차 검색 경로 DB 장애, R7)는 "조용히 무시"가 아니라 "보이게 무시": stderr로 알리고
         // 빈 컨텍스트로 degrade한다(REPL은 계속 진행). 활성 경로 중복은 제외(분기 인지 디프리오리티).
         let hits = match r.retrieve_ctx(topic, RETRIEVE_K, &self.session_id) {
@@ -501,7 +576,13 @@ impl Session {
             self.head = Some(id);
         }
         if let Some(idx) = &self.indexer {
-            idx.persist(&self.session_id, &StoredSession { messages: self.messages.clone(), head: self.head });
+            idx.persist(
+                &self.session_id,
+                &StoredSession {
+                    messages: self.messages.clone(),
+                    head: self.head,
+                },
+            );
         }
     }
 
@@ -531,12 +612,21 @@ impl Session {
 
     /// 현재 트리를 상태 파일(JSON)로 저장한다.
     pub fn save_state(&self, path: &str) -> std::io::Result<()> {
-        crate::store::save_session(&StoredSession { messages: self.messages.clone(), head: self.head }, path)
+        crate::store::save_session(
+            &StoredSession {
+                messages: self.messages.clone(),
+                head: self.head,
+            },
+            path,
+        )
     }
 
     /// 현재 인메모리 트리를 StoredSession으로 복제한다(--core seed를 코어 DB에 권위로 반영할 때 사용).
     pub fn to_stored(&self) -> StoredSession {
-        StoredSession { messages: self.messages.clone(), head: self.head }
+        StoredSession {
+            messages: self.messages.clone(),
+            head: self.head,
+        }
     }
 
     /// 상태 파일에서 트리를 로드해 세션을 복원한다. 레거시 bare-array 포맷도 지원한다.
@@ -546,7 +636,20 @@ impl Session {
         path: &str,
     ) -> std::io::Result<Self> {
         let ss = crate::store::load_session(path)?;
-        Ok(Self { participants, messages: ss.messages, head: ss.head, registry, session_id: "default".to_string(), indexer: None, retriever: None, recent_turns: None, core_sync: None, validity_sink: None, annotation_sink: None, context_mode: ContextMode::Push })
+        Ok(Self {
+            participants,
+            messages: ss.messages,
+            head: ss.head,
+            registry,
+            session_id: "default".to_string(),
+            indexer: None,
+            retriever: None,
+            recent_turns: None,
+            core_sync: None,
+            validity_sink: None,
+            annotation_sink: None,
+            context_mode: ContextMode::Push,
+        })
     }
 
     /// 한 입력을 처리한다. run_round 호출 등 로직만; 실제 I/O는 호출자(main).
@@ -683,7 +786,12 @@ impl Session {
     }
 
     /// 큐레이션 지정 공용 처리: sink 미배선/발언 없음 안내 + 성공/실패 메시지.
-    fn mark_annotation(&self, id: u64, abstraction: Option<&str>, anchors: Option<&str>) -> StepOutcome {
+    fn mark_annotation(
+        &self,
+        id: u64,
+        abstraction: Option<&str>,
+        anchors: Option<&str>,
+    ) -> StepOutcome {
         let Some(sink) = &self.annotation_sink else {
             return StepOutcome::Print("큐레이션 지정은 --db <경로>로 실행해야 합니다.".into());
         };
@@ -719,7 +827,9 @@ impl Session {
         match sink.set_validity(&self.session_id, id, state, by) {
             Ok(()) => {
                 let extra = by.map(|b| format!(" (대체: #{b})")).unwrap_or_default();
-                StepOutcome::Print(format!("#{id} {label}{extra}. 이후 검색에서 디프리오리티/제외됩니다."))
+                StepOutcome::Print(format!(
+                    "#{id} {label}{extra}. 이후 검색에서 디프리오리티/제외됩니다."
+                ))
             }
             Err(e) => StepOutcome::Print(format!("[유효성 지정 실패] {e}")),
         }
@@ -732,20 +842,44 @@ mod tests {
     use crate::orchestrator::MapRegistry;
     use crate::runner::{RunError, RunInput, RunOutput, Runner};
 
-    struct FakeRunner { reply: String }
+    struct FakeRunner {
+        reply: String,
+    }
     impl Runner for FakeRunner {
         fn run(&self, _i: &RunInput) -> Result<RunOutput, RunError> {
-            Ok(RunOutput { content: self.reply.clone(), input_tokens: 0, output_tokens: 0 })
+            Ok(RunOutput {
+                content: self.reply.clone(),
+                input_tokens: 0,
+                output_tokens: 0,
+            })
         }
     }
 
     fn session_with_two_seats() -> Session {
         let mut reg = MapRegistry::new();
-        reg.insert("claude", Box::new(FakeRunner { reply: "제안".into() }));
-        reg.insert("codex", Box::new(FakeRunner { reply: "리뷰".into() }));
+        reg.insert(
+            "claude",
+            Box::new(FakeRunner {
+                reply: "제안".into(),
+            }),
+        );
+        reg.insert(
+            "codex",
+            Box::new(FakeRunner {
+                reply: "리뷰".into(),
+            }),
+        );
         let participants = vec![
-            Participant { engine: "claude".into(), role: Some("proposer".into()), instruction: String::new() },
-            Participant { engine: "codex".into(), role: Some("reviewer".into()), instruction: String::new() },
+            Participant {
+                engine: "claude".into(),
+                role: Some("proposer".into()),
+                instruction: String::new(),
+            },
+            Participant {
+                engine: "codex".into(),
+                role: Some("reviewer".into()),
+                instruction: String::new(),
+            },
         ];
         Session::new(participants, Box::new(reg))
     }
@@ -757,13 +891,23 @@ mod tests {
     }
     impl FakeCoreSync {
         fn new() -> Self {
-            Self { db: std::sync::Arc::new(std::sync::Mutex::new(StoredSession { messages: vec![], head: None })) }
+            Self {
+                db: std::sync::Arc::new(std::sync::Mutex::new(StoredSession {
+                    messages: vec![],
+                    head: None,
+                })),
+            }
         }
         fn append_inner(&self, speaker: &str, content: &str) -> u64 {
             let mut db = self.db.lock().unwrap();
             let new_id = db.messages.iter().map(|m| m.id).max().unwrap_or(0) + 1;
             let parent = db.head;
-            db.messages.push(StoredMessage { id: new_id, parent_id: parent, speaker: speaker.into(), content: content.into() });
+            db.messages.push(StoredMessage {
+                id: new_id,
+                parent_id: parent,
+                speaker: speaker.into(),
+                content: content.into(),
+            });
             db.head = Some(new_id);
             new_id
         }
@@ -778,7 +922,11 @@ mod tests {
     impl crate::orchestrator::CoreSync for FakeCoreSync {
         fn load_session(&self, _sid: &str) -> Option<StoredSession> {
             let db = self.db.lock().unwrap();
-            if db.messages.is_empty() { None } else { Some(db.clone()) }
+            if db.messages.is_empty() {
+                None
+            } else {
+                Some(db.clone())
+            }
         }
         fn append_turn(&self, _sid: &str, speaker: &str, content: &str) -> Result<u64, String> {
             Ok(self.append_inner(speaker, content))
@@ -787,25 +935,61 @@ mod tests {
 
     fn core_sync_session(cs: FakeCoreSync) -> Session {
         let mut reg = MapRegistry::new();
-        reg.insert("claude", Box::new(FakeRunner { reply: "제안".into() }));
-        reg.insert("codex", Box::new(FakeRunner { reply: "리뷰".into() }));
+        reg.insert(
+            "claude",
+            Box::new(FakeRunner {
+                reply: "제안".into(),
+            }),
+        );
+        reg.insert(
+            "codex",
+            Box::new(FakeRunner {
+                reply: "리뷰".into(),
+            }),
+        );
         let participants = vec![
-            Participant { engine: "claude".into(), role: Some("proposer".into()), instruction: String::new() },
-            Participant { engine: "codex".into(), role: Some("reviewer".into()), instruction: String::new() },
+            Participant {
+                engine: "claude".into(),
+                role: Some("proposer".into()),
+                instruction: String::new(),
+            },
+            Participant {
+                engine: "codex".into(),
+                role: Some("reviewer".into()),
+                instruction: String::new(),
+            },
         ];
         Session::new(participants, Box::new(reg)).with_core_sync(Some(Box::new(cs)))
     }
 
     #[test]
     fn parses_validity_commands() {
-        assert_eq!(parse_command("/supersede 3"), Command::Supersede { id: 3, by: None });
-        assert_eq!(parse_command("/supersede 3 7"), Command::Supersede { id: 3, by: Some(7) });
+        assert_eq!(
+            parse_command("/supersede 3"),
+            Command::Supersede { id: 3, by: None }
+        );
+        assert_eq!(
+            parse_command("/supersede 3 7"),
+            Command::Supersede { id: 3, by: Some(7) }
+        );
         assert_eq!(parse_command("/reject 4"), Command::Reject(4));
-        assert_eq!(parse_command("/explain 검색 질의"), Command::Explain("검색 질의".into()));
-        assert_eq!(parse_command("/explain"), Command::Message("/explain".into()));
+        assert_eq!(
+            parse_command("/explain 검색 질의"),
+            Command::Explain("검색 질의".into())
+        );
+        assert_eq!(
+            parse_command("/explain"),
+            Command::Message("/explain".into())
+        );
         // 인자 없으면 일반 메시지로 폴스루.
-        assert_eq!(parse_command("/supersede"), Command::Message("/supersede".into()));
-        assert_eq!(parse_command("/reject x"), Command::Message("/reject x".into()));
+        assert_eq!(
+            parse_command("/supersede"),
+            Command::Message("/supersede".into())
+        );
+        assert_eq!(
+            parse_command("/reject x"),
+            Command::Message("/reject x".into())
+        );
     }
 
     #[test]
@@ -822,27 +1006,55 @@ mod tests {
         // abstraction만.
         assert_eq!(
             parse_command("/annotate 5 --abstraction \"요약만\""),
-            Command::Annotate { id: 5, abstraction: Some("요약만".into()), anchors: None }
+            Command::Annotate {
+                id: 5,
+                abstraction: Some("요약만".into()),
+                anchors: None
+            }
         );
         // anchors만.
         assert_eq!(
             parse_command("/annotate 7 --anchors \"a,b\""),
-            Command::Annotate { id: 7, abstraction: None, anchors: Some("a,b".into()) }
+            Command::Annotate {
+                id: 7,
+                abstraction: None,
+                anchors: Some("a,b".into())
+            }
         );
         // 따옴표 없는 단일 토큰 값도 허용.
         assert_eq!(
             parse_command("/annotate 9 --anchors kiwi"),
-            Command::Annotate { id: 9, abstraction: None, anchors: Some("kiwi".into()) }
+            Command::Annotate {
+                id: 9,
+                abstraction: None,
+                anchors: Some("kiwi".into())
+            }
         );
         // id 없음 / 플래그 없음 / 빈 값은 일반 메시지로 폴스루.
-        assert_eq!(parse_command("/annotate"), Command::Message("/annotate".into()));
-        assert_eq!(parse_command("/annotate 3"), Command::Message("/annotate 3".into()));
-        assert_eq!(parse_command("/annotate x --abstraction \"y\""), Command::Message("/annotate x --abstraction \"y\"".into()));
-        assert_eq!(parse_command("/annotate 3 --abstraction \"\""), Command::Message("/annotate 3 --abstraction \"\"".into()));
+        assert_eq!(
+            parse_command("/annotate"),
+            Command::Message("/annotate".into())
+        );
+        assert_eq!(
+            parse_command("/annotate 3"),
+            Command::Message("/annotate 3".into())
+        );
+        assert_eq!(
+            parse_command("/annotate x --abstraction \"y\""),
+            Command::Message("/annotate x --abstraction \"y\"".into())
+        );
+        assert_eq!(
+            parse_command("/annotate 3 --abstraction \"\""),
+            Command::Message("/annotate 3 --abstraction \"\"".into())
+        );
         // 값 없는 --abstraction 뒤에 --anchors가 바로 오면, --anchors를 값으로 삼키지 않고 정상 파싱.
         assert_eq!(
             parse_command("/annotate 3 --abstraction --anchors \"x\""),
-            Command::Annotate { id: 3, abstraction: None, anchors: Some("x".into()) }
+            Command::Annotate {
+                id: 3,
+                abstraction: None,
+                anchors: Some("x".into())
+            }
         );
         // 양쪽 다 값 없으면 일반 메시지로 폴스루(삼킴 없음).
         assert_eq!(
@@ -859,7 +1071,13 @@ mod tests {
         last: std::sync::Mutex<Option<ValidityCapture>>,
     }
     impl crate::orchestrator::ValiditySink for CapturingSink {
-        fn set_validity(&self, sid: &str, msg_id: u64, state: &str, by: Option<u64>) -> Result<(), String> {
+        fn set_validity(
+            &self,
+            sid: &str,
+            msg_id: u64,
+            state: &str,
+            by: Option<u64>,
+        ) -> Result<(), String> {
             *self.last.lock().unwrap() = Some((sid.to_string(), msg_id, state.to_string(), by));
             Ok(())
         }
@@ -867,27 +1085,43 @@ mod tests {
 
     #[test]
     fn supersede_command_calls_sink_for_existing_message() {
-        let sink = std::sync::Arc::new(CapturingSink { last: std::sync::Mutex::new(None) });
+        let sink = std::sync::Arc::new(CapturingSink {
+            last: std::sync::Mutex::new(None),
+        });
         // 메시지 1건 있는 세션 구성(sink 배선).
-        let mut s = session_with_two_seats()
-            .with_validity_sink(Some(Box::new(SinkHandle(sink.clone()))));
+        let mut s =
+            session_with_two_seats().with_validity_sink(Some(Box::new(SinkHandle(sink.clone()))));
         s.seed_from(StoredSession {
-            messages: vec![StoredMessage { id: 1, parent_id: None, speaker: "claude".into(), content: "x".into() }],
+            messages: vec![StoredMessage {
+                id: 1,
+                parent_id: None,
+                speaker: "claude".into(),
+                content: "x".into(),
+            }],
             head: Some(1),
         });
         let out = s.step(Command::Supersede { id: 1, by: Some(2) });
         assert!(matches!(out, StepOutcome::Print(_)));
         let cap = sink.last.lock().unwrap().clone();
-        assert_eq!(cap, Some(("default".into(), 1, "superseded".into(), Some(2))));
+        assert_eq!(
+            cap,
+            Some(("default".into(), 1, "superseded".into(), Some(2)))
+        );
     }
 
     #[test]
     fn supersede_missing_message_does_not_call_sink() {
-        let sink = std::sync::Arc::new(CapturingSink { last: std::sync::Mutex::new(None) });
-        let mut s = session_with_two_seats()
-            .with_validity_sink(Some(Box::new(SinkHandle(sink.clone()))));
+        let sink = std::sync::Arc::new(CapturingSink {
+            last: std::sync::Mutex::new(None),
+        });
+        let mut s =
+            session_with_two_seats().with_validity_sink(Some(Box::new(SinkHandle(sink.clone()))));
         let _ = s.step(Command::Reject(99)); // 없는 id.
-        assert_eq!(sink.last.lock().unwrap().clone(), None, "없는 발언은 sink 미호출");
+        assert_eq!(
+            sink.last.lock().unwrap().clone(),
+            None,
+            "없는 발언은 sink 미호출"
+        );
     }
 
     #[test]
@@ -902,7 +1136,13 @@ mod tests {
     /// Arc<CapturingSink>를 Box<dyn ValiditySink>로 넘기기 위한 얇은 래퍼.
     struct SinkHandle(std::sync::Arc<CapturingSink>);
     impl crate::orchestrator::ValiditySink for SinkHandle {
-        fn set_validity(&self, sid: &str, msg_id: u64, state: &str, by: Option<u64>) -> Result<(), String> {
+        fn set_validity(
+            &self,
+            sid: &str,
+            msg_id: u64,
+            state: &str,
+            by: Option<u64>,
+        ) -> Result<(), String> {
             self.0.set_validity(sid, msg_id, state, by)
         }
     }
@@ -915,48 +1155,97 @@ mod tests {
         last: std::sync::Mutex<Option<AnnotationCapture>>,
     }
     impl crate::orchestrator::AnnotationSink for CapturingAnnotationSink {
-        fn set_annotation(&self, sid: &str, msg_id: u64, abstraction: Option<&str>, anchors: Option<&str>) -> Result<(), String> {
-            *self.last.lock().unwrap() =
-                Some((sid.to_string(), msg_id, abstraction.map(str::to_string), anchors.map(str::to_string)));
+        fn set_annotation(
+            &self,
+            sid: &str,
+            msg_id: u64,
+            abstraction: Option<&str>,
+            anchors: Option<&str>,
+        ) -> Result<(), String> {
+            *self.last.lock().unwrap() = Some((
+                sid.to_string(),
+                msg_id,
+                abstraction.map(str::to_string),
+                anchors.map(str::to_string),
+            ));
             Ok(())
         }
     }
     /// Arc<CapturingAnnotationSink>를 Box<dyn AnnotationSink>로 넘기기 위한 얇은 래퍼.
     struct AnnotationSinkHandle(std::sync::Arc<CapturingAnnotationSink>);
     impl crate::orchestrator::AnnotationSink for AnnotationSinkHandle {
-        fn set_annotation(&self, sid: &str, msg_id: u64, abstraction: Option<&str>, anchors: Option<&str>) -> Result<(), String> {
+        fn set_annotation(
+            &self,
+            sid: &str,
+            msg_id: u64,
+            abstraction: Option<&str>,
+            anchors: Option<&str>,
+        ) -> Result<(), String> {
             self.0.set_annotation(sid, msg_id, abstraction, anchors)
         }
     }
 
     #[test]
     fn annotate_command_calls_sink_for_existing_message() {
-        let sink = std::sync::Arc::new(CapturingAnnotationSink { last: std::sync::Mutex::new(None) });
+        let sink = std::sync::Arc::new(CapturingAnnotationSink {
+            last: std::sync::Mutex::new(None),
+        });
         let mut s = session_with_two_seats()
             .with_annotation_sink(Some(Box::new(AnnotationSinkHandle(sink.clone()))));
         s.seed_from(StoredSession {
-            messages: vec![StoredMessage { id: 1, parent_id: None, speaker: "claude".into(), content: "x".into() }],
+            messages: vec![StoredMessage {
+                id: 1,
+                parent_id: None,
+                speaker: "claude".into(),
+                content: "x".into(),
+            }],
             head: Some(1),
         });
-        let out = s.step(Command::Annotate { id: 1, abstraction: Some("요약".into()), anchors: Some("검색,랭킹".into()) });
+        let out = s.step(Command::Annotate {
+            id: 1,
+            abstraction: Some("요약".into()),
+            anchors: Some("검색,랭킹".into()),
+        });
         assert!(matches!(out, StepOutcome::Print(_)));
         let cap = sink.last.lock().unwrap().clone();
-        assert_eq!(cap, Some(("default".into(), 1, Some("요약".into()), Some("검색,랭킹".into()))));
+        assert_eq!(
+            cap,
+            Some((
+                "default".into(),
+                1,
+                Some("요약".into()),
+                Some("검색,랭킹".into())
+            ))
+        );
     }
 
     #[test]
     fn annotate_missing_message_does_not_call_sink() {
-        let sink = std::sync::Arc::new(CapturingAnnotationSink { last: std::sync::Mutex::new(None) });
+        let sink = std::sync::Arc::new(CapturingAnnotationSink {
+            last: std::sync::Mutex::new(None),
+        });
         let mut s = session_with_two_seats()
             .with_annotation_sink(Some(Box::new(AnnotationSinkHandle(sink.clone()))));
-        let _ = s.step(Command::Annotate { id: 99, abstraction: Some("요약".into()), anchors: None });
-        assert_eq!(sink.last.lock().unwrap().clone(), None, "없는 발언은 sink 미호출");
+        let _ = s.step(Command::Annotate {
+            id: 99,
+            abstraction: Some("요약".into()),
+            anchors: None,
+        });
+        assert_eq!(
+            sink.last.lock().unwrap().clone(),
+            None,
+            "없는 발언은 sink 미호출"
+        );
     }
 
     #[test]
     fn annotate_command_without_sink_guides() {
         let mut s = session_with_two_seats(); // sink 미배선.
-        match s.step(Command::Annotate { id: 1, abstraction: Some("요약".into()), anchors: None }) {
+        match s.step(Command::Annotate {
+            id: 1,
+            abstraction: Some("요약".into()),
+            anchors: None,
+        }) {
             StepOutcome::Print(t) => assert!(t.contains("--db"), "안내 불일치: {t}"),
             _ => panic!("Print 기대"),
         }
@@ -1021,9 +1310,15 @@ mod tests {
     fn parses_commands() {
         assert_eq!(parse_command("/quit"), Command::Quit);
         assert_eq!(parse_command("/help"), Command::Help);
-        assert_eq!(parse_command("/save notes.md"), Command::Save(Some("notes.md".into())));
+        assert_eq!(
+            parse_command("/save notes.md"),
+            Command::Save(Some("notes.md".into()))
+        );
         assert_eq!(parse_command("/save"), Command::Save(None));
-        assert_eq!(parse_command("이 설계 어떤가요?"), Command::Message("이 설계 어떤가요?".into()));
+        assert_eq!(
+            parse_command("이 설계 어떤가요?"),
+            Command::Message("이 설계 어떤가요?".into())
+        );
     }
 
     #[test]
@@ -1033,19 +1328,44 @@ mod tests {
 
     #[test]
     fn parses_debate() {
-        assert_eq!(parse_command("/debate 3 이 설계 괜찮나"), Command::Debate { turns: 3, topic: "이 설계 괜찮나".into() });
+        assert_eq!(
+            parse_command("/debate 3 이 설계 괜찮나"),
+            Command::Debate {
+                turns: 3,
+                topic: "이 설계 괜찮나".into()
+            }
+        );
         // 숫자 생략 -> 기본 3턴
-        assert_eq!(parse_command("/debate 주제만"), Command::Debate { turns: 3, topic: "주제만".into() });
+        assert_eq!(
+            parse_command("/debate 주제만"),
+            Command::Debate {
+                turns: 3,
+                topic: "주제만".into()
+            }
+        );
         // 상한 clamp(최대 10)
-        assert_eq!(parse_command("/debate 50 큰주제"), Command::Debate { turns: 10, topic: "큰주제".into() });
+        assert_eq!(
+            parse_command("/debate 50 큰주제"),
+            Command::Debate {
+                turns: 10,
+                topic: "큰주제".into()
+            }
+        );
         // 주제 없음 -> 일반 메시지로 폴스루
         assert_eq!(parse_command("/debate"), Command::Message("/debate".into()));
-        assert_eq!(parse_command("/debate 3"), Command::Message("/debate 3".into())); // 숫자만, 주제 없음
+        assert_eq!(
+            parse_command("/debate 3"),
+            Command::Message("/debate 3".into())
+        ); // 숫자만, 주제 없음
     }
 
     #[test]
     fn render_formats_speaker_and_content() {
-        let utts = vec![Utterance { speaker: "claude/proposer".into(), content: "제안".into(), abstraction: None }];
+        let utts = vec![Utterance {
+            speaker: "claude/proposer".into(),
+            content: "제안".into(),
+            abstraction: None,
+        }];
         let out = render(&utts);
         assert!(out.contains("claude/proposer"));
         assert!(out.contains("제안"));
@@ -1067,7 +1387,10 @@ mod tests {
     #[test]
     fn parses_conclude() {
         assert_eq!(parse_command("/conclude"), Command::Conclude(None));
-        assert_eq!(parse_command("/conclude claude"), Command::Conclude(Some("claude".into())));
+        assert_eq!(
+            parse_command("/conclude claude"),
+            Command::Conclude(Some("claude".into()))
+        );
     }
 
     #[test]
@@ -1096,7 +1419,13 @@ mod tests {
 
     #[test]
     fn parses_at_engine_target() {
-        assert_eq!(parse_command("@codex 이거 봐줘"), Command::Only { engine: "codex".into(), text: "이거 봐줘".into() });
+        assert_eq!(
+            parse_command("@codex 이거 봐줘"),
+            Command::Only {
+                engine: "codex".into(),
+                text: "이거 봐줘".into()
+            }
+        );
         // @만 있고 메시지 없으면 일반 메시지로 취급
         assert_eq!(parse_command("@codex"), Command::Message("@codex".into()));
     }
@@ -1104,10 +1433,13 @@ mod tests {
     #[test]
     fn step_only_targets_single_seat() {
         let mut s = session_with_two_seats();
-        match s.step(Command::Only { engine: "codex".into(), text: "리뷰만".into() }) {
+        match s.step(Command::Only {
+            engine: "codex".into(),
+            text: "리뷰만".into(),
+        }) {
             StepOutcome::Print(text) => {
-                assert!(text.contains("리뷰"));   // codex FakeRunner reply
-                assert!(!text.contains("제안"));  // claude는 응답 안 함
+                assert!(text.contains("리뷰")); // codex FakeRunner reply
+                assert!(!text.contains("제안")); // claude는 응답 안 함
             }
             other => panic!("expected Print, got {other:?}"),
         }
@@ -1117,7 +1449,10 @@ mod tests {
     #[test]
     fn step_only_unknown_engine_errors() {
         let mut s = session_with_two_seats();
-        match s.step(Command::Only { engine: "gemini".into(), text: "?".into() }) {
+        match s.step(Command::Only {
+            engine: "gemini".into(),
+            text: "?".into(),
+        }) {
             StepOutcome::Print(text) => assert!(text.contains("자리가 없")),
             other => panic!("expected Print, got {other:?}"),
         }
@@ -1126,24 +1461,42 @@ mod tests {
     struct ModeEchoRunner;
     impl Runner for ModeEchoRunner {
         fn run(&self, i: &RunInput) -> Result<RunOutput, RunError> {
-            Ok(RunOutput { content: format!("mode={:?}", i.mode), input_tokens: 0, output_tokens: 0 })
+            Ok(RunOutput {
+                content: format!("mode={:?}", i.mode),
+                input_tokens: 0,
+                output_tokens: 0,
+            })
         }
     }
 
     fn session_with_mode_echo() -> Session {
         let mut reg = MapRegistry::new();
         reg.insert("codex", Box::new(ModeEchoRunner));
-        let participants = vec![
-            Participant { engine: "codex".into(), role: Some("coder".into()), instruction: String::new() },
-        ];
+        let participants = vec![Participant {
+            engine: "codex".into(),
+            role: Some("coder".into()),
+            instruction: String::new(),
+        }];
         Session::new(participants, Box::new(reg))
     }
 
     #[test]
     fn parses_at_engine_bang_as_write() {
-        assert_eq!(parse_command("@codex! 이 함수 고쳐줘"), Command::Write { engine: "codex".into(), text: "이 함수 고쳐줘".into() });
+        assert_eq!(
+            parse_command("@codex! 이 함수 고쳐줘"),
+            Command::Write {
+                engine: "codex".into(),
+                text: "이 함수 고쳐줘".into()
+            }
+        );
         // 읽기 지목은 그대로
-        assert_eq!(parse_command("@codex 봐줘"), Command::Only { engine: "codex".into(), text: "봐줘".into() });
+        assert_eq!(
+            parse_command("@codex 봐줘"),
+            Command::Only {
+                engine: "codex".into(),
+                text: "봐줘".into()
+            }
+        );
         // bang만 있고 메시지 없으면 일반 메시지
         assert_eq!(parse_command("@codex!"), Command::Message("@codex!".into()));
     }
@@ -1151,7 +1504,10 @@ mod tests {
     #[test]
     fn step_write_uses_write_mode_on_single_seat() {
         let mut s = session_with_mode_echo();
-        match s.step(Command::Write { engine: "codex".into(), text: "고쳐줘".into() }) {
+        match s.step(Command::Write {
+            engine: "codex".into(),
+            text: "고쳐줘".into(),
+        }) {
             StepOutcome::Print(text) => assert!(text.contains("Write"), "got: {text}"),
             other => panic!("expected Print, got {other:?}"),
         }
@@ -1161,7 +1517,10 @@ mod tests {
     #[test]
     fn step_only_stays_readonly() {
         let mut s = session_with_mode_echo();
-        match s.step(Command::Only { engine: "codex".into(), text: "봐줘".into() }) {
+        match s.step(Command::Only {
+            engine: "codex".into(),
+            text: "봐줘".into(),
+        }) {
             StepOutcome::Print(text) => assert!(text.contains("ReadOnly"), "got: {text}"),
             other => panic!("expected Print, got {other:?}"),
         }
@@ -1170,7 +1529,10 @@ mod tests {
     #[test]
     fn step_write_unknown_engine_errors() {
         let mut s = session_with_mode_echo();
-        match s.step(Command::Write { engine: "gemini".into(), text: "x".into() }) {
+        match s.step(Command::Write {
+            engine: "gemini".into(),
+            text: "x".into(),
+        }) {
             StepOutcome::Print(text) => assert!(text.contains("자리가 없")),
             other => panic!("expected Print, got {other:?}"),
         }
@@ -1180,7 +1542,10 @@ mod tests {
     fn parses_branches_and_checkout() {
         assert_eq!(parse_command("/branches"), Command::Branches);
         assert_eq!(parse_command("/checkout 3"), Command::Checkout(3));
-        assert_eq!(parse_command("/checkout"), Command::Message("/checkout".into())); // 인자 없으면 일반 메시지
+        assert_eq!(
+            parse_command("/checkout"),
+            Command::Message("/checkout".into())
+        ); // 인자 없으면 일반 메시지
     }
 
     #[test]
@@ -1201,7 +1566,10 @@ mod tests {
     #[test]
     fn step_debate_runs_n_rounds_and_grows_tree() {
         let mut s = session_with_two_seats(); // claude="제안", codex="리뷰" (FakeRunner)
-        match s.step(Command::Debate { turns: 2, topic: "주제".into() }) {
+        match s.step(Command::Debate {
+            turns: 2,
+            topic: "주제".into(),
+        }) {
             StepOutcome::Print(text) => {
                 assert!(text.contains("라운드 1"));
                 assert!(text.contains("라운드 2"));
@@ -1219,8 +1587,13 @@ mod tests {
         // 첫 라운드는 OK, 이후 에러나는 시나리오는 FakeRunner로 만들기 번거로우니
         // 최소: turns=1도 정상 동작(라운드 1만)
         let mut s = session_with_two_seats();
-        match s.step(Command::Debate { turns: 1, topic: "주제".into() }) {
-            StepOutcome::Print(text) => assert!(text.contains("라운드 1") && !text.contains("라운드 2")),
+        match s.step(Command::Debate {
+            turns: 1,
+            topic: "주제".into(),
+        }) {
+            StepOutcome::Print(text) => {
+                assert!(text.contains("라운드 1") && !text.contains("라운드 2"))
+            }
             other => panic!("expected Print, got {other:?}"),
         }
         assert_eq!(s.message_count(), 2);
@@ -1236,7 +1609,9 @@ mod tests {
         }
     }
 
-    struct FakeRetriever { results: Vec<Utterance> }
+    struct FakeRetriever {
+        results: Vec<Utterance>,
+    }
     impl crate::orchestrator::ContextRetriever for FakeRetriever {
         fn retrieve(&self, _query: &str, _limit: usize) -> Result<Vec<Utterance>, String> {
             Ok(self.results.clone())
@@ -1253,8 +1628,16 @@ mod tests {
 
         let retriever = FakeRetriever {
             results: vec![
-                Utterance { speaker: "past/speaker".into(), content: dup_content, abstraction: None },
-                Utterance { speaker: "past/other".into(), content: "고유 맥락 발언".into(), abstraction: None },
+                Utterance {
+                    speaker: "past/speaker".into(),
+                    content: dup_content,
+                    abstraction: None,
+                },
+                Utterance {
+                    speaker: "past/other".into(),
+                    content: "고유 맥락 발언".into(),
+                    abstraction: None,
+                },
             ],
         };
         let s = s.with_retriever(Some(Box::new(retriever)));
@@ -1277,7 +1660,9 @@ mod tests {
     /// (표면화를 retriever content에 하면 content가 변형돼 dedup이 깨졌던 실회귀를 못박는다.)
     #[test]
     fn annotated_active_path_hit_is_deduped_not_double_injected() {
-        struct AnnotatedRetriever { dup: String }
+        struct AnnotatedRetriever {
+            dup: String,
+        }
         impl crate::orchestrator::ContextRetriever for AnnotatedRetriever {
             fn retrieve(&self, _q: &str, _l: usize) -> Result<Vec<Utterance>, String> {
                 // finish가 실어 보내는 것과 동형: content=raw(활성 경로와 동일), abstraction=Some.
@@ -1301,12 +1686,18 @@ mod tests {
     }
 
     #[derive(Default)]
-    struct IdxCalls { persists: usize, last_session: String, last_len: usize }
+    struct IdxCalls {
+        persists: usize,
+        last_session: String,
+        last_len: usize,
+    }
     struct FakeIndexer(std::sync::Arc<std::sync::Mutex<IdxCalls>>);
     impl crate::store::indexer::MessageIndexer for FakeIndexer {
         fn persist(&self, session_id: &str, ss: &StoredSession) {
             let mut c = self.0.lock().unwrap();
-            c.persists += 1; c.last_session = session_id.to_string(); c.last_len = ss.messages.len();
+            c.persists += 1;
+            c.last_session = session_id.to_string();
+            c.last_len = ss.messages.len();
         }
     }
 
@@ -1314,9 +1705,23 @@ mod tests {
     fn round_persists_to_indexer_when_present() {
         let calls = std::sync::Arc::new(std::sync::Mutex::new(IdxCalls::default()));
         let mut reg = MapRegistry::new();
-        reg.insert("claude", Box::new(FakeRunner { reply: "제안".into() }));
-        let participants = vec![Participant { engine: "claude".into(), role: Some("proposer".into()), instruction: String::new() }];
-        let mut s = Session::new_with_indexer(participants, Box::new(reg), "sess-i".into(), Some(Box::new(FakeIndexer(std::sync::Arc::clone(&calls)))));
+        reg.insert(
+            "claude",
+            Box::new(FakeRunner {
+                reply: "제안".into(),
+            }),
+        );
+        let participants = vec![Participant {
+            engine: "claude".into(),
+            role: Some("proposer".into()),
+            instruction: String::new(),
+        }];
+        let mut s = Session::new_with_indexer(
+            participants,
+            Box::new(reg),
+            "sess-i".into(),
+            Some(Box::new(FakeIndexer(std::sync::Arc::clone(&calls)))),
+        );
         let _ = s.step(Command::Message("주제".into()));
         let c = calls.lock().unwrap();
         assert_eq!(c.persists, 1);
@@ -1333,7 +1738,10 @@ mod tests {
 
     #[test]
     fn parses_search() {
-        assert_eq!(parse_command("/search 검색 시스템"), Command::Search("검색 시스템".into()));
+        assert_eq!(
+            parse_command("/search 검색 시스템"),
+            Command::Search("검색 시스템".into())
+        );
         // 인자 없으면 일반 메시지로 폴스루(기존 명령 패턴)
         assert_eq!(parse_command("/search"), Command::Message("/search".into()));
     }
@@ -1352,12 +1760,21 @@ mod tests {
         // FakeRetriever(고정 Utterance 반환)로 검색 결과 렌더 확인.
         struct FakeRetriever(Vec<Utterance>);
         impl crate::orchestrator::ContextRetriever for FakeRetriever {
-            fn retrieve(&self, _q: &str, _l: usize) -> Result<Vec<Utterance>, String> { Ok(self.0.clone()) }
+            fn retrieve(&self, _q: &str, _l: usize) -> Result<Vec<Utterance>, String> {
+                Ok(self.0.clone())
+            }
         }
-        let hits = vec![Utterance { speaker: "claude/proposer".into(), content: "검색 시스템 설계".into(), abstraction: None }];
+        let hits = vec![Utterance {
+            speaker: "claude/proposer".into(),
+            content: "검색 시스템 설계".into(),
+            abstraction: None,
+        }];
         let mut s = session_with_two_seats().with_retriever(Some(Box::new(FakeRetriever(hits))));
         match s.step(Command::Search("검색".into())) {
-            StepOutcome::Print(t) => { assert!(t.contains("검색 시스템 설계")); assert!(t.contains("claude/proposer")); }
+            StepOutcome::Print(t) => {
+                assert!(t.contains("검색 시스템 설계"));
+                assert!(t.contains("claude/proposer"));
+            }
             other => panic!("got {other:?}"),
         }
     }
@@ -1380,7 +1797,10 @@ mod tests {
         assert_eq!(prior.len(), 2); // 최근 2턴만 재주입
         // 마지막 발언이 활성 경로 전체의 마지막 발언과 동일해야 한다.
         let full = s.active_path_pub_for_test();
-        assert_eq!(prior.last().map(|u| &u.content), full.last().map(|u| &u.content));
+        assert_eq!(
+            prior.last().map(|u| &u.content),
+            full.last().map(|u| &u.content)
+        );
     }
 
     // --- carry_forward_digest 테스트 ---
@@ -1423,10 +1843,14 @@ mod tests {
     #[test]
     fn with_context_mode_pull_does_not_break_step() {
         // with_context_mode(Pull) 후 step이 정상 동작하는지(스모크). FakeRunner 엔진이므로 동작 동일.
-        let mut s = session_with_two_seats().with_context_mode(crate::orchestrator::ContextMode::Pull);
+        let mut s =
+            session_with_two_seats().with_context_mode(crate::orchestrator::ContextMode::Pull);
         match s.step(Command::Message("테스트".into())) {
             StepOutcome::Print(text) => {
-                assert!(text.contains("제안") || text.contains("리뷰"), "출력 없음: {text}");
+                assert!(
+                    text.contains("제안") || text.contains("리뷰"),
+                    "출력 없음: {text}"
+                );
             }
             other => panic!("expected Print, got {other:?}"),
         }
@@ -1446,11 +1870,24 @@ mod tests {
         // recent_turns=Some(1), 10번 Message -> path=20, 드롭=19 -> 각 라인 ~100자 합계 ~1900 > 1500.
         let mut reg = MapRegistry::new();
         let long_reply = "A".repeat(200);
-        reg.insert("claude", Box::new(FakeRunner { reply: long_reply.clone() }));
+        reg.insert(
+            "claude",
+            Box::new(FakeRunner {
+                reply: long_reply.clone(),
+            }),
+        );
         reg.insert("codex", Box::new(FakeRunner { reply: long_reply }));
         let parts = vec![
-            Participant { engine: "claude".into(), role: Some("proposer".into()), instruction: String::new() },
-            Participant { engine: "codex".into(), role: Some("reviewer".into()), instruction: String::new() },
+            Participant {
+                engine: "claude".into(),
+                role: Some("proposer".into()),
+                instruction: String::new(),
+            },
+            Participant {
+                engine: "codex".into(),
+                role: Some("reviewer".into()),
+                instruction: String::new(),
+            },
         ];
         let mut s = Session::new(parts, Box::new(reg)).with_recent_turns(Some(1));
         for _ in 0..10 {

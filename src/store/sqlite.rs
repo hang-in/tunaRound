@@ -328,13 +328,15 @@ impl SqliteStore {
             }
             // v8: 어떤 러너가 처리했는지 트레이스(claim 시 기록). 기존 행은 NULL.
             if !self.column_exists("tasks", "runner") {
-                self.conn.execute("ALTER TABLE tasks ADD COLUMN runner TEXT", [])
+                self.conn
+                    .execute("ALTER TABLE tasks ADD COLUMN runner TEXT", [])
                     .map_err(|e| format!("sqlite: {e}"))?;
             }
             // v10: 종결 task를 mesh 기억에 색인했는지 스탬프(NULL=미색인). 기존 종결 행은 NULL이라
             // 기동 백필이 색인한다(v2-45 P6a).
             if !self.column_exists("tasks", "indexed_at") {
-                self.conn.execute("ALTER TABLE tasks ADD COLUMN indexed_at TEXT", [])
+                self.conn
+                    .execute("ALTER TABLE tasks ADD COLUMN indexed_at TEXT", [])
                     .map_err(|e| format!("sqlite: {e}"))?;
             }
             self.conn
@@ -414,7 +416,10 @@ mod tests {
     #[test]
     fn fresh_db_has_model_id_column() {
         let db = SqliteStore::open_memory().unwrap();
-        assert!(db.column_exists("message_vectors", "model_id"), "v3 스키마에 model_id 컬럼 존재");
+        assert!(
+            db.column_exists("message_vectors", "model_id"),
+            "v3 스키마에 model_id 컬럼 존재"
+        );
     }
 
     #[test]
@@ -423,19 +428,24 @@ mod tests {
         let db = SqliteStore::open_memory().unwrap();
         // 부재 = Ok(None)(오류 아님).
         assert_eq!(db.get_config("broker_started_at").unwrap(), None);
-        db.set_config("broker_started_at", "2026-07-12 00:00:00").unwrap();
+        db.set_config("broker_started_at", "2026-07-12 00:00:00")
+            .unwrap();
         assert_eq!(
             db.get_config("broker_started_at").unwrap().as_deref(),
             Some("2026-07-12 00:00:00")
         );
         // upsert = 매 기동 덮어씀.
-        db.set_config("broker_started_at", "2026-07-12 01:00:00").unwrap();
+        db.set_config("broker_started_at", "2026-07-12 01:00:00")
+            .unwrap();
         assert_eq!(
             db.get_config("broker_started_at").unwrap().as_deref(),
             Some("2026-07-12 01:00:00")
         );
         // 마이그레이션이 기록한 schema_version도 같은 접근자로 읽힌다(테이블 공유).
-        assert_eq!(db.get_config("schema_version").unwrap().as_deref(), Some("11"));
+        assert_eq!(
+            db.get_config("schema_version").unwrap().as_deref(),
+            Some("11")
+        );
     }
 
     #[test]
@@ -456,7 +466,8 @@ mod tests {
         let db = SqliteStore::open(&p).unwrap();
         // 파일 기반이라 경로 branch를 타고 stat이 성립한다. 커밋된 쓰기가 체크포인트 전이면 WAL에
         // 프레임이 쌓여 양수 = 경로·stat 실검증(is_ok만이면 항상 0/잘못된 경로도 통과).
-        db.set_config("broker_started_at", "2026-07-12 00:00:00").unwrap();
+        db.set_config("broker_started_at", "2026-07-12 00:00:00")
+            .unwrap();
         assert!(db.wal_bytes().unwrap() > 0, "체크포인트 전 WAL은 양수");
         // TRUNCATE 체크포인트 후 WAL은 0바이트(결정적).
         db.wal_checkpoint().unwrap();
@@ -489,10 +500,17 @@ mod tests {
         }
         // open → migrate v2→v3(ALTER로 model_id 추가).
         let db = SqliteStore::open(p).unwrap();
-        assert!(db.column_exists("message_vectors", "model_id"), "마이그레이션이 model_id 추가");
+        assert!(
+            db.column_exists("message_vectors", "model_id"),
+            "마이그레이션이 model_id 추가"
+        );
         let cnt: i64 = db
             .conn
-            .query_row("SELECT COUNT(*) FROM message_vectors WHERE session_id='s'", [], |r| r.get(0))
+            .query_row(
+                "SELECT COUNT(*) FROM message_vectors WHERE session_id='s'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(cnt, 1, "기존 벡터 행 보존");
         let mid: Option<String> = db
@@ -503,7 +521,10 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(mid, None, "기존 행 model_id는 NULL(다음 색인 때 재임베딩 트리거)");
+        assert_eq!(
+            mid, None,
+            "기존 행 model_id는 NULL(다음 색인 때 재임베딩 트리거)"
+        );
         let _ = std::fs::remove_file(&path);
     }
 
@@ -532,7 +553,10 @@ mod tests {
         }
         // open → migrate v4→v5(ALTER로 created_at 추가).
         let db = SqliteStore::open(p).unwrap();
-        assert!(db.column_exists("messages", "created_at"), "마이그레이션이 created_at 추가");
+        assert!(
+            db.column_exists("messages", "created_at"),
+            "마이그레이션이 created_at 추가"
+        );
         let ca: Option<String> = db.get_created_at("s", 1).unwrap();
         assert_eq!(ca, None, "기존 행 created_at은 NULL(recency 판단 유보)");
         let _ = std::fs::remove_file(&path);
@@ -542,14 +566,20 @@ mod tests {
     fn fresh_db_has_agent_human_input_table() {
         let db = SqliteStore::open_memory().unwrap();
         // 테이블이 있으면 count 조회가 성공한다(없으면 no such table 에러).
-        let cnt: i64 = db.conn.query_row("SELECT count(*) FROM agent_human_input", [], |r| r.get(0)).unwrap();
+        let cnt: i64 = db
+            .conn
+            .query_row("SELECT count(*) FROM agent_human_input", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(cnt, 0, "v9 스키마에 agent_human_input 테이블 존재(빈 상태)");
     }
 
     #[test]
     fn fresh_db_has_tasks_indexed_at_column() {
         let db = SqliteStore::open_memory().unwrap();
-        assert!(db.column_exists("tasks", "indexed_at"), "v10 스키마에 tasks.indexed_at 존재");
+        assert!(
+            db.column_exists("tasks", "indexed_at"),
+            "v10 스키마에 tasks.indexed_at 존재"
+        );
     }
 
     #[test]
@@ -575,7 +605,10 @@ mod tests {
             .unwrap();
         }
         let db = SqliteStore::open(p).unwrap();
-        assert!(db.column_exists("tasks", "indexed_at"), "마이그레이션이 indexed_at 추가");
+        assert!(
+            db.column_exists("tasks", "indexed_at"),
+            "마이그레이션이 indexed_at 추가"
+        );
         // 기존 종결 행은 indexed_at NULL이라 백필 대상으로 잡혀야 한다.
         let unindexed = db.list_unindexed_terminal_tasks().unwrap();
         assert_eq!(unindexed.len(), 1, "기존 종결 task가 미색인 목록에 있음");
@@ -607,13 +640,25 @@ mod tests {
         }
         // open → migrate v8→v9(agent_human_input 테이블 생성).
         let db = SqliteStore::open(p).unwrap();
-        let cnt: i64 = db.conn.query_row("SELECT count(*) FROM agent_human_input", [], |r| r.get(0)).unwrap();
+        let cnt: i64 = db
+            .conn
+            .query_row("SELECT count(*) FROM agent_human_input", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(cnt, 0, "마이그레이션이 agent_human_input 테이블 추가");
-        let tasks: i64 = db.conn.query_row("SELECT count(*) FROM tasks WHERE task_id='t1'", [], |r| r.get(0)).unwrap();
+        let tasks: i64 = db
+            .conn
+            .query_row("SELECT count(*) FROM tasks WHERE task_id='t1'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
         assert_eq!(tasks, 1, "기존 tasks 행 보존");
         let ver: String = db
             .conn
-            .query_row("SELECT value FROM config WHERE key='schema_version'", [], |r| r.get(0))
+            .query_row(
+                "SELECT value FROM config WHERE key='schema_version'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(ver, "11", "schema_version가 최신(11)으로 갱신");
         let _ = std::fs::remove_file(&path);
@@ -623,7 +668,10 @@ mod tests {
     fn fresh_db_has_presence_events_table() {
         let db = SqliteStore::open_memory().unwrap();
         // 테이블이 있으면 count 조회가 성공한다(없으면 no such table 에러).
-        let cnt: i64 = db.conn.query_row("SELECT count(*) FROM presence_events", [], |r| r.get(0)).unwrap();
+        let cnt: i64 = db
+            .conn
+            .query_row("SELECT count(*) FROM presence_events", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(cnt, 0, "v11 스키마에 presence_events 테이블 존재(빈 상태)");
     }
 
@@ -651,13 +699,28 @@ mod tests {
         }
         // open → migrate v10→v11(presence_events 테이블 생성).
         let db = SqliteStore::open(p).unwrap();
-        let cnt: i64 = db.conn.query_row("SELECT count(*) FROM presence_events", [], |r| r.get(0)).unwrap();
-        assert_eq!(cnt, 0, "마이그레이션이 presence_events 테이블 추가(빈 상태)");
-        let tasks: i64 = db.conn.query_row("SELECT count(*) FROM tasks WHERE task_id='t1'", [], |r| r.get(0)).unwrap();
+        let cnt: i64 = db
+            .conn
+            .query_row("SELECT count(*) FROM presence_events", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            cnt, 0,
+            "마이그레이션이 presence_events 테이블 추가(빈 상태)"
+        );
+        let tasks: i64 = db
+            .conn
+            .query_row("SELECT count(*) FROM tasks WHERE task_id='t1'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
         assert_eq!(tasks, 1, "기존 tasks 행 보존");
         let ver: String = db
             .conn
-            .query_row("SELECT value FROM config WHERE key='schema_version'", [], |r| r.get(0))
+            .query_row(
+                "SELECT value FROM config WHERE key='schema_version'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
         assert_eq!(ver, "11", "schema_version가 최신(11)으로 갱신");
         let _ = std::fs::remove_file(&path);

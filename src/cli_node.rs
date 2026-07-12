@@ -15,13 +15,15 @@ pub fn build_lane_runner(
     let runner: Arc<dyn tunaround::runner::Runner + Send + Sync> = match lane.runner.as_str() {
         "claude" => Arc::new(tunaround::runner::claude::ClaudeRunner::new()),
         "codex" => Arc::new(tunaround::runner::codex::CodexRunner::new()),
-        "opencode" => {
-            Arc::new(tunaround::runner::opencode::OpencodeRunner::new().with_model(lane.model.clone()))
-        }
+        "opencode" => Arc::new(
+            tunaround::runner::opencode::OpencodeRunner::new().with_model(lane.model.clone()),
+        ),
         #[cfg(feature = "engines")]
         "http" => {
-            let base =
-                lane.http_base_url.as_deref().ok_or("lane runner=http는 http_base_url이 필요합니다")?;
+            let base = lane
+                .http_base_url
+                .as_deref()
+                .ok_or("lane runner=http는 http_base_url이 필요합니다")?;
             Arc::new(tunaround::runner::http::OpenAiChatRunner::new(
                 base,
                 lane.model.as_deref().unwrap_or(""),
@@ -32,8 +34,14 @@ pub fn build_lane_runner(
         "http" => return Err("lane runner=http는 engines 피처가 필요합니다".to_string()),
         #[cfg(feature = "a2a-out")]
         "a2a" => {
-            let card = lane.a2a_card.as_deref().ok_or("lane runner=a2a는 a2a_card가 필요합니다")?;
-            Arc::new(tunaround::runner::a2a::A2ARunner::new(card.to_string(), lane.a2a_token.clone()))
+            let card = lane
+                .a2a_card
+                .as_deref()
+                .ok_or("lane runner=a2a는 a2a_card가 필요합니다")?;
+            Arc::new(tunaround::runner::a2a::A2ARunner::new(
+                card.to_string(),
+                lane.a2a_token.clone(),
+            ))
         }
         #[cfg(not(feature = "a2a-out"))]
         "a2a" => return Err("lane runner=a2a는 a2a-out 피처가 필요합니다".to_string()),
@@ -51,7 +59,9 @@ pub async fn connect_with_retry(
 ) -> Result<tunaround::mcp_client::McpHttpClient, String> {
     let mut last = String::new();
     for _ in 0..tries {
-        match tunaround::mcp_client::McpHttpClient::connect(core_url.to_string(), token.clone()).await {
+        match tunaround::mcp_client::McpHttpClient::connect(core_url.to_string(), token.clone())
+            .await
+        {
             Ok(c) => return Ok(c),
             Err(e) => {
                 last = e;
@@ -62,12 +72,13 @@ pub async fn connect_with_retry(
     Err(format!("코어 연결 실패({tries}회 재시도): {last}"))
 }
 
-
 /// node.toml을 생성한다(플래그 주도). 러너 자동 탐지 + 다음 단계 안내. 성공 0, 실패 non-zero.
 #[cfg(all(feature = "serve", feature = "worker"))]
 pub fn run_init(args: &InitArgs) -> i32 {
-    let out =
-        args.out.clone().unwrap_or_else(|| tunaround::config::expand_home("~/.tunaround/node.toml"));
+    let out = args
+        .out
+        .clone()
+        .unwrap_or_else(|| tunaround::config::expand_home("~/.tunaround/node.toml"));
     if std::path::Path::new(&out).exists() && !args.force {
         eprintln!("[init] 이미 존재합니다: {out} (덮어쓰려면 --force)");
         return 1;
@@ -92,11 +103,17 @@ pub fn run_init(args: &InitArgs) -> i32 {
         .replace('\\', "/"); // TOML 이중따옴표 이스케이프 회피(Windows 백슬래시 -> 슬래시).
     // 토큰 env 이름을 데몬·훅(TUNA_BROKER_TOKEN)과 통일한다: 예전 기본값 TUNAROUND_TOKEN은 node만
     // 쓰던 별도 이름이라 "토큰 env가 둘"인 혼란을 만들었다. 이제 node.toml·데몬·훅·config가 한 이름을 쓴다.
-    let token_env = args.token_env.clone().unwrap_or_else(|| "TUNA_BROKER_TOKEN".to_string());
+    let token_env = args
+        .token_env
+        .clone()
+        .unwrap_or_else(|| "TUNA_BROKER_TOKEN".to_string());
 
     let mut toml = format!("core = \"{core}\"\n");
     if core == "self" {
-        let listen = args.listen.clone().unwrap_or_else(|| "0.0.0.0:8770".to_string());
+        let listen = args
+            .listen
+            .clone()
+            .unwrap_or_else(|| "0.0.0.0:8770".to_string());
         toml.push_str(&format!("listen = \"{listen}\"\n"));
         toml.push_str("db = \"~/.tunaround/broker.db\"\n");
     }
@@ -142,7 +159,9 @@ pub fn run_init(args: &InitArgs) -> i32 {
         );
     }
     println!("  2) 진단: tunaround doctor");
-    println!("  3) 상주: tunaround node   (mesh 전체는 restart 스크립트가 config를 읽어 데몬에 상속)");
+    println!(
+        "  3) 상주: tunaround node   (mesh 전체는 restart 스크립트가 config를 읽어 데몬에 상속)"
+    );
     0
 }
 
@@ -190,7 +209,11 @@ fn scaffold_mesh_config(core: &str, machine: Option<&str>, force: bool) -> bool 
         return false;
     }
     // core=self면 브로커가 로컬이라 loopback URL, 아니면 넘겨받은 코어 URL을 그대로 쓴다.
-    let broker_core = if core == "self" { "http://127.0.0.1:8770/mcp" } else { core };
+    let broker_core = if core == "self" {
+        "http://127.0.0.1:8770/mcp"
+    } else {
+        core
+    };
     let machine = detect_machine(machine);
     let bin = std::env::current_exe()
         .ok()
@@ -222,7 +245,11 @@ fn scaffold_mesh_config(core: &str, machine: Option<&str>, force: bool) -> bool 
 /// 실행 파일이 PATH에 있는지 확인한다(Windows는 .exe/.cmd/.bat 확장자도 시도).
 #[cfg(all(feature = "serve", feature = "worker"))]
 pub fn binary_on_path(name: &str) -> bool {
-    let exts: &[&str] = if cfg!(windows) { &["", ".exe", ".cmd", ".bat"] } else { &[""] };
+    let exts: &[&str] = if cfg!(windows) {
+        &["", ".exe", ".cmd", ".bat"]
+    } else {
+        &[""]
+    };
     let Some(path) = std::env::var_os("PATH") else {
         return false;
     };
@@ -304,29 +331,41 @@ pub fn run_doctor(cfg_path: Option<&str>) -> i32 {
                     listen.to_string()
                 };
                 let url = format!("http://{target}/.well-known/agent-card.json");
-                let mut req =
-                    reqwest::blocking::Client::new().get(&url).timeout(std::time::Duration::from_secs(3));
+                let mut req = reqwest::blocking::Client::new()
+                    .get(&url)
+                    .timeout(std::time::Duration::from_secs(3));
                 if let Some(t) = &token {
                     req = req.bearer_auth(t);
                 }
                 match req.send() {
                     Ok(r) if r.status().is_success() => {
-                        println!("OK   core=self: {listen} 사용 중이나 브로커가 응답(node가 이미 구동 중)")
+                        println!(
+                            "OK   core=self: {listen} 사용 중이나 브로커가 응답(node가 이미 구동 중)"
+                        )
                     }
                     // 401/403만 "우리 브로커인데 인증 문제"로 보고 WARN. 404 등 다른 non-2xx는
                     // 무관한 프로세스(일반 웹서버)일 가능성이 커서 FAIL(node 기동 시 포트 충돌 예방).
-                    Ok(r) if r.status() == reqwest::StatusCode::UNAUTHORIZED
-                        || r.status() == reqwest::StatusCode::FORBIDDEN =>
+                    Ok(r)
+                        if r.status() == reqwest::StatusCode::UNAUTHORIZED
+                            || r.status() == reqwest::StatusCode::FORBIDDEN =>
                     {
-                        println!("WARN core=self: {listen} 사용 중, 브로커가 {} (우리 브로커로 보이나 토큰 확인 필요)", r.status())
+                        println!(
+                            "WARN core=self: {listen} 사용 중, 브로커가 {} (우리 브로커로 보이나 토큰 확인 필요)",
+                            r.status()
+                        )
                     }
                     Ok(r) => {
-                        println!("FAIL core=self: {listen} 점유한 프로세스가 {} 응답(우리 브로커 아님, 포트 충돌)", r.status());
+                        println!(
+                            "FAIL core=self: {listen} 점유한 프로세스가 {} 응답(우리 브로커 아님, 포트 충돌)",
+                            r.status()
+                        );
                         fails += 1;
                     }
                     // 전송 자체 실패 = HTTP 응답 없음. 다른 프로세스가 비-HTTP로 점유 중일 수 있다.
                     Err(_) => {
-                        println!("FAIL core=self: {listen} 사용 중이고 HTTP 응답 없음(다른 프로세스 점유?)");
+                        println!(
+                            "FAIL core=self: {listen} 사용 중이고 HTTP 응답 없음(다른 프로세스 점유?)"
+                        );
                         fails += 1;
                     }
                 }
@@ -344,7 +383,10 @@ pub fn run_doctor(cfg_path: Option<&str>) -> i32 {
                     println!("OK   db: {db_e} (상위 디렉터리 존재)");
                 }
                 Some(p) => {
-                    println!("WARN db: 상위 디렉터리 없음 {} (node가 만들거나 실패할 수 있음)", p.display());
+                    println!(
+                        "WARN db: 상위 디렉터리 없음 {} (node가 만들거나 실패할 수 있음)",
+                        p.display()
+                    );
                 }
                 None => println!("OK   db: {db_e}"),
             }
@@ -373,13 +415,20 @@ pub fn run_doctor(cfg_path: Option<&str>) -> i32 {
     }
 
     for l in &cfg.lane {
-        let kind = if l.is_supervised() { "감독" } else { "자동" };
+        let kind = if l.is_supervised() {
+            "감독"
+        } else {
+            "자동"
+        };
         match l.runner.as_str() {
             b @ ("claude" | "codex" | "opencode") => {
                 if binary_on_path(b) {
                     println!("OK   lane {}[{kind}] runner={b}: PATH에 있음", l.agent);
                 } else {
-                    println!("FAIL lane {}[{kind}] runner={b}: PATH에 없음(설치/로그인 필요)", l.agent);
+                    println!(
+                        "FAIL lane {}[{kind}] runner={b}: PATH에 없음(설치/로그인 필요)",
+                        l.agent
+                    );
                     fails += 1;
                 }
             }
@@ -389,7 +438,10 @@ pub fn run_doctor(cfg_path: Option<&str>) -> i32 {
             "http" => {
                 #[cfg(not(feature = "engines"))]
                 {
-                    println!("FAIL lane {}[{kind}] runner=http: 이 바이너리는 engines 피처 없이 빌드됨", l.agent);
+                    println!(
+                        "FAIL lane {}[{kind}] runner=http: 이 바이너리는 engines 피처 없이 빌드됨",
+                        l.agent
+                    );
                     fails += 1;
                 }
                 #[cfg(feature = "engines")]
@@ -412,7 +464,10 @@ pub fn run_doctor(cfg_path: Option<&str>) -> i32 {
                                 .send()
                                 .is_ok();
                             if reachable {
-                                println!("OK   lane {}[{kind}] runner=http: base_url {u} 도달", l.agent);
+                                println!(
+                                    "OK   lane {}[{kind}] runner=http: base_url {u} 도달",
+                                    l.agent
+                                );
                             } else {
                                 println!(
                                     "WARN lane {}[{kind}] runner=http: base_url {u} 도달 불가(LLM 미기동?)",
@@ -422,7 +477,10 @@ pub fn run_doctor(cfg_path: Option<&str>) -> i32 {
                         }
                     }
                     None => {
-                        println!("FAIL lane {}[{kind}] runner=http: http_base_url 누락", l.agent);
+                        println!(
+                            "FAIL lane {}[{kind}] runner=http: http_base_url 누락",
+                            l.agent
+                        );
                         fails += 1;
                     }
                 }
@@ -430,7 +488,10 @@ pub fn run_doctor(cfg_path: Option<&str>) -> i32 {
             "a2a" => {
                 #[cfg(not(feature = "a2a-out"))]
                 {
-                    println!("FAIL lane {}[{kind}] runner=a2a: 이 바이너리는 a2a-out 피처 없이 빌드됨", l.agent);
+                    println!(
+                        "FAIL lane {}[{kind}] runner=a2a: 이 바이너리는 a2a-out 피처 없이 빌드됨",
+                        l.agent
+                    );
                     fails += 1;
                 }
                 #[cfg(feature = "a2a-out")]
@@ -443,7 +504,10 @@ pub fn run_doctor(cfg_path: Option<&str>) -> i32 {
                 }
             }
             other => {
-                println!("FAIL lane {}[{kind}] runner={other}: 알 수 없는 runner", l.agent);
+                println!(
+                    "FAIL lane {}[{kind}] runner={other}: 알 수 없는 runner",
+                    l.agent
+                );
                 fails += 1;
             }
         }
@@ -489,18 +553,34 @@ mod tests {
         assert_eq!(detect_machine(Some("win")), "win");
         // 명시 없으면 OS 감지 - 셋 중 하나.
         let m = detect_machine(None);
-        assert!(["win", "mac", "unix"].contains(&m.as_str()), "감지된 머신 태그: {m}");
+        assert!(
+            ["win", "mac", "unix"].contains(&m.as_str()),
+            "감지된 머신 태그: {m}"
+        );
     }
 
     #[test]
     fn mesh_config_content_has_keys_and_placeholder_token() {
-        let c = mesh_config_content("http://127.0.0.1:8770/mcp", "mac", "/usr/local/bin/tunaround");
+        let c = mesh_config_content(
+            "http://127.0.0.1:8770/mcp",
+            "mac",
+            "/usr/local/bin/tunaround",
+        );
         assert!(c.contains("TUNA_AUTOARM=1"), "autoarm 스위치 누락");
-        assert!(c.contains("TUNA_BROKER_CORE=http://127.0.0.1:8770/mcp"), "코어 URL 미보간");
+        assert!(
+            c.contains("TUNA_BROKER_CORE=http://127.0.0.1:8770/mcp"),
+            "코어 URL 미보간"
+        );
         assert!(c.contains("TUNA_MACHINE=mac"), "머신 태그 미보간");
-        assert!(c.contains("TUNA_BIN=/usr/local/bin/tunaround"), "bin 경로 미보간");
+        assert!(
+            c.contains("TUNA_BIN=/usr/local/bin/tunaround"),
+            "bin 경로 미보간"
+        );
         // 토큰은 placeholder만: 실값을 쓰지 않는다.
-        assert!(c.contains("TUNA_BROKER_TOKEN=여기에-실제-토큰-넣기"), "토큰 placeholder 누락");
+        assert!(
+            c.contains("TUNA_BROKER_TOKEN=여기에-실제-토큰-넣기"),
+            "토큰 placeholder 누락"
+        );
     }
 
     #[test]
@@ -529,8 +609,10 @@ mod tests {
             written.contains("token = \"@env:TUNA_BROKER_TOKEN\""),
             "토큰 env 이름이 TUNA_BROKER_TOKEN으로 통일되어야 함: {written}"
         );
-        assert!(written.contains("runner = \"claude\""), "러너 미기록: {written}");
+        assert!(
+            written.contains("runner = \"claude\""),
+            "러너 미기록: {written}"
+        );
         let _ = std::fs::remove_file(&out);
     }
 }
-

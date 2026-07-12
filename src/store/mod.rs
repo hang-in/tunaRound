@@ -95,7 +95,11 @@ mod rrf_tests {
         let result = reciprocal_rank_fusion(&lexical, &vector);
         assert!(!result.is_empty());
         // ("s1", 1)은 두 리스트에서 모두 rank=0 -> 가장 높은 RRF 점수를 가져야 한다.
-        assert_eq!(result[0], ("s1".to_string(), 1u64), "양쪽 상위 키가 최상위여야 함");
+        assert_eq!(
+            result[0],
+            ("s1".to_string(), 1u64),
+            "양쪽 상위 키가 최상위여야 함"
+        );
     }
 
     use super::cap_per_session_backfill;
@@ -119,7 +123,11 @@ mod rrf_tests {
         // 단일 세션 5개, max_per_session=2, limit=5 → backfill로 5개 모두(동작 불변).
         let items: Vec<(String, i32)> = (0..5).map(|i| ("s1".to_string(), i)).collect();
         let out = cap_per_session_backfill(items, 2, 5);
-        assert_eq!(out, vec![0, 1, 2, 3, 4], "단일 세션은 under-fill 없이 가득 채워야 함");
+        assert_eq!(
+            out,
+            vec![0, 1, 2, 3, 4],
+            "단일 세션은 under-fill 없이 가득 채워야 함"
+        );
     }
 
     #[test]
@@ -234,12 +242,20 @@ pub fn path_to_root(messages: &[StoredMessage], head: Option<u64>) -> Vec<Uttera
         }
     }
     chain.reverse();
-    chain.iter().map(|m| Utterance::new(m.speaker.clone(), m.content.clone())).collect()
+    chain
+        .iter()
+        .map(|m| Utterance::new(m.speaker.clone(), m.content.clone()))
+        .collect()
 }
 
 /// 다음 메시지 id(max+1, 비어 있으면 1).
 pub fn next_id(messages: &[StoredMessage]) -> u64 {
-    messages.iter().map(|m| m.id).max().map(|m| m + 1).unwrap_or(1)
+    messages
+        .iter()
+        .map(|m| m.id)
+        .max()
+        .map(|m| m + 1)
+        .unwrap_or(1)
 }
 
 /// 트리 요약 줄(id, parent, speaker, 본문 일부). /branches 표시용.
@@ -250,9 +266,15 @@ pub fn tree_summary(messages: &[StoredMessage], head: Option<u64>) -> String {
     let mut out = String::new();
     for m in messages {
         let marker = if Some(m.id) == head { "*" } else { " " };
-        let parent = m.parent_id.map(|p| p.to_string()).unwrap_or_else(|| "-".into());
+        let parent = m
+            .parent_id
+            .map(|p| p.to_string())
+            .unwrap_or_else(|| "-".into());
         let snippet: String = m.content.chars().take(30).collect();
-        out.push_str(&format!("{marker} #{} (<-{parent}) {}: {}\n", m.id, m.speaker, snippet));
+        out.push_str(&format!(
+            "{marker} #{} (<-{parent}) {}: {}\n",
+            m.id, m.speaker, snippet
+        ));
     }
     out
 }
@@ -284,8 +306,16 @@ mod tests {
 
     fn utts() -> Vec<Utterance> {
         vec![
-            Utterance { speaker: "claude/proposer".into(), content: "제안".into(), abstraction: None },
-            Utterance { speaker: "codex/reviewer".into(), content: "리뷰".into(), abstraction: None },
+            Utterance {
+                speaker: "claude/proposer".into(),
+                content: "제안".into(),
+                abstraction: None,
+            },
+            Utterance {
+                speaker: "codex/reviewer".into(),
+                content: "리뷰".into(),
+                abstraction: None,
+            },
         ]
     }
 
@@ -293,15 +323,41 @@ mod tests {
     fn path_to_root_walks_parents() {
         // 트리: 1 -> 2 -> 3, 그리고 2 -> 4 (분기)
         let msgs = vec![
-            StoredMessage { id: 1, parent_id: None, speaker: "a".into(), content: "1".into() },
-            StoredMessage { id: 2, parent_id: Some(1), speaker: "b".into(), content: "2".into() },
-            StoredMessage { id: 3, parent_id: Some(2), speaker: "c".into(), content: "3".into() },
-            StoredMessage { id: 4, parent_id: Some(2), speaker: "d".into(), content: "4".into() },
+            StoredMessage {
+                id: 1,
+                parent_id: None,
+                speaker: "a".into(),
+                content: "1".into(),
+            },
+            StoredMessage {
+                id: 2,
+                parent_id: Some(1),
+                speaker: "b".into(),
+                content: "2".into(),
+            },
+            StoredMessage {
+                id: 3,
+                parent_id: Some(2),
+                speaker: "c".into(),
+                content: "3".into(),
+            },
+            StoredMessage {
+                id: 4,
+                parent_id: Some(2),
+                speaker: "d".into(),
+                content: "4".into(),
+            },
         ];
         let path = path_to_root(&msgs, Some(3));
-        assert_eq!(path.iter().map(|u| u.content.clone()).collect::<Vec<_>>(), vec!["1","2","3"]);
+        assert_eq!(
+            path.iter().map(|u| u.content.clone()).collect::<Vec<_>>(),
+            vec!["1", "2", "3"]
+        );
         let branch = path_to_root(&msgs, Some(4));
-        assert_eq!(branch.iter().map(|u| u.content.clone()).collect::<Vec<_>>(), vec!["1","2","4"]);
+        assert_eq!(
+            branch.iter().map(|u| u.content.clone()).collect::<Vec<_>>(),
+            vec!["1", "2", "4"]
+        );
         assert!(path_to_root(&msgs, None).is_empty());
     }
 
@@ -310,18 +366,37 @@ mod tests {
         // 순환: id=1.parent=Some(2), id=2.parent=Some(1). head=Some(1).
         // 무한루프 없이 유계 반환(2개 이하).
         let msgs = vec![
-            StoredMessage { id: 1, parent_id: Some(2), speaker: "a".into(), content: "1".into() },
-            StoredMessage { id: 2, parent_id: Some(1), speaker: "b".into(), content: "2".into() },
+            StoredMessage {
+                id: 1,
+                parent_id: Some(2),
+                speaker: "a".into(),
+                content: "1".into(),
+            },
+            StoredMessage {
+                id: 2,
+                parent_id: Some(1),
+                speaker: "b".into(),
+                content: "2".into(),
+            },
         ];
         let path = path_to_root(&msgs, Some(1));
         // 순환이므로 결과 길이가 유한해야 함(2개 이하).
-        assert!(path.len() <= 2, "순환에서 유한 반환이어야 함: len={}", path.len());
+        assert!(
+            path.len() <= 2,
+            "순환에서 유한 반환이어야 함: len={}",
+            path.len()
+        );
     }
 
     #[test]
     fn next_id_is_max_plus_one() {
         assert_eq!(next_id(&[]), 1);
-        let msgs = vec![StoredMessage { id: 5, parent_id: None, speaker: "a".into(), content: "x".into() }];
+        let msgs = vec![StoredMessage {
+            id: 5,
+            parent_id: None,
+            speaker: "a".into(),
+            content: "x".into(),
+        }];
         assert_eq!(next_id(&msgs), 6);
     }
 
@@ -329,8 +404,18 @@ mod tests {
     fn session_roundtrip_preserves_tree_and_head() {
         let ss = StoredSession {
             messages: vec![
-                StoredMessage { id: 1, parent_id: None, speaker: "a".into(), content: "1".into() },
-                StoredMessage { id: 2, parent_id: Some(1), speaker: "b".into(), content: "2".into() },
+                StoredMessage {
+                    id: 1,
+                    parent_id: None,
+                    speaker: "a".into(),
+                    content: "1".into(),
+                },
+                StoredMessage {
+                    id: 2,
+                    parent_id: Some(1),
+                    speaker: "b".into(),
+                    content: "2".into(),
+                },
             ],
             head: Some(2),
         };
@@ -346,8 +431,18 @@ mod tests {
     fn load_session_falls_back_to_legacy_bare_array() {
         // 레거시 v1: bare [StoredMessage] (head 없음) -> head = 마지막 id
         let legacy = vec![
-            StoredMessage { id: 1, parent_id: None, speaker: "a".into(), content: "1".into() },
-            StoredMessage { id: 2, parent_id: Some(1), speaker: "b".into(), content: "2".into() },
+            StoredMessage {
+                id: 1,
+                parent_id: None,
+                speaker: "a".into(),
+                content: "1".into(),
+            },
+            StoredMessage {
+                id: 2,
+                parent_id: Some(1),
+                speaker: "b".into(),
+                content: "2".into(),
+            },
         ];
         let dir = std::env::temp_dir();
         let path = dir.join("tuna_legacy.json");

@@ -13,8 +13,8 @@ pub use sqlite_transcript::{
 mod sqlite_retriever {
     use std::collections::HashMap;
 
-    use crate::types::Utterance;
     use crate::store::sqlite::SqliteStore;
+    use crate::types::Utterance;
 
     /// 세션 다양성 cap: 한 세션이 결과를 독점하지 않도록 우선 뽑는 세션당 최대 개수.
     const MAX_PER_SESSION: usize = 2;
@@ -36,7 +36,11 @@ mod sqlite_retriever {
             tok: Box<dyn Fn(&str) -> String + Send + Sync>,
             embedder: Option<Box<dyn crate::store::embedding::Embedder>>,
         ) -> Self {
-            Self { store: std::sync::Mutex::new(store), tok, embedder }
+            Self {
+                store: std::sync::Mutex::new(store),
+                tok,
+                embedder,
+            }
         }
     }
 
@@ -137,7 +141,11 @@ mod sqlite_retriever {
             let abstraction = meta
                 .and_then(|m| m.abstraction)
                 .filter(|a| !a.trim().is_empty());
-            let ts = store.get_created_at(&sid, mid).ok().flatten().and_then(|s| parse_ts_approx(&s));
+            let ts = store
+                .get_created_at(&sid, mid)
+                .ok()
+                .flatten()
+                .and_then(|s| parse_ts_approx(&s));
             if let Some(t) = ts {
                 max_ts = Some(max_ts.map_or(t, |m| m.max(t)));
             }
@@ -157,7 +165,10 @@ mod sqlite_retriever {
         }
         // 안정 정렬: penalty 1차, 앵커 매치 2차. 같은 (penalty, anchor_rank) 내 relevance 순서 보존.
         scored.sort_by_key(|(p, ar, _, _, _, _)| (*p, *ar));
-        scored.into_iter().map(|(_, _, sid, mid, v, abstraction)| (sid, mid, v, abstraction)).collect()
+        scored
+            .into_iter()
+            .map(|(_, _, sid, mid, v, abstraction)| (sid, mid, v, abstraction))
+            .collect()
     }
 
     /// (session_id, msg_id, Utterance) 항목을 재랭크(유효성+분기+앵커) 후 큐레이션 abstraction을
@@ -215,26 +226,35 @@ mod sqlite_retriever {
             };
 
             // FTS 결과 키 리스트 + content_map 구축.
-            let lex_keys: Vec<(String, u64)> =
-                lex_hits.iter().map(|h| (h.session_id.clone(), h.msg_id)).collect();
+            let lex_keys: Vec<(String, u64)> = lex_hits
+                .iter()
+                .map(|h| (h.session_id.clone(), h.msg_id))
+                .collect();
             let mut content_map: HashMap<(String, u64), (String, String)> = lex_hits
                 .into_iter()
                 .map(|h| ((h.session_id, h.msg_id), (h.speaker, h.content)))
                 .collect();
 
             // content_map에서 (sid, msg_id, Utterance) 후보를 만드는 폴백용 클로저.
-            let cands_from_map = |m: HashMap<(String, u64), (String, String)>| -> Vec<(String, u64, Utterance)> {
-                m.into_iter()
-                    .map(|((sid, mid), (sp, ct))| (sid, mid, Utterance::new(sp, ct)))
-                    .collect()
-            };
+            let cands_from_map =
+                |m: HashMap<(String, u64), (String, String)>| -> Vec<(String, u64, Utterance)> {
+                    m.into_iter()
+                        .map(|((sid, mid), (sp, ct))| (sid, mid, Utterance::new(sp, ct)))
+                        .collect()
+                };
 
             // 쿼리 임베딩 시도(실패 시 FTS 단독 폴백 = 정당한 degrade, Err로 승격 안 함).
             let qvec = match emb.embed(query) {
                 Ok(v) => v,
                 Err(e) => {
                     eprintln!("[tunaRound] 쿼리 임베딩 실패(FTS 단독 폴백): {e}");
-                    return Ok(finish(&store, cands_from_map(content_map), limit, current_session, &query_tokens));
+                    return Ok(finish(
+                        &store,
+                        cands_from_map(content_map),
+                        limit,
+                        current_session,
+                        &query_tokens,
+                    ));
                 }
             };
 
@@ -243,12 +263,20 @@ mod sqlite_retriever {
                 Ok(hits) => hits,
                 Err(e) => {
                     eprintln!("[tunaRound] 벡터 검색 실패(FTS 단독 폴백): {e}");
-                    return Ok(finish(&store, cands_from_map(content_map), limit, current_session, &query_tokens));
+                    return Ok(finish(
+                        &store,
+                        cands_from_map(content_map),
+                        limit,
+                        current_session,
+                        &query_tokens,
+                    ));
                 }
             };
 
-            let vec_keys: Vec<(String, u64)> =
-                vec_hits.iter().map(|(sid, mid, _)| (sid.clone(), *mid)).collect();
+            let vec_keys: Vec<(String, u64)> = vec_hits
+                .iter()
+                .map(|(sid, mid, _)| (sid.clone(), *mid))
+                .collect();
 
             // RRF 융합 → (sid, msg_id, Utterance) 후보로 해석(벡터-only 키는 DB 조회).
             let fused = crate::store::reciprocal_rank_fusion(&lex_keys, &vec_keys);
@@ -295,7 +323,11 @@ mod sqlite_retriever {
             let q = (self.tok)(query);
             let store = self.store.lock().unwrap_or_else(|e| e.into_inner());
             let hits = store.search(&q, limit * OVERFETCH).unwrap_or_default();
-            let hybrid = if self.embedder.is_some() { " (+벡터 하이브리드)" } else { "" };
+            let hybrid = if self.embedder.is_some() {
+                " (+벡터 하이브리드)"
+            } else {
+                ""
+            };
             // recency: 후보 최신 created_at 대비 임계 초과한 다른 세션 히트를 표시(rerank와 동일 규칙, step 5c).
             let max_ts: Option<i64> = hits
                 .iter()
@@ -314,7 +346,11 @@ mod sqlite_retriever {
                     .flatten()
                     .map(|v| v.valid_state)
                     .unwrap_or_else(|| "active".to_string());
-                let branch = if current_session == h.session_id { " cur-session" } else { "" };
+                let branch = if current_session == h.session_id {
+                    " cur-session"
+                } else {
+                    ""
+                };
                 let created = store.get_created_at(&h.session_id, h.msg_id).ok().flatten();
                 let ts = created.as_deref().and_then(parse_ts_approx);
                 let recency = match (ts, max_ts) {
@@ -332,7 +368,15 @@ mod sqlite_retriever {
                 let snippet: String = h.content.chars().take(50).collect();
                 out.push_str(&format!(
                     "  [#{} sid={} bm25={:.3} valid={}{} created={}{}] {}: {}\n",
-                    h.msg_id, h.session_id, h.score, state, branch, created_disp, recency, h.speaker, snippet
+                    h.msg_id,
+                    h.session_id,
+                    h.score,
+                    state,
+                    branch,
+                    created_disp,
+                    recency,
+                    h.speaker,
+                    snippet
                 ));
             }
             out.push_str("(bm25: 낮을수록 관련 높음. valid=rejected는 제외·superseded/stale·cur-session off-branch는 강등. recency↓=다른 세션의 낡은 후보 강등.)");
@@ -343,8 +387,8 @@ mod sqlite_retriever {
 
 #[cfg(feature = "sqlite")]
 mod sqlite_transcript {
-    use crate::types::Utterance;
     use crate::store::sqlite::SqliteStore;
+    use crate::types::Utterance;
 
     /// 세션 전사 전체(또는 마지막 N턴)를 활성 경로(root->head)로 읽어 오는 구현.
     /// rusqlite Connection은 Send이지만 Sync가 아니므로 Mutex로 감싼다.
@@ -355,7 +399,9 @@ mod sqlite_transcript {
     impl SqliteTranscriptReader {
         /// SqliteStore를 받아 새 전사 리더를 반환한다.
         pub fn new(store: SqliteStore) -> Self {
-            Self { store: std::sync::Mutex::new(store) }
+            Self {
+                store: std::sync::Mutex::new(store),
+            }
         }
     }
 
@@ -390,12 +436,20 @@ mod sqlite_transcript {
     impl SqliteTranscriptWriter {
         /// SqliteStore + 색인용 토크나이저 closure를 받아 새 writer를 반환한다.
         pub fn new(store: SqliteStore, tok: Box<dyn Fn(&str) -> String + Send + Sync>) -> Self {
-            Self { store: std::sync::Mutex::new(store), tok }
+            Self {
+                store: std::sync::Mutex::new(store),
+                tok,
+            }
         }
     }
 
     impl crate::orchestrator::TranscriptWriter for SqliteTranscriptWriter {
-        fn append_turn(&self, session_id: &str, speaker: &str, content: &str) -> Result<u64, String> {
+        fn append_turn(
+            &self,
+            session_id: &str,
+            speaker: &str,
+            content: &str,
+        ) -> Result<u64, String> {
             let store = self.store.lock().unwrap_or_else(|e| e.into_inner());
             store.append_turn(session_id, speaker, content, |t| (self.tok)(t))
         }
@@ -411,7 +465,10 @@ mod sqlite_transcript {
     impl SqliteCoreSync {
         /// SqliteStore + 색인용 토크나이저 closure를 받아 새 core-sync를 반환한다.
         pub fn new(store: SqliteStore, tok: Box<dyn Fn(&str) -> String + Send + Sync>) -> Self {
-            Self { store: std::sync::Mutex::new(store), tok }
+            Self {
+                store: std::sync::Mutex::new(store),
+                tok,
+            }
         }
     }
 
@@ -420,7 +477,12 @@ mod sqlite_transcript {
             let store = self.store.lock().unwrap_or_else(|e| e.into_inner());
             store.load_session(session_id).ok().flatten()
         }
-        fn append_turn(&self, session_id: &str, speaker: &str, content: &str) -> Result<u64, String> {
+        fn append_turn(
+            &self,
+            session_id: &str,
+            speaker: &str,
+            content: &str,
+        ) -> Result<u64, String> {
             let store = self.store.lock().unwrap_or_else(|e| e.into_inner());
             store.append_turn(session_id, speaker, content, |t| (self.tok)(t))
         }
@@ -433,7 +495,9 @@ mod sqlite_transcript {
 
     impl SqliteValiditySink {
         pub fn new(store: SqliteStore) -> Self {
-            Self { store: std::sync::Mutex::new(store) }
+            Self {
+                store: std::sync::Mutex::new(store),
+            }
         }
     }
 
@@ -457,7 +521,9 @@ mod sqlite_transcript {
 
     impl SqliteAnnotationSink {
         pub fn new(store: SqliteStore) -> Self {
-            Self { store: std::sync::Mutex::new(store) }
+            Self {
+                store: std::sync::Mutex::new(store),
+            }
         }
     }
 
@@ -500,7 +566,9 @@ mod tests {
             }],
             head: Some(1),
         };
-        store_w.save_session("session-a", &ss_a, |t| t.to_string()).unwrap();
+        store_w
+            .save_session("session-a", &ss_a, |t| t.to_string())
+            .unwrap();
         drop(store_w);
 
         // 별도 읽기 연결로 SqliteRetriever 생성 후 cross-session 검색(embedder=None -> FTS 단독).
@@ -511,7 +579,8 @@ mod tests {
         let hits = retriever.retrieve("검색", 10).unwrap();
         assert!(!hits.is_empty(), "cross-session 검색이 결과를 반환해야 함");
         assert!(
-            hits.iter().any(|u| u.content.contains("검색") || u.speaker.contains("claude")),
+            hits.iter()
+                .any(|u| u.content.contains("검색") || u.speaker.contains("claude")),
             "검색 결과 내용 불일치: {:?}",
             hits.iter().map(|u| u.content.as_str()).collect::<Vec<_>>()
         );
@@ -529,9 +598,24 @@ mod tests {
         // 세 발언 모두 "검색" 포함(같은 세션).
         let ss = StoredSession {
             messages: vec![
-                StoredMessage { id: 1, parent_id: None, speaker: "a".into(), content: "검색 활성".into() },
-                StoredMessage { id: 2, parent_id: Some(1), speaker: "b".into(), content: "검색 대체됨".into() },
-                StoredMessage { id: 3, parent_id: Some(2), speaker: "c".into(), content: "검색 기각됨".into() },
+                StoredMessage {
+                    id: 1,
+                    parent_id: None,
+                    speaker: "a".into(),
+                    content: "검색 활성".into(),
+                },
+                StoredMessage {
+                    id: 2,
+                    parent_id: Some(1),
+                    speaker: "b".into(),
+                    content: "검색 대체됨".into(),
+                },
+                StoredMessage {
+                    id: 3,
+                    parent_id: Some(2),
+                    speaker: "c".into(),
+                    content: "검색 기각됨".into(),
+                },
             ],
             head: Some(3),
         };
@@ -544,11 +628,20 @@ mod tests {
         let retriever = SqliteRetriever::new(store_r, Box::new(|t: &str| t.to_string()), None);
         let hits = retriever.retrieve("검색", 10).unwrap();
         let contents: Vec<&str> = hits.iter().map(|u| u.content.as_str()).collect();
-        assert!(!contents.iter().any(|c| c.contains("기각")), "rejected는 제외: {contents:?}");
+        assert!(
+            !contents.iter().any(|c| c.contains("기각")),
+            "rejected는 제외: {contents:?}"
+        );
         let pos_active = contents.iter().position(|c| c.contains("활성"));
         let pos_super = contents.iter().position(|c| c.contains("대체"));
-        assert!(pos_active.is_some() && pos_super.is_some(), "active·superseded 모두 존재: {contents:?}");
-        assert!(pos_active < pos_super, "active가 superseded보다 앞: {contents:?}");
+        assert!(
+            pos_active.is_some() && pos_super.is_some(),
+            "active·superseded 모두 존재: {contents:?}"
+        );
+        assert!(
+            pos_active < pos_super,
+            "active가 superseded보다 앞: {contents:?}"
+        );
 
         let _ = std::fs::remove_file(&path);
     }
@@ -565,7 +658,12 @@ mod tests {
             .save_session(
                 "old",
                 &StoredSession {
-                    messages: vec![StoredMessage { id: 1, parent_id: None, speaker: "a".into(), content: "검색 오래된".into() }],
+                    messages: vec![StoredMessage {
+                        id: 1,
+                        parent_id: None,
+                        speaker: "a".into(),
+                        content: "검색 오래된".into(),
+                    }],
                     head: Some(1),
                 },
                 |t| t.to_string(),
@@ -575,15 +673,24 @@ mod tests {
             .save_session(
                 "new",
                 &StoredSession {
-                    messages: vec![StoredMessage { id: 1, parent_id: None, speaker: "b".into(), content: "검색 최신".into() }],
+                    messages: vec![StoredMessage {
+                        id: 1,
+                        parent_id: None,
+                        speaker: "b".into(),
+                        content: "검색 최신".into(),
+                    }],
                     head: Some(1),
                 },
                 |t| t.to_string(),
             )
             .unwrap();
         // 8일 간격(임계 7일 초과) → 낡은 세션 히트가 강등돼야 함.
-        store_w.set_created_at("old", 1, "2026-01-01 00:00:00").unwrap();
-        store_w.set_created_at("new", 1, "2026-01-09 00:00:00").unwrap();
+        store_w
+            .set_created_at("old", 1, "2026-01-01 00:00:00")
+            .unwrap();
+        store_w
+            .set_created_at("new", 1, "2026-01-09 00:00:00")
+            .unwrap();
         drop(store_w);
 
         let store_r = SqliteStore::open(p).unwrap();
@@ -592,8 +699,14 @@ mod tests {
         let contents: Vec<&str> = hits.iter().map(|u| u.content.as_str()).collect();
         let pos_new = contents.iter().position(|c| c.contains("최신"));
         let pos_old = contents.iter().position(|c| c.contains("오래된"));
-        assert!(pos_new.is_some() && pos_old.is_some(), "두 발언 모두 존재: {contents:?}");
-        assert!(pos_new < pos_old, "최신 세션이 낡은 세션보다 앞(recency 강등): {contents:?}");
+        assert!(
+            pos_new.is_some() && pos_old.is_some(),
+            "두 발언 모두 존재: {contents:?}"
+        );
+        assert!(
+            pos_new < pos_old,
+            "최신 세션이 낡은 세션보다 앞(recency 강등): {contents:?}"
+        );
 
         let _ = std::fs::remove_file(&path);
     }
@@ -610,7 +723,12 @@ mod tests {
             .save_session(
                 "s",
                 &StoredSession {
-                    messages: vec![StoredMessage { id: 1, parent_id: None, speaker: "a".into(), content: "검색 랭킹".into() }],
+                    messages: vec![StoredMessage {
+                        id: 1,
+                        parent_id: None,
+                        speaker: "a".into(),
+                        content: "검색 랭킹".into(),
+                    }],
                     head: Some(1),
                 },
                 |t| t.to_string(),
@@ -643,22 +761,37 @@ mod tests {
                 .save_session(
                     sid,
                     &StoredSession {
-                        messages: vec![StoredMessage { id: 1, parent_id: None, speaker: "a".into(), content: body.into() }],
+                        messages: vec![StoredMessage {
+                            id: 1,
+                            parent_id: None,
+                            speaker: "a".into(),
+                            content: body.into(),
+                        }],
                         head: Some(1),
                     },
                     |t| t.to_string(),
                 )
                 .unwrap();
         }
-        store_w.set_created_at("old", 1, "2026-01-01 00:00:00").unwrap();
-        store_w.set_created_at("new", 1, "2026-01-09 00:00:00").unwrap();
+        store_w
+            .set_created_at("old", 1, "2026-01-01 00:00:00")
+            .unwrap();
+        store_w
+            .set_created_at("new", 1, "2026-01-09 00:00:00")
+            .unwrap();
         drop(store_w);
         let store_r = SqliteStore::open(p).unwrap();
         let retriever = SqliteRetriever::new(store_r, Box::new(|t: &str| t.to_string()), None);
         // current_session은 제3자("none")라 old·new 모두 다른 세션 → old만 recency 강등 표시돼야.
         let out = retriever.debug_retrieve("검색", 10, "none");
-        assert!(out.contains("recency↓"), "낡은 다른세션 후보에 recency 표시: {out}");
-        assert!(out.contains("created=2026-01-01"), "created_at 날짜 표시: {out}");
+        assert!(
+            out.contains("recency↓"),
+            "낡은 다른세션 후보에 recency 표시: {out}"
+        );
+        assert!(
+            out.contains("created=2026-01-01"),
+            "created_at 날짜 표시: {out}"
+        );
         let _ = std::fs::remove_file(&path);
     }
 
@@ -673,7 +806,12 @@ mod tests {
             .save_session(
                 "cur",
                 &StoredSession {
-                    messages: vec![StoredMessage { id: 1, parent_id: None, speaker: "a".into(), content: "검색 현재세션".into() }],
+                    messages: vec![StoredMessage {
+                        id: 1,
+                        parent_id: None,
+                        speaker: "a".into(),
+                        content: "검색 현재세션".into(),
+                    }],
                     head: Some(1),
                 },
                 |t| t.to_string(),
@@ -683,7 +821,12 @@ mod tests {
             .save_session(
                 "oth",
                 &StoredSession {
-                    messages: vec![StoredMessage { id: 1, parent_id: None, speaker: "b".into(), content: "검색 다른세션".into() }],
+                    messages: vec![StoredMessage {
+                        id: 1,
+                        parent_id: None,
+                        speaker: "b".into(),
+                        content: "검색 다른세션".into(),
+                    }],
                     head: Some(1),
                 },
                 |t| t.to_string(),
@@ -699,8 +842,14 @@ mod tests {
         let contents: Vec<&str> = hits.iter().map(|u| u.content.as_str()).collect();
         let pos_other = contents.iter().position(|c| c.contains("다른세션"));
         let pos_cur = contents.iter().position(|c| c.contains("현재세션"));
-        assert!(pos_other.is_some() && pos_cur.is_some(), "둘 다 존재: {contents:?}");
-        assert!(pos_other < pos_cur, "다른 세션이 현재세션 off-branch보다 앞: {contents:?}");
+        assert!(
+            pos_other.is_some() && pos_cur.is_some(),
+            "둘 다 존재: {contents:?}"
+        );
+        assert!(
+            pos_other < pos_cur,
+            "다른 세션이 현재세션 off-branch보다 앞: {contents:?}"
+        );
 
         // 컨텍스트 없는 retrieve는 분기 페널티 없음(둘 다 반환).
         assert_eq!(retriever.retrieve("검색", 10).unwrap().len(), 2);
@@ -721,14 +870,21 @@ mod tests {
             .save_session(
                 "s",
                 &StoredSession {
-                    messages: vec![StoredMessage { id: 1, parent_id: None, speaker: "a".into(), content: "원문 검색 구현 논의".into() }],
+                    messages: vec![StoredMessage {
+                        id: 1,
+                        parent_id: None,
+                        speaker: "a".into(),
+                        content: "원문 검색 구현 논의".into(),
+                    }],
                     head: Some(1),
                 },
                 |t| t.to_string(),
             )
             .unwrap();
         // 사람이 남긴 증류 요약(abstraction). anchors는 None으로 두어 캐리만 검증.
-        store_w.set_annotation("s", 1, Some("핵심 결정: 하이브리드 검색 채택"), None).unwrap();
+        store_w
+            .set_annotation("s", 1, Some("핵심 결정: 하이브리드 검색 채택"), None)
+            .unwrap();
         drop(store_w);
 
         let store_r = SqliteStore::open(p).unwrap();
@@ -736,9 +892,17 @@ mod tests {
         let hits = retriever.retrieve("검색", 10).unwrap();
         assert_eq!(hits.len(), 1, "1건 반환: {hits:?}");
         // content는 원문 raw 그대로(표면화되지 않음).
-        assert_eq!(hits[0].content, "원문 검색 구현 논의", "content가 원문 raw가 아님: {:?}", hits[0].content);
+        assert_eq!(
+            hits[0].content, "원문 검색 구현 논의",
+            "content가 원문 raw가 아님: {:?}",
+            hits[0].content
+        );
         // abstraction은 별도 필드로 실려 온다.
-        assert_eq!(hits[0].abstraction.as_deref(), Some("핵심 결정: 하이브리드 검색 채택"), "abstraction 캐리 안 됨");
+        assert_eq!(
+            hits[0].abstraction.as_deref(),
+            Some("핵심 결정: 하이브리드 검색 채택"),
+            "abstraction 캐리 안 됨"
+        );
 
         let _ = std::fs::remove_file(&path);
     }
@@ -758,7 +922,12 @@ mod tests {
             .save_session(
                 "a",
                 &StoredSession {
-                    messages: vec![StoredMessage { id: 1, parent_id: None, speaker: "a".into(), content: "검색".into() }],
+                    messages: vec![StoredMessage {
+                        id: 1,
+                        parent_id: None,
+                        speaker: "a".into(),
+                        content: "검색".into(),
+                    }],
                     head: Some(1),
                 },
                 |t| t.to_string(),
@@ -768,7 +937,12 @@ mod tests {
             .save_session(
                 "b",
                 &StoredSession {
-                    messages: vec![StoredMessage { id: 1, parent_id: None, speaker: "b".into(), content: "검색 시스템 상세 설계 배경 기록".into() }],
+                    messages: vec![StoredMessage {
+                        id: 1,
+                        parent_id: None,
+                        speaker: "b".into(),
+                        content: "검색 시스템 상세 설계 배경 기록".into(),
+                    }],
                     head: Some(1),
                 },
                 |t| t.to_string(),
@@ -781,18 +955,27 @@ mod tests {
         let base = SqliteRetriever::new(store_b, Box::new(|t: &str| t.to_string()), None);
         let base_hits = base.retrieve("검색", 10).unwrap();
         let base_first = base_hits.first().map(|u| u.speaker.clone());
-        assert_eq!(base_first.as_deref(), Some("a"), "baseline은 dense 'a'가 먼저: {base_hits:?}");
+        assert_eq!(
+            base_first.as_deref(),
+            Some("a"),
+            "baseline은 dense 'a'가 먼저: {base_hits:?}"
+        );
 
         // "b"에 쿼리("검색")와 매치되는 anchors 부여 → 같은 penalty tier에서 'b'가 앞서야 한다.
         let store_ann = SqliteStore::open(p).unwrap();
-        store_ann.set_annotation("b", 1, None, Some("검색,아키텍처")).unwrap();
+        store_ann
+            .set_annotation("b", 1, None, Some("검색,아키텍처"))
+            .unwrap();
         drop(store_ann);
 
         let store_r = SqliteStore::open(p).unwrap();
         let retriever = SqliteRetriever::new(store_r, Box::new(|t: &str| t.to_string()), None);
         let hits = retriever.retrieve("검색", 10).unwrap();
         assert_eq!(hits.len(), 2, "두 발언 모두 반환: {hits:?}");
-        assert_eq!(hits[0].speaker, "b", "앵커 매치 발언이 부스트로 먼저: {hits:?}");
+        assert_eq!(
+            hits[0].speaker, "b",
+            "앵커 매치 발언이 부스트로 먼저: {hits:?}"
+        );
 
         let _ = std::fs::remove_file(&path);
     }
@@ -812,7 +995,12 @@ mod tests {
             .save_session(
                 "a",
                 &StoredSession {
-                    messages: vec![StoredMessage { id: 1, parent_id: None, speaker: "a".into(), content: "설계".into() }],
+                    messages: vec![StoredMessage {
+                        id: 1,
+                        parent_id: None,
+                        speaker: "a".into(),
+                        content: "설계".into(),
+                    }],
                     head: Some(1),
                 },
                 |t| t.to_string(),
@@ -822,21 +1010,31 @@ mod tests {
             .save_session(
                 "b",
                 &StoredSession {
-                    messages: vec![StoredMessage { id: 1, parent_id: None, speaker: "b".into(), content: "설계 시스템 상세 배경 기록".into() }],
+                    messages: vec![StoredMessage {
+                        id: 1,
+                        parent_id: None,
+                        speaker: "b".into(),
+                        content: "설계 시스템 상세 배경 기록".into(),
+                    }],
                     head: Some(1),
                 },
                 |t| t.to_string(),
             )
             .unwrap();
         // "b"에 하이픈·언더스코어 포함 앵커 부여. 질의 토큰 "설계"가 "RAG-설계" 안 토큰과 완전일치해야 한다.
-        store_w.set_annotation("b", 1, None, Some("RAG-설계,mesh_scan")).unwrap();
+        store_w
+            .set_annotation("b", 1, None, Some("RAG-설계,mesh_scan"))
+            .unwrap();
         drop(store_w);
 
         let store_r = SqliteStore::open(p).unwrap();
         let retriever = SqliteRetriever::new(store_r, Box::new(|t: &str| t.to_string()), None);
         let hits = retriever.retrieve("설계", 10).unwrap();
         assert_eq!(hits.len(), 2, "두 발언 모두 반환: {hits:?}");
-        assert_eq!(hits[0].speaker, "b", "하이픈 포함 앵커도 완전일치 부스트로 먼저: {hits:?}");
+        assert_eq!(
+            hits[0].speaker, "b",
+            "하이픈 포함 앵커도 완전일치 부스트로 먼저: {hits:?}"
+        );
 
         let _ = std::fs::remove_file(&path);
     }
@@ -869,7 +1067,9 @@ mod tests {
             ],
             head: Some(2),
         };
-        store_w.save_session("hybrid-s", &ss, |t| t.to_string()).unwrap();
+        store_w
+            .save_session("hybrid-s", &ss, |t| t.to_string())
+            .unwrap();
         // 벡터 색인.
         let mock = MockEmbedder::new(64);
         store_w.index_vectors("hybrid-s", &ss, &mock).unwrap();
@@ -885,7 +1085,11 @@ mod tests {
 
         // RRF 경로 실행: 결과가 반환되어야 한다.
         let hits = retriever.retrieve("검색", 10).unwrap();
-        assert!(!hits.is_empty(), "하이브리드 검색이 결과를 반환해야 함: {:?}", hits);
+        assert!(
+            !hits.is_empty(),
+            "하이브리드 검색이 결과를 반환해야 함: {:?}",
+            hits
+        );
 
         let _ = std::fs::remove_file(&path);
     }
@@ -903,7 +1107,12 @@ mod tests {
             .save_session(
                 "s",
                 &StoredSession {
-                    messages: vec![StoredMessage { id: 1, parent_id: None, speaker: "a".into(), content: "검색 내용".into() }],
+                    messages: vec![StoredMessage {
+                        id: 1,
+                        parent_id: None,
+                        speaker: "a".into(),
+                        content: "검색 내용".into(),
+                    }],
                     head: Some(1),
                 },
                 |t| t.to_string(),
@@ -915,7 +1124,10 @@ mod tests {
         let store_r = SqliteStore::open(p).unwrap();
         let retriever = SqliteRetriever::new(store_r, Box::new(|_: &str| "\"".to_string()), None);
         let res = retriever.retrieve("검색", 10);
-        assert!(res.is_err(), "FTS 검색 실패는 Err로 전파돼야 함(빈 벡터 은폐 금지): {res:?}");
+        assert!(
+            res.is_err(),
+            "FTS 검색 실패는 Err로 전파돼야 함(빈 벡터 은폐 금지): {res:?}"
+        );
 
         let _ = std::fs::remove_file(&path);
     }
@@ -932,7 +1144,12 @@ mod tests {
             .save_session(
                 "s",
                 &StoredSession {
-                    messages: vec![StoredMessage { id: 1, parent_id: None, speaker: "a".into(), content: "검색 내용".into() }],
+                    messages: vec![StoredMessage {
+                        id: 1,
+                        parent_id: None,
+                        speaker: "a".into(),
+                        content: "검색 내용".into(),
+                    }],
                     head: Some(1),
                 },
                 |t| t.to_string(),
@@ -944,14 +1161,23 @@ mod tests {
         let store_ok = SqliteStore::open(p).unwrap();
         let ok = SqliteRetriever::new(store_ok, Box::new(|t: &str| t.to_string()), None);
         let no_match = ok.retrieve("존재하지않는질의어zzzqqq", 10);
-        assert!(matches!(no_match, Ok(ref v) if v.is_empty()), "매칭 0건은 Ok(빈 벡터): {no_match:?}");
+        assert!(
+            matches!(no_match, Ok(ref v) if v.is_empty()),
+            "매칭 0건은 Ok(빈 벡터): {no_match:?}"
+        );
         let blank = ok.retrieve("   ", 10);
-        assert!(matches!(blank, Ok(ref v) if v.is_empty()), "빈 질의는 Ok(빈 벡터): {blank:?}");
+        assert!(
+            matches!(blank, Ok(ref v) if v.is_empty()),
+            "빈 질의는 Ok(빈 벡터): {blank:?}"
+        );
 
         // 오류 토크나이저: 같은 DB라도 store.search 실패 -> Err(빈 결과와 구분됨).
         let store_err = SqliteStore::open(p).unwrap();
         let err = SqliteRetriever::new(store_err, Box::new(|_: &str| "\"".to_string()), None);
-        assert!(err.retrieve("검색", 10).is_err(), "DB 오류는 Err(매칭 0건과 구분)");
+        assert!(
+            err.retrieve("검색", 10).is_err(),
+            "DB 오류는 Err(매칭 0건과 구분)"
+        );
 
         let _ = std::fs::remove_file(&path);
     }
@@ -971,7 +1197,12 @@ mod tests {
             .save_session(
                 "s",
                 &StoredSession {
-                    messages: vec![StoredMessage { id: 1, parent_id: None, speaker: "a".into(), content: "전사 발언".into() }],
+                    messages: vec![StoredMessage {
+                        id: 1,
+                        parent_id: None,
+                        speaker: "a".into(),
+                        content: "전사 발언".into(),
+                    }],
                     head: Some(1),
                 },
                 |t| t.to_string(),
@@ -983,16 +1214,23 @@ mod tests {
         let store_r = SqliteStore::open(p).unwrap();
         let reader = SqliteTranscriptReader::new(store_r);
         let missing = reader.read_transcript("nonexistent-session", None);
-        assert!(matches!(missing, Ok(ref v) if v.is_empty()), "세션 없음은 Ok(빈 벡터): {missing:?}");
+        assert!(
+            matches!(missing, Ok(ref v) if v.is_empty()),
+            "세션 없음은 Ok(빈 벡터): {missing:?}"
+        );
         let present = reader.read_transcript("s", None).unwrap();
         assert_eq!(present.len(), 1, "존재 세션은 발언 반환: {present:?}");
 
         // DB 오류 유도: 별도 연결로 messages 테이블 드롭 -> load_session의 messages 조회 실패 -> Err.
         let raw = rusqlite::Connection::open(p).unwrap();
-        raw.execute_batch("PRAGMA foreign_keys=OFF; DROP TABLE messages;").unwrap();
+        raw.execute_batch("PRAGMA foreign_keys=OFF; DROP TABLE messages;")
+            .unwrap();
         drop(raw);
         let err = reader.read_transcript("s", None);
-        assert!(err.is_err(), "load_session DB 오류는 Err로 전파(세션 없음과 구분): {err:?}");
+        assert!(
+            err.is_err(),
+            "load_session DB 오류는 Err로 전파(세션 없음과 구분): {err:?}"
+        );
 
         let _ = std::fs::remove_file(&path);
     }

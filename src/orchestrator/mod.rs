@@ -1,10 +1,10 @@
 // 사람 주도 토론 오케스트레이터의 경계. 역할·프롬프트·라운드 구동.
-pub mod roles;
 pub mod prompt;
+pub mod roles;
 
 use std::collections::HashMap;
 
-use crate::orchestrator::prompt::{build_round_prompt, PromptContext};
+use crate::orchestrator::prompt::{PromptContext, build_round_prompt};
 use crate::runner::{RunError, RunInput, RunMode, Runner};
 
 /// 컨텍스트 전달 방식. Push(기본)=지금처럼 프롬프트에 직접 주입, Pull=포인터만 주고 에이전트가 도구로 당겨옴.
@@ -148,7 +148,9 @@ pub struct MapRegistry {
 
 impl MapRegistry {
     pub fn new() -> Self {
-        Self { runners: HashMap::new() }
+        Self {
+            runners: HashMap::new(),
+        }
     }
     pub fn insert(&mut self, engine: &str, runner: Box<dyn Runner>) {
         self.runners.insert(engine.to_string(), runner);
@@ -197,15 +199,24 @@ pub fn run_round(
     for part in participants {
         // Pull 모드이고 MCP 도구 보유 좌석이면 포인터 프롬프트, 아니면 Push(기존 동일).
         let pull = input.ctx_mode == ContextMode::Pull && is_mcp_capable(&part.engine);
-        let prompt = build_round_prompt(part, topic, PromptContext {
-            prior: input.prior,
-            same_round: &same_round,
-            retrieved: input.retrieved,
-            carried: input.carried,
-            pull,
-            transcript_len: input.transcript_len,
-        });
-        eprintln!("[ctx] seat={} mode={} prompt_chars={}", part.engine, if pull { "pull" } else { "push" }, prompt.chars().count());
+        let prompt = build_round_prompt(
+            part,
+            topic,
+            PromptContext {
+                prior: input.prior,
+                same_round: &same_round,
+                retrieved: input.retrieved,
+                carried: input.carried,
+                pull,
+                transcript_len: input.transcript_len,
+            },
+        );
+        eprintln!(
+            "[ctx] seat={} mode={} prompt_chars={}",
+            part.engine,
+            if pull { "pull" } else { "push" },
+            prompt.chars().count()
+        );
         let runner = registry
             .get(&part.engine)
             .ok_or_else(|| RunError::Spawn(format!("엔진 러너 없음: {}", part.engine)))?;

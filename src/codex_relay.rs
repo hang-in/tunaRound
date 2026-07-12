@@ -82,7 +82,10 @@ pub async fn run(opts: RelayOpts) -> Result<(), String> {
 
     loop {
         // 자기 등록 = heartbeat 겸용(register가 last_heartbeat를 now로 덮는다. 스캐너 답습).
-        if let Err(e) = client.register_agent(&self_id, Some(&self_tags), Some(&display)).await {
+        if let Err(e) = client
+            .register_agent(&self_id, Some(&self_tags), Some(&display))
+            .await
+        {
             eprintln!("[codex-relay] 자기 등록 실패(무시): {e}");
         }
 
@@ -138,7 +141,10 @@ pub async fn run(opts: RelayOpts) -> Result<(), String> {
                 )
                 .await
                 {
-                    Ok(_) => eprintln!("[codex-relay] task {} 주입 턴 종료(complete는 codex 몫)", t.id),
+                    Ok(_) => eprintln!(
+                        "[codex-relay] task {} 주입 턴 종료(complete는 codex 몫)",
+                        t.id
+                    ),
                     Err(e) => {
                         eprintln!("[codex-relay] task {} 주입 실패 -> fail_task: {e}", t.id);
                         if let Err(fe) = client
@@ -154,7 +160,11 @@ pub async fn run(opts: RelayOpts) -> Result<(), String> {
 
         if opts.once {
             // 테스트·수동 실행 모드: 폴 실패가 있었으면 성공으로 위장하지 않는다(봇리뷰).
-            return if reconnect { Err("codex-relay: --once 패스 중 poll 실패".to_string()) } else { Ok(()) };
+            return if reconnect {
+                Err("codex-relay: --once 패스 중 poll 실패".to_string())
+            } else {
+                Ok(())
+            };
         }
         if reconnect
             && let Ok(c) = McpHttpClient::connect(opts.core.clone(), opts.token.clone()).await
@@ -175,7 +185,10 @@ mod tests {
         let tags = relay_tags("mac");
         assert!(tags.contains("machine=mac"), "머신 태그 포함: {tags}");
         assert!(tags.contains("role=infra"), "infra 역할 포함: {tags}");
-        assert!(tags.contains("purpose=codex-inject"), "도트·GoalForm 키 유지: {tags}");
+        assert!(
+            tags.contains("purpose=codex-inject"),
+            "도트·GoalForm 키 유지: {tags}"
+        );
     }
 
     #[test]
@@ -185,7 +198,10 @@ mod tests {
         assert!(text.contains("1+1은?"), "본문 포함: {text}");
         assert!(text.contains("complete_task"), "마감 지시 포함: {text}");
         assert!(text.contains("fail_task"), "실패 경로 지시 포함: {text}");
-        assert!(!text.contains("claim_task로 가져와"), "claim 절차 지시는 없어야(대리 claim): {text}");
+        assert!(
+            !text.contains("claim_task로 가져와"),
+            "claim 절차 지시는 없어야(대리 claim): {text}"
+        );
     }
 
     #[test]
@@ -193,6 +209,9 @@ mod tests {
         // §5-6 고정 계약: 주입 텍스트는 반드시 RELAY_INJECT_PREFIX로 시작한다(P5 스캐너 필터가 이걸로
         // relay 주입을 사람 입력에서 배제). 이 테스트가 깨지면 P5 필터도 함께 갱신해야 한다.
         let text = build_inject_text("abc123", "본문");
-        assert!(text.starts_with(RELAY_INJECT_PREFIX), "prefix 계약 위반: {text}");
+        assert!(
+            text.starts_with(RELAY_INJECT_PREFIX),
+            "prefix 계약 위반: {text}"
+        );
     }
 }

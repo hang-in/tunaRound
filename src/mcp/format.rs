@@ -2,7 +2,9 @@
 
 use super::*;
 use crate::store::a2a::{Artifact, Message, Part};
-use crate::store::agents::{format_ambiguous_candidates, validate_send_target, AgentEntry, SendTarget};
+use crate::store::agents::{
+    AgentEntry, SendTarget, format_ambiguous_candidates, validate_send_target,
+};
 
 /// working이 이 초과 갱신정지면 stuck? 표시(claim 후 사망 의심).
 pub(crate) const STUCK_WORKING_SECS: i64 = 15 * 60;
@@ -60,7 +62,11 @@ pub(crate) fn poll_tasks_text(store: &SqliteStore, agent: &str) -> Result<String
 
 /// task 목록을 `[id] from=... state=... msg=...` 줄들로 조립하는 순수 함수(SQLite 없이 테스트 가능).
 /// now는 health_annotation(표시 전용 stuck?/no-consumer? 주석)에 쓰인다.
-pub(crate) fn format_open_tasks(agent: &str, tasks: &[crate::store::a2a::Task], now: &str) -> String {
+pub(crate) fn format_open_tasks(
+    agent: &str,
+    tasks: &[crate::store::a2a::Task],
+    now: &str,
+) -> String {
     if tasks.is_empty() {
         return format!("{agent} 앞 열린 task 없음");
     }
@@ -122,8 +128,14 @@ pub(crate) fn complete_task_text(
         return Err(format!("task 없음: task_id={task_id}"));
     }
     let artifact_id = store.new_task_id()?;
-    let artifacts =
-        vec![Artifact { artifact_id, name: None, parts: vec![Part { text: Some(result.to_string()), ..Default::default() }] }];
+    let artifacts = vec![Artifact {
+        artifact_id,
+        name: None,
+        parts: vec![Part {
+            text: Some(result.to_string()),
+            ..Default::default()
+        }],
+    }];
     store.try_complete(task_id, &artifacts, agent)?;
     Ok(format!("완료됨: task_id={task_id} state=completed"))
 }
@@ -145,7 +157,10 @@ pub(crate) fn fail_task_text(
     let message = Message {
         message_id,
         role: "agent".to_string(),
-        parts: vec![Part { text: Some(reason.to_string()), ..Default::default() }],
+        parts: vec![Part {
+            text: Some(reason.to_string()),
+            ..Default::default()
+        }],
         task_id: None,
         context_id: None,
     };
@@ -195,12 +210,19 @@ pub(crate) fn send_task_text(
     let message = Message {
         message_id,
         role: "user".to_string(),
-        parts: vec![Part { text: Some(text.to_string()), ..Default::default() }],
+        parts: vec![Part {
+            text: Some(text.to_string()),
+            ..Default::default()
+        }],
         task_id: None,
         context_id,
     };
     let task = store.create_task_from_message(from_agent, to_agent, message)?;
-    Ok(format!("생성됨: task_id={} state={}", task.id, task.state.as_str()))
+    Ok(format!(
+        "생성됨: task_id={} state={}",
+        task.id,
+        task.state.as_str()
+    ))
 }
 
 /// AgentEntry 목록을 사람이 읽는 텍스트로 조립한다(비면 "online 에이전트 없음").
@@ -218,12 +240,14 @@ pub fn format_agents(agents: &[AgentEntry]) -> String {
                 .map(|(k, v)| format!("{k}={v}"))
                 .collect::<Vec<_>>()
                 .join(", ");
-            format!("[{}] {} tags: {} (heartbeat={})", a.uuid, name, tags, a.last_heartbeat)
+            format!(
+                "[{}] {} tags: {} (heartbeat={})",
+                a.uuid, name, tags, a.last_heartbeat
+            )
         })
         .collect::<Vec<_>>()
         .join("\n")
 }
-
 
 /// send_task 셀렉터 인지 버전. Agent면 concrete 발송(send_task_text 위임), Selector면 resolve 후
 /// 0개=no-consumer 안내(생성 안 함), 1개=그 uuid로 발송, 2개+=후보 목록(생성 안 함).
@@ -271,19 +295,31 @@ pub(crate) fn get_task_text(store: &SqliteStore, task_id: &str) -> Result<String
 /// (세션20 실측). now는 health_annotation(표시 전용 stuck?/no-consumer? 주석)에 쓰인다.
 /// runner가 기록돼 있으면(v8, claim한 워커의 러너 종류) ` runner=<x>`를 덧붙인다. 표시 전용, 없으면 생략.
 pub(crate) fn format_task_status(task: &crate::store::a2a::Task, now: &str) -> String {
-    let mut out = format!("[{}] state={}{}", task.id, task.state.as_str(), health_annotation(task, now));
+    let mut out = format!(
+        "[{}] state={}{}",
+        task.id,
+        task.state.as_str(),
+        health_annotation(task, now)
+    );
     if let Some(runner) = task.runner.as_deref() {
         out.push_str(&format!(" runner={runner}"));
     }
     if task.state == TaskState::Completed {
-        let texts: Vec<&str> =
-            task.artifacts.iter().flat_map(|a| a.parts.iter()).filter_map(|p| p.text.as_deref()).collect();
+        let texts: Vec<&str> = task
+            .artifacts
+            .iter()
+            .flat_map(|a| a.parts.iter())
+            .filter_map(|p| p.text.as_deref())
+            .collect();
         if !texts.is_empty() {
             out.push('\n');
             out.push('\n');
             out.push_str(&texts.join("\n\n"));
         }
-    } else if matches!(task.state, TaskState::Submitted | TaskState::Working | TaskState::InputRequired) {
+    } else if matches!(
+        task.state,
+        TaskState::Submitted | TaskState::Working | TaskState::InputRequired
+    ) {
         // 텍스트가 하나도 없는 status_message는 건너뛰고 history로 폴백한다(봇리뷰: Some이지만
         // parts.text 전부 None이면 본문이 있는 history[0]가 막히던 것).
         let texts: Vec<&str> = task
@@ -358,12 +394,20 @@ mod tests {
 
     #[test]
     fn format_open_tasks_lists_task_id_from_agent_state_and_message() {
-        let mut task =
-            crate::store::a2a::Task::new("t1", None, "win-claude", "mac-claude", "2026-07-02 09:00:00");
+        let mut task = crate::store::a2a::Task::new(
+            "t1",
+            None,
+            "win-claude",
+            "mac-claude",
+            "2026-07-02 09:00:00",
+        );
         task.status_message = Some(crate::store::a2a::Message {
             message_id: "m1".into(),
             role: "user".into(),
-            parts: vec![Part { text: Some("리뷰 부탁".into()), ..Default::default() }],
+            parts: vec![Part {
+                text: Some("리뷰 부탁".into()),
+                ..Default::default()
+            }],
             task_id: Some("t1".into()),
             context_id: None,
         });
@@ -383,20 +427,38 @@ mod tests {
         task.status_message = Some(crate::store::a2a::Message {
             message_id: "m1".into(),
             role: "user".into(),
-            parts: vec![Part { text: Some("31*13을 계산해줘".into()), ..Default::default() }],
+            parts: vec![Part {
+                text: Some("31*13을 계산해줘".into()),
+                ..Default::default()
+            }],
             task_id: Some("t9".into()),
             context_id: None,
         });
-        for state in [TaskState::Submitted, TaskState::Working, TaskState::InputRequired] {
+        for state in [
+            TaskState::Submitted,
+            TaskState::Working,
+            TaskState::InputRequired,
+        ] {
             task.state = state;
             let text = format_task_status(&task, "2026-07-11 09:00:01");
-            assert!(text.contains("[요청]"), "본문 라벨 누락({:?}): {text}", task.state);
-            assert!(text.contains("31*13"), "본문 누락({:?}): {text}", task.state);
+            assert!(
+                text.contains("[요청]"),
+                "본문 라벨 누락({:?}): {text}",
+                task.state
+            );
+            assert!(
+                text.contains("31*13"),
+                "본문 누락({:?}): {text}",
+                task.state
+            );
         }
         // completed는 기존대로 artifact만(요청 본문 미표시).
         task.state = TaskState::Completed;
         let text = format_task_status(&task, "2026-07-11 09:00:01");
-        assert!(!text.contains("[요청]"), "completed에 본문이 붙으면 안 됨: {text}");
+        assert!(
+            !text.contains("[요청]"),
+            "completed에 본문이 붙으면 안 됨: {text}"
+        );
     }
 
     #[test]
@@ -411,7 +473,10 @@ mod tests {
         let text = poll_tasks_text(&store, "mac").unwrap();
         assert!(text.contains("t1"), "열린 task 누락: {text}");
         assert!(!text.contains("t2"), "completed가 섞여 들어옴: {text}");
-        assert!(!text.contains("t3"), "다른 agent 앞 task가 섞여 들어옴: {text}");
+        assert!(
+            !text.contains("t3"),
+            "다른 agent 앞 task가 섞여 들어옴: {text}"
+        );
     }
 
     #[test]
@@ -425,7 +490,10 @@ mod tests {
         store.test_force_lease_expired("t1");
 
         let text = poll_tasks_text(&store, "mac").unwrap();
-        assert!(text.contains("state=submitted"), "sweep 후 submitted로 복귀 안 됨: {text}");
+        assert!(
+            text.contains("state=submitted"),
+            "sweep 후 submitted로 복귀 안 됨: {text}"
+        );
     }
 
     #[test]
@@ -452,20 +520,32 @@ mod tests {
         let text = cancel_task_text(&store, "t1", Some("오발송")).unwrap();
         assert!(text.contains("state=canceled"), "응답 불일치: {text}");
         assert!(text.contains("오발송"), "사유 미표시: {text}");
-        assert_eq!(store.get_task("t1").unwrap().unwrap().state, TaskState::Canceled);
+        assert_eq!(
+            store.get_task("t1").unwrap().unwrap().state,
+            TaskState::Canceled
+        );
     }
 
     #[test]
     fn cancel_task_text_blocks_terminal_and_missing() {
         let store = SqliteStore::open_memory().unwrap();
         // 없는 task는 Err.
-        assert!(cancel_task_text(&store, "nope", None).is_err(), "없는 task는 Err");
+        assert!(
+            cancel_task_text(&store, "nope", None).is_err(),
+            "없는 task는 Err"
+        );
         // 이미 completed(종료)면 canceled로 덮어쓰지 못한다(R2 - 종료 상태 보호).
         seed_task(&store, "t1", "win", "mac", "2026-07-02 09:00:00");
         claim_task_text(&store, "t1", None, None).unwrap();
         complete_task_text(&store, "t1", "결과", None).unwrap();
-        assert!(cancel_task_text(&store, "t1", None).is_err(), "completed는 취소 불가(R2)");
-        assert_eq!(store.get_task("t1").unwrap().unwrap().state, TaskState::Completed);
+        assert!(
+            cancel_task_text(&store, "t1", None).is_err(),
+            "completed는 취소 불가(R2)"
+        );
+        assert_eq!(
+            store.get_task("t1").unwrap().unwrap().state,
+            TaskState::Completed
+        );
     }
 
     #[test]
@@ -473,7 +553,10 @@ mod tests {
         let store = SqliteStore::open_memory().unwrap();
         seed_task(&store, "t1", "win", "mac", "2026-07-02 09:00:00");
         // claim 전에는 working이 아니라 연장 불가.
-        assert!(extend_lease_text(&store, "t1", "worker-a").is_err(), "claim 전 연장 불가");
+        assert!(
+            extend_lease_text(&store, "t1", "worker-a").is_err(),
+            "claim 전 연장 불가"
+        );
         claim_task_text(&store, "t1", Some("worker-a"), None).unwrap();
         let text = extend_lease_text(&store, "t1", "worker-a").unwrap();
         assert!(text.contains("lease 연장됨"), "응답 불일치: {text}");
@@ -490,7 +573,10 @@ mod tests {
         let reloaded = store.get_task("t1").unwrap().unwrap();
         assert_eq!(reloaded.state, TaskState::Completed);
         assert_eq!(reloaded.artifacts.len(), 1);
-        assert_eq!(reloaded.artifacts[0].parts[0].text.as_deref(), Some("작업 결과"));
+        assert_eq!(
+            reloaded.artifacts[0].parts[0].text.as_deref(),
+            Some("작업 결과")
+        );
     }
 
     #[test]
@@ -510,7 +596,10 @@ mod tests {
         assert_eq!(reloaded.state, TaskState::Failed);
         // 사유는 상태 메시지로 남아 dispatcher가 읽을 수 있다.
         assert_eq!(
-            reloaded.status_message.and_then(|m| m.parts[0].text.clone()).as_deref(),
+            reloaded
+                .status_message
+                .and_then(|m| m.parts[0].text.clone())
+                .as_deref(),
             Some("러너 타임아웃")
         );
     }
@@ -526,13 +615,20 @@ mod tests {
 
     #[test]
     fn health_annotation_working_stuck_past_threshold() {
-        let mut task = crate::store::a2a::Task::new("t1", None, "win", "mac", "2026-07-02 09:00:00");
+        let mut task =
+            crate::store::a2a::Task::new("t1", None, "win", "mac", "2026-07-02 09:00:00");
         task.state = TaskState::Working;
         task.updated_at = "2026-07-02 09:00:00".into(); // claim 시각.
         // STUCK_WORKING_SECS(15분) 초과: 09:00:00 -> 09:20:00 = 20분.
         let annotation = health_annotation(&task, "2026-07-02 09:20:00");
-        assert!(annotation.contains("stuck?"), "stuck 표시 누락: {annotation}");
-        assert!(annotation.contains("20m"), "경과분 표시 불일치: {annotation}");
+        assert!(
+            annotation.contains("stuck?"),
+            "stuck 표시 누락: {annotation}"
+        );
+        assert!(
+            annotation.contains("20m"),
+            "경과분 표시 불일치: {annotation}"
+        );
     }
 
     #[test]
@@ -540,8 +636,14 @@ mod tests {
         let task = crate::store::a2a::Task::new("t1", None, "win", "mac", "2026-07-02 09:00:00");
         // NO_CONSUMER_SUBMITTED_SECS(5분) 초과: 09:00:00 -> 09:10:00 = 10분.
         let annotation = health_annotation(&task, "2026-07-02 09:10:00");
-        assert!(annotation.contains("no-consumer?"), "no-consumer 표시 누락: {annotation}");
-        assert!(annotation.contains("10m"), "경과분 표시 불일치: {annotation}");
+        assert!(
+            annotation.contains("no-consumer?"),
+            "no-consumer 표시 누락: {annotation}"
+        );
+        assert!(
+            annotation.contains("10m"),
+            "경과분 표시 불일치: {annotation}"
+        );
     }
 
     #[test]
@@ -554,7 +656,8 @@ mod tests {
 
     #[test]
     fn health_annotation_terminal_state_is_always_empty() {
-        let mut task = crate::store::a2a::Task::new("t1", None, "win", "mac", "2026-07-02 09:00:00");
+        let mut task =
+            crate::store::a2a::Task::new("t1", None, "win", "mac", "2026-07-02 09:00:00");
         task.state = TaskState::Completed;
         task.updated_at = "2026-07-02 09:00:00".into();
         // 아주 오래 지났어도 종료 상태(completed)는 주석을 붙이지 않는다.
@@ -565,13 +668,15 @@ mod tests {
     #[test]
     fn classify_task_health_returns_variants_for_health_panel_counts() {
         // 헬스 패널(/dashboard/health)이 no-consumer/stuck 집계에 의존하는 enum 계약을 잠근다.
-        let submitted = crate::store::a2a::Task::new("t1", None, "win", "mac", "2026-07-02 09:00:00");
+        let submitted =
+            crate::store::a2a::Task::new("t1", None, "win", "mac", "2026-07-02 09:00:00");
         assert!(
             matches!(classify_task_health(&submitted, "2026-07-02 09:10:00"), TaskHealth::NoConsumer(secs) if secs == 600),
             "submitted 10분 = NoConsumer(600) 여야 함",
         );
 
-        let mut working = crate::store::a2a::Task::new("t2", None, "win", "mac", "2026-07-02 09:00:00");
+        let mut working =
+            crate::store::a2a::Task::new("t2", None, "win", "mac", "2026-07-02 09:00:00");
         working.state = TaskState::Working;
         working.updated_at = "2026-07-02 09:00:00".into();
         assert!(
@@ -580,7 +685,10 @@ mod tests {
         );
 
         // 임계 이내는 Ok(집계 제외).
-        assert!(matches!(classify_task_health(&submitted, "2026-07-02 09:01:00"), TaskHealth::Ok));
+        assert!(matches!(
+            classify_task_health(&submitted, "2026-07-02 09:01:00"),
+            TaskHealth::Ok
+        ));
     }
 
     // --- tasks 툴(list_all_tasks_text): 순수 함수 단위테스트 ---
@@ -603,7 +711,10 @@ mod tests {
         seed_task(&store, "t1", "win", "mac", "2026-07-02 09:00:00");
         // now를 미래로 둬 NO_CONSUMER_SUBMITTED_SECS(5분)을 넘긴다.
         let text = list_all_tasks_text(&store, "2026-07-02 09:30:00").unwrap();
-        assert!(text.contains("no-consumer?"), "no-consumer 주석 누락: {text}");
+        assert!(
+            text.contains("no-consumer?"),
+            "no-consumer 주석 누락: {text}"
+        );
     }
 
     #[test]
@@ -618,8 +729,14 @@ mod tests {
     #[test]
     fn send_task_text_creates_submitted_task_and_preserves_text() {
         let store = SqliteStore::open_memory().unwrap();
-        let text =
-            send_task_text(&store, "win-claude", "mac-claude", "리뷰 부탁", Some("ctx1".into())).unwrap();
+        let text = send_task_text(
+            &store,
+            "win-claude",
+            "mac-claude",
+            "리뷰 부탁",
+            Some("ctx1".into()),
+        )
+        .unwrap();
         assert!(text.contains("state=submitted"), "응답 불일치: {text}");
 
         // store에 실제로 submitted task가 생겼는지, 메시지 본문이 보존됐는지 확인(round-trip).
@@ -629,7 +746,10 @@ mod tests {
         assert_eq!(task.from_agent, "win-claude");
         assert_eq!(task.context_id.as_deref(), Some("ctx1"));
         assert_eq!(
-            task.status_message.as_ref().and_then(|m| m.parts.first()).and_then(|p| p.text.as_deref()),
+            task.status_message
+                .as_ref()
+                .and_then(|m| m.parts.first())
+                .and_then(|p| p.text.as_deref()),
             Some("리뷰 부탁")
         );
     }
@@ -667,14 +787,26 @@ mod tests {
         assert!(text.contains("2026-07-04 10:00:00"));
     }
 
-
     #[test]
     fn send_task_routed_selector_zero_matches_is_no_consumer_and_no_task_created() {
         let store = SqliteStore::open_memory().unwrap();
-        let text = send_task_routed(&store, "win-claude", None, Some("runner=claude"), "부탁", None)
-            .unwrap();
-        assert!(text.contains("no-consumer") || text.contains("대상 없음"), "안내 불일치: {text}");
-        assert!(store.list_all_open_tasks().unwrap().is_empty(), "task가 생성되면 안 됨");
+        let text = send_task_routed(
+            &store,
+            "win-claude",
+            None,
+            Some("runner=claude"),
+            "부탁",
+            None,
+        )
+        .unwrap();
+        assert!(
+            text.contains("no-consumer") || text.contains("대상 없음"),
+            "안내 불일치: {text}"
+        );
+        assert!(
+            store.list_all_open_tasks().unwrap().is_empty(),
+            "task가 생성되면 안 됨"
+        );
     }
 
     #[test]
@@ -685,8 +817,15 @@ mod tests {
         tags.insert("runner".to_string(), "claude".to_string());
         store.register_agent("uuid-only", tags, None, &now);
 
-        let text =
-            send_task_routed(&store, "win-claude", None, Some("runner=claude"), "부탁", None).unwrap();
+        let text = send_task_routed(
+            &store,
+            "win-claude",
+            None,
+            Some("runner=claude"),
+            "부탁",
+            None,
+        )
+        .unwrap();
         assert!(text.contains("state=submitted"), "응답 불일치: {text}");
 
         let tasks = store.list_open_tasks_for("uuid-only").unwrap();
@@ -702,11 +841,21 @@ mod tests {
         store.register_agent("uuid-a", tags.clone(), None, &now);
         store.register_agent("uuid-b", tags, None, &now);
 
-        let text =
-            send_task_routed(&store, "win-claude", None, Some("runner=claude"), "부탁", None).unwrap();
+        let text = send_task_routed(
+            &store,
+            "win-claude",
+            None,
+            Some("runner=claude"),
+            "부탁",
+            None,
+        )
+        .unwrap();
         assert!(text.contains("uuid-a"), "후보 목록 불일치: {text}");
         assert!(text.contains("uuid-b"), "후보 목록 불일치: {text}");
-        assert!(store.list_all_open_tasks().unwrap().is_empty(), "task가 생성되면 안 됨");
+        assert!(
+            store.list_all_open_tasks().unwrap().is_empty(),
+            "task가 생성되면 안 됨"
+        );
     }
 
     #[test]
@@ -726,6 +875,9 @@ mod tests {
         complete_task_text(&store, "t1", "작업 결과 요약", None).unwrap();
         let text = get_task_text(&store, "t1").unwrap();
         assert!(text.contains("state=completed"), "state 누락: {text}");
-        assert!(text.contains("작업 결과 요약"), "artifact 텍스트 누락: {text}");
+        assert!(
+            text.contains("작업 결과 요약"),
+            "artifact 텍스트 누락: {text}"
+        );
     }
 }

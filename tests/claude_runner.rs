@@ -25,7 +25,11 @@ fn fixture_bin() -> String {
 #[test]
 fn claude_runner_spawns_and_parses_fixture() {
     let runner = ClaudeRunner::with_bin(&fixture_bin());
-    let input = RunInput { prompt: "이 설계 어떤가요?".into(), mode: RunMode::ReadOnly, ..Default::default() };
+    let input = RunInput {
+        prompt: "이 설계 어떤가요?".into(),
+        mode: RunMode::ReadOnly,
+        ..Default::default()
+    };
     let out = runner.run(&input).expect("run ok");
     assert_eq!(out.content, "fixture 결론");
     assert_eq!(out.input_tokens, 11);

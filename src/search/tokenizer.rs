@@ -3,10 +3,10 @@ use super::tokenize_fallback;
 use std::collections::HashSet;
 
 use lindera::{
-    dictionary::{load_embedded_dictionary, DictionaryKind},
+    dictionary::{DictionaryKind, load_embedded_dictionary},
     mode::Mode,
     segmenter::Segmenter,
-    token_filter::{korean_keep_tags::KoreanKeepTagsTokenFilter, BoxTokenFilter},
+    token_filter::{BoxTokenFilter, korean_keep_tags::KoreanKeepTagsTokenFilter},
     tokenizer::Tokenizer as LinderaInner,
 };
 
@@ -122,8 +122,7 @@ mod kiwi_impl {
 
     impl KiwiTokenizer {
         pub fn new() -> Result<Self, String> {
-            let kiwi = kiwi_rs::Kiwi::init()
-                .map_err(|e| format!("kiwi-rs init failed: {e}"))?;
+            let kiwi = kiwi_rs::Kiwi::init().map_err(|e| format!("kiwi-rs init failed: {e}"))?;
             Ok(Self {
                 kiwi: std::sync::Mutex::new(KiwiWrapper(kiwi)),
             })
@@ -279,7 +278,10 @@ mod tests {
     fn fts_index_keeps_loanword_in_context() {
         let tok = LinderaKoTokenizer::new().unwrap();
         let idx = tok.fts_index("벡터 임베딩을 쓴다");
-        assert!(idx.contains("임베딩을") || idx.contains("임베딩"), "외래어 보존 실패: {idx}");
+        assert!(
+            idx.contains("임베딩을") || idx.contains("임베딩"),
+            "외래어 보존 실패: {idx}"
+        );
     }
 
     #[test]

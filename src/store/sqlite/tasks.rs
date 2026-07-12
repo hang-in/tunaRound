@@ -1,7 +1,7 @@
 // A2A task 큐: 위임·claim·lease 만료 회수·상태 전이.
 
 use super::*;
-use crate::store::a2a::{append_history_json, Artifact, Message, Task, TaskRow, TaskState};
+use crate::store::a2a::{Artifact, Message, Task, TaskRow, TaskState, append_history_json};
 
 /// list_tasks_replay의 상한 방향(v2-45 P3). 잘림 의미가 소비자마다 달라 방향을 명시한다:
 /// 피드 스냅샷(?replay=N)은 "최근 N건" 창 뷰이고, watch-results catch-up(?since=TS)은
@@ -213,14 +213,19 @@ impl SqliteStore {
             ReplayLimit::All => " ORDER BY updated_at ASC, rowid ASC".to_string(),
         };
         let sql = format!("SELECT {TASK_COLUMNS} FROM tasks{where_sql}{order_sql}");
-        let mut stmt = self.conn.prepare(&sql).map_err(|e| format!("sqlite: {e}"))?;
+        let mut stmt = self
+            .conn
+            .prepare(&sql)
+            .map_err(|e| format!("sqlite: {e}"))?;
         let rows: Vec<TaskRow> = stmt
             .query_map(rusqlite::params_from_iter(params.iter()), task_row_from_sql)
             .map_err(|e| format!("sqlite: {e}"))?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| format!("sqlite: {e}"))?;
-        let mut tasks: Vec<Task> =
-            rows.into_iter().map(TaskRow::into_task).collect::<Result<Vec<_>, _>>()?;
+        let mut tasks: Vec<Task> = rows
+            .into_iter()
+            .map(TaskRow::into_task)
+            .collect::<Result<Vec<_>, _>>()?;
         if matches!(limit, ReplayLimit::Newest(_)) {
             tasks.reverse();
         }
@@ -231,7 +236,10 @@ impl SqliteStore {
     /// 대상이므로, 색인 성공 시 이 스탬프로 제외된다. best-effort 호출부라 존재하지 않는 task_id도 Ok(0행).
     pub fn mark_task_indexed(&self, task_id: &str) -> Result<(), String> {
         self.conn
-            .execute("UPDATE tasks SET indexed_at = datetime('now') WHERE task_id = ?1", [task_id])
+            .execute(
+                "UPDATE tasks SET indexed_at = datetime('now') WHERE task_id = ?1",
+                [task_id],
+            )
             .map(|_| ())
             .map_err(|e| format!("sqlite: {e}"))
     }
@@ -276,13 +284,18 @@ impl SqliteStore {
              WHERE state IN ('completed','failed') AND indexed_at IS NULL \
              ORDER BY updated_at ASC, rowid ASC"
         );
-        let mut stmt = self.conn.prepare(&sql).map_err(|e| format!("sqlite: {e}"))?;
+        let mut stmt = self
+            .conn
+            .prepare(&sql)
+            .map_err(|e| format!("sqlite: {e}"))?;
         let rows: Vec<TaskRow> = stmt
             .query_map([], task_row_from_sql)
             .map_err(|e| format!("sqlite: {e}"))?
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| format!("sqlite: {e}"))?;
-        rows.into_iter().map(TaskRow::into_task).collect::<Result<Vec<_>, _>>()
+        rows.into_iter()
+            .map(TaskRow::into_task)
+            .collect::<Result<Vec<_>, _>>()
     }
 
     /// state와 동반 상태 메시지를 원자적으로 갱신한다(A2A TaskStatus 단위). status_message=None이면
@@ -312,8 +325,7 @@ impl SqliteStore {
 
     /// task를 completed로 마감하고 산출물을 세팅한다.
     pub fn complete_task(&self, task_id: &str, artifacts: &[Artifact]) -> Result<(), String> {
-        let artifacts_json =
-            serde_json::to_string(artifacts).map_err(|e| format!("json: {e}"))?;
+        let artifacts_json = serde_json::to_string(artifacts).map_err(|e| format!("json: {e}"))?;
         self.conn
             .execute(
                 "UPDATE tasks SET state=?2, artifacts_json=?3, updated_at=datetime('now') \
@@ -361,7 +373,9 @@ impl SqliteStore {
             )
             .map_err(|e| format!("sqlite: {e}"))?;
         if affected != 1 {
-            return Err(format!("전이 불가: task_id={task_id} (현재 상태가 대상 아님)"));
+            return Err(format!(
+                "전이 불가: task_id={task_id} (현재 상태가 대상 아님)"
+            ));
         }
         if let Some(task) = self.get_task(task_id)? {
             self.emit_task_event(TaskEvent::Status(task));
@@ -441,19 +455,25 @@ impl SqliteStore {
         artifacts: &[Artifact],
         completer: Option<&str>,
     ) -> Result<(), String> {
-        let artifacts_json =
-            serde_json::to_string(artifacts).map_err(|e| format!("json: {e}"))?;
+        let artifacts_json = serde_json::to_string(artifacts).map_err(|e| format!("json: {e}"))?;
         let affected = self
             .conn
             .execute(
                 "UPDATE tasks SET state=?2, artifacts_json=?3, updated_at=datetime('now') \
                  WHERE task_id=?1 AND state='working' \
                  AND (?4 IS NULL OR claimed_by IS NULL OR claimed_by = ?4)",
-                rusqlite::params![task_id, TaskState::Completed.as_str(), artifacts_json, completer],
+                rusqlite::params![
+                    task_id,
+                    TaskState::Completed.as_str(),
+                    artifacts_json,
+                    completer
+                ],
             )
             .map_err(|e| format!("sqlite: {e}"))?;
         if affected != 1 {
-            return Err(format!("전이 불가: task_id={task_id} (현재 상태가 대상 아님)"));
+            return Err(format!(
+                "전이 불가: task_id={task_id} (현재 상태가 대상 아님)"
+            ));
         }
         if let Some(task) = self.get_task(task_id)? {
             self.emit_task_event(TaskEvent::Completed(task));
@@ -488,7 +508,9 @@ impl SqliteStore {
             )
             .map_err(|e| format!("sqlite: {e}"))?;
         if affected != 1 {
-            return Err(format!("전이 불가: task_id={task_id} (현재 상태가 대상 아님)"));
+            return Err(format!(
+                "전이 불가: task_id={task_id} (현재 상태가 대상 아님)"
+            ));
         }
         if let Some(task) = self.get_task(task_id)? {
             self.emit_task_event(TaskEvent::Status(task));
@@ -509,7 +531,9 @@ impl SqliteStore {
             )
             .map_err(|e| format!("sqlite: {e}"))?;
         if affected != 1 {
-            return Err(format!("전이 불가: task_id={task_id} (현재 상태가 대상 아님)"));
+            return Err(format!(
+                "전이 불가: task_id={task_id} (현재 상태가 대상 아님)"
+            ));
         }
         if let Some(task) = self.get_task(task_id)? {
             self.emit_task_event(TaskEvent::Status(task));
@@ -582,7 +606,10 @@ mod tests {
             Message {
                 message_id: id.into(),
                 role: "user".into(),
-                parts: vec![Part { text: Some("내용".into()), ..Default::default() }],
+                parts: vec![Part {
+                    text: Some("내용".into()),
+                    ..Default::default()
+                }],
                 task_id: Some("t1".into()),
                 context_id: None,
             }
@@ -594,7 +621,10 @@ mod tests {
             let ts = db.now().unwrap();
             // "YYYY-MM-DD HH:MM:SS" 형식(datetime('now') 기본 포맷). 정확한 파싱보다 형태만 가드.
             assert_eq!(ts.len(), 19, "datetime('now') 포맷 불일치: {ts}");
-            assert!(ts.contains('-') && ts.contains(':'), "datetime('now') 포맷 불일치: {ts}");
+            assert!(
+                ts.contains('-') && ts.contains(':'),
+                "datetime('now') 포맷 불일치: {ts}"
+            );
         }
 
         #[test]
@@ -612,8 +642,13 @@ mod tests {
         fn create_get_roundtrip_preserves_all_fields() {
             let db = SqliteStore::open_memory().unwrap();
             let msg = sample_message("m1");
-            let mut task =
-                Task::new("t1", Some("ctx1".into()), "win-claude", "mac-claude", "2026-07-02 10:00:00");
+            let mut task = Task::new(
+                "t1",
+                Some("ctx1".into()),
+                "win-claude",
+                "mac-claude",
+                "2026-07-02 10:00:00",
+            );
             task.status_message = Some(msg.clone());
             task.history = vec![msg.clone()];
             db.create_task(&task).unwrap();
@@ -641,10 +676,17 @@ mod tests {
         fn create_task_from_message_creates_submitted_task_and_persists_message() {
             let db = SqliteStore::open_memory().unwrap();
             let msg = sample_message("m1");
-            let task = db.create_task_from_message("win-claude", "mac-claude", msg.clone()).unwrap();
+            let task = db
+                .create_task_from_message("win-claude", "mac-claude", msg.clone())
+                .unwrap();
 
             assert_eq!(task.state, TaskState::Submitted);
-            assert_eq!(task.id.len(), 32, "task_id는 randomblob(16) hex 32자여야 함: {}", task.id);
+            assert_eq!(
+                task.id.len(),
+                32,
+                "task_id는 randomblob(16) hex 32자여야 함: {}",
+                task.id
+            );
             assert_eq!(task.from_agent, "win-claude");
             assert_eq!(task.to_agent, "mac-claude");
             assert_eq!(task.status_message, Some(msg.clone()));
@@ -667,8 +709,12 @@ mod tests {
         #[test]
         fn create_task_from_message_two_calls_produce_distinct_task_ids() {
             let db = SqliteStore::open_memory().unwrap();
-            let t1 = db.create_task_from_message("a", "b", sample_message("m1")).unwrap();
-            let t2 = db.create_task_from_message("a", "b", sample_message("m2")).unwrap();
+            let t1 = db
+                .create_task_from_message("a", "b", sample_message("m1"))
+                .unwrap();
+            let t2 = db
+                .create_task_from_message("a", "b", sample_message("m2"))
+                .unwrap();
             assert_ne!(t1.id, t2.id);
         }
 
@@ -781,16 +827,28 @@ mod tests {
         fn list_tasks_replay_no_filters_returns_all_states_ascending() {
             let db = SqliteStore::open_memory().unwrap();
             seed_replay_tasks(&db);
-            let all = db.list_tasks_replay(None, None, &[], ReplayLimit::All).unwrap();
-            assert_eq!(ids(&all), vec!["t1", "t2", "t3", "t4"], "전 상태 + updated_at 오름차순");
+            let all = db
+                .list_tasks_replay(None, None, &[], ReplayLimit::All)
+                .unwrap();
+            assert_eq!(
+                ids(&all),
+                vec!["t1", "t2", "t3", "t4"],
+                "전 상태 + updated_at 오름차순"
+            );
         }
 
         #[test]
         fn list_tasks_replay_limit_takes_most_recent_and_returns_ascending() {
             let db = SqliteStore::open_memory().unwrap();
             seed_replay_tasks(&db);
-            let recent = db.list_tasks_replay(None, None, &[], ReplayLimit::Newest(2)).unwrap();
-            assert_eq!(ids(&recent), vec!["t3", "t4"], "최근 2건을 오름차순으로 반환(DESC LIMIT 후 뒤집기)");
+            let recent = db
+                .list_tasks_replay(None, None, &[], ReplayLimit::Newest(2))
+                .unwrap();
+            assert_eq!(
+                ids(&recent),
+                vec!["t3", "t4"],
+                "최근 2건을 오름차순으로 반환(DESC LIMIT 후 뒤집기)"
+            );
         }
 
         #[test]
@@ -798,8 +856,14 @@ mod tests {
             let db = SqliteStore::open_memory().unwrap();
             seed_replay_tasks(&db);
             // catch-up 연쇄(v2-45 P3): 잘려도 오래된 것부터 이어받아야 워터마크가 갭 없이 전진한다.
-            let oldest = db.list_tasks_replay(None, None, &[], ReplayLimit::Oldest(2)).unwrap();
-            assert_eq!(ids(&oldest), vec!["t1", "t2"], "오래된 것부터 2건(ASC LIMIT)");
+            let oldest = db
+                .list_tasks_replay(None, None, &[], ReplayLimit::Oldest(2))
+                .unwrap();
+            assert_eq!(
+                ids(&oldest),
+                vec!["t1", "t2"],
+                "오래된 것부터 2건(ASC LIMIT)"
+            );
         }
 
         #[test]
@@ -815,14 +879,32 @@ mod tests {
                 db.create_task(&t).unwrap();
             }
             let first = db
-                .list_tasks_replay(Some("win"), Some(ts), &["completed"], ReplayLimit::Oldest(3))
+                .list_tasks_replay(
+                    Some("win"),
+                    Some(ts),
+                    &["completed"],
+                    ReplayLimit::Oldest(3),
+                )
                 .unwrap();
-            assert_eq!(ids(&first), vec!["s0", "s1", "s2"], "동일 초에선 rowid 앞 N건만(상한=3)");
+            assert_eq!(
+                ids(&first),
+                vec!["s0", "s1", "s2"],
+                "동일 초에선 rowid 앞 N건만(상한=3)"
+            );
             // 워터마크가 그 초(=ts)로만 전진 가능 → since>= 재조회도 같은 prefix = s3·s4 도달 불가.
             let again = db
-                .list_tasks_replay(Some("win"), Some(ts), &["completed"], ReplayLimit::Oldest(3))
+                .list_tasks_replay(
+                    Some("win"),
+                    Some(ts),
+                    &["completed"],
+                    ReplayLimit::Oldest(3),
+                )
                 .unwrap();
-            assert_eq!(ids(&again), vec!["s0", "s1", "s2"], "since>= 재조회도 전진 불가(same prefix)");
+            assert_eq!(
+                ids(&again),
+                vec!["s0", "s1", "s2"],
+                "since>= 재조회도 전진 불가(same prefix)"
+            );
         }
 
         #[test]
@@ -832,7 +914,11 @@ mod tests {
             let from = db
                 .list_tasks_replay(None, Some("2026-07-11 09:01:00"), &[], ReplayLimit::All)
                 .unwrap();
-            assert_eq!(ids(&from), vec!["t2", "t3", "t4"], "since는 >= (경계 포함, seen dedup은 소비자 몫)");
+            assert_eq!(
+                ids(&from),
+                vec!["t2", "t3", "t4"],
+                "since는 >= (경계 포함, seen dedup은 소비자 몫)"
+            );
         }
 
         #[test]
@@ -841,9 +927,18 @@ mod tests {
             seed_replay_tasks(&db);
             // watch-results 의미론: completed/failed만 + dispatcher(from_agent) 필터.
             let terminal = db
-                .list_tasks_replay(Some("win"), None, &["completed", "failed"], ReplayLimit::All)
+                .list_tasks_replay(
+                    Some("win"),
+                    None,
+                    &["completed", "failed"],
+                    ReplayLimit::All,
+                )
                 .unwrap();
-            assert_eq!(ids(&terminal), vec!["t1", "t2"], "canceled(t3)·submitted(t4)·타 발신자 제외");
+            assert_eq!(
+                ids(&terminal),
+                vec!["t1", "t2"],
+                "canceled(t3)·submitted(t4)·타 발신자 제외"
+            );
         }
 
         #[test]
@@ -864,7 +959,11 @@ mod tests {
         #[test]
         fn list_tasks_replay_empty_db_is_empty() {
             let db = SqliteStore::open_memory().unwrap();
-            assert!(db.list_tasks_replay(None, None, &[], ReplayLimit::Newest(50)).unwrap().is_empty());
+            assert!(
+                db.list_tasks_replay(None, None, &[], ReplayLimit::Newest(50))
+                    .unwrap()
+                    .is_empty()
+            );
         }
 
         #[test]
@@ -882,11 +981,17 @@ mod tests {
             }
             // 미색인 종결 = completed·failed만(canceled·submitted 제외), updated_at 오름차순.
             let un = db.list_unindexed_terminal_tasks().unwrap();
-            assert_eq!(un.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), vec!["t1", "t2"]);
+            assert_eq!(
+                un.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(),
+                vec!["t1", "t2"]
+            );
             // 색인 스탬프 후엔 목록에서 빠진다.
             db.mark_task_indexed("t1").unwrap();
             let un2 = db.list_unindexed_terminal_tasks().unwrap();
-            assert_eq!(un2.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), vec!["t2"]);
+            assert_eq!(
+                un2.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(),
+                vec!["t2"]
+            );
             // 존재하지 않는 task_id 스탬프도 Ok(0행, best-effort).
             assert!(db.mark_task_indexed("nope").is_ok());
         }
@@ -897,7 +1002,10 @@ mod tests {
             let msg = |t: &str| Message {
                 message_id: "m".into(),
                 role: "user".into(),
-                parts: vec![Part { text: Some(t.into()), ..Default::default() }],
+                parts: vec![Part {
+                    text: Some(t.into()),
+                    ..Default::default()
+                }],
                 task_id: None,
                 context_id: None,
             };
@@ -911,7 +1019,10 @@ mod tests {
             t1.artifacts = vec![Artifact {
                 artifact_id: "a".into(),
                 name: None,
-                parts: vec![Part { text: Some("결과1".into()), ..Default::default() }],
+                parts: vec![Part {
+                    text: Some("결과1".into()),
+                    ..Default::default()
+                }],
             }];
             db.create_task(&t1).unwrap();
             db.mark_task_indexed("t1").unwrap();
@@ -937,11 +1048,22 @@ mod tests {
             t4.history = vec![msg("요청4")];
             db.create_task(&t4).unwrap();
 
-            assert_eq!(db.prune_terminal_tasks(30).unwrap(), 2, "오래되고 색인된 종결(t1·t2)만 슬림화");
+            assert_eq!(
+                db.prune_terminal_tasks(30).unwrap(),
+                2,
+                "오래되고 색인된 종결(t1·t2)만 슬림화"
+            );
             let g1 = db.get_task("t1").unwrap().unwrap();
             assert!(g1.history.is_empty(), "completed history 비움");
-            assert!(g1.status_message.is_none(), "completed 요청(message_json) 비움");
-            assert_eq!(g1.artifacts[0].parts[0].text.as_deref(), Some("결과1"), "artifacts 보존(§5-5)");
+            assert!(
+                g1.status_message.is_none(),
+                "completed 요청(message_json) 비움"
+            );
+            assert_eq!(
+                g1.artifacts[0].parts[0].text.as_deref(),
+                Some("결과1"),
+                "artifacts 보존(§5-5)"
+            );
             let g2 = db.get_task("t2").unwrap().unwrap();
             assert!(g2.history.is_empty(), "failed history 비움");
             assert_eq!(
@@ -949,10 +1071,20 @@ mod tests {
                 Some("BLOCKED: 사유"),
                 "failed 실패 사유 보존(§5-5)"
             );
-            assert!(!db.get_task("t3").unwrap().unwrap().history.is_empty(), "보존기간 내 task 불변");
-            assert!(!db.get_task("t4").unwrap().unwrap().history.is_empty(), "미색인 task 불변");
+            assert!(
+                !db.get_task("t3").unwrap().unwrap().history.is_empty(),
+                "보존기간 내 task 불변"
+            );
+            assert!(
+                !db.get_task("t4").unwrap().unwrap().history.is_empty(),
+                "미색인 task 불변"
+            );
             // 재실행은 0건(이미 슬림, 멱등).
-            assert_eq!(db.prune_terminal_tasks(30).unwrap(), 0, "재실행은 0건(멱등)");
+            assert_eq!(
+                db.prune_terminal_tasks(30).unwrap(),
+                0,
+                "재실행은 0건(멱등)"
+            );
             // WAL 체크포인트 호출도 성공(인메모리는 no-op이나 에러 없음).
             assert!(db.wal_checkpoint().is_ok());
         }
@@ -962,10 +1094,14 @@ mod tests {
             let db = SqliteStore::open_memory().unwrap();
             let task = Task::new("t1", None, "win", "mac", "2026-07-02 09:00:00");
             db.create_task(&task).unwrap();
-            assert_eq!(db.get_task("t1").unwrap().unwrap().state, TaskState::Submitted);
+            assert_eq!(
+                db.get_task("t1").unwrap().unwrap().state,
+                TaskState::Submitted
+            );
 
             let working_msg = sample_message("wm1");
-            db.update_task_state("t1", TaskState::Working, Some(&working_msg)).unwrap();
+            db.update_task_state("t1", TaskState::Working, Some(&working_msg))
+                .unwrap();
             let mid = db.get_task("t1").unwrap().unwrap();
             assert_eq!(mid.state, TaskState::Working);
             assert_eq!(mid.status_message, Some(working_msg));
@@ -973,7 +1109,10 @@ mod tests {
             let artifacts = vec![Artifact {
                 artifact_id: "a1".into(),
                 name: Some("결과물".into()),
-                parts: vec![Part { text: Some("완료 보고".into()), ..Default::default() }],
+                parts: vec![Part {
+                    text: Some("완료 보고".into()),
+                    ..Default::default()
+                }],
             }];
             db.complete_task("t1", &artifacts).unwrap();
             let done = db.get_task("t1").unwrap().unwrap();
@@ -1006,18 +1145,27 @@ mod tests {
         #[test]
         fn task_events_emit_status_then_status_then_completed_in_order() {
             let db = SqliteStore::open_memory().unwrap().with_task_events();
-            let mut rx = db.task_event_sender().expect("with_task_events 후엔 버스 활성화").subscribe();
+            let mut rx = db
+                .task_event_sender()
+                .expect("with_task_events 후엔 버스 활성화")
+                .subscribe();
 
             let msg = sample_message("m1");
-            let task = db.create_task_from_message("win-claude", "mac-claude", msg).unwrap();
+            let task = db
+                .create_task_from_message("win-claude", "mac-claude", msg)
+                .unwrap();
 
             let working_msg = sample_message("wm1");
-            db.update_task_state(&task.id, TaskState::Working, Some(&working_msg)).unwrap();
+            db.update_task_state(&task.id, TaskState::Working, Some(&working_msg))
+                .unwrap();
 
             let artifacts = vec![Artifact {
                 artifact_id: "a1".into(),
                 name: Some("결과물".into()),
-                parts: vec![Part { text: Some("완료 보고".into()), ..Default::default() }],
+                parts: vec![Part {
+                    text: Some("완료 보고".into()),
+                    ..Default::default()
+                }],
             }];
             db.complete_task(&task.id, &artifacts).unwrap();
 
@@ -1048,7 +1196,9 @@ mod tests {
             let db = SqliteStore::open_memory().unwrap();
             assert!(db.task_event_sender().is_none());
             let msg = sample_message("m1");
-            let task = db.create_task_from_message("win-claude", "mac-claude", msg).unwrap();
+            let task = db
+                .create_task_from_message("win-claude", "mac-claude", msg)
+                .unwrap();
             assert_eq!(task.state, TaskState::Submitted);
         }
 
@@ -1062,13 +1212,19 @@ mod tests {
 
             // 첫 claim: submitted -> working 성공.
             db.try_claim("t1", None, None).unwrap();
-            assert_eq!(db.get_task("t1").unwrap().unwrap().state, TaskState::Working);
+            assert_eq!(
+                db.get_task("t1").unwrap().unwrap().state,
+                TaskState::Working
+            );
 
             // 둘째 claim(동시 착수 경쟁 시뮬레이션): 이미 working이라 전이 대상 아님 -> Err.
             let err = db.try_claim("t1", None, None).unwrap_err();
             assert!(err.contains("t1"), "에러 메시지에 task_id 없음: {err}");
             // 실패한 전이가 상태를 건드리지 않았는지 확인(여전히 working, 다른 상태로 안 튐).
-            assert_eq!(db.get_task("t1").unwrap().unwrap().state, TaskState::Working);
+            assert_eq!(
+                db.get_task("t1").unwrap().unwrap().state,
+                TaskState::Working
+            );
         }
 
         #[test]
@@ -1080,12 +1236,18 @@ mod tests {
             let artifacts = vec![Artifact {
                 artifact_id: "a1".into(),
                 name: None,
-                parts: vec![Part { text: Some("결과".into()), ..Default::default() }],
+                parts: vec![Part {
+                    text: Some("결과".into()),
+                    ..Default::default()
+                }],
             }];
             let err = db.try_complete("t1", &artifacts, None).unwrap_err();
             assert!(err.contains("t1"), "에러 메시지에 task_id 없음: {err}");
             // submitted로 남아있어야 함(완료로 잘못 전이되지 않음).
-            assert_eq!(db.get_task("t1").unwrap().unwrap().state, TaskState::Submitted);
+            assert_eq!(
+                db.get_task("t1").unwrap().unwrap().state,
+                TaskState::Submitted
+            );
         }
 
         #[test]
@@ -1097,16 +1259,26 @@ mod tests {
             let artifacts = vec![Artifact {
                 artifact_id: "a1".into(),
                 name: None,
-                parts: vec![Part { text: Some("결과".into()), ..Default::default() }],
+                parts: vec![Part {
+                    text: Some("결과".into()),
+                    ..Default::default()
+                }],
             }];
             db.try_complete("t1", &artifacts, None).unwrap();
-            assert_eq!(db.get_task("t1").unwrap().unwrap().state, TaskState::Completed);
+            assert_eq!(
+                db.get_task("t1").unwrap().unwrap().state,
+                TaskState::Completed
+            );
 
             // 이미 completed(종료 상태)인 task를 canceled로 덮어쓰려 하면 차단돼야 한다(R2 핵심 회귀).
             let err = db.try_cancel("t1").unwrap_err();
             assert!(err.contains("t1"), "에러 메시지에 task_id 없음: {err}");
             let after = db.get_task("t1").unwrap().unwrap();
-            assert_eq!(after.state, TaskState::Completed, "completed가 canceled로 덮어써짐(R2 회귀)");
+            assert_eq!(
+                after.state,
+                TaskState::Completed,
+                "completed가 canceled로 덮어써짐(R2 회귀)"
+            );
             assert_eq!(after.artifacts, artifacts, "완료 산출물이 유지돼야 함");
         }
 
@@ -1116,17 +1288,25 @@ mod tests {
             // task_events_emit_status_then_status_then_completed_in_order와 동일한 이벤트버스 계약을
             // try_* 조건부 전이 경로에서도 유지하는지 확인한다(R2: emit 보존이 핵심 요구사항).
             let db = SqliteStore::open_memory().unwrap().with_task_events();
-            let mut rx = db.task_event_sender().expect("with_task_events 후엔 버스 활성화").subscribe();
+            let mut rx = db
+                .task_event_sender()
+                .expect("with_task_events 후엔 버스 활성화")
+                .subscribe();
 
             let msg = sample_message("m1");
-            let task = db.create_task_from_message("win-claude", "mac-claude", msg).unwrap();
+            let task = db
+                .create_task_from_message("win-claude", "mac-claude", msg)
+                .unwrap();
 
             db.try_claim(&task.id, None, None).unwrap();
 
             let artifacts = vec![Artifact {
                 artifact_id: "a1".into(),
                 name: Some("결과물".into()),
-                parts: vec![Part { text: Some("완료 보고".into()), ..Default::default() }],
+                parts: vec![Part {
+                    text: Some("완료 보고".into()),
+                    ..Default::default()
+                }],
             }];
             db.try_complete(&task.id, &artifacts, None).unwrap();
 
@@ -1156,11 +1336,17 @@ mod tests {
             // 대상 task 자체가 없으면 rows_affected=0으로 같은 에러 경로를 타야 한다(스펙 요구사항).
             // 전이가 없었으니 이벤트도 없어야 한다.
             let db = SqliteStore::open_memory().unwrap().with_task_events();
-            let mut rx = db.task_event_sender().expect("with_task_events 후엔 버스 활성화").subscribe();
+            let mut rx = db
+                .task_event_sender()
+                .expect("with_task_events 후엔 버스 활성화")
+                .subscribe();
             assert!(db.try_claim("nope", None, None).is_err());
             assert!(db.try_fail("nope", None, None).is_err());
             assert!(db.try_cancel("nope").is_err());
-            assert!(rx.try_recv().is_err(), "존재하지 않는 task에 대해 이벤트가 emit됨");
+            assert!(
+                rx.try_recv().is_err(),
+                "존재하지 않는 task에 대해 이벤트가 emit됨"
+            );
         }
 
         // --- lease 기반 claim-후-워커사망 자동 requeue 단위테스트 ---
@@ -1189,9 +1375,13 @@ mod tests {
 
             db.try_claim("t1", Some("worker-a"), None).unwrap();
 
-            let (claimed_at, lease_expires_at, claimed_by, attempt_count) = raw_claim_fields(&db, "t1");
+            let (claimed_at, lease_expires_at, claimed_by, attempt_count) =
+                raw_claim_fields(&db, "t1");
             assert!(claimed_at.is_some(), "claimed_at이 세팅되어야 함");
-            assert!(lease_expires_at.is_some(), "lease_expires_at이 세팅되어야 함");
+            assert!(
+                lease_expires_at.is_some(),
+                "lease_expires_at이 세팅되어야 함"
+            );
             assert_eq!(claimed_by.as_deref(), Some("worker-a"));
             assert_eq!(attempt_count, 1, "최초 claim은 attempt_count=1");
         }
@@ -1206,7 +1396,11 @@ mod tests {
             db.try_claim("t1", Some("worker-a"), Some("codex")).unwrap();
 
             let reloaded = db.get_task("t1").unwrap().unwrap();
-            assert_eq!(reloaded.runner.as_deref(), Some("codex"), "claim한 runner가 노출되어야 함");
+            assert_eq!(
+                reloaded.runner.as_deref(),
+                Some("codex"),
+                "claim한 runner가 노출되어야 함"
+            );
         }
 
         #[test]
@@ -1248,12 +1442,21 @@ mod tests {
             let task = Task::new("t1", None, "win", "mac", "2026-07-02 09:00:00");
             db.create_task(&task).unwrap();
             // claim 전(submitted)에는 working이 아니라 연장 불가.
-            assert!(db.extend_lease("t1", "worker-a").is_err(), "claim 전에는 연장 불가");
+            assert!(
+                db.extend_lease("t1", "worker-a").is_err(),
+                "claim 전에는 연장 불가"
+            );
             db.try_claim("t1", Some("worker-a"), None).unwrap();
             // 다른 워커는 claimed_by 불일치라 연장 불가(소유권 없는 연장 차단).
-            assert!(db.extend_lease("t1", "worker-b").is_err(), "claimed_by 불일치 연장 불가");
+            assert!(
+                db.extend_lease("t1", "worker-b").is_err(),
+                "claimed_by 불일치 연장 불가"
+            );
             // 소유 워커는 성공.
-            assert!(db.extend_lease("t1", "worker-a").is_ok(), "소유 워커는 연장 성공");
+            assert!(
+                db.extend_lease("t1", "worker-a").is_ok(),
+                "소유 워커는 연장 성공"
+            );
         }
 
         #[test]
@@ -1264,7 +1467,10 @@ mod tests {
             db.create_task(&task).unwrap();
 
             db.try_claim("t1", None, None).unwrap();
-            assert_eq!(db.get_task("t1").unwrap().unwrap().state, TaskState::Working);
+            assert_eq!(
+                db.get_task("t1").unwrap().unwrap().state,
+                TaskState::Working
+            );
 
             let (_, _, claimed_by, attempt_count) = raw_claim_fields(&db, "t1");
             assert_eq!(claimed_by, None, "agent 없이 claim하면 claimed_by는 NULL");
@@ -1290,14 +1496,28 @@ mod tests {
             assert_eq!(n, 1, "만료된 claim 1건이 회수되어야 함");
 
             let reloaded = db.get_task("t1").unwrap().unwrap();
-            assert_eq!(reloaded.state, TaskState::Submitted, "만료된 working은 submitted로 복귀");
-            assert!(reloaded.runner.is_none(), "runner는 회수(submitted 복귀) 시 클리어되어야 함(claimed_by와 동형)");
+            assert_eq!(
+                reloaded.state,
+                TaskState::Submitted,
+                "만료된 working은 submitted로 복귀"
+            );
+            assert!(
+                reloaded.runner.is_none(),
+                "runner는 회수(submitted 복귀) 시 클리어되어야 함(claimed_by와 동형)"
+            );
 
-            let (claimed_at, lease_expires_at, claimed_by, attempt_count) = raw_claim_fields(&db, "t1");
+            let (claimed_at, lease_expires_at, claimed_by, attempt_count) =
+                raw_claim_fields(&db, "t1");
             assert!(claimed_at.is_none(), "claimed_at은 클리어되어야 함");
-            assert!(lease_expires_at.is_none(), "lease_expires_at은 클리어되어야 함");
+            assert!(
+                lease_expires_at.is_none(),
+                "lease_expires_at은 클리어되어야 함"
+            );
             assert!(claimed_by.is_none(), "claimed_by는 클리어되어야 함");
-            assert_eq!(attempt_count, 1, "attempt_count는 유지(다음 claim에서 다시 증가)");
+            assert_eq!(
+                attempt_count, 1,
+                "attempt_count는 유지(다음 claim에서 다시 증가)"
+            );
         }
 
         #[test]
@@ -1306,7 +1526,9 @@ mod tests {
             // claim·requeue 모두 status_message를 지우면 안 된다(재배달 시 빈 프롬프트 방지).
             let db = SqliteStore::open_memory().unwrap();
             let msg = sample_message("m1");
-            let task = db.create_task_from_message("win", "mac", msg.clone()).unwrap();
+            let task = db
+                .create_task_from_message("win", "mac", msg.clone())
+                .unwrap();
             db.try_claim(&task.id, Some("worker-a"), None).unwrap();
             db.test_force_lease_expired(&task.id);
 
@@ -1314,7 +1536,11 @@ mod tests {
             assert_eq!(n, 1);
 
             let reloaded = db.get_task(&task.id).unwrap().unwrap();
-            assert_eq!(reloaded.state, TaskState::Submitted, "만료 claim은 submitted로 복귀");
+            assert_eq!(
+                reloaded.state,
+                TaskState::Submitted,
+                "만료 claim은 submitted로 복귀"
+            );
             assert_eq!(
                 reloaded.status_message,
                 Some(msg),
@@ -1342,7 +1568,11 @@ mod tests {
             assert_eq!(n, 1, "상한 도달 claim 1건이 격리되어야 함");
 
             let reloaded = db.get_task("t1").unwrap().unwrap();
-            assert_eq!(reloaded.state, TaskState::Failed, "상한 초과는 submitted가 아니라 failed로 격리");
+            assert_eq!(
+                reloaded.state,
+                TaskState::Failed,
+                "상한 초과는 submitted가 아니라 failed로 격리"
+            );
         }
 
         #[test]
@@ -1354,7 +1584,10 @@ mod tests {
 
             let n = db.expire_stale_claims().unwrap();
             assert_eq!(n, 0, "lease가 아직 안 지났으면 아무것도 회수되지 않아야 함");
-            assert_eq!(db.get_task("t1").unwrap().unwrap().state, TaskState::Working);
+            assert_eq!(
+                db.get_task("t1").unwrap().unwrap().state,
+                TaskState::Working
+            );
         }
 
         #[test]
@@ -1366,7 +1599,10 @@ mod tests {
 
             let n = db.expire_stale_claims().unwrap();
             assert_eq!(n, 0);
-            assert_eq!(db.get_task("t1").unwrap().unwrap().state, TaskState::Submitted);
+            assert_eq!(
+                db.get_task("t1").unwrap().unwrap().state,
+                TaskState::Submitted
+            );
         }
 
         #[test]
@@ -1379,16 +1615,28 @@ mod tests {
             let artifacts = vec![Artifact {
                 artifact_id: "a1".into(),
                 name: None,
-                parts: vec![Part { text: Some("결과".into()), ..Default::default() }],
+                parts: vec![Part {
+                    text: Some("결과".into()),
+                    ..Default::default()
+                }],
             }];
             // stale(되살아난) worker-b가 completer 불일치로 거부되어야 한다(레이스 방지 핵심).
-            let err = db.try_complete("t1", &artifacts, Some("worker-b")).unwrap_err();
+            let err = db
+                .try_complete("t1", &artifacts, Some("worker-b"))
+                .unwrap_err();
             assert!(err.contains("t1"));
-            assert_eq!(db.get_task("t1").unwrap().unwrap().state, TaskState::Working, "거부 후 상태 불변");
+            assert_eq!(
+                db.get_task("t1").unwrap().unwrap().state,
+                TaskState::Working,
+                "거부 후 상태 불변"
+            );
 
             // claim한 본인(worker-a)이 completer면 성공.
             db.try_complete("t1", &artifacts, Some("worker-a")).unwrap();
-            assert_eq!(db.get_task("t1").unwrap().unwrap().state, TaskState::Completed);
+            assert_eq!(
+                db.get_task("t1").unwrap().unwrap().state,
+                TaskState::Completed
+            );
         }
 
         #[test]
@@ -1403,7 +1651,11 @@ mod tests {
             // stale worker-b의 fail은 거부 -> 상태 불변(working).
             let err = db.try_fail("t1", None, Some("worker-b")).unwrap_err();
             assert!(err.contains("t1"));
-            assert_eq!(db.get_task("t1").unwrap().unwrap().state, TaskState::Working, "거부 후 상태 불변");
+            assert_eq!(
+                db.get_task("t1").unwrap().unwrap().state,
+                TaskState::Working,
+                "거부 후 상태 불변"
+            );
 
             // claim 본인(worker-a)이면 성공.
             db.try_fail("t1", None, Some("worker-a")).unwrap();
@@ -1428,10 +1680,16 @@ mod tests {
             let artifacts = vec![Artifact {
                 artifact_id: "a1".into(),
                 name: None,
-                parts: vec![Part { text: Some("결과".into()), ..Default::default() }],
+                parts: vec![Part {
+                    text: Some("결과".into()),
+                    ..Default::default()
+                }],
             }];
             db.try_complete("t1", &artifacts, None).unwrap();
-            assert_eq!(db.get_task("t1").unwrap().unwrap().state, TaskState::Completed);
+            assert_eq!(
+                db.get_task("t1").unwrap().unwrap().state,
+                TaskState::Completed
+            );
         }
 
         #[test]
@@ -1446,10 +1704,16 @@ mod tests {
             let artifacts = vec![Artifact {
                 artifact_id: "a1".into(),
                 name: None,
-                parts: vec![Part { text: Some("결과".into()), ..Default::default() }],
+                parts: vec![Part {
+                    text: Some("결과".into()),
+                    ..Default::default()
+                }],
             }];
             db.try_complete("t1", &artifacts, Some("worker-a")).unwrap();
-            assert_eq!(db.get_task("t1").unwrap().unwrap().state, TaskState::Completed);
+            assert_eq!(
+                db.get_task("t1").unwrap().unwrap().state,
+                TaskState::Completed
+            );
         }
 
         #[test]
@@ -1483,8 +1747,16 @@ mod tests {
             }
             // open → migrate v6→v7(lease 컬럼 4종 신설).
             let db = SqliteStore::open(p).unwrap();
-            for col in ["claimed_at", "lease_expires_at", "claimed_by", "attempt_count"] {
-                assert!(db.column_exists("tasks", col), "마이그레이션이 {col} 컬럼을 추가해야 함");
+            for col in [
+                "claimed_at",
+                "lease_expires_at",
+                "claimed_by",
+                "attempt_count",
+            ] {
+                assert!(
+                    db.column_exists("tasks", col),
+                    "마이그레이션이 {col} 컬럼을 추가해야 함"
+                );
             }
             // 기존 task 보존 + attempt_count 기본값 0.
             let preserved = db.get_task("t1").unwrap().expect("기존 task 보존");
@@ -1493,7 +1765,10 @@ mod tests {
             assert_eq!(attempt_count, 0, "기존 행의 attempt_count는 기본값 0");
             // 마이그레이션된 스키마에서 claim이 바로 동작해야 한다(신규 컬럼이 실사용 가능한지 확인).
             db.try_claim("t1", Some("worker-a"), None).unwrap();
-            assert_eq!(db.get_task("t1").unwrap().unwrap().state, TaskState::Working);
+            assert_eq!(
+                db.get_task("t1").unwrap().unwrap().state,
+                TaskState::Working
+            );
             let _ = std::fs::remove_file(&path);
         }
 
@@ -1530,13 +1805,20 @@ mod tests {
             }
             // open → migrate v7→v8(runner 컬럼 신설).
             let db = SqliteStore::open(p).unwrap();
-            assert!(db.column_exists("tasks", "runner"), "마이그레이션이 runner 컬럼을 추가해야 함");
+            assert!(
+                db.column_exists("tasks", "runner"),
+                "마이그레이션이 runner 컬럼을 추가해야 함"
+            );
             // 기존 task 보존 + runner는 NULL(마이그레이션 이전엔 없던 컬럼).
             let preserved = db.get_task("t1").unwrap().expect("기존 task 보존");
             assert_eq!(preserved.state, TaskState::Submitted);
-            assert_eq!(preserved.runner, None, "마이그레이션 이전 행의 runner는 NULL이어야 함");
+            assert_eq!(
+                preserved.runner, None,
+                "마이그레이션 이전 행의 runner는 NULL이어야 함"
+            );
             // 마이그레이션된 스키마에서 runner를 포함한 claim이 바로 동작해야 한다.
-            db.try_claim("t1", Some("worker-a"), Some("claude")).unwrap();
+            db.try_claim("t1", Some("worker-a"), Some("claude"))
+                .unwrap();
             let reloaded = db.get_task("t1").unwrap().unwrap();
             assert_eq!(reloaded.state, TaskState::Working);
             assert_eq!(reloaded.runner.as_deref(), Some("claude"));

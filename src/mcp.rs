@@ -4,14 +4,17 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use rmcp::{
+    ErrorData as McpError, ServerHandler, ServiceExt,
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::{CallToolResult, Content, ServerCapabilities, ServerInfo},
-    tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler, ServiceExt,
+    tool, tool_handler, tool_router,
 };
 
-use crate::orchestrator::{ContextRetriever, RosterSeat, TranscriptReader, TranscriptWriter, Utterance};
+use crate::orchestrator::{
+    ContextRetriever, RosterSeat, TranscriptReader, TranscriptWriter, Utterance,
+};
 use crate::store::a2a::{Task, TaskState};
-use crate::store::agents::{parse_tags, AGENT_TTL_SECS};
+use crate::store::agents::{AGENT_TTL_SECS, parse_tags};
 use crate::store::sqlite::SqliteStore;
 
 // ---------------------------------------------------------------------------
@@ -39,13 +42,22 @@ fn build_terminal_index_payload(task: &Task) -> Option<TerminalIndexPayload> {
     if !matches!(task.state, TaskState::Completed | TaskState::Failed) {
         return None; // canceled·열린 task는 색인 비대상(§4 P6a).
     }
-    let request_text =
-        task.history.first().and_then(|m| m.parts.first()).and_then(|p| p.text.clone());
+    let request_text = task
+        .history
+        .first()
+        .and_then(|m| m.parts.first())
+        .and_then(|p| p.text.clone());
     let result_text = match task.state {
-        TaskState::Completed => {
-            task.artifacts.first().and_then(|a| a.parts.first()).and_then(|p| p.text.clone())
-        }
-        _ => task.status_message.as_ref().and_then(|m| m.parts.first()).and_then(|p| p.text.clone()),
+        TaskState::Completed => task
+            .artifacts
+            .first()
+            .and_then(|a| a.parts.first())
+            .and_then(|p| p.text.clone()),
+        _ => task
+            .status_message
+            .as_ref()
+            .and_then(|m| m.parts.first())
+            .and_then(|p| p.text.clone()),
     };
     Some(TerminalIndexPayload {
         task_id: task.id.clone(),
@@ -93,7 +105,10 @@ fn index_terminal_task(
     if ok {
         let store = a2a_store.lock().unwrap_or_else(|e| e.into_inner());
         if let Err(e) = store.mark_task_indexed(&p.task_id) {
-            eprintln!("[index] task {} indexed_at 스탬프 실패(무시): {e}", p.task_id);
+            eprintln!(
+                "[index] task {} indexed_at 스탬프 실패(무시): {e}",
+                p.task_id
+            );
         }
     }
 }
@@ -224,7 +239,11 @@ impl TunaSearchServer {
                 .unwrap_or_else(|e| Err(format!("검색 태스크 실패: {e}")));
         let hits = match outcome {
             Ok(h) => h,
-            Err(e) => return Ok(CallToolResult::error(vec![Content::text(format!("검색 실패: {e}"))])),
+            Err(e) => {
+                return Ok(CallToolResult::error(vec![Content::text(format!(
+                    "검색 실패: {e}"
+                ))]));
+            }
         };
         let text = if hits.is_empty() {
             "검색 결과 없음".to_string()
@@ -237,7 +256,9 @@ impl TunaSearchServer {
         Ok(CallToolResult::success(vec![Content::text(text)]))
     }
 
-    #[tool(description = "현재 토론 전사를 읽는다(활성 경로). 검색이 아니라 통째 맥락이 필요할 때.")]
+    #[tool(
+        description = "현재 토론 전사를 읽는다(활성 경로). 검색이 아니라 통째 맥락이 필요할 때."
+    )]
     async fn read_transcript(
         &self,
         Parameters(p): Parameters<TranscriptParams>,
@@ -252,7 +273,9 @@ impl TunaSearchServer {
         let utts = match reader.read_transcript(&sid, p.max_turns) {
             Ok(u) => u,
             Err(e) => {
-                return Ok(CallToolResult::error(vec![Content::text(format!("전사 읽기 실패: {e}"))]));
+                return Ok(CallToolResult::error(vec![Content::text(format!(
+                    "전사 읽기 실패: {e}"
+                ))]));
             }
         };
         let text = if utts.is_empty() {
@@ -307,7 +330,9 @@ impl TunaSearchServer {
         Ok(CallToolResult::success(vec![Content::text(text)]))
     }
 
-    #[tool(description = "내 앞으로 온 A2A task 목록을 조회한다(열린 상태: submitted/working/input_required).")]
+    #[tool(
+        description = "내 앞으로 온 A2A task 목록을 조회한다(열린 상태: submitted/working/input_required)."
+    )]
     async fn poll_tasks(
         &self,
         Parameters(p): Parameters<PollTasksParams>,
@@ -356,11 +381,15 @@ impl TunaSearchServer {
         // parse_jsonrpc_sse)가 Err로 인식하고, 워커(run_one_pass)가 claim 실패로 보고 러너를 안 돌린다.
         match outcome {
             Ok(t) => Ok(CallToolResult::success(vec![Content::text(t)])),
-            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!("착수 실패: {e}"))])),
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
+                "착수 실패: {e}"
+            ))])),
         }
     }
 
-    #[tool(description = "task 결과를 보고하고 완료 처리한다(-> completed, 결과는 텍스트 Artifact로 저장).")]
+    #[tool(
+        description = "task 결과를 보고하고 완료 처리한다(-> completed, 결과는 텍스트 Artifact로 저장)."
+    )]
     async fn complete_task(
         &self,
         Parameters(p): Parameters<CompleteTaskParams>,
@@ -377,8 +406,12 @@ impl TunaSearchServer {
             let store = store.lock().unwrap_or_else(|e| e.into_inner());
             let text = complete_task_text(&store, &task_id, &result, agent.as_deref())?;
             // v2-45 P6a: 종결 성공 후 색인 payload를 같은 락 안에서 구성(요청=history[0], 결과=artifact).
-            let payload =
-                store.get_task(&task_id).ok().flatten().as_ref().and_then(build_terminal_index_payload);
+            let payload = store
+                .get_task(&task_id)
+                .ok()
+                .flatten()
+                .as_ref()
+                .and_then(build_terminal_index_payload);
             Ok::<_, String>((text, payload))
         })
         .await
@@ -392,15 +425,21 @@ impl TunaSearchServer {
                 {
                     // best-effort·종결 응답과 독립: 색인을 백그라운드로 던지고 응답을 막지 않는다
                     // (gemini 리뷰). 크래시로 미완료 시 재기동 백필이 멱등 재색인한다(delete-then-append).
-                    tokio::task::spawn_blocking(move || index_terminal_task(&writer, &a2a, &payload));
+                    tokio::task::spawn_blocking(move || {
+                        index_terminal_task(&writer, &a2a, &payload)
+                    });
                 }
                 Ok(CallToolResult::success(vec![Content::text(t)]))
             }
-            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!("완료 처리 실패: {e}"))])),
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
+                "완료 처리 실패: {e}"
+            ))])),
         }
     }
 
-    #[tool(description = "task 실행이 실패했음을 보고한다(-> failed, 사유는 상태 메시지로 저장). completed와 구분되어 dispatcher가 실패를 인지한다.")]
+    #[tool(
+        description = "task 실행이 실패했음을 보고한다(-> failed, 사유는 상태 메시지로 저장). completed와 구분되어 dispatcher가 실패를 인지한다."
+    )]
     async fn fail_task(
         &self,
         Parameters(p): Parameters<FailTaskParams>,
@@ -417,8 +456,12 @@ impl TunaSearchServer {
             let store = store.lock().unwrap_or_else(|e| e.into_inner());
             let text = fail_task_text(&store, &task_id, &reason, agent.as_deref())?;
             // v2-45 P6a: 종결 성공 후 색인 payload 구성(요청=history[0], 결과=실패 사유 status_message).
-            let payload =
-                store.get_task(&task_id).ok().flatten().as_ref().and_then(build_terminal_index_payload);
+            let payload = store
+                .get_task(&task_id)
+                .ok()
+                .flatten()
+                .as_ref()
+                .and_then(build_terminal_index_payload);
             Ok::<_, String>((text, payload))
         })
         .await
@@ -431,11 +474,15 @@ impl TunaSearchServer {
                 {
                     // best-effort·종결 응답과 독립: 색인을 백그라운드로 던지고 응답을 막지 않는다
                     // (gemini 리뷰). 크래시로 미완료 시 재기동 백필이 멱등 재색인한다(delete-then-append).
-                    tokio::task::spawn_blocking(move || index_terminal_task(&writer, &a2a, &payload));
+                    tokio::task::spawn_blocking(move || {
+                        index_terminal_task(&writer, &a2a, &payload)
+                    });
                 }
                 Ok(CallToolResult::success(vec![Content::text(t)]))
             }
-            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!("실패 처리 실패: {e}"))])),
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
+                "실패 처리 실패: {e}"
+            ))])),
         }
     }
 
@@ -462,7 +509,9 @@ impl TunaSearchServer {
         // 대상이 아니면(종료·재claim) isError=true라야 워커가 Err로 인지한다(claim_task와 동일 계약).
         match outcome {
             Ok(t) => Ok(CallToolResult::success(vec![Content::text(t)])),
-            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!("lease 연장 실패: {e}"))])),
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
+                "lease 연장 실패: {e}"
+            ))])),
         }
     }
 
@@ -488,11 +537,15 @@ impl TunaSearchServer {
         .unwrap_or_else(|e| Err(format!("작업 실패: {e}")));
         match outcome {
             Ok(t) => Ok(CallToolResult::success(vec![Content::text(t)])),
-            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!("취소 실패: {e}"))])),
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
+                "취소 실패: {e}"
+            ))])),
         }
     }
 
-    #[tool(description = "다른 에이전트에게 새 A2A task를 위임한다(생성 즉시 submitted 상태, dispatcher용).")]
+    #[tool(
+        description = "다른 에이전트에게 새 A2A task를 위임한다(생성 즉시 submitted 상태, dispatcher용)."
+    )]
     async fn send_task(
         &self,
         Parameters(p): Parameters<SendTaskParams>,
@@ -502,10 +555,23 @@ impl TunaSearchServer {
                 "A2A task 저장소 미구성(send_task 비활성)".to_string(),
             )]));
         };
-        let SendTaskParams { from_agent, to_agent, text, context_id, to_selector } = p;
+        let SendTaskParams {
+            from_agent,
+            to_agent,
+            text,
+            context_id,
+            to_selector,
+        } = p;
         let outcome = tokio::task::spawn_blocking(move || {
             let store = store.lock().unwrap_or_else(|e| e.into_inner());
-            send_task_routed(&store, &from_agent, to_agent.as_deref(), to_selector.as_deref(), &text, context_id)
+            send_task_routed(
+                &store,
+                &from_agent,
+                to_agent.as_deref(),
+                to_selector.as_deref(),
+                &text,
+                context_id,
+            )
         })
         .await
         .unwrap_or_else(|e| Err(format!("작업 실패: {e}")));
@@ -516,7 +582,9 @@ impl TunaSearchServer {
         Ok(CallToolResult::success(vec![Content::text(text)]))
     }
 
-    #[tool(description = "이 에이전트를 브로커 로스터에 등록한다(uuid+태그, 워커/세션 자기 등록용).")]
+    #[tool(
+        description = "이 에이전트를 브로커 로스터에 등록한다(uuid+태그, 워커/세션 자기 등록용)."
+    )]
     async fn register_agent(
         &self,
         Parameters(p): Parameters<RegisterAgentParams>,
@@ -526,7 +594,11 @@ impl TunaSearchServer {
                 "A2A task 저장소 미구성(register_agent 비활성)".to_string(),
             )]));
         };
-        let RegisterAgentParams { uuid, tags, display_name } = p;
+        let RegisterAgentParams {
+            uuid,
+            tags,
+            display_name,
+        } = p;
         let outcome = tokio::task::spawn_blocking(move || {
             let store = store.lock().unwrap_or_else(|e| e.into_inner());
             let now = store.now()?;
@@ -543,7 +615,9 @@ impl TunaSearchServer {
         // R1: 등록 실패(now/parse_tags 오류)를 success로 위장하지 않는다(클라가 감지하게 isError).
         match outcome {
             Ok(t) => Ok(CallToolResult::success(vec![Content::text(t)])),
-            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!("등록 실패: {e}"))])),
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
+                "등록 실패: {e}"
+            ))])),
         }
     }
 
@@ -574,7 +648,9 @@ impl TunaSearchServer {
         // 재등록 로직(needs_reregister)이 그 텍스트를 받는다(정상 흐름, 실패 아님).
         match outcome {
             Ok(t) => Ok(CallToolResult::success(vec![Content::text(t)])),
-            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!("heartbeat 실패: {e}"))])),
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
+                "heartbeat 실패: {e}"
+            ))])),
         }
     }
 
@@ -604,11 +680,15 @@ impl TunaSearchServer {
         // R1: 조회 실패(now/parse_tags 오류)를 success로 위장하지 않는다(클라가 감지하게 isError).
         match outcome {
             Ok(t) => Ok(CallToolResult::success(vec![Content::text(t)])),
-            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!("조회 실패: {e}"))])),
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
+                "조회 실패: {e}"
+            ))])),
         }
     }
 
-    #[tool(description = "머신당 presence 스캐너가 라이브 세션 전집합을 일괄 보고한다(upsert+소유분 제거, v2-44).")]
+    #[tool(
+        description = "머신당 presence 스캐너가 라이브 세션 전집합을 일괄 보고한다(upsert+소유분 제거, v2-44)."
+    )]
     async fn report_presence(
         &self,
         Parameters(p): Parameters<ReportPresenceParams>,
@@ -633,18 +713,24 @@ impl TunaSearchServer {
                 })
                 .collect();
             let (upserted, removed) = store.sync_presence(&machine, &entries, &now);
-            Ok::<String, String>(format!("presence 동기화(machine={machine}): upsert {upserted}건, 제거 {removed}건"))
+            Ok::<String, String>(format!(
+                "presence 동기화(machine={machine}): upsert {upserted}건, 제거 {removed}건"
+            ))
         })
         .await
         .unwrap_or_else(|e| Err(format!("작업 실패: {e}")));
         // 동기화 실패(now 오류)를 success로 위장하지 않는다(R1 계약과 동일).
         match outcome {
             Ok(t) => Ok(CallToolResult::success(vec![Content::text(t)])),
-            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!("presence 동기화 실패: {e}"))])),
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
+                "presence 동기화 실패: {e}"
+            ))])),
         }
     }
 
-    #[tool(description = "위임한 A2A task의 상태를 조회한다(completed면 결과 텍스트도 함께 반환, dispatcher용).")]
+    #[tool(
+        description = "위임한 A2A task의 상태를 조회한다(completed면 결과 텍스트도 함께 반환, dispatcher용)."
+    )]
     async fn get_task(
         &self,
         Parameters(p): Parameters<GetTaskParams>,
@@ -668,8 +754,13 @@ impl TunaSearchServer {
         Ok(CallToolResult::success(vec![Content::text(text)]))
     }
 
-    #[tool(description = "브로커 전역에서 열려 있는 A2A task를 to_agent 무관하게 전부 조회한다(운영자 조망용, 미배달/고착 의심 주석 포함).")]
-    async fn tasks(&self, Parameters(_p): Parameters<ListTasksParams>) -> Result<CallToolResult, McpError> {
+    #[tool(
+        description = "브로커 전역에서 열려 있는 A2A task를 to_agent 무관하게 전부 조회한다(운영자 조망용, 미배달/고착 의심 주석 포함)."
+    )]
+    async fn tasks(
+        &self,
+        Parameters(_p): Parameters<ListTasksParams>,
+    ) -> Result<CallToolResult, McpError> {
         let Some(store) = self.a2a_store.clone() else {
             return Ok(CallToolResult::success(vec![Content::text(
                 "A2A task 저장소 미구성(tasks 비활성)".to_string(),
@@ -788,7 +879,10 @@ mod tests {
         let req = Message {
             message_id: "m1".into(),
             role: "user".into(),
-            parts: vec![Part { text: Some("피드백 3건 정리해줘".into()), ..Default::default() }],
+            parts: vec![Part {
+                text: Some("피드백 3건 정리해줘".into()),
+                ..Default::default()
+            }],
             task_id: None,
             context_id: None,
         };
@@ -800,7 +894,10 @@ mod tests {
         done.artifacts = vec![Artifact {
             artifact_id: "a1".into(),
             name: None,
-            parts: vec![Part { text: Some("정리 결과".into()), ..Default::default() }],
+            parts: vec![Part {
+                text: Some("정리 결과".into()),
+                ..Default::default()
+            }],
         }];
         let p = build_terminal_index_payload(&done).unwrap();
         assert_eq!(p.request_text.as_deref(), Some("피드백 3건 정리해줘"));
@@ -814,12 +911,18 @@ mod tests {
         fail.status_message = Some(Message {
             message_id: "m2".into(),
             role: "agent".into(),
-            parts: vec![Part { text: Some("BLOCKED: 자료 없음".into()), ..Default::default() }],
+            parts: vec![Part {
+                text: Some("BLOCKED: 자료 없음".into()),
+                ..Default::default()
+            }],
             task_id: None,
             context_id: None,
         });
         assert_eq!(
-            build_terminal_index_payload(&fail).unwrap().result_text.as_deref(),
+            build_terminal_index_payload(&fail)
+                .unwrap()
+                .result_text
+                .as_deref(),
             Some("BLOCKED: 자료 없음")
         );
         // 결과 없어도 요청만 있으면 색인 대상(적대 리뷰: prune이 미색인 요청을 지우지 않게).
@@ -828,7 +931,10 @@ mod tests {
         req_only.history = vec![req.clone()]; // artifact 없음.
         let ro = build_terminal_index_payload(&req_only).unwrap();
         assert_eq!(ro.request_text.as_deref(), Some("피드백 3건 정리해줘"));
-        assert_eq!(ro.result_text, None, "결과 없음이어도 payload는 Some(요청 색인용)");
+        assert_eq!(
+            ro.result_text, None,
+            "결과 없음이어도 payload는 Some(요청 색인용)"
+        );
         // canceled·열린 task만 None(색인 비대상).
         let mut cancel = Task::new("t3", None, "d", "m", "2026-07-11 09:00:00");
         cancel.state = TaskState::Canceled;
@@ -855,13 +961,24 @@ mod tests {
         let writer: Arc<dyn TranscriptWriter> = Arc::new(FakeWriter);
         backfill_unindexed_terminal_tasks(&a2a, &writer);
         assert_eq!(
-            a2a.lock().unwrap().list_unindexed_terminal_tasks().unwrap().len(),
+            a2a.lock()
+                .unwrap()
+                .list_unindexed_terminal_tasks()
+                .unwrap()
+                .len(),
             0,
             "결과 없는 종결도 스탬프돼 재스캔 목록에서 빠짐(수렴)"
         );
         // 재백필도 no-op(수렴 유지).
         backfill_unindexed_terminal_tasks(&a2a, &writer);
-        assert_eq!(a2a.lock().unwrap().list_unindexed_terminal_tasks().unwrap().len(), 0);
+        assert_eq!(
+            a2a.lock()
+                .unwrap()
+                .list_unindexed_terminal_tasks()
+                .unwrap()
+                .len(),
+            0
+        );
     }
 
     #[tokio::test]
@@ -892,8 +1009,16 @@ mod tests {
     #[tokio::test]
     async fn read_transcript_with_reader_returns_content() {
         let utts = vec![
-            Utterance { speaker: "claude/proposer".into(), content: "첫 번째 발언".into(), abstraction: None },
-            Utterance { speaker: "codex/reviewer".into(), content: "두 번째 발언".into(), abstraction: None },
+            Utterance {
+                speaker: "claude/proposer".into(),
+                content: "첫 번째 발언".into(),
+                abstraction: None,
+            },
+            Utterance {
+                speaker: "codex/reviewer".into(),
+                content: "두 번째 발언".into(),
+                abstraction: None,
+            },
         ];
         let server = TunaSearchServer::new(Arc::new(FakeRetriever(vec![])))
             .with_transcript_reader(Arc::new(FakeTranscriptReader(utts)));
@@ -906,8 +1031,14 @@ mod tests {
         assert!(result.is_ok(), "read_transcript가 Ok여야 함: {result:?}");
         let call_result = result.unwrap();
         let text = format!("{:?}", call_result.content);
-        assert!(text.contains("첫 번째 발언"), "전사 내용이 포함되어야 함: {text}");
-        assert!(text.contains("두 번째 발언"), "전사 내용이 포함되어야 함: {text}");
+        assert!(
+            text.contains("첫 번째 발언"),
+            "전사 내용이 포함되어야 함: {text}"
+        );
+        assert!(
+            text.contains("두 번째 발언"),
+            "전사 내용이 포함되어야 함: {text}"
+        );
     }
 
     #[tokio::test]
@@ -922,7 +1053,10 @@ mod tests {
         assert!(result.is_ok());
         let call_result = result.unwrap();
         let text = format!("{:?}", call_result.content);
-        assert!(text.contains("전사 리더 미연결"), "reader=None 안내 불일치: {text}");
+        assert!(
+            text.contains("전사 리더 미연결"),
+            "reader=None 안내 불일치: {text}"
+        );
     }
 
     /// session_id를 캡처해 검증하는 전사 리더.
@@ -933,7 +1067,10 @@ mod tests {
 
     impl CapturingTranscriptReader {
         fn new(utts: Vec<Utterance>) -> Self {
-            Self { captured: std::sync::Mutex::new(None), utts }
+            Self {
+                captured: std::sync::Mutex::new(None),
+                utts,
+            }
         }
         fn last_session_id(&self) -> Option<String> {
             self.captured.lock().unwrap().clone()
@@ -954,11 +1091,15 @@ mod tests {
     #[tokio::test]
     async fn read_transcript_without_session_id_uses_default_session() {
         // session_id 파라미터 생략 시 default_session이 TranscriptReader에 전달된다.
-        let capturing = Arc::new(CapturingTranscriptReader::new(vec![
-            Utterance { speaker: "claude".into(), content: "안녕".into(), abstraction: None },
-        ]));
+        let capturing = Arc::new(CapturingTranscriptReader::new(vec![Utterance {
+            speaker: "claude".into(),
+            content: "안녕".into(),
+            abstraction: None,
+        }]));
         let server = TunaSearchServer::new(Arc::new(FakeRetriever(vec![])))
-            .with_transcript_reader(capturing.clone() as Arc<dyn crate::orchestrator::TranscriptReader>)
+            .with_transcript_reader(
+                capturing.clone() as Arc<dyn crate::orchestrator::TranscriptReader>
+            )
             .with_default_session("session-xyz".to_string());
         let result = server
             .read_transcript(Parameters(TranscriptParams {
@@ -979,7 +1120,9 @@ mod tests {
         // session_id 명시 시 default_session이 아닌 명시 id가 사용된다.
         let capturing = Arc::new(CapturingTranscriptReader::new(vec![]));
         let server = TunaSearchServer::new(Arc::new(FakeRetriever(vec![])))
-            .with_transcript_reader(capturing.clone() as Arc<dyn crate::orchestrator::TranscriptReader>)
+            .with_transcript_reader(
+                capturing.clone() as Arc<dyn crate::orchestrator::TranscriptReader>
+            )
             .with_default_session("should-not-appear".to_string());
         let _ = server
             .read_transcript(Parameters(TranscriptParams {
@@ -1000,19 +1143,32 @@ mod tests {
     }
 
     impl crate::orchestrator::TranscriptWriter for CapturingWriter {
-        fn append_turn(&self, session_id: &str, speaker: &str, content: &str) -> Result<u64, String> {
-            *self.captured.lock().unwrap() =
-                Some((session_id.to_string(), speaker.to_string(), content.to_string()));
+        fn append_turn(
+            &self,
+            session_id: &str,
+            speaker: &str,
+            content: &str,
+        ) -> Result<u64, String> {
+            *self.captured.lock().unwrap() = Some((
+                session_id.to_string(),
+                speaker.to_string(),
+                content.to_string(),
+            ));
             Ok(7)
         }
     }
 
     #[tokio::test]
     async fn post_turn_with_writer_appends_and_uses_default_session() {
-        let writer = Arc::new(CapturingWriter { captured: std::sync::Mutex::new(None) });
-        let server = TunaSearchServer::new(Arc::new(FakeRetriever(vec![])))
-            .with_transcript_writer(writer.clone() as Arc<dyn crate::orchestrator::TranscriptWriter>)
-            .with_default_session("sess-d".to_string());
+        let writer = Arc::new(CapturingWriter {
+            captured: std::sync::Mutex::new(None),
+        });
+        let server =
+            TunaSearchServer::new(Arc::new(FakeRetriever(vec![])))
+                .with_transcript_writer(
+                    writer.clone() as Arc<dyn crate::orchestrator::TranscriptWriter>
+                )
+                .with_default_session("sess-d".to_string());
         let result = server
             .post_turn(Parameters(PostTurnParams {
                 session_id: None, // 생략 → default_session.
@@ -1024,7 +1180,14 @@ mod tests {
         let text = format!("{:?}", result.unwrap().content);
         assert!(text.contains("msg_id=7"), "새 id 안내 불일치: {text}");
         let cap = writer.captured.lock().unwrap().clone();
-        assert_eq!(cap, Some(("sess-d".into(), "claude/proposer".into(), "원격 발언".into())));
+        assert_eq!(
+            cap,
+            Some((
+                "sess-d".into(),
+                "claude/proposer".into(),
+                "원격 발언".into()
+            ))
+        );
     }
 
     #[tokio::test]
@@ -1045,20 +1208,33 @@ mod tests {
     #[tokio::test]
     async fn get_roster_lists_seats() {
         let server = TunaSearchServer::new(Arc::new(FakeRetriever(vec![]))).with_roster(vec![
-            RosterSeat { engine: "claude".into(), role: Some("proposer".into()) },
-            RosterSeat { engine: "codex".into(), role: None },
+            RosterSeat {
+                engine: "claude".into(),
+                role: Some("proposer".into()),
+            },
+            RosterSeat {
+                engine: "codex".into(),
+                role: None,
+            },
         ]);
-        let result = server.get_roster(Parameters(RosterParams { session_id: None })).await;
+        let result = server
+            .get_roster(Parameters(RosterParams { session_id: None }))
+            .await;
         assert!(result.is_ok());
         let text = format!("{:?}", result.unwrap().content);
-        assert!(text.contains("claude (proposer)"), "좌석 표기 불일치: {text}");
+        assert!(
+            text.contains("claude (proposer)"),
+            "좌석 표기 불일치: {text}"
+        );
         assert!(text.contains("codex"), "역할 없는 좌석 누락: {text}");
     }
 
     #[tokio::test]
     async fn get_roster_without_roster_returns_not_connected() {
         let server = TunaSearchServer::new(Arc::new(FakeRetriever(vec![])));
-        let result = server.get_roster(Parameters(RosterParams { session_id: None })).await;
+        let result = server
+            .get_roster(Parameters(RosterParams { session_id: None }))
+            .await;
         assert!(result.is_ok());
         let text = format!("{:?}", result.unwrap().content);
         assert!(text.contains("로스터 미연결"), "미연결 안내 불일치: {text}");
@@ -1072,41 +1248,64 @@ mod tests {
         store.create_task(&task).unwrap();
     }
 
-
     // --- A2A inbox 툴: MCP 계층(#[tool] 메서드) 테스트 ---
 
     /// in-memory store를 a2a_store로 연결한 서버를 만든다(inbox 툴 3종 테스트 공용).
     fn server_with_a2a_store(store: SqliteStore) -> TunaSearchServer {
-        TunaSearchServer::new(Arc::new(FakeRetriever(vec![]))).with_a2a_store(Arc::new(Mutex::new(store)))
+        TunaSearchServer::new(Arc::new(FakeRetriever(vec![])))
+            .with_a2a_store(Arc::new(Mutex::new(store)))
     }
 
     #[tokio::test]
     async fn poll_tasks_without_store_returns_not_connected() {
         let server = TunaSearchServer::new(Arc::new(FakeRetriever(vec![])));
-        let result = server.poll_tasks(Parameters(PollTasksParams { agent: "mac".into() })).await;
+        let result = server
+            .poll_tasks(Parameters(PollTasksParams {
+                agent: "mac".into(),
+            }))
+            .await;
         assert!(result.is_ok());
         let text = format!("{:?}", result.unwrap().content);
-        assert!(text.contains("A2A task 저장소 미구성"), "미구성 안내 불일치: {text}");
+        assert!(
+            text.contains("A2A task 저장소 미구성"),
+            "미구성 안내 불일치: {text}"
+        );
     }
 
     #[tokio::test]
     async fn claim_task_without_store_returns_not_connected() {
         let server = TunaSearchServer::new(Arc::new(FakeRetriever(vec![])));
-        let result = server.claim_task(Parameters(ClaimTaskParams { task_id: "t1".into(), agent: None, runner: None })).await;
+        let result = server
+            .claim_task(Parameters(ClaimTaskParams {
+                task_id: "t1".into(),
+                agent: None,
+                runner: None,
+            }))
+            .await;
         assert!(result.is_ok());
         let text = format!("{:?}", result.unwrap().content);
-        assert!(text.contains("A2A task 저장소 미구성"), "미구성 안내 불일치: {text}");
+        assert!(
+            text.contains("A2A task 저장소 미구성"),
+            "미구성 안내 불일치: {text}"
+        );
     }
 
     #[tokio::test]
     async fn complete_task_without_store_returns_not_connected() {
         let server = TunaSearchServer::new(Arc::new(FakeRetriever(vec![])));
         let result = server
-            .complete_task(Parameters(CompleteTaskParams { task_id: "t1".into(), result: "결과".into(), agent: None }))
+            .complete_task(Parameters(CompleteTaskParams {
+                task_id: "t1".into(),
+                result: "결과".into(),
+                agent: None,
+            }))
             .await;
         assert!(result.is_ok());
         let text = format!("{:?}", result.unwrap().content);
-        assert!(text.contains("A2A task 저장소 미구성"), "미구성 안내 불일치: {text}");
+        assert!(
+            text.contains("A2A task 저장소 미구성"),
+            "미구성 안내 불일치: {text}"
+        );
     }
 
     #[tokio::test]
@@ -1114,7 +1313,11 @@ mod tests {
         let store = SqliteStore::open_memory().unwrap();
         seed_task(&store, "t1", "win", "mac", "2026-07-02 09:00:00");
         let server = server_with_a2a_store(store);
-        let result = server.poll_tasks(Parameters(PollTasksParams { agent: "mac".into() })).await;
+        let result = server
+            .poll_tasks(Parameters(PollTasksParams {
+                agent: "mac".into(),
+            }))
+            .await;
         assert!(result.is_ok());
         let text = format!("{:?}", result.unwrap().content);
         assert!(text.contains("t1"), "task 목록 누락: {text}");
@@ -1125,8 +1328,15 @@ mod tests {
         let store = SqliteStore::open_memory().unwrap();
         seed_task(&store, "t1", "win", "mac", "2026-07-02 09:00:00");
         let a2a = Arc::new(Mutex::new(store));
-        let server = TunaSearchServer::new(Arc::new(FakeRetriever(vec![]))).with_a2a_store(a2a.clone());
-        let result = server.claim_task(Parameters(ClaimTaskParams { task_id: "t1".into(), agent: None, runner: None })).await;
+        let server =
+            TunaSearchServer::new(Arc::new(FakeRetriever(vec![]))).with_a2a_store(a2a.clone());
+        let result = server
+            .claim_task(Parameters(ClaimTaskParams {
+                task_id: "t1".into(),
+                agent: None,
+                runner: None,
+            }))
+            .await;
         assert!(result.is_ok());
         let text = format!("{:?}", result.unwrap().content);
         assert!(text.contains("state=working"), "응답 불일치: {text}");
@@ -1139,25 +1349,46 @@ mod tests {
         let store = SqliteStore::open_memory().unwrap();
         seed_task(&store, "t1", "win", "mac", "2026-07-02 09:00:00");
         let a2a = Arc::new(Mutex::new(store));
-        let server = TunaSearchServer::new(Arc::new(FakeRetriever(vec![]))).with_a2a_store(a2a.clone());
+        let server =
+            TunaSearchServer::new(Arc::new(FakeRetriever(vec![]))).with_a2a_store(a2a.clone());
         // R2: try_complete는 working 상태에서만 성공하므로, 먼저 claim해 착수 상태로 만든다.
-        server.claim_task(Parameters(ClaimTaskParams { task_id: "t1".into(), agent: None, runner: None })).await.unwrap();
+        server
+            .claim_task(Parameters(ClaimTaskParams {
+                task_id: "t1".into(),
+                agent: None,
+                runner: None,
+            }))
+            .await
+            .unwrap();
         let result = server
-            .complete_task(Parameters(CompleteTaskParams { task_id: "t1".into(), result: "완료 보고".into(), agent: None }))
+            .complete_task(Parameters(CompleteTaskParams {
+                task_id: "t1".into(),
+                result: "완료 보고".into(),
+                agent: None,
+            }))
             .await;
         assert!(result.is_ok());
         let text = format!("{:?}", result.unwrap().content);
         assert!(text.contains("state=completed"), "응답 불일치: {text}");
         let reloaded = a2a.lock().unwrap().get_task("t1").unwrap().unwrap();
         assert_eq!(reloaded.state, TaskState::Completed);
-        assert_eq!(reloaded.artifacts[0].parts[0].text.as_deref(), Some("완료 보고"));
+        assert_eq!(
+            reloaded.artifacts[0].parts[0].text.as_deref(),
+            Some("완료 보고")
+        );
     }
 
     #[tokio::test]
     async fn claim_task_tool_missing_task_returns_error_text() {
         let store = SqliteStore::open_memory().unwrap();
         let server = server_with_a2a_store(store);
-        let result = server.claim_task(Parameters(ClaimTaskParams { task_id: "nope".into(), agent: None, runner: None })).await;
+        let result = server
+            .claim_task(Parameters(ClaimTaskParams {
+                task_id: "nope".into(),
+                agent: None,
+                runner: None,
+            }))
+            .await;
         assert!(result.is_ok());
         let call_result = result.unwrap();
         // R1: 내부 실패는 isError=true라야 클라이언트가 성공으로 오인하지 않는다.
@@ -1171,7 +1402,11 @@ mod tests {
         let store = SqliteStore::open_memory().unwrap();
         let server = server_with_a2a_store(store);
         let result = server
-            .complete_task(Parameters(CompleteTaskParams { task_id: "nope".into(), result: "결과".into(), agent: None }))
+            .complete_task(Parameters(CompleteTaskParams {
+                task_id: "nope".into(),
+                result: "결과".into(),
+                agent: None,
+            }))
             .await;
         assert!(result.is_ok());
         let call_result = result.unwrap();
@@ -1188,18 +1423,42 @@ mod tests {
         let store = SqliteStore::open_memory().unwrap();
         seed_task(&store, "t1", "win", "mac", "2026-07-02 09:00:00");
         let a2a = Arc::new(Mutex::new(store));
-        let server = TunaSearchServer::new(Arc::new(FakeRetriever(vec![]))).with_a2a_store(a2a.clone());
+        let server =
+            TunaSearchServer::new(Arc::new(FakeRetriever(vec![]))).with_a2a_store(a2a.clone());
 
         // 첫 claim은 성공(submitted -> working).
-        let first = server.claim_task(Parameters(ClaimTaskParams { task_id: "t1".into(), agent: None, runner: None })).await;
+        let first = server
+            .claim_task(Parameters(ClaimTaskParams {
+                task_id: "t1".into(),
+                agent: None,
+                runner: None,
+            }))
+            .await;
         assert!(first.is_ok());
-        assert_eq!(first.unwrap().is_error, Some(false), "첫 claim은 성공이어야 함");
+        assert_eq!(
+            first.unwrap().is_error,
+            Some(false),
+            "첫 claim은 성공이어야 함"
+        );
 
         // 둘째 claim(동시 착수 경쟁 시뮬레이션): 이미 working이라 전이충돌 -> isError=true.
-        let second = server.claim_task(Parameters(ClaimTaskParams { task_id: "t1".into(), agent: None, runner: None })).await;
-        assert!(second.is_ok(), "MCP 레벨에서는 항상 Ok(CallToolResult)를 반환해야 함");
+        let second = server
+            .claim_task(Parameters(ClaimTaskParams {
+                task_id: "t1".into(),
+                agent: None,
+                runner: None,
+            }))
+            .await;
+        assert!(
+            second.is_ok(),
+            "MCP 레벨에서는 항상 Ok(CallToolResult)를 반환해야 함"
+        );
         let call_result = second.unwrap();
-        assert_eq!(call_result.is_error, Some(true), "전이충돌인데 isError=true가 아님");
+        assert_eq!(
+            call_result.is_error,
+            Some(true),
+            "전이충돌인데 isError=true가 아님"
+        );
         let text = format!("{:?}", call_result.content);
         assert!(text.contains("착수 실패"), "에러 안내 불일치: {text}");
 
@@ -1215,12 +1474,21 @@ mod tests {
         let store = SqliteStore::open_memory().unwrap();
         seed_task(&store, "t1", "win", "mac", "2026-07-02 09:00:00");
         let a2a = Arc::new(Mutex::new(store));
-        let server = TunaSearchServer::new(Arc::new(FakeRetriever(vec![]))).with_a2a_store(a2a.clone());
+        let server =
+            TunaSearchServer::new(Arc::new(FakeRetriever(vec![]))).with_a2a_store(a2a.clone());
 
         let claim = server
-            .claim_task(Parameters(ClaimTaskParams { task_id: "t1".into(), agent: Some("worker-a".into()), runner: None }))
+            .claim_task(Parameters(ClaimTaskParams {
+                task_id: "t1".into(),
+                agent: Some("worker-a".into()),
+                runner: None,
+            }))
             .await;
-        assert_eq!(claim.unwrap().is_error, Some(false), "claim은 성공이어야 함");
+        assert_eq!(
+            claim.unwrap().is_error,
+            Some(false),
+            "claim은 성공이어야 함"
+        );
 
         // 되살아난(stale) worker-b가 completer로 완료 보고 -> 거부(isError=true).
         let mismatched = server
@@ -1231,7 +1499,11 @@ mod tests {
             }))
             .await;
         let mismatched = mismatched.unwrap();
-        assert_eq!(mismatched.is_error, Some(true), "completer 불일치인데 isError=true가 아님");
+        assert_eq!(
+            mismatched.is_error,
+            Some(true),
+            "completer 불일치인데 isError=true가 아님"
+        );
         assert_eq!(
             a2a.lock().unwrap().get_task("t1").unwrap().unwrap().state,
             TaskState::Working,
@@ -1246,13 +1518,16 @@ mod tests {
                 agent: Some("worker-a".into()),
             }))
             .await;
-        assert_eq!(matched.unwrap().is_error, Some(false), "본인 completer는 성공해야 함");
+        assert_eq!(
+            matched.unwrap().is_error,
+            Some(false),
+            "본인 completer는 성공해야 함"
+        );
         assert_eq!(
             a2a.lock().unwrap().get_task("t1").unwrap().unwrap().state,
             TaskState::Completed
         );
     }
-
 
     // --- A2A dispatcher 툴: MCP 계층(#[tool] 메서드) 테스트 ---
 
@@ -1270,23 +1545,34 @@ mod tests {
             .await;
         assert!(result.is_ok());
         let text = format!("{:?}", result.unwrap().content);
-        assert!(text.contains("A2A task 저장소 미구성"), "미구성 안내 불일치: {text}");
+        assert!(
+            text.contains("A2A task 저장소 미구성"),
+            "미구성 안내 불일치: {text}"
+        );
     }
 
     #[tokio::test]
     async fn get_task_without_store_returns_not_connected() {
         let server = TunaSearchServer::new(Arc::new(FakeRetriever(vec![])));
-        let result = server.get_task(Parameters(GetTaskParams { task_id: "t1".into() })).await;
+        let result = server
+            .get_task(Parameters(GetTaskParams {
+                task_id: "t1".into(),
+            }))
+            .await;
         assert!(result.is_ok());
         let text = format!("{:?}", result.unwrap().content);
-        assert!(text.contains("A2A task 저장소 미구성"), "미구성 안내 불일치: {text}");
+        assert!(
+            text.contains("A2A task 저장소 미구성"),
+            "미구성 안내 불일치: {text}"
+        );
     }
 
     #[tokio::test]
     async fn send_task_tool_creates_task_via_server_and_get_task_reads_it_back() {
         let store = SqliteStore::open_memory().unwrap();
         let a2a = Arc::new(Mutex::new(store));
-        let server = TunaSearchServer::new(Arc::new(FakeRetriever(vec![]))).with_a2a_store(a2a.clone());
+        let server =
+            TunaSearchServer::new(Arc::new(FakeRetriever(vec![]))).with_a2a_store(a2a.clone());
 
         let send_result = server
             .send_task(Parameters(SendTaskParams {
@@ -1299,7 +1585,10 @@ mod tests {
             .await;
         assert!(send_result.is_ok());
         let send_text = format!("{:?}", send_result.unwrap().content);
-        assert!(send_text.contains("state=submitted"), "send_task 응답 불일치: {send_text}");
+        assert!(
+            send_text.contains("state=submitted"),
+            "send_task 응답 불일치: {send_text}"
+        );
 
         // 실제로 mac-claude 앞으로 열린 task가 생겼는지 store에서 직접 확인.
         let seeded_id = {
@@ -1310,18 +1599,32 @@ mod tests {
         };
 
         // get_task 툴로도 같은 task를 읽을 수 있어야 한다(dispatcher가 보내고 확인하는 왕복).
-        let get_result = server.get_task(Parameters(GetTaskParams { task_id: seeded_id.clone() })).await;
+        let get_result = server
+            .get_task(Parameters(GetTaskParams {
+                task_id: seeded_id.clone(),
+            }))
+            .await;
         assert!(get_result.is_ok());
         let get_text = format!("{:?}", get_result.unwrap().content);
-        assert!(get_text.contains(&seeded_id), "get_task 응답에 task_id 없음: {get_text}");
-        assert!(get_text.contains("state=submitted"), "get_task 응답 불일치: {get_text}");
+        assert!(
+            get_text.contains(&seeded_id),
+            "get_task 응답에 task_id 없음: {get_text}"
+        );
+        assert!(
+            get_text.contains("state=submitted"),
+            "get_task 응답 불일치: {get_text}"
+        );
     }
 
     #[tokio::test]
     async fn get_task_tool_missing_task_returns_not_found_text() {
         let store = SqliteStore::open_memory().unwrap();
         let server = server_with_a2a_store(store);
-        let result = server.get_task(Parameters(GetTaskParams { task_id: "nope".into() })).await;
+        let result = server
+            .get_task(Parameters(GetTaskParams {
+                task_id: "nope".into(),
+            }))
+            .await;
         assert!(result.is_ok());
         let text = format!("{:?}", result.unwrap().content);
         assert!(text.contains("없음"), "미존재 안내 불일치: {text}");
@@ -1335,7 +1638,10 @@ mod tests {
         let result = server.tasks(Parameters(ListTasksParams {})).await;
         assert!(result.is_ok());
         let text = format!("{:?}", result.unwrap().content);
-        assert!(text.contains("A2A task 저장소 미구성"), "미구성 안내 불일치: {text}");
+        assert!(
+            text.contains("A2A task 저장소 미구성"),
+            "미구성 안내 불일치: {text}"
+        );
     }
 
     #[tokio::test]
@@ -1350,5 +1656,4 @@ mod tests {
         assert!(text.contains("t1"), "t1 누락: {text}");
         assert!(text.contains("t2"), "t2 누락: {text}");
     }
-
 }
