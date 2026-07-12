@@ -78,12 +78,23 @@ export type ScannerHealth = {
   online: boolean
 }
 
-// 브로커 헬스 요약(GET /dashboard/health). 열린 task 수 + 미배달/고착 집계 + 스캐너 도달성
-// + 브로커 uptime(기동 후 경과 초) + WAL 사이드카 크기(바이트). uptime/WAL은 임계 없는 게이지.
+// tasks 테이블 상태별 라이브 카운트(StatTiles 서버소스, v2-53). working=진행 중(open)=
+// submitted+working+input_required. 피드에서 세지 않아 리로드에도 안정.
+export type TaskCounts = {
+  working: number
+  completed: number
+  failed: number
+}
+
+// 브로커 헬스 요약(GET /dashboard/health). 브로커 버전 + 열린 task 수 + 미배달/고착 집계
+// + 상태별 카운트(task_counts) + 스캐너 도달성 + 브로커 uptime(기동 후 경과 초) + WAL 사이드카 크기(바이트).
+// uptime/WAL은 임계 없는 게이지.
 export type BrokerHealth = {
+  version: string
   open_tasks: number
   no_consumer: number
   stuck: number
+  task_counts: TaskCounts
   scanners: ScannerHealth[]
   now: string
   uptime_secs: number

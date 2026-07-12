@@ -534,11 +534,23 @@ async fn dashboard_health_handler(
         age_secs: i64,
         online: bool,
     }
+    /// tasks 테이블 상태별 라이브 카운트(StatTiles 서버소스화, v2-53). working=진행 중(open)=
+    /// submitted+working+input_required(목업이 진행중==열린 동일값). completed/failed는 종결 카운트.
+    #[derive(serde::Serialize)]
+    struct TaskCounts {
+        working: usize,
+        completed: usize,
+        failed: usize,
+    }
     #[derive(serde::Serialize)]
     struct Health {
+        /// 브로커 바이너리 버전(CARGO_PKG_VERSION). 헤더 v{version} 표시용(v2-53).
+        version: String,
         open_tasks: usize,
         no_consumer: usize,
         stuck: usize,
+        /// tasks 테이블 상태별 라이브 카운트(StatTiles 서버소스, 리로드 안정. v2-53).
+        task_counts: TaskCounts,
         scanners: Vec<ScannerHealth>,
         now: String,
         /// 브로커(serve 프로세스) 기동 후 경과 초(broker_started_at config 기준). row 부재 시 0.
@@ -585,7 +597,27 @@ async fn dashboard_health_handler(
                 .ok_or_else(|| "broker_started_at 형식 손상".to_string())?,
         };
         let wal_bytes = store.wal_bytes()?;
-        Ok(Health { open_tasks: open.len(), no_consumer, stuck, scanners, now, uptime_secs, wal_bytes })
+        // StatTiles 서버소스: 단일 GROUP BY 질의로 상태별 카운트를 얻어 진행중/완료/실패를 도출한다
+        // (피드에서 세지 않아 리로드에도 안정). fail-visible: 질의 실패는 500으로 표면화(정상 0 위장 금지).
+        let by_state = store.count_by_state()?;
+        let count_of = |s: &str| by_state.get(s).copied().unwrap_or(0);
+        let task_counts = TaskCounts {
+            working: (count_of("submitted") + count_of("working") + count_of("input_required"))
+                as usize,
+            completed: count_of("completed") as usize,
+            failed: count_of("failed") as usize,
+        };
+        Ok(Health {
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            open_tasks: open.len(),
+            no_consumer,
+            stuck,
+            task_counts,
+            scanners,
+            now,
+            uptime_secs,
+            wal_bytes,
+        })
     })
     .await
     .unwrap_or_else(|e| Err(format!("spawn_blocking 실패: {e}")));

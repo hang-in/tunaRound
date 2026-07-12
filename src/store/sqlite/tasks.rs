@@ -134,6 +134,27 @@ impl SqliteStore {
         rows.into_iter().map(TaskRow::into_task).collect()
     }
 
+    /// tasks 테이블을 상태(state)별로 집계한다(`SELECT state, COUNT(*) FROM tasks GROUP BY state`).
+    /// 대시보드 StatTiles를 SoR 라이브 질의로 서버소스화(리로드 안정)하기 위한 순수 집계 헬퍼다.
+    /// 반환은 "존재하는 상태 → 개수" 맵이다(개수 0인 상태는 키가 없음 → 호출부가 `.unwrap_or(0)`).
+    pub fn count_by_state(&self) -> Result<std::collections::HashMap<String, i64>, String> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT state, COUNT(*) FROM tasks GROUP BY state")
+            .map_err(|e| format!("sqlite: {e}"))?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })
+            .map_err(|e| format!("sqlite: {e}"))?;
+        let mut out = std::collections::HashMap::new();
+        for row in rows {
+            let (state, count) = row.map_err(|e| format!("sqlite: {e}"))?;
+            out.insert(state, count);
+        }
+        Ok(out)
+    }
+
     /// 과거 task를 재생(replay)용으로 조회하는 공용 질의(v2-45 P2, 설계 §3). 피드 스냅샷(?replay=N)과
     /// watch-results 재생(?since=TS)이 이 하나로 수렴한다(질의 중복 설계 방지).
     ///
@@ -698,6 +719,41 @@ mod tests {
                 vec!["t1", "t2"],
                 "to_agent 필터 없이 열린 task 전부(agent 무관) + completed 제외"
             );
+        }
+
+        #[test]
+        fn count_by_state_groups_all_states() {
+            let db = SqliteStore::open_memory().unwrap();
+            // submitted 2, working 1, completed 3, failed 1(입력 상태는 0 → 키 부재로 확인).
+            let seed = [
+                ("a", TaskState::Submitted),
+                ("b", TaskState::Submitted),
+                ("c", TaskState::Working),
+                ("d", TaskState::Completed),
+                ("e", TaskState::Completed),
+                ("f", TaskState::Completed),
+                ("g", TaskState::Failed),
+            ];
+            for (id, state) in seed {
+                let mut t = Task::new(id, None, "win", "mac", "2026-07-12 10:00:00");
+                t.state = state;
+                db.create_task(&t).unwrap();
+            }
+
+            let counts = db.count_by_state().unwrap();
+            assert_eq!(counts.get("submitted").copied(), Some(2));
+            assert_eq!(counts.get("working").copied(), Some(1));
+            assert_eq!(counts.get("completed").copied(), Some(3));
+            assert_eq!(counts.get("failed").copied(), Some(1));
+            // 존재하지 않는 상태는 키가 없어야 한다(호출부가 unwrap_or(0)로 흡수).
+            assert_eq!(counts.get("input_required").copied(), None);
+            assert_eq!(counts.get("canceled").copied(), None);
+        }
+
+        #[test]
+        fn count_by_state_empty_table_is_empty_map() {
+            let db = SqliteStore::open_memory().unwrap();
+            assert!(db.count_by_state().unwrap().is_empty(), "빈 테이블은 빈 맵");
         }
 
         // --- v2-45 P2: list_tasks_replay(재생 공용 질의) 단위테스트 ---
