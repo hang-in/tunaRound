@@ -411,8 +411,13 @@ mod tests {
         let json_str = v.to_string();
         assert!(json_str.contains("--session-id"), "--session-id가 MCP config에 없음: {json_str}");
         assert!(json_str.contains("my-session-42"), "세션 id가 MCP config에 없음: {json_str}");
-        // search_session 미설정 시 --session-id 미포함.
-        assert!(!runner.search_session.is_none() || !json_str.is_empty()); // 항상 true, 빌더 검증은 위에서 완료.
+        // with_search_session(Some(..)) 호출 시 빌더가 세션 id를 실제로 저장했는지 확인한다.
+        assert_eq!(
+            runner.search_session.as_deref(),
+            Some("my-session-42"),
+            "with_search_session 호출 시 search_session에 값이 저장돼야 함"
+        );
+        // search_session 미설정 시 None(위 --session-id 경로가 타지 않음).
         let runner_no_session = ClaudeRunner::new().with_search_db(Some("/tmp/test.db".into()));
         assert!(runner_no_session.search_session.is_none(), "with_search_session 미호출 시 None이어야 함");
     }
