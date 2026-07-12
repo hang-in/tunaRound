@@ -1,81 +1,24 @@
-// 관리자 로스터: 머신별 그룹 + 1줄 행(프로젝트·러너·상태만). 이름/뱃지 3중 중복 제거 리디자인.
-// role=session(기본값)은 숨기고 예외(supervised 등)만 칩. uuid는 행 클릭 확장 상세로(복사·목표 추가).
+// 관리자 로스터(사이드바): 머신 그룹 + 세션 행(mono id, ★ boss 강조, runner pill, 상대시간).
+// 목업 aside.sidebar 이식. 행 클릭=확장 상세(uuid 복사·이 세션에 목표). buildRoster·★ autoBoss 도출 보존.
 import { useState } from 'react'
 import { relativeTime } from '../api'
 import type { SessionRow } from '../activity'
-import { RunnerIcon } from './runnerIcons'
-
-// 태그 값별 색(워커 섹션 TagPill 재사용분). 알려진 값은 고정, 나머지는 해시 팔레트.
-const VALUE_COLOR: Record<string, string> = {
-  mac: '#6e7681',
-  win: '#0078d4',
-  linux: '#f0883e',
-  claude: '#c15f3c',
-  codex: '#10a37f',
-  gemini: '#4285f4',
-  supervised: '#2da44e',
-  infra: '#2da44e',
-  dispatcher: '#8250df',
-  worker: '#bf8700',
-  tunaround: '#d29922',
-}
-const PALETTE = ['#2f6fe4', '#8957e5', '#2da44e', '#d29922', '#c15f3c', '#10a37f', '#bf3989', '#57606a']
-
-function valueColor(v: string): string {
-  if (VALUE_COLOR[v]) return VALUE_COLOR[v]
-  let h = 0
-  for (let i = 0; i < v.length; i++) h = (h * 31 + v.charCodeAt(i)) >>> 0
-  return PALETTE[h % PALETTE.length]
-}
-
-// 머신 브랜드 글리프(그룹 헤더·워커 섹션 재사용).
-export function MachineGlyph({ machine }: { machine: string | undefined }) {
-  if (machine === 'mac') {
-    return (
-      <svg className="machine-glyph" width="13" height="13" viewBox="0 0 16 16" fill="currentColor" aria-label="mac">
-        <path d="M11.05 8.36c-.02-1.5 1.22-2.22 1.28-2.26-.7-1.02-1.79-1.16-2.17-1.18-.92-.09-1.8.54-2.27.54-.47 0-1.19-.53-1.96-.51-1.01.01-1.94.59-2.46 1.49-1.05 1.82-.27 4.52.75 6 .5.73 1.09 1.54 1.87 1.51.75-.03 1.03-.48 1.94-.48.9 0 1.16.48 1.95.47.81-.01 1.32-.74 1.81-1.47.57-.84.81-1.66.82-1.7-.02-.01-1.57-.6-1.59-2.38zM9.6 3.87c.41-.5.69-1.2.61-1.9-.59.02-1.31.4-1.74.9-.38.44-.71 1.15-.62 1.83.66.05 1.34-.33 1.75-.83z" />
-      </svg>
-    )
-  }
-  if (machine === 'win') {
-    return (
-      <svg className="machine-glyph win" width="12" height="12" viewBox="0 0 16 16" fill="currentColor" aria-label="win">
-        <path d="M0 2.25 6.5 1.35v6.4H0V2.25zM7.4 1.22 16 0v7.75H7.4V1.22zM0 8.55h6.5v6.4L0 14.05V8.55zM7.4 8.55H16V16l-8.6-1.2V8.55z" />
-      </svg>
-    )
-  }
-  return <span className="machine-glyph-none" aria-hidden="true" />
-}
-
-// 값만 표시하는 뱃지(워커 섹션 전용으로 유지 - 로스터 본문에서는 예외 role 칩만 쓴다).
-export function TagPill({ k, v }: { k: string; v: string }) {
-  return (
-    <span className="shield-v shield-solo" style={{ background: valueColor(v) }} title={k}>
-      {v}
-    </span>
-  )
-}
 
 type Props = {
   rows: SessionRow[]
-  // 머신 상주 데몬(role=infra). 카드가 아니라 머신 그룹 헤더의 상태 도트로 렌더한다(설계 v2-44 §5).
-  infra: SessionRow[]
-  // uuid -> 방금 heartbeat 가 갱신돼 pulse 링을 잠깐 보여줄지 여부.
+  // uuid -> 방금 heartbeat 가 갱신돼 잠깐 강조할지 여부.
   pulses: Record<string, boolean>
-  // 총감독(활성 중 사람 입력 최신).
+  // 총감독(활성 중 사람 입력 최신). 없으면 ''.
   autoBossUuid: string
-  // 상세의 "이 세션에 목표" -> 목표 제출 폼 선택에 추가(App이 배선).
+  // 상세의 "이 세션에 목표" -> 목표 모달 대상에 추가(App이 배선).
   onAddTarget?: (uuid: string) => void
 }
 
-// 머신 그룹 헤더의 인프라 상태 도트 한 개. ok=해당 데몬 online(도달 가능), off=부재.
-function InfraDot({ ok, label, title }: { ok: boolean; label: string; title: string }) {
-  return (
-    <span className={`rst-infra-dot${ok ? ' ok' : ''}`} title={title}>
-      <span className="rst-infra-bullet" aria-hidden="true" />
-      {label}
-    </span>
-  )
+// 머신 letter-glyph(목업 .glyph). win→W, mac→M, 기타→첫 글자 대문자.
+function machineLetter(m: string): string {
+  if (m === 'win') return 'W'
+  if (m === 'mac') return 'M'
+  return (m[0] ?? '·').toUpperCase()
 }
 
 // 그룹 내 같은 (runner, project) 세션이 여럿이면 두 번째부터 ·B ·C 접미(uuid 정렬 순).
@@ -99,14 +42,13 @@ function titleSuffixes(rows: SessionRow[]): Map<string, string> {
   return out
 }
 
-export default function Roster({ rows, infra, pulses, autoBossUuid, onAddTarget }: Props) {
+export default function Roster({ rows, pulses, autoBossUuid, onAddTarget }: Props) {
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
   const [copied, setCopied] = useState('')
 
-  // 머신 그룹: 총감독 머신 → win → mac → 나머지 알파벳. 세션이 없어도 infra만 있는 머신은 그룹을 남긴다
-  // (도트 = "이 머신에 A2A가 닿는가"의 인디케이터, 설계 v2-44 §5).
+  // 머신 그룹 순서: 총감독 머신 → win → mac → 나머지 알파벳.
   const bossMachine = rows.find((r) => r.uuid === autoBossUuid)?.machine ?? null
-  const machines = [...new Set([...rows, ...infra].map((r) => r.machine ?? '기타'))]
+  const machines = [...new Set(rows.map((r) => r.machine ?? '기타'))]
   machines.sort((a, b) => {
     const rank = (m: string) => (m === bossMachine ? 0 : m === 'win' ? 1 : m === 'mac' ? 2 : 3)
     return rank(a) - rank(b) || a.localeCompare(b)
@@ -125,140 +67,99 @@ export default function Roster({ rows, infra, pulses, autoBossUuid, onAddTarget 
   }
 
   return (
-    <section className="roster-section">
-      <div className="panel-header">
-        <h2 className="section-title">관리자 로스터</h2>
-        <span className="section-count">{rows.length} online</span>
+    <div className="side-block">
+      <div className="sh">
+        <h2>관리자 로스터</h2>
+        <span className="count">{rows.length} online</span>
       </div>
-      <div className="roster-list">
-        {rows.length === 0 && infra.length === 0 ? (
-          <div className="roster-empty">열린 세션 없음.</div>
-        ) : (
-          machines.map((m) => {
-            const group = rows.filter((r) => (r.machine ?? '기타') === m)
-            const suffix = titleSuffixes(group)
-            const sorted = [...group].sort(
-              (a, b) =>
-                (a.uuid === autoBossUuid ? 0 : 1) - (b.uuid === autoBossUuid ? 0 : 1) ||
-                (a.project ?? a.label).localeCompare(b.project ?? b.label),
-            )
-            // 머신 인프라 도트: presence = 스캐너 데몬 heartbeat(폴백=이 머신 세션이 src=scan으로 보고됨),
-            // codex 주입 = codex-inject watcher online(이 머신 codex에 던지면 받는가).
-            const machineInfra = infra.filter((r) => (r.machine ?? '기타') === m)
-            const presenceOk =
-              machineInfra.some((r) => r.tags.purpose === 'presence') ||
-              group.some((r) => r.tags.src === 'scan')
-            const injectOk = machineInfra.some((r) => r.tags.purpose === 'codex-inject')
-            return (
-              <div key={m}>
-                <div className="rst-group">
-                  <MachineGlyph machine={m === '기타' ? undefined : m} />
-                  <span className="rst-group-name">{m}</span>
-                  <span className="rst-group-count">· {group.length}</span>
-                  <InfraDot
-                    ok={presenceOk}
-                    label="presence"
-                    title={presenceOk ? '스캐너 동작 중(이 머신에 A2A 도달 가능)' : '스캐너 부재(세션 자체 등록만)'}
-                  />
-                  <InfraDot
-                    ok={injectOk}
-                    label="codex 주입"
-                    title={injectOk ? 'codex-inject watcher online(이 머신 codex에 task 전달 가능)' : 'codex 주입 경로 없음'}
-                  />
-                  <span className="rst-group-line" />
+      {rows.length === 0 ? (
+        <div className="roster-empty">열린 세션 없음.</div>
+      ) : (
+        machines.map((m) => {
+          const group = rows.filter((r) => (r.machine ?? '기타') === m)
+          const suffix = titleSuffixes(group)
+          const sorted = [...group].sort(
+            (a, b) =>
+              (a.uuid === autoBossUuid ? 0 : 1) - (b.uuid === autoBossUuid ? 0 : 1) ||
+              (a.project ?? a.label).localeCompare(b.project ?? b.label),
+          )
+          return (
+            <div key={m}>
+              <div className="mgroup">
+                <div className="mh">
+                  <span className="glyph">{machineLetter(m)}</span>
+                  <span className="label">{m}</span>
                 </div>
-                {group.length === 0 ? <div className="roster-empty">열린 세션 없음(인프라만 동작 중).</div> : null}
-                {sorted.map((s) => {
-                  const isBoss = s.uuid === autoBossUuid
-                  const pulse = Boolean(pulses[s.uuid])
-                  const open = Boolean(expanded[s.uuid])
-                  const role = s.tags.role
-                  const title = (s.project ?? s.label) + (suffix.get(s.uuid) ?? '')
-                  const sessionId = s.tags.session ?? s.uuid
-                  return (
-                    <div key={s.uuid}>
-                      <div
-                        className={`rst-row${isBoss ? ' boss' : ''}${pulse ? ' fresh' : ''}`}
-                        role="button"
-                        tabIndex={0}
-                        aria-expanded={open}
-                        onClick={() => toggle(s.uuid)}
-                        onKeyDown={(e) => {
-                          if (e.key === 'Enter' || e.key === ' ') {
-                            e.preventDefault()
-                            toggle(s.uuid)
-                          }
-                        }}
-                      >
-                        <span className="rst-dot-wrap">
-                          <span className="rst-dot" />
-                          {pulse ? <span className="rst-ping" /> : null}
+              </div>
+              {sorted.map((s) => {
+                const isBoss = s.uuid === autoBossUuid
+                const fresh = Boolean(pulses[s.uuid])
+                const open = Boolean(expanded[s.uuid])
+                const title = (s.project ?? s.label) + (suffix.get(s.uuid) ?? '')
+                const sessionId = s.tags.session ?? s.uuid
+                // .rr 우측: boss는 heartbeat rel, 사람 입력 이력 있으면 ★+humanInputAt rel, 아니면 heartbeat rel.
+                const tail =
+                  isBoss || !s.humanInputAt
+                    ? relativeTime(s.lastHeartbeat)
+                    : '★ ' + relativeTime(s.humanInputAt)
+                return (
+                  <div key={s.uuid}>
+                    <button
+                      type="button"
+                      className={`srow${isBoss ? ' boss' : ''}${fresh ? ' fresh' : ''}`}
+                      aria-expanded={open}
+                      onClick={() => toggle(s.uuid)}
+                    >
+                      <span className="rid" title={s.uuid}>
+                        {title}
+                      </span>
+                      {isBoss ? (
+                        <span className="star" title="현재 총감독(사람이 마지막으로 입력한 세션)">
+                          ★
                         </span>
-                        <RunnerIcon runner={s.runner} />
-                        <span className="rst-title">{title}</span>
-                        <span className="rst-runner-name">{s.runner ?? '?'}</span>
-                        {isBoss ? (
-                          <>
-                            <span className="boss-star on" title="현재 총감독(사람이 마지막으로 입력한 세션)">
-                              ★
-                            </span>
-                            <span className="rst-chip boss">총괄</span>
-                          </>
-                        ) : null}
-                        {role && role !== 'session' ? (
-                          <span className={`rst-chip role-${role}`}>{role}</span>
-                        ) : null}
-                        <span className="dash-spacer" />
-                        {!isBoss && s.humanInputAt ? (
-                          <span
-                            className="rst-last-star"
-                            title="이 세션에 사람이 마지막으로 입력한 시각(★가 거쳐간 자리). 현재 ★는 총괄 카드."
-                          >
-                            ★ {relativeTime(s.humanInputAt)}
-                          </span>
-                        ) : null}
-                        <span className="rst-hb">{relativeTime(s.lastHeartbeat)}</span>
-                        <span className="rst-caret" aria-hidden="true">
-                          ▸
+                      ) : null}
+                      <span className="rr">
+                        <span className="pill on">{s.runner ?? '?'}</span>
+                        {tail}
+                      </span>
+                    </button>
+                    {open ? (
+                      <div className="srow-detail">
+                        <span className="srow-uuid" title="session / uuid">
+                          {sessionId}
                         </span>
-                      </div>
-                      {open ? (
-                        <div className="rst-detail">
-                          <span className="rst-uuid" title="session / uuid">
-                            {sessionId}
-                          </span>
+                        <button
+                          type="button"
+                          className="srow-detail-btn"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            copyUuid(s.uuid) // 내부에서 실패를 삼키는 fire-and-forget.
+                          }}
+                        >
+                          {copied === s.uuid ? '복사됨 ✓' : 'uuid 복사'}
+                        </button>
+                        {onAddTarget ? (
                           <button
                             type="button"
-                            className="rst-detail-btn"
+                            className="srow-detail-btn"
                             onClick={(e) => {
                               e.stopPropagation()
-                              copyUuid(s.uuid) // 내부에서 실패를 삼키는 fire-and-forget.
+                              onAddTarget(s.uuid)
                             }}
                           >
-                            {copied === s.uuid ? '복사됨 ✓' : 'uuid 복사'}
+                            이 세션에 목표
                           </button>
-                          {onAddTarget ? (
-                            <button
-                              type="button"
-                              className="rst-detail-btn"
-                              onClick={(e) => {
-                                e.stopPropagation()
-                                onAddTarget(s.uuid)
-                              }}
-                            >
-                              이 세션에 목표
-                            </button>
-                          ) : null}
-                        </div>
-                      ) : null}
-                    </div>
-                  )
-                })}
-              </div>
-            )
-          })
-        )}
-      </div>
-    </section>
+                        ) : null}
+                      </div>
+                    ) : null}
+                  </div>
+                )
+              })}
+            </div>
+          )
+        })
+      )}
+      <div className="side-empty">rail 하단은 비워둠 · 필요한 패널을 여기 얹습니다</div>
+    </div>
   )
 }

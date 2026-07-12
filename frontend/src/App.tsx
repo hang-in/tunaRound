@@ -1,30 +1,42 @@
-// 총괄 대시보드 루트. roster 폴링 + heartbeat 변화 감지(pulse) + feed 이벤트 취합(통계)을 소유하고
-// 헤더/통계/로스터/피드/goal 폼을 배치한다. 목업(총괄 대시보드.dc.html) 레이아웃 이식.
+// 총괄 대시보드 루트(shell 레이아웃, v2-53). roster 5초 폴 + heartbeat pulse + health 5초 폴을 소유하고
+// 헤더/사이드바 로스터/통계/피드/타임라인/푸터/목표 모달을 배치한다. 확정 목업 dashboard-mockup.html 이식.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { Agent, Task, TaskEventMsg } from './api'
-import { fetchRoster } from './api'
+import type { Agent, BrokerHealth, Task, TaskEventMsg } from './api'
+import { fetchHealth, fetchRoster } from './api'
 import { buildRoster } from './activity'
 import Header from './components/Header'
 import StatTiles from './components/StatTiles'
-import HealthPanel from './components/HealthPanel'
 import Roster from './components/Roster'
-import WorkerSection from './components/WorkerSection'
 import Feed from './components/Feed'
 import GoalForm from './components/GoalForm'
-import SearchPanel from './components/SearchPanel'
 import PresenceTimeline from './components/PresenceTimeline'
+import Footer from './components/Footer'
 
 // 로컬(총괄) 세션인지 원격 관전인지 클라이언트에서 판정한다(loopback 여부).
 const LOOPBACK_HOSTS = ['127.0.0.1', 'localhost', '[::1]', '::1']
 const remoteViewer = !LOOPBACK_HOSTS.includes(location.hostname)
 
 const PULSE_MS = 750
+const HEALTH_POLL_MS = 5000
 
 // 브라우저 알림 옵트인 여부를 세션 간 기억(권한이 유지될 때만 유효).
 const NOTIFY_PREF_KEY = 'tuna-notify'
 const notifySupported = typeof Notification !== 'undefined'
 
-// task id 축약(알림 본문용, Feed.shortId 와 동일 규칙).
+// 테마 선호 저장 키. 저장값이 있으면 dataset.theme로 OS 미디어쿼리를 오버라이드한다(목업 script).
+const THEME_KEY = 'tuna-theme'
+type Theme = 'light' | 'dark'
+
+function savedTheme(): Theme | null {
+  const v = localStorage.getItem(THEME_KEY)
+  return v === 'light' || v === 'dark' ? v : null
+}
+
+function initialTheme(): Theme {
+  return savedTheme() ?? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+}
+
+// task id 축약(알림 본문용).
 function shortId(id: string): string {
   return 't-' + id.slice(0, 4)
 }
@@ -43,9 +55,7 @@ export default function App() {
   const [sseOpen, setSseOpen] = useState(false)
   // uuid -> 방금 heartbeat 가 갱신돼 짧게 pulse 를 보여줄지 여부.
   const [pulses, setPulses] = useState<Record<string, boolean>>({})
-  // taskId -> 가장 최근 수신한 이벤트(통계 타일 계산용).
-  const [taskLatest, setTaskLatest] = useState<Record<string, TaskEventMsg>>({})
-  // 브라우저 알림 옵트인 상태(#4). ref 는 handleEvent(안정 콜백) 안에서 최신값을 읽기 위한 미러.
+  // 브라우저 알림 옵트인 상태. ref 는 handleEvent(안정 콜백) 안에서 최신값을 읽기 위한 미러.
   const [notifyOn, setNotifyOn] = useState(false)
   const notifyOnRef = useRef(false)
   // taskId -> 이 세션에서 마지막으로 관측한 state(완료/실패 전이 알림의 중복·재생 발화 방지용).
@@ -53,6 +63,31 @@ export default function App() {
 
   const prevHbRef = useRef<Record<string, string>>({})
   const pulseTimersRef = useRef<number[]>([])
+
+  // 브로커 헬스(버전·상태별 카운트·헬스 게이지·스캐너). Header/StatTiles/Footer가 공유(HealthPanel 폴 이관).
+  const [health, setHealth] = useState<BrokerHealth | null>(null)
+  const [healthOk, setHealthOk] = useState(true)
+
+  // 테마(라이트/다크). 저장값 또는 OS로 초기화. 토글 시 dataset.theme 강제 + 저장.
+  const [theme, setTheme] = useState<Theme>(initialTheme)
+  useEffect(() => {
+    // 저장값이 있을 때만 dataset을 강제한다(없으면 CSS @media가 OS를 따른다).
+    const s = savedTheme()
+    if (s) document.documentElement.dataset.theme = s
+  }, [])
+  const toggleTheme = useCallback(() => {
+    setTheme((cur) => {
+      const next: Theme = cur === 'dark' ? 'light' : 'dark'
+      document.documentElement.dataset.theme = next
+      localStorage.setItem(THEME_KEY, next)
+      return next
+    })
+  }, [])
+
+  // 목표 제출 모달 오픈 여부.
+  const [modalOpen, setModalOpen] = useState(false)
+  const openGoal = useCallback(() => setModalOpen(true), [])
+  const closeGoal = useCallback(() => setModalOpen(false), [])
 
   // 마운트 시 알림 선호 복원(권한이 아직 granted 일 때만 유효).
   useEffect(() => {
@@ -151,14 +186,40 @@ export default function App() {
     }
   }, [])
 
+  // health 를 5초 주기로 폴링한다(HealthPanel 에서 이관). fail-visible: 최신 폴 실패는 healthOk=false 로 표면화.
+  useEffect(() => {
+    let cancelled = false
+    const controller = new AbortController()
+    const load = () => {
+      fetchHealth(controller.signal)
+        .then((h) => {
+          if (cancelled) return
+          setHealth(h)
+          setHealthOk(true)
+        })
+        .catch((err) => {
+          if (err instanceof DOMException && err.name === 'AbortError') return
+          if (cancelled) return
+          setHealthOk(false)
+          console.error('[health] 조회 실패.', err)
+        })
+    }
+    load()
+    const timer = window.setInterval(load, HEALTH_POLL_MS)
+    return () => {
+      cancelled = true
+      controller.abort()
+      window.clearInterval(timer)
+    }
+  }, [])
+
   // Feed 의 useEffect 재실행(SSE 재구독)을 막기 위해 안정적인 콜백으로 감싼다.
   const handleConnected = useCallback((v: boolean) => setSseOpen(v), [])
   const handleEvent = useCallback((msg: TaskEventMsg) => {
     const id = msg.task.id
     const state = msg.task.state
-    // 알림(#4): 이 세션에서 non-terminal 로 관측했던 task 가 완료/실패로 전이할 때만 발화한다.
-    // 과거 task 재생(?replay=50)·재접속 스냅샷은 prev 가 없거나 이미 terminal 이라 발화하지 않는다.
-    // non-terminal = "관측된 적 있고 종료 상태가 아님"(submitted·working·input_required 모두 포함).
+    // 알림: 이 세션에서 non-terminal 로 관측했던 task 가 완료/실패로 전이할 때만 발화한다.
+    // 과거 task 재생(?replay)·재접속 스냅샷은 prev 가 없거나 이미 terminal 이라 발화하지 않는다.
     const prevState = seenStateRef.current.get(id)
     const terminalStates = ['completed', 'failed', 'canceled']
     const wasNonTerminal = prevState !== undefined && !terminalStates.includes(prevState)
@@ -181,76 +242,52 @@ export default function App() {
       }
     }
     seenStateRef.current.set(id, state)
-    setTaskLatest((prev) => ({ ...prev, [id]: msg }))
   }, [])
 
-  // taskId 별 최신 상태로 진행중/완료/실패 카운트를 계산한다(목업 renderVals 의 latest-per-task 로직).
-  const { workingCount, completedCount, failedCount } = useMemo(() => {
-    let working = 0
-    let completed = 0
-    let failed = 0
-    Object.values(taskLatest).forEach((msg) => {
-      const s = msg.task.state
-      if (s === 'submitted' || s === 'working') working += 1
-      else if (s === 'completed') completed += 1
-      else if (s === 'failed') failed += 1
-    })
-    return { workingCount: working, completedCount: completed, failedCount: failed }
-  }, [taskLatest])
-
-  // uuid -> 진행 중(submitted/working) 최신 task. 워커 섹션 "작업 중" 판정용(uuid 지목 task만 매칭).
-  // 같은 워커에 진행 task가 여럿이면 updatedAt 최신을 남긴다(SQLite datetime=사전순 비교 가능).
-  const activeByAgent = useMemo(() => {
-    const byAgent: Record<string, Task> = {}
-    Object.values(taskLatest).forEach((msg) => {
-      const state = msg.task.state
-      if (state !== 'submitted' && state !== 'working') return
-      const prev = byAgent[msg.task.toAgent]
-      if (!prev || msg.task.updatedAt > prev.updatedAt) byAgent[msg.task.toAgent] = msg.task
-    })
-    return byAgent
-  }, [taskLatest])
-
-  // 로스터 = online(heartbeat) 세션 전부(세션·워커·infra 분리). 총감독 = human_input_at 최신(설계 v2-43).
-  const { rows, workers, infra, autoBossUuid } = useMemo(() => buildRoster(agents), [agents])
+  // 로스터 = online(heartbeat) 세션 전부. 총감독 = human_input_at 최신(설계 v2-43).
+  const { rows, autoBossUuid } = useMemo(() => buildRoster(agents), [agents])
 
   // 목표 제출 대상 선택(App 소유): 로스터 상세의 "이 세션에 목표"와 GoalForm이 공유한다.
   const [goalTargets, setGoalTargets] = useState<Record<string, boolean>>({})
+  // 로스터 행의 "이 세션에 목표": 대상 추가 + 모달 오픈.
   const addGoalTarget = useCallback((uuid: string) => {
     setGoalTargets((prev) => ({ ...prev, [uuid]: true }))
+    setModalOpen(true)
   }, [])
 
   return (
     <div className="dash-root">
       <Header
+        version={health?.version ?? null}
         brokerOk={brokerOk}
         sseOpen={sseOpen}
         remoteViewer={remoteViewer}
         notifySupported={notifySupported}
         notifyOn={notifyOn}
         onToggleNotify={toggleNotify}
+        theme={theme}
+        onToggleTheme={toggleTheme}
+        onOpenGoal={openGoal}
       />
-      <main className="dash-main">
-        <StatTiles
-          onlineCount={rows.length}
-          totalSups={rows.length}
-          workingCount={workingCount}
-          completedCount={completedCount}
-          failedCount={failedCount}
-        />
-        <HealthPanel />
-        <Roster rows={rows} infra={infra} pulses={pulses} autoBossUuid={autoBossUuid} onAddTarget={addGoalTarget} />
-        <WorkerSection workers={workers} activeByAgent={activeByAgent} />
-        <Feed onConnectedChange={handleConnected} onEvent={handleEvent} agents={agents} />
-        <GoalForm
-          agents={agents}
-          remoteViewer={remoteViewer}
-          selected={goalTargets}
-          onChangeSelected={setGoalTargets}
-        />
-        <SearchPanel />
-        <PresenceTimeline />
-      </main>
+      <div className="shell">
+        <aside className="sidebar">
+          <Roster rows={rows} pulses={pulses} autoBossUuid={autoBossUuid} onAddTarget={addGoalTarget} />
+        </aside>
+        <main>
+          <StatTiles onlineCount={rows.length} health={health} ok={healthOk} />
+          <Feed onConnectedChange={handleConnected} onEvent={handleEvent} agents={agents} />
+          <PresenceTimeline />
+        </main>
+      </div>
+      <Footer health={health} ok={healthOk} />
+      <GoalForm
+        open={modalOpen}
+        onClose={closeGoal}
+        agents={agents}
+        remoteViewer={remoteViewer}
+        selected={goalTargets}
+        onChangeSelected={setGoalTargets}
+      />
     </div>
   )
 }

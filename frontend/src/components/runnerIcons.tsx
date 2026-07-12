@@ -40,7 +40,12 @@ export function RunnerIcon({ runner, size = 15 }: { runner: string | null; size?
   }
   // 폴백: 이니셜 색점(미지의 러너). 러너 이름은 항상 옆 텍스트로 노출되므로 장식용으로 숨긴다(봇리뷰).
   return (
-    <span className="rst-runner" style={{ background: runnerColor(name) }} title={name} aria-hidden="true">
+    <span
+      className="runner-fallback"
+      style={{ background: runnerColor(name), width: size, height: size }}
+      title={name}
+      aria-hidden="true"
+    >
       {name.charAt(0).toUpperCase()}
     </span>
   )
