@@ -529,10 +529,22 @@ async fn dashboard_roster_handler(
         last_heartbeat: String,
         online: bool,
         human_input_at: Option<String>,
+        /// 이 세션이 지금 실제로 일하는 중인지(=state=working 열린 task의 대상). 대시보드가 presence 닷
+        /// 위에 "동작 중" 스피너를 얹는 소프트 신호(v2-54). 조회 실패 시 false(스피너만 안 뜸).
+        busy: bool,
     }
     let agents: Vec<DashAgent> = tokio::task::spawn_blocking(move || {
         let store = store.lock().unwrap_or_else(|e| e.into_inner());
         let now = store.now().unwrap_or_default();
+        // "동작 중" 세션 = 열린 task 중 state=working인 것의 to_agent 집합. relay 대리 claim도 to_agent가
+        // 대상 세션 uuid라 그대로 매칭된다. 소프트 인디케이터라 조회 실패는 빈 집합으로 무시한다.
+        let busy: std::collections::HashSet<String> = store
+            .list_all_open_tasks()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|t| t.state == crate::store::a2a::TaskState::Working)
+            .map(|t| t.to_agent)
+            .collect();
         // TTL=i64::MAX로 오프라인 포함 전체 조회 후, online은 실제 TTL(AGENT_TTL_SECS)로 per-agent 계산.
         store
             .list_agents(&BTreeMap::new(), &now, i64::MAX)
@@ -540,6 +552,7 @@ async fn dashboard_roster_handler(
             .map(|a| {
                 let online =
                     crate::store::agents::is_online(&a.last_heartbeat, &now, AGENT_TTL_SECS);
+                let busy = busy.contains(&a.uuid);
                 DashAgent {
                     uuid: a.uuid,
                     tags: a.tags,
@@ -547,6 +560,7 @@ async fn dashboard_roster_handler(
                     last_heartbeat: a.last_heartbeat,
                     online,
                     human_input_at: a.human_input_at,
+                    busy,
                 }
             })
             .collect()

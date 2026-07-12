@@ -3,6 +3,7 @@
 import { useState } from 'react'
 import { relativeTime } from '../api'
 import type { SessionRow } from '../activity'
+import { RunnerIcon } from './runnerIcons'
 
 type Props = {
   rows: SessionRow[]
@@ -110,6 +111,7 @@ export default function Roster({ rows, pulses, autoBossUuid, onAddTarget }: Prop
                       aria-expanded={open}
                       onClick={() => toggle(s.uuid)}
                     >
+                      <RunnerIcon runner={s.runner} size={14} />
                       <span className="rid" title={s.uuid}>
                         {title}
                       </span>
@@ -119,6 +121,14 @@ export default function Roster({ rows, pulses, autoBossUuid, onAddTarget }: Prop
                         </span>
                       ) : null}
                       <span className="rr">
+                        {s.busy ? (
+                          <span
+                            className="spinner"
+                            role="img"
+                            title="지금 task 처리 중"
+                            aria-label="작업 중"
+                          />
+                        ) : null}
                         <span className="pill on">{s.runner ?? '?'}</span>
                         {tail}
                       </span>
