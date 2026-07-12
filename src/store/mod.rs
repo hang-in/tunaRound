@@ -259,63 +259,8 @@ impl From<&crate::types::ConversationSnapshot> for StoredSession {
     }
 }
 
-/// head에서 parent_id를 따라 root까지 거슬러 올라간 경로(루트->head 순)를 전사로 반환.
-/// HashMap O(1) 조회 + HashSet 순환 가드로 무한루프를 방지한다.
-pub fn path_to_root(messages: &[StoredMessage], head: Option<u64>) -> Vec<Utterance> {
-    use std::collections::{HashMap, HashSet};
-    let by_id: HashMap<u64, &StoredMessage> = messages.iter().map(|m| (m.id, m)).collect();
-    let mut chain: Vec<&StoredMessage> = Vec::new();
-    let mut seen: HashSet<u64> = HashSet::new();
-    let mut cur = head;
-    while let Some(id) = cur {
-        if !seen.insert(id) {
-            break; // 순환 가드
-        }
-        match by_id.get(&id) {
-            Some(m) => {
-                chain.push(*m);
-                cur = m.parent_id;
-            }
-            None => break,
-        }
-    }
-    chain.reverse();
-    chain
-        .iter()
-        .map(|m| Utterance::new(m.speaker.clone(), m.content.clone()))
-        .collect()
-}
-
-/// 다음 메시지 id(max+1, 비어 있으면 1).
-pub fn next_id(messages: &[StoredMessage]) -> u64 {
-    messages
-        .iter()
-        .map(|m| m.id)
-        .max()
-        .map(|m| m + 1)
-        .unwrap_or(1)
-}
-
-/// 트리 요약 줄(id, parent, speaker, 본문 일부). /branches 표시용.
-pub fn tree_summary(messages: &[StoredMessage], head: Option<u64>) -> String {
-    if messages.is_empty() {
-        return "(빈 트리)".to_string();
-    }
-    let mut out = String::new();
-    for m in messages {
-        let marker = if Some(m.id) == head { "*" } else { " " };
-        let parent = m
-            .parent_id
-            .map(|p| p.to_string())
-            .unwrap_or_else(|| "-".into());
-        let snippet: String = m.content.chars().take(30).collect();
-        out.push_str(&format!(
-            "{marker} #{} (<-{parent}) {}: {}\n",
-            m.id, m.speaker, snippet
-        ));
-    }
-    out
-}
+// v2-52 ⑤ S6: path_to_root·next_id·tree_summary 자유함수는 ConversationSnapshot 메서드
+// (active_path·append·tree_summary)로 흡수·삭제됨. 트리 순회·id 채번은 이제 도메인 타입에만 산다.
 
 /// ConversationSnapshot을 JSON으로 저장한다. 와이어 포맷은 StoredSession(serde)이라 하위호환 불변이다
 /// (중립 타입은 serde 없음 → 직렬화 책임이 store 경계에만, v2-52 ⑤).
@@ -363,86 +308,8 @@ mod tests {
     }
 
     #[test]
-    fn path_to_root_walks_parents() {
-        // 트리: 1 -> 2 -> 3, 그리고 2 -> 4 (분기)
-        let msgs = vec![
-            StoredMessage {
-                id: 1,
-                parent_id: None,
-                speaker: "a".into(),
-                content: "1".into(),
-            },
-            StoredMessage {
-                id: 2,
-                parent_id: Some(1),
-                speaker: "b".into(),
-                content: "2".into(),
-            },
-            StoredMessage {
-                id: 3,
-                parent_id: Some(2),
-                speaker: "c".into(),
-                content: "3".into(),
-            },
-            StoredMessage {
-                id: 4,
-                parent_id: Some(2),
-                speaker: "d".into(),
-                content: "4".into(),
-            },
-        ];
-        let path = path_to_root(&msgs, Some(3));
-        assert_eq!(
-            path.iter().map(|u| u.content.clone()).collect::<Vec<_>>(),
-            vec!["1", "2", "3"]
-        );
-        let branch = path_to_root(&msgs, Some(4));
-        assert_eq!(
-            branch.iter().map(|u| u.content.clone()).collect::<Vec<_>>(),
-            vec!["1", "2", "4"]
-        );
-        assert!(path_to_root(&msgs, None).is_empty());
-    }
-
-    #[test]
-    fn tree_summary_characterization_format() {
-        // S0 특성화(v2-52 ⑤): /branches 출력 포맷을 바이트 단위로 고정한다. ConversationSnapshot::
-        // tree_summary가 이 포맷을 등가로 흡수해야 한다. 포맷 = "{marker} #{id} (<-{parent}) {speaker}: {snippet}\n",
-        // head=* 마커·비head=공백·root parent="-"·snippet=본문 앞 30자.
-        let msgs = vec![
-            StoredMessage {
-                id: 1,
-                parent_id: None,
-                speaker: "a".into(),
-                content: "첫줄".into(),
-            },
-            StoredMessage {
-                id: 2,
-                parent_id: Some(1),
-                speaker: "b".into(),
-                content: "둘째".into(),
-            },
-        ];
-        let expected = "  #1 (<--) a: 첫줄\n* #2 (<-1) b: 둘째\n";
-        assert_eq!(tree_summary(&msgs, Some(2)), expected);
-        // 빈 트리.
-        assert_eq!(tree_summary(&[], None), "(빈 트리)");
-        // snippet은 본문 앞 30자로 절단(40 'x' → 30 'x').
-        let long = StoredMessage {
-            id: 1,
-            parent_id: None,
-            speaker: "s".into(),
-            content: "x".repeat(40),
-        };
-        assert_eq!(
-            tree_summary(std::slice::from_ref(&long), Some(1)),
-            format!("* #1 (<--) s: {}\n", "x".repeat(30))
-        );
-    }
-
-    #[test]
     fn stored_session_snapshot_roundtrip_and_equivalence() {
-        // v2-52 ⑤: From 변환이 트리·head 보존(round-trip) + snapshot 메서드가 기존 자유함수와 등가(브릿지).
+        // v2-52 ⑤: From 변환이 트리·head를 보존하고(round-trip) active_path가 순회를 보존하는지.
         use crate::types::ConversationSnapshot;
         let ss = StoredSession {
             messages: vec![
@@ -471,48 +338,14 @@ mod tests {
         // 라운드트립 = 원본 보존.
         let back: StoredSession = (&snap).into();
         assert_eq!(back, ss);
-        // 등가 브릿지: active_path == path_to_root, tree_summary 바이트 등가.
-        assert_eq!(snap.active_path(), path_to_root(&ss.messages, ss.head));
-        assert_eq!(snap.tree_summary(), tree_summary(&ss.messages, ss.head));
-    }
-
-    #[test]
-    fn path_to_root_cycle_guard_terminates() {
-        // 순환: id=1.parent=Some(2), id=2.parent=Some(1). head=Some(1).
-        // 무한루프 없이 유계 반환(2개 이하).
-        let msgs = vec![
-            StoredMessage {
-                id: 1,
-                parent_id: Some(2),
-                speaker: "a".into(),
-                content: "1".into(),
-            },
-            StoredMessage {
-                id: 2,
-                parent_id: Some(1),
-                speaker: "b".into(),
-                content: "2".into(),
-            },
-        ];
-        let path = path_to_root(&msgs, Some(1));
-        // 순환이므로 결과 길이가 유한해야 함(2개 이하).
-        assert!(
-            path.len() <= 2,
-            "순환에서 유한 반환이어야 함: len={}",
-            path.len()
+        // From 변환 후 active_path가 트리 순회를 보존(head=3, parent=1 → [1, 3]).
+        assert_eq!(
+            snap.active_path()
+                .iter()
+                .map(|u| u.content.clone())
+                .collect::<Vec<_>>(),
+            vec!["1", "3"]
         );
-    }
-
-    #[test]
-    fn next_id_is_max_plus_one() {
-        assert_eq!(next_id(&[]), 1);
-        let msgs = vec![StoredMessage {
-            id: 5,
-            parent_id: None,
-            speaker: "a".into(),
-            content: "x".into(),
-        }];
-        assert_eq!(next_id(&msgs), 6);
     }
 
     #[test]

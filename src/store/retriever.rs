@@ -418,7 +418,7 @@ mod sqlite_transcript {
                 Ok(None) => return Ok(Vec::new()),
                 Err(e) => return Err(format!("세션 로드 실패: {e}")),
             };
-            let path = crate::store::path_to_root(&ss.messages, ss.head);
+            let path = crate::types::ConversationSnapshot::from(ss).active_path();
             Ok(match max_turns {
                 Some(n) if path.len() > n => path[path.len() - n..].to_vec(),
                 _ => path,

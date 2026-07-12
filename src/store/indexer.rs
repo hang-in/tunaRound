@@ -1,5 +1,4 @@
 // 메시지 트리를 검색 인덱스(SQLite/FTS)에 미러링하는 인덱서 추상화.
-use crate::store::StoredSession;
 
 /// 메시지 트리를 검색 인덱스에 반영하는 추상화(append 후 fire-and-forget 미러 패턴).
 pub trait MessageIndexer: Send + Sync {
@@ -13,6 +12,7 @@ pub use sqlite_indexer::SqliteIndexer;
 #[cfg(feature = "sqlite")]
 mod sqlite_indexer {
     use super::*;
+    use crate::store::StoredSession; // persist가 중립 snapshot을 영속 DTO로 변환할 때만 필요(sqlite 전용).
     use crate::store::sqlite::SqliteStore;
 
     /// SqliteStore + 선-토크나이즈 closure + 선택적 Embedder를 묶은 인덱서.

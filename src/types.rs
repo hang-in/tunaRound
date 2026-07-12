@@ -230,6 +230,16 @@ mod tests {
     }
 
     #[test]
+    fn active_path_cycle_guard_terminates() {
+        // 순환(1.parent=2, 2.parent=1), head=1. HashSet 가드로 무한루프 없이 유계 반환(2개 이하).
+        let snap = ConversationSnapshot::from_parts(
+            vec![node(1, Some(2), "1"), node(2, Some(1), "2")],
+            BranchHead(Some(1)),
+        );
+        assert!(snap.active_path().len() <= 2);
+    }
+
+    #[test]
     fn append_reproduces_next_id_parent_and_head_advance() {
         // store::next_id(max+1, 빈=1) + parent=head + head 전진 규칙 재현.
         let mut snap = ConversationSnapshot::new();
