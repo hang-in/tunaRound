@@ -540,4 +540,4 @@
 - [x] **③ embed timeout**(store/embedding.rs): Client::builder().timeout(env TUNAROUND_EMBED_TIMEOUT_SECS 기본 30s). 순수 헬퍼 timeout_secs_from + 단위테스트. 적대 리뷰 반영: 죽은 폴백 unwrap_or_else(Client::new)→expect(동작 불변, 주석 정정).
 - [x] **② index race 직렬화**(mcp/indexing.rs): a2a_store 락 하나로 delete→append→stamp 전체 직렬화(데드락 없음=락순서 a2a_store→writer 일관, backfill 비재진입). 테스트 concurrent_index_same_task_no_duplicate_turns(2스레드×40) + idempotent(공유 파일 DB). 적대 검증: 데드락 렌즈 전부 holds, race-closure holds.
 - [x] 게이트: cargo fmt --all clean + lib test 582 pass/0 fail + clippy --all-targets clean. 적대 검증 워크플로우(4렌즈+종합=GO, blocker/major 0).
-- [ ] 커밋 → push → PR → CI green + 봇 리뷰 반영 → 머지(리팩토링 트랙 자율 승인).
+- [x] 커밋(af7582b fix·4cddf34 봇반영) → push → **PR #89** → canonical CI green(3-OS·dashboard·fmt·plan·CodeRabbit) + 봇 리뷰 처리(CodeRabbit 2 수정·gemini 트레이드오프 수용·DeepSource 자문성 비수정) → **머지 b93e277**(리팩토링 트랙 자율 승인). origin=main만.
