@@ -12,6 +12,7 @@ import WorkerSection from './components/WorkerSection'
 import Feed from './components/Feed'
 import GoalForm from './components/GoalForm'
 import SearchPanel from './components/SearchPanel'
+import PresenceTimeline from './components/PresenceTimeline'
 
 // 로컬(총괄) 세션인지 원격 관전인지 클라이언트에서 판정한다(loopback 여부).
 const LOOPBACK_HOSTS = ['127.0.0.1', 'localhost', '[::1]', '::1']
@@ -248,6 +249,7 @@ export default function App() {
           onChangeSelected={setGoalTargets}
         />
         <SearchPanel />
+        <PresenceTimeline />
       </main>
     </div>
   )
