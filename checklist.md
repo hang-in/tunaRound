@@ -574,3 +574,15 @@
 - [x] ① main.rs(#83) · ② fmt(#85) · ③ mcp.rs(#86) · ⑥ tasks.rs(#87) [세션25] / ⑤ store DTO(#90) · ④ task JSON Stage1(#91) [세션26]. 잔여=④ Stage4(문자열 파서 제거, mesh 전체 롤아웃+도그푸딩 후).
 - [x] **배포·도그푸딩 시작(2026-07-12)**: 릴리즈 빌드(morphology mcp serve worker dashboard, semantic 제외) → WMI 스폰으로 restart-win-mesh.ps1 -SourceBin(rename-swap·PID 선별종료·내 세션 Monitor 생존) → broker 재기동(uptime 리셋). **④ 라이브 검증 성공**: poll 응답에 `TASKS_JSON [{...context_id:null...}]` 프리픽스 + human 블록 병존 확인(신 broker JSON emit + context "-"→null 정규화 + 하위호환). mesh 정상(mac·win 스캐너 online). 구 바이너리 세션 Monitor가 신 broker 폴링 = 하위호환 라이브.
 - [ ] **다음 = v0.5.0 태그**(며칠 도그푸딩 후 + 사용자 승인. 릴리즈 태그는 리팩토링 트랙 자율 예외 밖 = [[dogfood-before-release]]). cargo release minor → v0.5.0 태그 → cargo-dist+brew. CHANGELOG [Unreleased]→[0.5.0].
+
+## 세션26 후반: 이슈 #88 codex presence 유령 (브랜치 fix/issue-88 @ 592121e)
+
+> 정본 진입점 docs/prompts/v2-handoff_2026-07-12_session26.md. #88 상세는 브랜치의 context-notes.md #88 섹션.
+
+- [x] understand+design 워크플로우(4렌즈, 6접근 평가) + 시간창 게이트 구현(apply_codex_human_input_gate·created_at grace·system_time_to_db_datetime·CLI --codex-human-window-mins). lib 595 pass·clippy·worker단독 clean. **브랜치 WIP push=592121e.**
+- [x] 적대 검증 = **조건부 NO-GO**: 이 게이트는 #88 부분 완화(유령 수명 240→60분 bound + relay 자기유지 차단)이지 완전 해결 아님(grace가 최근 유령 살림, 방금 닫은 세션은 human_input 최근이라 60분 잔존=시간창 원리적 한계, 60분+ 미입력 live codex FP).
+- [ ] **(다음 세션) #88 전체 해결 = #2 app-server thread/loaded/list canonical** + rollout mtime fallback + killed-TUI resume 라이브 실측 + 사람 TUI 누락 fallback + relay claim 전 probe(#4). 착수 전 계약 고정. 시간창 게이트 supersede 가능.
+
+## GPT 온보딩 답변 검토 (2026-07-12)
+
+- [x] 검토 결론: 온보딩 퍼널·첫성공 UX·페어링 코드=competitive lens(북극성 불일치, 비채택). **유일 유효=대시보드를 릴리스 산출물에 포함**(dist-workspace.toml 피처에 dashboard 없음 확인 → dist 피처 + 릴리스 CI 프론트빌드). presence 스캐너가 자동탐지·로스터 표시를 이미 함 = 대시보드만 릴리스에 넣으면 됨. v0.5.0 전 P0 후보.
