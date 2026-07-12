@@ -566,5 +566,10 @@
 - [x] **소비**: parse_open_tasks가 JSON 프리픽스 우선(decode), 없으면 문자열 폴백. 기존 문자열 테스트 green 유지.
 - [x] 테스트 6: JSON 라운드트립·우선·문자열 폴백·구 워커 헤더 무시(가짜 헤더 msg)·context_id "-" 정규화·프리픽스 없음. 게이트(fmt·591 pass·clippy --all-targets·no-default·worker단독·all-features clean).
 - [x] 적대 검증 워크플로우(하위호환 4조합·등가 2렌즈 = GO, blocker/major 0). nit 4건(encode Option·context "-" 패리티·테스트주석·doc경로) 반영.
-- [ ] **④ 파서 제거는 defer**(post-rollout·도그푸딩). Stage 1까지가 이 세션.
-- [ ] 커밋 → PR → CI green+봇 → 머지(리팩토링 트랙 자율). 완료 후 리팩토링 종료 → v0.5.0 릴리즈.
+- [x] **④ 파서 제거(Stage 4)는 defer**(post-rollout·도그푸딩). Stage 1(①②③ 병존)까지가 이 세션.
+- [x] 커밋(계약 b286be8·구현 00c8984·nit) → **PR #91** → canonical CI + CodeRabbit + **DeepSource Rust 전부 pass**(mergeStateStatus=CLEAN) + 봇 3건(gemini 할당·CodeRabbit doc 2) 반영 → **머지 d5a15e7**. origin=main만.
+
+## v2-52 리팩토링 백로그 = 전체 완료 (2026-07-12)
+
+- [x] ① main.rs(#83) · ② fmt(#85) · ③ mcp.rs(#86) · ⑥ tasks.rs(#87) [세션25] / ⑤ store DTO(#90) · ④ task JSON Stage1(#91) [세션26]. 잔여=④ Stage4(문자열 파서 제거, mesh 전체 롤아웃+도그푸딩 후).
+- [ ] **다음 = v0.5.0 릴리즈**(도그푸딩 후 + 사용자 승인. 릴리즈 태그는 리팩토링 트랙 자율 예외 밖 = [[dogfood-before-release]]). 병합분(잠복3·⑤·④)을 mesh에 배포·검증 후 cargo release minor → v0.5.0 태그 → cargo-dist+brew.
