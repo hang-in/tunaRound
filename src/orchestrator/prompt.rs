@@ -12,8 +12,12 @@ fn join_utterances(utts: &[Utterance]) -> String {
             let body: String = u.content.chars().take(MAX_ANSWER_LEN).collect();
             // 큐레이션 표면화(v2-51): abstraction 있으면 증류 요약을 원문 앞에 얹는다. content(raw)는
             // repl 중복제거용이라 불변이고, 표면화는 실제 주입되는 이 렌더 경계에서만 일어난다.
+            // abstraction도 발언 본문과 동일하게 MAX_ANSWER_LEN으로 캡한다(발언당 길이 상한 보장, CodeRabbit).
             let body = match &u.abstraction {
-                Some(a) if !a.trim().is_empty() => format!("[요약] {}\n{}", a.trim(), body),
+                Some(a) if !a.trim().is_empty() => {
+                    let a_capped: String = a.trim().chars().take(MAX_ANSWER_LEN).collect();
+                    format!("[요약] {}\n{}", a_capped, body)
+                }
                 _ => body,
             };
             format!("**[{}]**:\n{}", u.speaker, body)
@@ -169,6 +173,20 @@ mod tests {
         let out = build_round_prompt(&p("claude", None), "주제", ctx(&[], &[], &retrieved, "", false, 0));
         assert!(out.contains("[요약] 증류 요약"), "abstraction 표면화 없음: {out}");
         assert!(out.contains("원문 본문"), "원문 보존 없음: {out}");
+    }
+
+    #[test]
+    fn prompt_caps_abstraction_length() {
+        // CodeRabbit: abstraction도 발언 본문과 같은 MAX_ANSWER_LEN으로 캡돼야 한다(발언당 길이 상한 보장).
+        let long = "가".repeat(MAX_ANSWER_LEN + 500);
+        let retrieved = vec![Utterance { speaker: "past".into(), content: "원문".into(), abstraction: Some(long) }];
+        let out = build_round_prompt(&p("claude", None), "주제", ctx(&[], &[], &retrieved, "", false, 0));
+        assert!(out.contains("[요약]"), "요약 표면화 없음: {out}");
+        // MAX_ANSWER_LEN+1 길이의 연속 '가'는 없어야 한다(캡 적용).
+        assert!(
+            !out.contains(&"가".repeat(MAX_ANSWER_LEN + 1)),
+            "abstraction이 MAX_ANSWER_LEN으로 캡되지 않음"
+        );
     }
 
     #[test]

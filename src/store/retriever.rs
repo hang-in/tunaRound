@@ -74,13 +74,15 @@ mod sqlite_retriever {
     /// 부스트를 오발화하는 것을 막는다.
     const MIN_ANCHOR_TOKEN_LEN: usize = 2;
 
-    /// anchors 문자열(콤마·공백 분리) 토큰과 질의 토큰이 **완전일치**(토큰 경계)하면 매치.
+    /// anchors 문자열 토큰과 질의 토큰이 **완전일치**(토큰 경계)하면 매치.
+    /// 앵커 분리는 query_anchor_tokens와 동일하게 **비영숫자 경계**(`!c.is_alphanumeric()`)로 통일한다.
+    /// 하이픈·언더스코어·슬래시가 든 앵커(예 `RAG-설계`, `mesh_scan`)도 질의 토큰과 매치되도록(gemini HIGH).
     /// 양쪽 모두 최소 길이 필터를 적용하고 부분일치(substring)는 쓰지 않는다(과매치 방지).
     /// anchors 비었거나 유효 질의 토큰 없으면 false. 대소문자 무시(양쪽 소문자화).
     fn anchor_matches(anchors: &str, query_tokens: &[String]) -> bool {
         let anchor_toks: Vec<String> = anchors
-            .split(|c: char| c == ',' || c.is_whitespace())
-            .map(|t| t.trim().to_lowercase())
+            .split(|c: char| !c.is_alphanumeric())
+            .map(|t| t.to_lowercase())
             .filter(|t| t.chars().count() >= MIN_ANCHOR_TOKEN_LEN)
             .collect();
         if anchor_toks.is_empty() {
@@ -791,6 +793,50 @@ mod tests {
         let hits = retriever.retrieve("검색", 10).unwrap();
         assert_eq!(hits.len(), 2, "두 발언 모두 반환: {hits:?}");
         assert_eq!(hits[0].speaker, "b", "앵커 매치 발언이 부스트로 먼저: {hits:?}");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn retrieve_boosts_hyphenated_anchor_match() {
+        // gemini HIGH 회귀 방지: 하이픈·언더스코어가 든 앵커(예 "RAG-설계")도 앵커 분리가 비영숫자 경계라
+        // 질의 토큰("설계")과 완전일치해 부스트된다(콤마·공백 분리였다면 "rag-설계"로 남아 매치 실패).
+        let dir = std::env::temp_dir();
+        let path = dir.join("tuna_retriever_anchor_hyphen.db");
+        let _ = std::fs::remove_file(&path);
+        let p = path.to_str().unwrap();
+
+        // "a"=밀도 높은 매치(baseline 상위), "b"=길어 하위. 둘 다 penalty 0 동률.
+        let store_w = SqliteStore::open(p).unwrap();
+        store_w
+            .save_session(
+                "a",
+                &StoredSession {
+                    messages: vec![StoredMessage { id: 1, parent_id: None, speaker: "a".into(), content: "설계".into() }],
+                    head: Some(1),
+                },
+                |t| t.to_string(),
+            )
+            .unwrap();
+        store_w
+            .save_session(
+                "b",
+                &StoredSession {
+                    messages: vec![StoredMessage { id: 1, parent_id: None, speaker: "b".into(), content: "설계 시스템 상세 배경 기록".into() }],
+                    head: Some(1),
+                },
+                |t| t.to_string(),
+            )
+            .unwrap();
+        // "b"에 하이픈·언더스코어 포함 앵커 부여. 질의 토큰 "설계"가 "RAG-설계" 안 토큰과 완전일치해야 한다.
+        store_w.set_annotation("b", 1, None, Some("RAG-설계,mesh_scan")).unwrap();
+        drop(store_w);
+
+        let store_r = SqliteStore::open(p).unwrap();
+        let retriever = SqliteRetriever::new(store_r, Box::new(|t: &str| t.to_string()), None);
+        let hits = retriever.retrieve("설계", 10).unwrap();
+        assert_eq!(hits.len(), 2, "두 발언 모두 반환: {hits:?}");
+        assert_eq!(hits[0].speaker, "b", "하이픈 포함 앵커도 완전일치 부스트로 먼저: {hits:?}");
 
         let _ = std::fs::remove_file(&path);
     }

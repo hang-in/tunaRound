@@ -25,7 +25,13 @@
 
 ### anchor 부스트 = penalty tier 내 2차 정렬 키(유효성 강등 불침해)
 
-`rerank`는 penalty(낮을수록 상위) 안정 정렬이다. anchor 부스트를 penalty에 직접 감산하면 superseded(+2)·off-branch(+1)·recency(+1) 강등을 넘어설 위험이 있다(자가 리뷰 지적). 그래서 **penalty를 1차, anchor_rank(매치=0/미매치=1)를 2차 키**로 삼아 `sort_by_key((penalty, anchor_rank))` 한다. 이러면 유효성/분기/recency 순서는 절대 불변이고, **같은 penalty tier 안에서만** anchor 매치가 앞선다(rejected 드롭·superseded 강등 무손상 보장). 쿼리 토큰은 raw query를 영숫자 경계로 분리·소문자화해 만들고, anchors는 콤마·공백으로 분리한다. 매치는 **토큰 완전일치**(2자 미만·부분일치 제외)라 짧고 흔한 토큰의 과매치를 막는다(적대 리뷰 반영). abstraction·anchors 조회는 rerank가 항목당 `get_validity`를 **1회만** 호출해 결과에 실어 나른다(핫패스 DB 왕복 중복 제거).
+`rerank`는 penalty(낮을수록 상위) 안정 정렬이다. anchor 부스트를 penalty에 직접 감산하면 superseded(+2)·off-branch(+1)·recency(+1) 강등을 넘어설 위험이 있다(자가 리뷰 지적). 그래서 **penalty를 1차, anchor_rank(매치=0/미매치=1)를 2차 키**로 삼아 `sort_by_key((penalty, anchor_rank))` 한다. 이러면 유효성/분기/recency 순서는 절대 불변이고, **같은 penalty tier 안에서만** anchor 매치가 앞선다(rejected 드롭·superseded 강등 무손상 보장). 쿼리 토큰과 anchors 모두 **비영숫자 경계**(`!c.is_alphanumeric()`)로 분리·소문자화한다(양쪽 토크나이저 통일 - 하이픈·언더스코어가 든 앵커 `RAG-설계`도 `설계` 질의와 매치, gemini HIGH). 매치는 **토큰 완전일치**(2자 미만·부분일치 제외)라 짧고 흔한 토큰의 과매치를 막는다(적대 리뷰 반영). abstraction·anchors 조회는 rerank가 항목당 `get_validity`를 **1회만** 호출해 결과에 실어 나른다(핫패스 DB 왕복 중복 제거).
+
+### 봇 리뷰(PR #78) 반영 3건
+
+- **anchor 토크나이저 불일치(gemini HIGH)**: `anchor_matches`의 앵커 분리를 `query_anchor_tokens`와 동일한 비영숫자 경계로 통일했다(위 문단). 하이픈·슬래시·언더스코어가 든 앵커가 질의 토큰과 완전일치하게 된다.
+- **abstraction 길이 캡(CodeRabbit)**: `join_utterances`에서 원문은 `MAX_ANSWER_LEN`으로 캡되는데 abstraction은 무제한이라 "발언당 길이 상한"이 깨졌다. abstraction도 `chars().take(MAX_ANSWER_LEN)`으로 캡한 뒤 얹는다. `repl::render`는 원문 자체를 캡하지 않는 터미널 표시 경로라 길이 불변식이 없어 캡 미적용(비대칭 회피).
+- **플래그 값 파싱(CodeRabbit)**: `--abstraction`/`--anchors`의 값 자리에 오는 다음 토큰이 `--`로 시작하면(다음 플래그) 값 없음으로 보고 삼키지 않는다(예 `--abstraction --anchors "x"`는 anchors만 설정).
 
 ## 변경 범위
 

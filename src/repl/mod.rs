@@ -130,16 +130,27 @@ pub fn parse_command(line: &str) -> Command {
                     Some(id) => {
                         let mut abstraction = None;
                         let mut anchors = None;
+                        // 플래그 값으로 소비할 다음 토큰. 다음 토큰이 `--`로 시작하면(=다음 플래그) 값이
+                        // 없는 것으로 보고 삼키지 않는다(예 `--abstraction --anchors "x"`, CodeRabbit).
+                        let take_value = |toks: &[String], i: usize| -> Option<String> {
+                            toks.get(i + 1)
+                                .filter(|s| !s.is_empty() && !s.starts_with("--"))
+                                .cloned()
+                        };
                         let mut i = 1;
                         while i < toks.len() {
                             match toks[i].as_str() {
                                 "--abstraction" => {
-                                    abstraction = toks.get(i + 1).filter(|s| !s.is_empty()).cloned();
-                                    i += 2;
+                                    let v = take_value(&toks, i);
+                                    let consumed = v.is_some();
+                                    abstraction = v;
+                                    i += if consumed { 2 } else { 1 };
                                 }
                                 "--anchors" => {
-                                    anchors = toks.get(i + 1).filter(|s| !s.is_empty()).cloned();
-                                    i += 2;
+                                    let v = take_value(&toks, i);
+                                    let consumed = v.is_some();
+                                    anchors = v;
+                                    i += if consumed { 2 } else { 1 };
                                 }
                                 _ => i += 1,
                             }
@@ -828,6 +839,16 @@ mod tests {
         assert_eq!(parse_command("/annotate 3"), Command::Message("/annotate 3".into()));
         assert_eq!(parse_command("/annotate x --abstraction \"y\""), Command::Message("/annotate x --abstraction \"y\"".into()));
         assert_eq!(parse_command("/annotate 3 --abstraction \"\""), Command::Message("/annotate 3 --abstraction \"\"".into()));
+        // 값 없는 --abstraction 뒤에 --anchors가 바로 오면, --anchors를 값으로 삼키지 않고 정상 파싱.
+        assert_eq!(
+            parse_command("/annotate 3 --abstraction --anchors \"x\""),
+            Command::Annotate { id: 3, abstraction: None, anchors: Some("x".into()) }
+        );
+        // 양쪽 다 값 없으면 일반 메시지로 폴스루(삼킴 없음).
+        assert_eq!(
+            parse_command("/annotate 3 --abstraction --anchors"),
+            Command::Message("/annotate 3 --abstraction --anchors".into())
+        );
     }
 
     /// set_validity 호출을 캡처하는 가짜 sink.
