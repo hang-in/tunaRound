@@ -556,4 +556,14 @@
 - [x] **S6 자유함수 삭제**(5571106): path_to_root/next_id/tree_summary 삭제(retriever·cli_run→active_path). to_stored/from_stored/save/load(v1 포맷)은 유지. no-default·all-features clean.
 - [x] 적대 검증 워크플로우(등가·경계·회귀범위 3렌즈 12확인점 전부 holds) = **GO**. nit 3건(주석·doc 오지칭·커버리지 미세공백) 반영. lib 585 pass·clippy --all-targets·no-default·all-features clean.
 - [x] 커밋(8개: 계약 d3a787a·S0~S6·nit 94e4b25·봇반영 e710b2e) → **PR #90** → canonical CI green(3-OS·dashboard·fmt·plan·CodeRabbit) + 봇 처리(gemini snapshot 참조·CodeRabbit doc 3 반영 / DeepSource 자문성·문체 dispositioned) → **머지 9b2a0ce**. origin=main만.
-- [ ] **(다음) v2-52 ④ task JSON**: mcp/format.rs·worker.rs 문자열 프로토콜→JSON. **라이브 mesh 동작 변경**이라 다단계(JSON 추가→worker 우선→문자열 하위호환→파서 제거)+도그푸딩. ⑤처럼 전용 세션·계약 고정 권장. 완료 시 리팩토링 종료 → **v0.5.0 릴리즈**.
+## 세션26 후반: v2-52 ④ task wire 프로토콜 구조화 (문자열→JSON, Stage 1)
+
+> 계약 정본 docs/design/v2-52-task-json-contract_2026-07-12.md. 브랜치 refactor/v2-52-task-json. 사용자: 지금 ④ 시작. 스코프=poll_tasks↔parse_open_tasks 한 쌍(유일 파싱 프로토콜).
+
+- [x] 정찰(생산 format_open_tasks·소비 parse_open_tasks) + 계약 고정(JSON 프리픽스 병존·4조합 하위호환·Stage 1=①②③).
+- [ ] **DTO**: store::a2a에 PollTaskDto(serde) + POLL_JSON_PREFIX + encode/decode_poll_json + 라운드트립 테스트.
+- [ ] **생산**: format_open_tasks가 `TASKS_JSON <json>\n\n` 프리픽스 + 기존 human 블록. state=clean.
+- [ ] **소비**: parse_open_tasks가 JSON 프리픽스 우선(decode), 없으면 문자열 폴백. 기존 문자열 테스트 green 유지.
+- [ ] 테스트: JSON 우선·문자열 폴백·구 워커 프리픽스 무시(혼합)·msg 개행/한글 무손실·빈 목록. 게이트(fmt·test·clippy) + 적대 검증.
+- [ ] **④ 파서 제거는 defer**(post-rollout·도그푸딩). Stage 1까지가 이 세션. 완료 후 v0.5.0 릴리즈.
+- [ ] 커밋 → PR → CI green+봇 → 머지(리팩토링 트랙 자율).
