@@ -72,13 +72,37 @@ pub struct OllamaEmbedder {
     dim: std::sync::OnceLock<usize>,
 }
 
+/// 임베딩 HTTP 요청 총 타임아웃 기본값(초). 콜드스타트 qwen3 over-tunnel 여유 + 무한행 차단.
+#[cfg(feature = "semantic")]
+const DEFAULT_EMBED_TIMEOUT_SECS: u64 = 30;
+
+/// TUNAROUND_EMBED_TIMEOUT_SECS 원문(env)에서 총 타임아웃 초를 파싱한다. 미설정·비수·0이면 기본값.
+/// (env 접근을 분리한 순수 함수라 결정적 단위테스트 가능.)
+#[cfg(feature = "semantic")]
+fn timeout_secs_from(raw: Option<String>) -> u64 {
+    raw.and_then(|s| s.trim().parse::<u64>().ok())
+        .filter(|&s| s > 0)
+        .unwrap_or(DEFAULT_EMBED_TIMEOUT_SECS)
+}
+
 #[cfg(feature = "semantic")]
 impl OllamaEmbedder {
     pub fn new(endpoint: &str, model: &str) -> Self {
+        // 타임아웃 없는 Client::new()는 Ollama 행 시 .send()가 무한 대기 → search_context의 spawn_blocking
+        // 스레드를 영구 점유한다. 총 타임아웃(env 조절 가능)으로 무한행을 차단한다. build 실패(TLS/resolver
+        // 초기화 불가)는 Client::new()도 내부 .build().expect()로 같은 이유로 패닉하므로 폴백이 무의미하다 →
+        // expect로 기존 Client::new()와 동일하게 즉시 실패시킨다(동작 불변, 타임아웃만 추가).
+        let timeout = std::time::Duration::from_secs(timeout_secs_from(
+            std::env::var("TUNAROUND_EMBED_TIMEOUT_SECS").ok(),
+        ));
+        let client = reqwest::blocking::Client::builder()
+            .timeout(timeout)
+            .build()
+            .expect("reqwest embed client build");
         Self {
             endpoint: endpoint.to_string(),
             model: model.to_string(),
-            client: reqwest::blocking::Client::new(),
+            client,
             dim: std::sync::OnceLock::new(),
         }
     }
@@ -166,6 +190,31 @@ mod tests {
     fn model_id_reflects_identity() {
         assert_eq!(MockEmbedder::new(64).model_id(), "mock-64");
         assert_eq!(MockEmbedder::new(1024).model_id(), "mock-1024");
+    }
+
+    #[cfg(feature = "semantic")]
+    #[test]
+    fn embed_timeout_parsing_falls_back_on_bad_input() {
+        // 정상 값은 그대로, 미설정·비수·0·음수·공백은 기본값으로 폴백(무한행 방지 불변식).
+        assert_eq!(timeout_secs_from(Some("15".to_string())), 15);
+        assert_eq!(timeout_secs_from(Some("  45  ".to_string())), 45);
+        assert_eq!(timeout_secs_from(None), DEFAULT_EMBED_TIMEOUT_SECS);
+        assert_eq!(
+            timeout_secs_from(Some("0".to_string())),
+            DEFAULT_EMBED_TIMEOUT_SECS
+        );
+        assert_eq!(
+            timeout_secs_from(Some("-5".to_string())),
+            DEFAULT_EMBED_TIMEOUT_SECS
+        );
+        assert_eq!(
+            timeout_secs_from(Some("abc".to_string())),
+            DEFAULT_EMBED_TIMEOUT_SECS
+        );
+        assert_eq!(
+            timeout_secs_from(Some("".to_string())),
+            DEFAULT_EMBED_TIMEOUT_SECS
+        );
     }
 
     #[cfg(feature = "semantic")]

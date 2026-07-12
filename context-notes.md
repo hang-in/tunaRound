@@ -2,6 +2,20 @@
 
 > 작업 중 결정과 근거. 계속 append. (규율 #7) 다음 세션이 결정을 재유도하지 않게.
 
+## 2026-07-12 세션26: 잠복 이슈 3건 (post_turn 계약·index race·embed timeout)
+
+세션25 핸드오프 §29가 남긴 pre-existing 잠복 3건. 사용자 선택="잠복 이슈 3건 수정"(트랙), 로드맵="이거 → v2-52 잔여 ④⑤(리팩토링 완결) → v0.5.0 릴리즈". 브랜치 `fix/post-turn-index-race-embed-timeout`. 재론 금지 설계 결정:
+
+- **① post_turn R1 계약 위반 (quick win, mcp/search.rs:101)**: `append_turn` 실패 시 `CallToolResult::success`에 "추가 실패:" 텍스트를 담아 반환 → 클라(`mcp_client.rs:331` `isError` 검사)가 성공으로 오인. **형제 툴 전부(search_context·read_transcript·claim/complete/fail·registry)는 실패=`CallToolResult::error`**. Err 분기만 error로 바꾼다. **"writer 미연결"(None)은 success 유지**(read_transcript "리더 미연결"과 동일 = 미배선은 실패 아님, R1은 진짜 실패만).
+- **③ OllamaEmbedder 타임아웃 부재 (store/embedding.rs:81)**: `reqwest::blocking::Client::new()` = 타임아웃 없음 → Ollama 행 시 `.send()` 무한 대기. search_context가 spawn_blocking으로 부르므로 blocking 스레드 영구 점유. **fix**: `Client::builder().timeout(env TUNAROUND_EMBED_TIMEOUT_SECS, 기본 30s)`. 30s=콜드스타트 qwen3 over-tunnel 여유 + 무한행 차단. 파싱은 순수 헬퍼 `timeout_secs_from(Option<String>)`로 뽑아 결정적 단위테스트(env 레이스 회피). build 실패 시 `Client::new()` 폴백(기존 동작 보존).
+- **② index_terminal_task delete-then-append race (heavy, mcp/indexing.rs:65)**: 핵심. **동시성 실측 그림**:
+  - writer(store3, 자체 Mutex)·a2a_store(store4, 외부 Mutex) = **같은 broker.db의 별개 연결·별개 뮤텍스**(cli_run.rs:86~123). `SqliteStore{conn:Connection}` = bare(Send·!Sync)라 각자 Mutex로 감쌈.
+  - 현재 `index_terminal_task`는 **단일 락 없이** ①delete(a2a_store 락) ②writer.append(writer 락) ③stamp(a2a_store 락) 3단을 락을 놓았다 잡았다 함. 두 동시 색인자가 같은 sid를 인터리빙하면 중복(2×req+2×res) 또는 유실.
+  - **동시 색인자 = backfill(기동 spawn_blocking, server.rs:78) vs live(complete/fail_task의 fire-and-forget spawn_blocking, tasks.rs:118·167)**. **live-vs-live는 first-completer-wins로 불가**(종결 전이 1회만 성공→색인 1회). backfill이 기동 창에서 terminal-but-unindexed task를 잡을 때 그 task의 live 색인이 아직 stamp 전이면 겹침.
+  - **fix = a2a_store 락 하나로 전체(delete→append→stamp) 직렬화**. writer는 별개 뮤텍스라 **락 잡은 채 호출해도 데드락 없음**: 락 순서 항상 a2a_store→writer, writer는 a2a_store를 절대 역방향으로 안 잡음(post_turn도 writer만). backfill은 tasks 수집 스코프에서 락을 놓고 루프에서 index 호출하므로 **재진입 데드락 없음**(std Mutex 비재진입 주의점 통과). 직렬화되면 A 완료 후 B가 delete로 A를 덮고 재-append=단일 사본(멱등, race 원천 차단).
+  - **비채택**: 전용 index Mutex(신규 필드+3 호출처 시그니처 plumbing=blast radius), writer에 트랜잭션형 replace_session_turns 트레이트 메서드 추가(트레이트 확장 광범). a2a_store 재사용이 최소·정확·무-plumbing. 코스트=색인 중(로컬 SQLite μs) a2a 핸들러 순간 대기(무시 가능, best-effort 배경).
+- **검증**: 각 fix에 단위테스트(① isError=true / ③ timeout 파싱 / ② 동시 2색인자→중복 0) + fmt·test(577 baseline)·clippy --all-targets. 적대 검증 워크플로우(데드락·race-closure·락순서·계약·타임아웃 독립 리뷰어). **push·PR·머지는 승인 후**([[commit-freely-push-with-approval]], 세션25식 자율승인은 이 세션 미부여).
+
 ## 2026-07-12 세션25: v2-52 리팩토링 백로그 clean 스윕 (god파일 3개 분리 + fmt + CI 게이트)
 
 정본 = [세션25 핸드오프](docs/prompts/v2-handoff_2026-07-12_session25.md). 재론 금지:

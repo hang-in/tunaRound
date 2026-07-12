@@ -68,14 +68,18 @@ pub(crate) fn index_terminal_task(
     p: &TerminalIndexPayload,
 ) {
     let sid = format!("a2a:{}", p.task_id);
-    // 멱등 재색인(적대 리뷰 major): append_turn은 비멱등이고 append 커밋과 indexed_at 스탬프가 서로 다른
-    // 커넥션이라, 크래시(taskkill·WMI 재기동 상시)·부분실패로 스탬프 전 죽으면 백필이 turn을 재-append해
-    // 중복이 쌓인다. 재색인 전 이 세션의 기존 색인을 비워 delete-then-append로 멱등화한다(재실행=덮어쓰기).
-    {
-        let store = a2a_store.lock().unwrap_or_else(|e| e.into_inner());
-        if let Err(e) = store.delete_session_messages(&sid) {
-            eprintln!("[index] task {} 기존 색인 정리 실패(무시): {e}", p.task_id);
-        }
+    // 색인 전체(delete→append→stamp)를 a2a_store 락 하나로 index_terminal_task 호출자 간 직렬화한다
+    // (적대 리뷰 confirmed race 차단. a2a:<sid>의 유일한 쓰기 진입점이 이 함수라 이 직렬화로 충분).
+    // 동시 색인자 = 기동 backfill(server.rs) vs 라이브 종결의 fire-and-forget spawn_blocking(tasks.rs)이
+    // 같은 sid에 delete-then-append를 인터리빙하면 중복(2×req+2×res)·유실이 생긴다(락을 매 단계 놓았다
+    // 잡으면 열리는 창). 락을 잡은 채로 append하면 뒤 색인자가 delete로 앞을 덮고 재-append=단일 사본(멱등).
+    // writer는 별개 연결·별개 뮤텍스라(cli_run: writer=store3, a2a_store=store4) 이 락을 잡은 채 호출해도
+    // 데드락이 없다: 락 순서는 항상 a2a_store→writer이고 writer(post_turn 포함)는 a2a_store를 역방향으로
+    // 잡지 않는다. backfill은 목록 수집 후 락을 놓고 이 함수를 부르므로 std Mutex 비재진입 데드락도 없다.
+    // best-effort 불변: 색인 실패는 종결을 되돌리지 않고 stamp를 건너뛰어 다음 백필이 재시도한다.
+    let store = a2a_store.lock().unwrap_or_else(|e| e.into_inner());
+    if let Err(e) = store.delete_session_messages(&sid) {
+        eprintln!("[index] task {} 기존 색인 정리 실패(무시): {e}", p.task_id);
     }
     let mut ok = true;
     if let Some(req) = &p.request_text
@@ -91,14 +95,11 @@ pub(crate) fn index_terminal_task(
         eprintln!("[index] task {} 결과 색인 실패(무시): {e}", p.task_id);
         ok = false;
     }
-    if ok {
-        let store = a2a_store.lock().unwrap_or_else(|e| e.into_inner());
-        if let Err(e) = store.mark_task_indexed(&p.task_id) {
-            eprintln!(
-                "[index] task {} indexed_at 스탬프 실패(무시): {e}",
-                p.task_id
-            );
-        }
+    if ok && let Err(e) = store.mark_task_indexed(&p.task_id) {
+        eprintln!(
+            "[index] task {} indexed_at 스탬프 실패(무시): {e}",
+            p.task_id
+        );
     }
 }
 
