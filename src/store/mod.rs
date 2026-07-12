@@ -317,24 +317,29 @@ pub fn tree_summary(messages: &[StoredMessage], head: Option<u64>) -> String {
     out
 }
 
-/// StoredSession을 JSON으로 저장.
-pub fn save_session(s: &StoredSession, path: &str) -> std::io::Result<()> {
-    let json = serde_json::to_string_pretty(s)
+/// ConversationSnapshot을 JSON으로 저장한다. 와이어 포맷은 StoredSession(serde)이라 하위호환 불변이다
+/// (중립 타입은 serde 없음 → 직렬화 책임이 store 경계에만, v2-52 ⑤).
+pub fn save_session(snap: &crate::types::ConversationSnapshot, path: &str) -> std::io::Result<()> {
+    let ss = StoredSession::from(snap);
+    let json = serde_json::to_string_pretty(&ss)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     std::fs::write(path, json)
 }
 
-/// StoredSession 로드. 레거시 bare-array(head 없음)이면 head=마지막 id로 폴백.
-pub fn load_session(path: &str) -> std::io::Result<StoredSession> {
+/// ConversationSnapshot을 로드한다. 와이어=StoredSession 역직렬화(레거시 bare-array면 head=마지막 id
+/// 폴백) 후 중립 타입으로 변환. 하위호환 로직은 이 StoredSession 경계에만 존재한다.
+pub fn load_session(path: &str) -> std::io::Result<crate::types::ConversationSnapshot> {
     let s = std::fs::read_to_string(path)?;
-    if let Ok(ss) = serde_json::from_str::<StoredSession>(&s) {
-        return Ok(ss);
-    }
-    // 레거시 v1: bare [StoredMessage]
-    let messages: Vec<StoredMessage> = serde_json::from_str(&s)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    let head = messages.iter().map(|m| m.id).max();
-    Ok(StoredSession { messages, head })
+    let ss = if let Ok(ss) = serde_json::from_str::<StoredSession>(&s) {
+        ss
+    } else {
+        // 레거시 v1: bare [StoredMessage]
+        let messages: Vec<StoredMessage> = serde_json::from_str(&s)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        let head = messages.iter().map(|m| m.id).max();
+        StoredSession { messages, head }
+    };
+    Ok(ss.into())
 }
 
 #[cfg(test)]
@@ -531,10 +536,12 @@ mod tests {
         };
         let dir = std::env::temp_dir();
         let path = dir.join("tuna_session_rt.json");
-        save_session(&ss, path.to_str().unwrap()).unwrap();
+        // save/load는 ConversationSnapshot 경계이나 와이어 포맷=StoredSession이라 라운드트립 등가.
+        let snap: crate::types::ConversationSnapshot = ss.clone().into();
+        save_session(&snap, path.to_str().unwrap()).unwrap();
         let back = load_session(path.to_str().unwrap()).unwrap();
-        assert_eq!(back.messages, ss.messages);
-        assert_eq!(back.head, Some(2));
+        assert_eq!(StoredSession::from(&back), ss);
+        assert_eq!(back.head().tip(), Some(2));
     }
 
     #[test]
@@ -557,9 +564,9 @@ mod tests {
         let dir = std::env::temp_dir();
         let path = dir.join("tuna_legacy.json");
         save(&legacy, path.to_str().unwrap()).unwrap(); // 기존 bare-array 저장
-        let ss = load_session(path.to_str().unwrap()).unwrap();
-        assert_eq!(ss.messages.len(), 2);
-        assert_eq!(ss.head, Some(2)); // 마지막 id
+        let snap = load_session(path.to_str().unwrap()).unwrap();
+        assert_eq!(snap.node_count(), 2);
+        assert_eq!(snap.head().tip(), Some(2)); // 마지막 id로 폴백
     }
 
     #[test]

@@ -56,8 +56,8 @@ fn session_save_state_then_resume() {
     assert_eq!(resumed.transcript_len(), 1);
 
     resumed.save_state(path).expect("save_state ok");
-    // save_state는 이제 StoredSession 포맷으로 저장하므로 load_session으로 확인한다.
-    assert_eq!(load_session(path).expect("reload").messages.len(), 1);
+    // save_state는 JSON(StoredSession 와이어) 저장이므로 load_session(ConversationSnapshot)으로 확인.
+    assert_eq!(load_session(path).expect("reload").node_count(), 1);
 
     let _ = std::fs::remove_file(path);
 }

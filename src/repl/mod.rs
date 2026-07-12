@@ -3,7 +3,6 @@ use crate::orchestrator::{
     ContextMode, Participant, RoundInput, RunnerRegistry, Utterance, run_round,
 };
 use crate::runner::RunMode;
-use crate::store::StoredSession;
 
 /// 이월 요약 최대 바이트 수. 초과 시 최근 드롭 턴 우선 유지 + 생략 표기.
 const MAX_CARRY: usize = 1500;
@@ -537,8 +536,8 @@ impl Session {
 
     /// 저장된 트리 상태(파일 또는 SQLite 세션 load_session)를 인메모리 세션에 주입한다.
     /// main이 --session/파일 재개 시 호출(v2-45 P7: Redis 스냅샷 경로 제거).
-    pub fn seed_from(&mut self, ss: StoredSession) {
-        self.snapshot = ss.into();
+    pub fn seed_from(&mut self, snap: crate::types::ConversationSnapshot) {
+        self.snapshot = snap;
     }
 
     /// 활성 경로(root->head) 전사를 반환한다.
@@ -595,12 +594,12 @@ impl Session {
 
     /// 현재 트리를 상태 파일(JSON)로 저장한다.
     pub fn save_state(&self, path: &str) -> std::io::Result<()> {
-        crate::store::save_session(&StoredSession::from(&self.snapshot), path)
+        crate::store::save_session(&self.snapshot, path)
     }
 
-    /// 현재 인메모리 트리를 StoredSession으로 복제한다(--core seed를 코어 DB에 권위로 반영할 때 사용).
-    pub fn to_stored(&self) -> StoredSession {
-        StoredSession::from(&self.snapshot)
+    /// 현재 인메모리 대화 트리 스냅샷을 복제한다(--core seed를 코어 DB에 권위로 반영할 때 사용).
+    pub fn snapshot(&self) -> crate::types::ConversationSnapshot {
+        self.snapshot.clone()
     }
 
     /// 상태 파일에서 트리를 로드해 세션을 복원한다. 레거시 bare-array 포맷도 지원한다.
@@ -609,10 +608,10 @@ impl Session {
         registry: Box<dyn RunnerRegistry>,
         path: &str,
     ) -> std::io::Result<Self> {
-        let ss = crate::store::load_session(path)?;
+        let snapshot = crate::store::load_session(path)?;
         Ok(Self {
             participants,
-            snapshot: ss.into(),
+            snapshot,
             registry,
             session_id: "default".to_string(),
             indexer: None,
@@ -813,7 +812,7 @@ mod tests {
     use super::*;
     use crate::orchestrator::MapRegistry;
     use crate::runner::{RunError, RunInput, RunOutput, Runner};
-    use crate::store::StoredMessage; // 테스트 fixture(FakeCoreSync·seed_from)가 StoredSession 조립에 사용.
+    use crate::store::{StoredMessage, StoredSession}; // 테스트 fixture(FakeCoreSync·seed_from)가 조립에 사용.
 
     struct FakeRunner {
         reply: String,
@@ -1064,15 +1063,18 @@ mod tests {
         // 메시지 1건 있는 세션 구성(sink 배선).
         let mut s =
             session_with_two_seats().with_validity_sink(Some(Box::new(SinkHandle(sink.clone()))));
-        s.seed_from(StoredSession {
-            messages: vec![StoredMessage {
-                id: 1,
-                parent_id: None,
-                speaker: "claude".into(),
-                content: "x".into(),
-            }],
-            head: Some(1),
-        });
+        s.seed_from(
+            StoredSession {
+                messages: vec![StoredMessage {
+                    id: 1,
+                    parent_id: None,
+                    speaker: "claude".into(),
+                    content: "x".into(),
+                }],
+                head: Some(1),
+            }
+            .into(),
+        );
         let out = s.step(Command::Supersede { id: 1, by: Some(2) });
         assert!(matches!(out, StepOutcome::Print(_)));
         let cap = sink.last.lock().unwrap().clone();
@@ -1165,15 +1167,18 @@ mod tests {
         });
         let mut s = session_with_two_seats()
             .with_annotation_sink(Some(Box::new(AnnotationSinkHandle(sink.clone()))));
-        s.seed_from(StoredSession {
-            messages: vec![StoredMessage {
-                id: 1,
-                parent_id: None,
-                speaker: "claude".into(),
-                content: "x".into(),
-            }],
-            head: Some(1),
-        });
+        s.seed_from(
+            StoredSession {
+                messages: vec![StoredMessage {
+                    id: 1,
+                    parent_id: None,
+                    speaker: "claude".into(),
+                    content: "x".into(),
+                }],
+                head: Some(1),
+            }
+            .into(),
+        );
         let out = s.step(Command::Annotate {
             id: 1,
             abstraction: Some("요약".into()),
