@@ -14,7 +14,10 @@ pub async fn start_http_mcp_server(
     a2a_store: Arc<std::sync::Mutex<crate::store::sqlite::SqliteStore>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    serve_http_mcp_on_listener(listener, retriever, reader, writer, roster, token, a2a_store).await
+    serve_http_mcp_on_listener(
+        listener, retriever, reader, writer, roster, token, a2a_store,
+    )
+    .await
 }
 
 /// 이미 바인드된 TcpListener로 HTTP MCP 서버를 서빙한다(테스트에서도 재사용).
@@ -56,7 +59,10 @@ pub async fn serve_http_mcp_on_listener(
     // 진입(아래) 이전 동기 기록이라 첫 헬스 요청 전에 항상 존재. best-effort(실패는 로그만, 기동 막지 않음).
     {
         let store = a2a_store.lock().unwrap_or_else(|e| e.into_inner());
-        match store.now().and_then(|n| store.set_config("broker_started_at", &n)) {
+        match store
+            .now()
+            .and_then(|n| store.set_config("broker_started_at", &n))
+        {
             Ok(()) => {}
             Err(e) => eprintln!("[serve] 브로커 기동 시각 기록 실패(무시): {e}"),
         }
@@ -96,8 +102,8 @@ pub async fn serve_http_mcp_on_listener(
     let service: StreamableHttpService<TunaSearchServer, LocalSessionManager> =
         StreamableHttpService::new(
             move || {
-                let mut s =
-                    TunaSearchServer::new(retriever2.clone()).with_a2a_store(a2a_store_for_mcp.clone());
+                let mut s = TunaSearchServer::new(retriever2.clone())
+                    .with_a2a_store(a2a_store_for_mcp.clone());
                 if let Some(r) = &reader2 {
                     s = s.with_transcript_reader(r.clone());
                 }
@@ -115,7 +121,9 @@ pub async fn serve_http_mcp_on_listener(
         );
 
     // MCP(/mcp)와 A2A(/a2a, /.well-known/agent-card.json)를 같은 axum app으로 병합한다.
-    let merged = Router::new().nest_service("/mcp", service).merge(a2a_router);
+    let merged = Router::new()
+        .nest_service("/mcp", service)
+        .merge(a2a_router);
 
     // 대시보드 쓰기 게이트(human-ping·deregister)용 토큰 사본: 원격 훅이 Bearer로 인증한다
     // (크로스머신 총감독, v2-43 비범위 해제 2026-07-10).
@@ -151,10 +159,22 @@ pub async fn serve_http_mcp_on_listener(
         .route("/dashboard/events", get(dashboard_events_handler))
         .route("/dashboard/roster", get(dashboard_roster_handler))
         .route("/dashboard/health", get(dashboard_health_handler))
-        .route("/dashboard/presence-timeline", get(dashboard_presence_timeline_handler))
-        .route("/dashboard/goal", axum::routing::post(dashboard_goal_handler))
-        .route("/dashboard/human-ping", axum::routing::post(dashboard_human_ping_handler))
-        .route("/dashboard/deregister", axum::routing::post(dashboard_deregister_handler));
+        .route(
+            "/dashboard/presence-timeline",
+            get(dashboard_presence_timeline_handler),
+        )
+        .route(
+            "/dashboard/goal",
+            axum::routing::post(dashboard_goal_handler),
+        )
+        .route(
+            "/dashboard/human-ping",
+            axum::routing::post(dashboard_human_ping_handler),
+        )
+        .route(
+            "/dashboard/deregister",
+            axum::routing::post(dashboard_deregister_handler),
+        );
     #[cfg(feature = "dashboard")]
     {
         // Vite base=/dashboard/라 에셋은 /dashboard/assets/*로 나가 events/roster와 경로 미충돌.
@@ -181,9 +201,15 @@ pub async fn serve_http_mcp_on_listener(
     #[cfg(feature = "dashboard")]
     eprintln!("[serve-mcp] HTTP MCP 서버 기동: {bound_addr} (대시보드 SPA: /dashboard)");
     #[cfg(not(feature = "dashboard"))]
-    eprintln!("[serve-mcp] HTTP MCP 서버 기동: {bound_addr} (대시보드: dashboard 피처 없이 빌드됨)");
+    eprintln!(
+        "[serve-mcp] HTTP MCP 서버 기동: {bound_addr} (대시보드: dashboard 피처 없이 빌드됨)"
+    );
     // ConnectInfo(peer addr)로 /dashboard/goal의 loopback 판정을 하기 위해 connect-info make service를 쓴다.
-    axum::serve(listener, app.into_make_service_with_connect_info::<std::net::SocketAddr>()).await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    )
+    .await?;
     Ok(())
 }
 
@@ -199,9 +225,11 @@ struct DashAssets;
 fn serve_embedded(path: &str) -> axum::response::Response {
     use axum::response::IntoResponse;
     match DashAssets::get(path) {
-        Some(content) => {
-            ([(axum::http::header::CONTENT_TYPE, mime_for_path(path))], content.data.into_owned()).into_response()
-        }
+        Some(content) => (
+            [(axum::http::header::CONTENT_TYPE, mime_for_path(path))],
+            content.data.into_owned(),
+        )
+            .into_response(),
         None => axum::http::StatusCode::NOT_FOUND.into_response(),
     }
 }
@@ -262,7 +290,11 @@ async fn dashboard_fallback_page() -> axum::response::Html<&'static str> {
 /// 재생 스냅샷이 이 한 함수를 공유해 두 경로의 매핑이 갈라지지 않게 한다.
 #[cfg(feature = "serve")]
 fn dashboard_envelope_json(task: &crate::store::a2a::Task) -> String {
-    let kind = if task.state == TaskState::Completed { "completed" } else { "status" };
+    let kind = if task.state == TaskState::Completed {
+        "completed"
+    } else {
+        "status"
+    };
     let envelope = serde_json::json!({ "event": kind, "task": task });
     serde_json::to_string(&envelope).unwrap_or_else(|_| "{}".to_string())
 }
@@ -389,7 +421,9 @@ fn parse_dashboard_events_query(query: &str) -> DashboardEventsQuery {
 /// (클라이언트 재접속 연쇄가 이어받음, 본문 주석 참조).
 #[cfg(feature = "serve")]
 async fn dashboard_events_handler(
-    axum::extract::State(store): axum::extract::State<Arc<Mutex<crate::store::sqlite::SqliteStore>>>,
+    axum::extract::State(store): axum::extract::State<
+        Arc<Mutex<crate::store::sqlite::SqliteStore>>,
+    >,
     uri: axum::http::Uri,
 ) -> axum::response::Response {
     use axum::response::IntoResponse;
@@ -400,7 +434,11 @@ async fn dashboard_events_handler(
         store.task_event_sender()
     };
     let Some(sender) = sender else {
-        return (axum::http::StatusCode::SERVICE_UNAVAILABLE, "task event bus 미활성").into_response();
+        return (
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            "task event bus 미활성",
+        )
+            .into_response();
     };
     // 순서 계약(§3): 스냅샷 질의보다 먼저 구독해야 질의 중 일어난 전이도 rx에 버퍼되어 유실되지
     // 않는다(a2a_server handle_subscribe_to_task의 subscribe-먼저 순서 답습). 그 대가로 스냅샷과
@@ -431,7 +469,10 @@ async fn dashboard_events_handler(
                     });
                 let truncated = tasks.len() > DASHBOARD_REPLAY_MAX;
                 tasks.truncate(DASHBOARD_REPLAY_MAX);
-                (tasks.iter().map(dashboard_envelope_json).collect(), truncated)
+                (
+                    tasks.iter().map(dashboard_envelope_json).collect(),
+                    truncated,
+                )
             } else {
                 // replay = 전 상태 스냅샷(canceled·열린 task 포함 - 피드는 전 상태 뷰).
                 // replay 값은 파서에서 이미 상한으로 클램프됨 = 잘림 판정 불요(창 뷰 의미론).
@@ -473,7 +514,9 @@ async fn dashboard_events_handler(
 /// axum "json" 피처(신규 의존) 없이 serde_json(기존 의존)만으로 application/json 응답을 만든다.
 #[cfg(feature = "serve")]
 async fn dashboard_roster_handler(
-    axum::extract::State(store): axum::extract::State<Arc<Mutex<crate::store::sqlite::SqliteStore>>>,
+    axum::extract::State(store): axum::extract::State<
+        Arc<Mutex<crate::store::sqlite::SqliteStore>>,
+    >,
 ) -> axum::response::Response {
     use axum::response::IntoResponse;
     // 대시보드는 오프라인 감독도 회색 닷으로 보여줘야 하므로 전체를 반환하고 online 플래그를 붙인다
@@ -495,7 +538,8 @@ async fn dashboard_roster_handler(
             .list_agents(&BTreeMap::new(), &now, i64::MAX)
             .into_iter()
             .map(|a| {
-                let online = crate::store::agents::is_online(&a.last_heartbeat, &now, AGENT_TTL_SECS);
+                let online =
+                    crate::store::agents::is_online(&a.last_heartbeat, &now, AGENT_TTL_SECS);
                 DashAgent {
                     uuid: a.uuid,
                     tags: a.tags,
@@ -524,7 +568,9 @@ async fn dashboard_roster_handler(
 /// uptime·WAL은 임계 없는 raw 게이지다(task-health 아님).
 #[cfg(feature = "serve")]
 async fn dashboard_health_handler(
-    axum::extract::State(store): axum::extract::State<Arc<Mutex<crate::store::sqlite::SqliteStore>>>,
+    axum::extract::State(store): axum::extract::State<
+        Arc<Mutex<crate::store::sqlite::SqliteStore>>,
+    >,
 ) -> axum::response::Response {
     use axum::response::IntoResponse;
     #[derive(serde::Serialize)]
@@ -561,7 +607,7 @@ async fn dashboard_health_handler(
     // 헬스는 "실패를 정상으로 위장하지 않는다"가 핵심(전부 0 = 정상처럼 보이는데 실은 조회 실패면 관제 오판).
     // 내부 쿼리 실패·spawn_blocking 패닉/취소는 Err로 모아 500으로 표면화 → 프론트가 "조회 실패"를 띄운다.
     let result: Result<Health, String> = tokio::task::spawn_blocking(move || {
-        use crate::mcp::format::{classify_task_health, TaskHealth};
+        use crate::mcp::format::{TaskHealth, classify_task_health};
         let store = store.lock().unwrap_or_else(|e| e.into_inner());
         let now = store.now()?;
         let open = store.list_all_open_tasks()?;
@@ -583,9 +629,19 @@ async fn dashboard_health_handler(
             .into_iter()
             .map(|a| {
                 let age_secs = crate::store::a2a::age_secs(&now, &a.last_heartbeat).unwrap_or(-1);
-                let online = crate::store::agents::is_online(&a.last_heartbeat, &now, AGENT_TTL_SECS);
-                let machine = a.tags.get("machine").cloned().unwrap_or_else(|| a.uuid.clone());
-                ScannerHealth { machine, last_heartbeat: a.last_heartbeat, age_secs, online }
+                let online =
+                    crate::store::agents::is_online(&a.last_heartbeat, &now, AGENT_TTL_SECS);
+                let machine = a
+                    .tags
+                    .get("machine")
+                    .cloned()
+                    .unwrap_or_else(|| a.uuid.clone());
+                ScannerHealth {
+                    machine,
+                    last_heartbeat: a.last_heartbeat,
+                    age_secs,
+                    online,
+                }
             })
             .collect();
         // uptime = 기동 시각(config) 대비 경과. row 부재(기동 write 이전=사실상 불가)면 0.
@@ -633,7 +689,11 @@ async fn dashboard_health_handler(
         }
         Err(e) => {
             eprintln!("[dashboard/health] 조회 실패: {e}");
-            (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "health 조회 실패").into_response()
+            (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                "health 조회 실패",
+            )
+                .into_response()
         }
     }
 }
@@ -650,7 +710,9 @@ const PRESENCE_TIMELINE_MAX: usize = 500;
 /// 백엔드는 raw 이벤트만 돌려주고 ★-도출(총감독 판정)은 프론트 activity.ts가 단일 소스로 유지한다.
 #[cfg(feature = "serve")]
 async fn dashboard_presence_timeline_handler(
-    axum::extract::State(store): axum::extract::State<Arc<Mutex<crate::store::sqlite::SqliteStore>>>,
+    axum::extract::State(store): axum::extract::State<
+        Arc<Mutex<crate::store::sqlite::SqliteStore>>,
+    >,
     uri: axum::http::Uri,
 ) -> axum::response::Response {
     use axum::response::IntoResponse;
@@ -697,7 +759,11 @@ async fn dashboard_presence_timeline_handler(
         }
         Err(e) => {
             eprintln!("[dashboard/presence-timeline] 조회 실패: {e}");
-            (axum::http::StatusCode::INTERNAL_SERVER_ERROR, "presence-timeline 조회 실패").into_response()
+            (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                "presence-timeline 조회 실패",
+            )
+                .into_response()
         }
     }
 }
@@ -707,7 +773,9 @@ async fn dashboard_presence_timeline_handler(
 /// 같은 retriever(형태소+FTS)로 검색한다. 배포 바이너리는 semantic 미포함이라 embedder 네트워크 비의존.
 #[cfg(feature = "serve")]
 async fn dashboard_search_handler(
-    axum::extract::State(retriever): axum::extract::State<Arc<dyn crate::orchestrator::ContextRetriever>>,
+    axum::extract::State(retriever): axum::extract::State<
+        Arc<dyn crate::orchestrator::ContextRetriever>,
+    >,
     uri: axum::http::Uri,
 ) -> axum::response::Response {
     use axum::response::IntoResponse;
@@ -732,8 +800,11 @@ async fn dashboard_search_handler(
     let query = query.trim().to_string();
     let json = [(axum::http::header::CONTENT_TYPE, "application/json")];
     if query.is_empty() {
-        let body = serde_json::to_vec(&SearchResponse { query, results: Vec::new() })
-            .unwrap_or_else(|_| b"{}".to_vec());
+        let body = serde_json::to_vec(&SearchResponse {
+            query,
+            results: Vec::new(),
+        })
+        .unwrap_or_else(|_| b"{}".to_vec());
         return (axum::http::StatusCode::OK, json, body).into_response();
     }
     // retrieve는 store 락 + FTS를 도는 동기 작업이라 spawn_blocking으로 감싼다. 검색 실패(진짜 DB 장애·
@@ -747,7 +818,10 @@ async fn dashboard_search_handler(
                 .into_iter()
                 .filter(|u| u.speaker.starts_with("a2a/"))
                 .take(20)
-                .map(|u| SearchResult { speaker: u.speaker, content: u.content })
+                .map(|u| SearchResult {
+                    speaker: u.speaker,
+                    content: u.content,
+                })
                 .collect();
             let body = serde_json::to_vec(&SearchResponse { query, results })
                 .unwrap_or_else(|_| b"{}".to_vec());
@@ -805,7 +879,9 @@ fn dashboard_write_allowed(
 #[cfg(feature = "serve")]
 async fn dashboard_human_ping_handler(
     axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<std::net::SocketAddr>,
-    axum::extract::State(store): axum::extract::State<Arc<Mutex<crate::store::sqlite::SqliteStore>>>,
+    axum::extract::State(store): axum::extract::State<
+        Arc<Mutex<crate::store::sqlite::SqliteStore>>,
+    >,
     axum::Extension(dash_token): axum::Extension<Arc<Option<String>>>,
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
@@ -819,7 +895,11 @@ async fn dashboard_human_ping_handler(
             .into_response();
     }
     if is_cross_site(&headers) {
-        return (axum::http::StatusCode::FORBIDDEN, "cross-site 요청 거부(local CSRF 방어).").into_response();
+        return (
+            axum::http::StatusCode::FORBIDDEN,
+            "cross-site 요청 거부(local CSRF 방어).",
+        )
+            .into_response();
     }
     #[derive(serde::Deserialize)]
     struct PingReq {
@@ -827,7 +907,13 @@ async fn dashboard_human_ping_handler(
     }
     let req: PingReq = match serde_json::from_slice(&body) {
         Ok(r) => r,
-        Err(e) => return (axum::http::StatusCode::BAD_REQUEST, format!("잘못된 요청: {e}")).into_response(),
+        Err(e) => {
+            return (
+                axum::http::StatusCode::BAD_REQUEST,
+                format!("잘못된 요청: {e}"),
+            )
+                .into_response();
+        }
     };
     // 미등록이어도 영속 선기록되므로(v2-45 P4) 항상 성공이다. 반환 bool은 무시하고 200을 준다.
     tokio::task::spawn_blocking(move || {
@@ -850,7 +936,9 @@ async fn dashboard_human_ping_handler(
 #[cfg(feature = "serve")]
 async fn dashboard_deregister_handler(
     axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<std::net::SocketAddr>,
-    axum::extract::State(store): axum::extract::State<Arc<Mutex<crate::store::sqlite::SqliteStore>>>,
+    axum::extract::State(store): axum::extract::State<
+        Arc<Mutex<crate::store::sqlite::SqliteStore>>,
+    >,
     axum::Extension(dash_token): axum::Extension<Arc<Option<String>>>,
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
@@ -864,7 +952,11 @@ async fn dashboard_deregister_handler(
             .into_response();
     }
     if is_cross_site(&headers) {
-        return (axum::http::StatusCode::FORBIDDEN, "cross-site 요청 거부(local CSRF 방어).").into_response();
+        return (
+            axum::http::StatusCode::FORBIDDEN,
+            "cross-site 요청 거부(local CSRF 방어).",
+        )
+            .into_response();
     }
     #[derive(serde::Deserialize)]
     struct DeregReq {
@@ -872,7 +964,13 @@ async fn dashboard_deregister_handler(
     }
     let req: DeregReq = match serde_json::from_slice(&body) {
         Ok(r) => r,
-        Err(e) => return (axum::http::StatusCode::BAD_REQUEST, format!("잘못된 요청: {e}")).into_response(),
+        Err(e) => {
+            return (
+                axum::http::StatusCode::BAD_REQUEST,
+                format!("잘못된 요청: {e}"),
+            )
+                .into_response();
+        }
     };
     let ok = tokio::task::spawn_blocking(move || {
         let store = store.lock().unwrap_or_else(|e| e.into_inner());
@@ -884,7 +982,11 @@ async fn dashboard_deregister_handler(
         (axum::http::StatusCode::OK, "ok").into_response()
     } else {
         // 미등록(이미 제거됐거나 무장 안 됨). 훅은 성패에 무관하게 통과한다.
-        (axum::http::StatusCode::NOT_FOUND, "미등록 세션(이미 제거됨)").into_response()
+        (
+            axum::http::StatusCode::NOT_FOUND,
+            "미등록 세션(이미 제거됨)",
+        )
+            .into_response()
     }
 }
 
@@ -894,7 +996,9 @@ async fn dashboard_deregister_handler(
 #[cfg(feature = "serve")]
 async fn dashboard_goal_handler(
     axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<std::net::SocketAddr>,
-    axum::extract::State(store): axum::extract::State<Arc<Mutex<crate::store::sqlite::SqliteStore>>>,
+    axum::extract::State(store): axum::extract::State<
+        Arc<Mutex<crate::store::sqlite::SqliteStore>>,
+    >,
     headers: axum::http::HeaderMap,
     body: axum::body::Bytes,
 ) -> axum::response::Response {
@@ -909,7 +1013,11 @@ async fn dashboard_goal_handler(
     }
     // local CSRF 방어: 다른 사이트가 유도한 cross-site POST 거부.
     if is_cross_site(&headers) {
-        return (axum::http::StatusCode::FORBIDDEN, "cross-site 요청 거부(local CSRF 방어).").into_response();
+        return (
+            axum::http::StatusCode::FORBIDDEN,
+            "cross-site 요청 거부(local CSRF 방어).",
+        )
+            .into_response();
     }
     #[derive(serde::Deserialize)]
     struct GoalReq {
@@ -918,10 +1026,20 @@ async fn dashboard_goal_handler(
     }
     let req: GoalReq = match serde_json::from_slice(&body) {
         Ok(r) => r,
-        Err(e) => return (axum::http::StatusCode::BAD_REQUEST, format!("잘못된 요청: {e}")).into_response(),
+        Err(e) => {
+            return (
+                axum::http::StatusCode::BAD_REQUEST,
+                format!("잘못된 요청: {e}"),
+            )
+                .into_response();
+        }
     };
     if req.text.trim().is_empty() || req.targets.is_empty() {
-        return (axum::http::StatusCode::BAD_REQUEST, "목표(text)와 대상(targets)이 필요합니다.").into_response();
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            "목표(text)와 대상(targets)이 필요합니다.",
+        )
+            .into_response();
     }
     #[derive(serde::Serialize)]
     #[serde(rename_all = "camelCase")]
@@ -950,19 +1068,28 @@ async fn dashboard_goal_handler(
             let message = Message {
                 message_id: msg_id,
                 role: "user".to_string(),
-                parts: vec![Part { text: Some(req.text.clone()), ..Default::default() }],
+                parts: vec![Part {
+                    text: Some(req.text.clone()),
+                    ..Default::default()
+                }],
                 task_id: None,
                 context_id: None,
             };
             match store.create_task_from_message("dashboard", uuid, message) {
-                Ok(task) => created.push(Created { task_id: task.id, to_agent: task.to_agent }),
+                Ok(task) => created.push(Created {
+                    task_id: task.id,
+                    to_agent: task.to_agent,
+                }),
                 Err(e) => errors.push(format!("{uuid}: {e}")),
             }
         }
         GoalResp { created, errors }
     })
     .await
-    .unwrap_or(GoalResp { created: vec![], errors: vec!["작업 실패".to_string()] });
+    .unwrap_or(GoalResp {
+        created: vec![],
+        errors: vec!["작업 실패".to_string()],
+    });
     let bodyv = serde_json::to_vec(&resp).unwrap_or_else(|_| b"{}".to_vec());
     (
         axum::http::StatusCode::OK,
@@ -992,12 +1119,24 @@ mod tests {
         #[test]
         fn loopback_always_allowed_without_token() {
             let ip: std::net::IpAddr = "127.0.0.1".parse().unwrap();
-            assert!(dashboard_write_allowed(ip, &headers_with_auth(None), &Some("tok".into())));
+            assert!(dashboard_write_allowed(
+                ip,
+                &headers_with_auth(None),
+                &Some("tok".into())
+            ));
             // dual-stack 소켓의 IPv4-mapped IPv6 루프백도 로컬로 인정해야 한다.
             let mapped: std::net::IpAddr = "::ffff:127.0.0.1".parse().unwrap();
-            assert!(dashboard_write_allowed(mapped, &headers_with_auth(None), &Some("tok".into())));
+            assert!(dashboard_write_allowed(
+                mapped,
+                &headers_with_auth(None),
+                &Some("tok".into())
+            ));
             let v6: std::net::IpAddr = "::1".parse().unwrap();
-            assert!(dashboard_write_allowed(v6, &headers_with_auth(None), &Some("tok".into())));
+            assert!(dashboard_write_allowed(
+                v6,
+                &headers_with_auth(None),
+                &Some("tok".into())
+            ));
         }
 
         #[test]
@@ -1010,8 +1149,16 @@ mod tests {
         #[test]
         fn remote_with_wrong_or_missing_bearer_denied() {
             let ip: std::net::IpAddr = "192.168.0.9".parse().unwrap();
-            assert!(!dashboard_write_allowed(ip, &headers_with_auth(Some("Bearer nope")), &Some("tok".into())));
-            assert!(!dashboard_write_allowed(ip, &headers_with_auth(None), &Some("tok".into())));
+            assert!(!dashboard_write_allowed(
+                ip,
+                &headers_with_auth(Some("Bearer nope")),
+                &Some("tok".into())
+            ));
+            assert!(!dashboard_write_allowed(
+                ip,
+                &headers_with_auth(None),
+                &Some("tok".into())
+            ));
         }
 
         #[test]
@@ -1062,7 +1209,11 @@ mod tests {
                     .lock()
                     .unwrap()
                     .iter()
-                    .map(|(s, c)| crate::orchestrator::Utterance { speaker: s.clone(), content: c.clone(), abstraction: None })
+                    .map(|(s, c)| crate::orchestrator::Utterance {
+                        speaker: s.clone(),
+                        content: c.clone(),
+                        abstraction: None,
+                    })
                     .collect())
             }
         }
@@ -1085,19 +1236,39 @@ mod tests {
         /// 핸드셰이크: initialize→(mcp-session-id 캡처)→initialized→tools/call들.
         #[tokio::test]
         async fn http_post_turn_get_roster_read_transcript_e2e() {
-            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind");
             let port = listener.local_addr().unwrap().port();
 
             let log = SharedLog::default();
-            let retriever = Arc::new(NullRetriever) as Arc<dyn crate::orchestrator::ContextRetriever>;
-            let reader = Some(Arc::new(log.clone()) as Arc<dyn crate::orchestrator::TranscriptReader>);
-            let writer = Some(Arc::new(log.clone()) as Arc<dyn crate::orchestrator::TranscriptWriter>);
+            let retriever =
+                Arc::new(NullRetriever) as Arc<dyn crate::orchestrator::ContextRetriever>;
+            let reader =
+                Some(Arc::new(log.clone()) as Arc<dyn crate::orchestrator::TranscriptReader>);
+            let writer =
+                Some(Arc::new(log.clone()) as Arc<dyn crate::orchestrator::TranscriptWriter>);
             let roster = Some(vec![
-                RosterSeat { engine: "claude".into(), role: Some("proposer".into()) },
-                RosterSeat { engine: "codex".into(), role: Some("reviewer".into()) },
+                RosterSeat {
+                    engine: "claude".into(),
+                    role: Some("proposer".into()),
+                },
+                RosterSeat {
+                    engine: "codex".into(),
+                    role: Some("reviewer".into()),
+                },
             ]);
             tokio::spawn(async move {
-                let _ = serve_http_mcp_on_listener(listener, retriever, reader, writer, roster, None, test_a2a_store()).await;
+                let _ = serve_http_mcp_on_listener(
+                    listener,
+                    retriever,
+                    reader,
+                    writer,
+                    roster,
+                    None,
+                    test_a2a_store(),
+                )
+                .await;
             });
             tokio::time::sleep(std::time::Duration::from_millis(120)).await;
 
@@ -1155,16 +1326,26 @@ mod tests {
 
             // get_roster → 좌석 목록.
             let roster_text = post(call_body(2, "get_roster", "{}")).await;
-            assert!(roster_text.contains("claude (proposer)"), "get_roster 응답: {roster_text}");
+            assert!(
+                roster_text.contains("claude (proposer)"),
+                "get_roster 응답: {roster_text}"
+            );
 
             // post_turn → 추가됨.
-            let post_text =
-                post(call_body(3, "post_turn", r#"{"speaker":"remote/agent","content":"원격 발언 핵심어 살구"}"#)).await;
+            let post_text = post(call_body(
+                3,
+                "post_turn",
+                r#"{"speaker":"remote/agent","content":"원격 발언 핵심어 살구"}"#,
+            ))
+            .await;
             assert!(post_text.contains("msg_id="), "post_turn 응답: {post_text}");
 
             // read_transcript → 방금 post한 발언이 보임(쓰기→읽기 일관).
             let read_text = post(call_body(4, "read_transcript", "{}")).await;
-            assert!(read_text.contains("살구"), "read_transcript에 post_turn 내용 없음: {read_text}");
+            assert!(
+                read_text.contains("살구"),
+                "read_transcript에 post_turn 내용 없음: {read_text}"
+            );
 
             // GET /dashboard/search → 별도 state(retriever) 서브라우터 merge 배선 검증
             // (NullRetriever = 빈 결과, 200). 라우터 merge가 깨지면 여기서 404가 잡힌다.
@@ -1173,14 +1354,19 @@ mod tests {
                 .expect("search get");
             assert_eq!(search.status(), 200);
             let search_body = search.text().await.expect("search text");
-            assert!(search_body.contains("\"results\":[]"), "search 응답: {search_body}");
+            assert!(
+                search_body.contains("\"results\":[]"),
+                "search 응답: {search_body}"
+            );
         }
 
         /// HTTP MCP로 poll_tasks→claim_task→complete_task 왕복을 검증한다. Task 2(a2a_server)가 만든
         /// a2a_store Arc를 serve_http_mcp_on_listener가 TunaSearchServer와 실제로 공유하는지까지 확인한다.
         #[tokio::test]
         async fn http_poll_claim_complete_task_e2e() {
-            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind");
             let port = listener.local_addr().unwrap().port();
 
             let store = test_a2a_store();
@@ -1194,11 +1380,20 @@ mod tests {
                 task.id
             };
 
-            let retriever = Arc::new(NullRetriever) as Arc<dyn crate::orchestrator::ContextRetriever>;
+            let retriever =
+                Arc::new(NullRetriever) as Arc<dyn crate::orchestrator::ContextRetriever>;
             let store_for_server = store.clone();
             tokio::spawn(async move {
-                let _ =
-                    serve_http_mcp_on_listener(listener, retriever, None, None, None, None, store_for_server).await;
+                let _ = serve_http_mcp_on_listener(
+                    listener,
+                    retriever,
+                    None,
+                    None,
+                    None,
+                    None,
+                    store_for_server,
+                )
+                .await;
             });
             tokio::time::sleep(std::time::Duration::from_millis(120)).await;
 
@@ -1252,31 +1447,50 @@ mod tests {
 
             // poll_tasks → 심어둔 task가 보임.
             let poll_text = post(call_body(2, "poll_tasks", r#"{"agent":"mac-claude"}"#)).await;
-            assert!(poll_text.contains(&seeded_id), "poll_tasks 응답에 task_id 없음: {poll_text}");
+            assert!(
+                poll_text.contains(&seeded_id),
+                "poll_tasks 응답에 task_id 없음: {poll_text}"
+            );
 
             // claim_task → working 전이.
             let claim_body = format!(r#"{{"task_id":"{seeded_id}"}}"#);
             let claim_text = post(call_body(3, "claim_task", &claim_body)).await;
-            assert!(claim_text.contains("state=working"), "claim_task 응답: {claim_text}");
+            assert!(
+                claim_text.contains("state=working"),
+                "claim_task 응답: {claim_text}"
+            );
 
             // complete_task → completed 전이 + artifact 저장.
             let complete_body = format!(r#"{{"task_id":"{seeded_id}","result":"작업 결과 요약"}}"#);
             let complete_text = post(call_body(4, "complete_task", &complete_body)).await;
-            assert!(complete_text.contains("state=completed"), "complete_task 응답: {complete_text}");
+            assert!(
+                complete_text.contains("state=completed"),
+                "complete_task 응답: {complete_text}"
+            );
 
             // DB 상태 최종 확인(HTTP 왕복 후 실제로 반영됐는지. serve_http_mcp_on_listener가 넘겨받은
             // 그 a2a_store Arc가 TunaSearchServer 쪽에도 공유됐다는 증거).
-            let final_task = store.lock().unwrap().get_task(&seeded_id).unwrap().expect("존재해야 함");
+            let final_task = store
+                .lock()
+                .unwrap()
+                .get_task(&seeded_id)
+                .unwrap()
+                .expect("존재해야 함");
             assert_eq!(final_task.state, TaskState::Completed);
             assert_eq!(final_task.artifacts.len(), 1);
-            assert_eq!(final_task.artifacts[0].parts[0].text.as_deref(), Some("작업 결과 요약"));
+            assert_eq!(
+                final_task.artifacts[0].parts[0].text.as_deref(),
+                Some("작업 결과 요약")
+            );
         }
 
         /// v2-45 P2: ?replay=N이 과거 task 스냅샷 프레임(전 상태, updated_at 오름차순)을 라이브
         /// 스트림보다 먼저 내보내는지 HTTP 레벨로 검증한다(subscribe-먼저 + chain 배선 확인).
         #[tokio::test]
         async fn dashboard_events_replay_sends_snapshot_frames_before_live() {
-            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind");
             let port = listener.local_addr().unwrap().port();
 
             // 이벤트 버스 활성 store에 종결·취소 task를 미리 심는다(재기동 후 피드 리로드 시나리오).
@@ -1287,29 +1501,48 @@ mod tests {
             ));
             {
                 let s = store.lock().unwrap();
-                let mut done =
-                    crate::store::a2a::Task::new("done-task", None, "win", "mac", "2026-07-11 09:00:00");
+                let mut done = crate::store::a2a::Task::new(
+                    "done-task",
+                    None,
+                    "win",
+                    "mac",
+                    "2026-07-11 09:00:00",
+                );
                 done.state = TaskState::Completed;
                 s.create_task(&done).unwrap();
-                let mut gone =
-                    crate::store::a2a::Task::new("gone-task", None, "win", "mac", "2026-07-11 09:01:00");
+                let mut gone = crate::store::a2a::Task::new(
+                    "gone-task",
+                    None,
+                    "win",
+                    "mac",
+                    "2026-07-11 09:01:00",
+                );
                 gone.state = TaskState::Canceled;
                 s.create_task(&gone).unwrap();
             }
 
-            let retriever = Arc::new(NullRetriever) as Arc<dyn crate::orchestrator::ContextRetriever>;
+            let retriever =
+                Arc::new(NullRetriever) as Arc<dyn crate::orchestrator::ContextRetriever>;
             let store_for_server = store.clone();
             tokio::spawn(async move {
                 let _ = serve_http_mcp_on_listener(
-                    listener, retriever, None, None, None, None, store_for_server,
+                    listener,
+                    retriever,
+                    None,
+                    None,
+                    None,
+                    None,
+                    store_for_server,
                 )
                 .await;
             });
             tokio::time::sleep(std::time::Duration::from_millis(120)).await;
 
-            let resp = reqwest::get(format!("http://127.0.0.1:{port}/dashboard/events?replay=10"))
-                .await
-                .expect("SSE 접속 실패");
+            let resp = reqwest::get(format!(
+                "http://127.0.0.1:{port}/dashboard/events?replay=10"
+            ))
+            .await
+            .expect("SSE 접속 실패");
             assert_eq!(resp.status(), 200);
 
             // 스냅샷 2프레임이 접속 직후(라이브 이벤트 없이) 도착해야 한다. SSE 이벤트는 "\n\n"으로
@@ -1317,7 +1550,10 @@ mod tests {
             fn complete_data_frames(body: &str) -> Vec<&str> {
                 let mut parts: Vec<&str> = body.split("\n\n").collect();
                 parts.pop(); // 마지막 조각은 아직 미완일 수 있다.
-                parts.into_iter().filter_map(|p| p.trim().strip_prefix("data: ")).collect()
+                parts
+                    .into_iter()
+                    .filter_map(|p| p.trim().strip_prefix("data: "))
+                    .collect()
             }
             let mut resp = resp;
             let mut body = String::new();
@@ -1352,7 +1588,8 @@ mod tests {
                     task_id: None,
                     context_id: None,
                 };
-                s.create_task_from_message("win", "live-target", msg).unwrap();
+                s.create_task_from_message("win", "live-target", msg)
+                    .unwrap();
             }
             while !body.contains("live-target") {
                 let chunk = tokio::time::timeout(std::time::Duration::from_secs(5), resp.chunk())
@@ -1370,7 +1607,9 @@ mod tests {
         /// = catch-up 연쇄 전체를 HTTP 레벨로 검증.
         #[tokio::test]
         async fn dashboard_events_since_truncation_ends_stream_then_catchup_chains() {
-            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind");
             let port = listener.local_addr().unwrap().port();
 
             // 상한+1건의 completed task를 초 단위로 구분된 updated_at으로 심는다(오래된 순 t-0000..).
@@ -1383,23 +1622,25 @@ mod tests {
                 let s = store.lock().unwrap();
                 for i in 0..=DASHBOARD_REPLAY_MAX {
                     let ts = format!("2026-07-11 09:{:02}:{:02}", i / 60, i % 60);
-                    let mut t = crate::store::a2a::Task::new(
-                        format!("t-{i:04}"),
-                        None,
-                        "win",
-                        "mac",
-                        ts,
-                    );
+                    let mut t =
+                        crate::store::a2a::Task::new(format!("t-{i:04}"), None, "win", "mac", ts);
                     t.state = TaskState::Completed;
                     s.create_task(&t).unwrap();
                 }
             }
 
-            let retriever = Arc::new(NullRetriever) as Arc<dyn crate::orchestrator::ContextRetriever>;
+            let retriever =
+                Arc::new(NullRetriever) as Arc<dyn crate::orchestrator::ContextRetriever>;
             let store_for_server = store.clone();
             tokio::spawn(async move {
                 let _ = serve_http_mcp_on_listener(
-                    listener, retriever, None, None, None, None, store_for_server,
+                    listener,
+                    retriever,
+                    None,
+                    None,
+                    None,
+                    None,
+                    store_for_server,
                 )
                 .await;
             });
@@ -1408,7 +1649,10 @@ mod tests {
             fn complete_data_frames(body: &str) -> Vec<&str> {
                 let mut parts: Vec<&str> = body.split("\n\n").collect();
                 parts.pop(); // 마지막 조각은 아직 미완일 수 있다.
-                parts.into_iter().filter_map(|p| p.trim().strip_prefix("data: ")).collect()
+                parts
+                    .into_iter()
+                    .filter_map(|p| p.trim().strip_prefix("data: "))
+                    .collect()
             }
 
             // 1차 접속: 전 구간 since → 상한 초과라 잘림 = 정확히 상한 개수 프레임 후 EOF(정상 종료).
@@ -1431,11 +1675,24 @@ mod tests {
                 .into_iter()
                 .map(|d| serde_json::from_str(d).expect("SSE data JSON 파싱 실패"))
                 .collect();
-            assert_eq!(frames.len(), DASHBOARD_REPLAY_MAX, "잘린 스냅샷 = 정확히 상한 개수");
-            assert_eq!(frames[0]["task"]["id"], "t-0000", "Oldest 방향 = 오래된 것부터");
+            assert_eq!(
+                frames.len(),
+                DASHBOARD_REPLAY_MAX,
+                "잘린 스냅샷 = 정확히 상한 개수"
+            );
+            assert_eq!(
+                frames[0]["task"]["id"], "t-0000",
+                "Oldest 방향 = 오래된 것부터"
+            );
             let last = &frames[frames.len() - 1];
-            assert_eq!(last["task"]["id"], format!("t-{:04}", DASHBOARD_REPLAY_MAX - 1));
-            let watermark = last["task"]["updatedAt"].as_str().expect("updatedAt 필요").to_string();
+            assert_eq!(
+                last["task"]["id"],
+                format!("t-{:04}", DASHBOARD_REPLAY_MAX - 1)
+            );
+            let watermark = last["task"]["updatedAt"]
+                .as_str()
+                .expect("updatedAt 필요")
+                .to_string();
 
             // 2차 접속(전진한 워터마크): >= 경계라 마지막 1건 재전달 + 나머지 1건, 잘림 아님
             // → 라이브 chain 생존(스냅샷 뒤 라이브 이벤트 도착).
@@ -1464,7 +1721,10 @@ mod tests {
                 format!("t-{:04}", DASHBOARD_REPLAY_MAX - 1),
                 "경계(>=) 재전달 - 클라이언트 seen이 dedup할 몫"
             );
-            assert_eq!(frames[1]["task"]["id"], format!("t-{:04}", DASHBOARD_REPLAY_MAX));
+            assert_eq!(
+                frames[1]["task"]["id"],
+                format!("t-{:04}", DASHBOARD_REPLAY_MAX)
+            );
 
             // 라이브 chain 확인: 새 task 생성 이벤트가 같은 접속에 도착.
             {
@@ -1476,7 +1736,8 @@ mod tests {
                     task_id: None,
                     context_id: None,
                 };
-                s.create_task_from_message("win", "live-after-catchup", msg).unwrap();
+                s.create_task_from_message("win", "live-after-catchup", msg)
+                    .unwrap();
             }
             while !body.contains("live-after-catchup") {
                 let chunk = tokio::time::timeout(std::time::Duration::from_secs(5), resp.chunk())
@@ -1492,7 +1753,9 @@ mod tests {
         /// 회귀 금지 - 설계 §4 P2 항목 5).
         #[tokio::test]
         async fn dashboard_events_without_params_sends_no_snapshot() {
-            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind");
             let port = listener.local_addr().unwrap().port();
 
             let store = Arc::new(std::sync::Mutex::new(
@@ -1502,17 +1765,29 @@ mod tests {
             ));
             {
                 let s = store.lock().unwrap();
-                let mut done =
-                    crate::store::a2a::Task::new("done-task", None, "win", "mac", "2026-07-11 09:00:00");
+                let mut done = crate::store::a2a::Task::new(
+                    "done-task",
+                    None,
+                    "win",
+                    "mac",
+                    "2026-07-11 09:00:00",
+                );
                 done.state = TaskState::Completed;
                 s.create_task(&done).unwrap();
             }
 
-            let retriever = Arc::new(NullRetriever) as Arc<dyn crate::orchestrator::ContextRetriever>;
+            let retriever =
+                Arc::new(NullRetriever) as Arc<dyn crate::orchestrator::ContextRetriever>;
             let store_for_server = store.clone();
             tokio::spawn(async move {
                 let _ = serve_http_mcp_on_listener(
-                    listener, retriever, None, None, None, None, store_for_server,
+                    listener,
+                    retriever,
+                    None,
+                    None,
+                    None,
+                    None,
+                    store_for_server,
                 )
                 .await;
             });
@@ -1533,7 +1808,8 @@ mod tests {
                     task_id: None,
                     context_id: None,
                 };
-                s.create_task_from_message("win", "live-target", msg).unwrap();
+                s.create_task_from_message("win", "live-target", msg)
+                    .unwrap();
             }
             let mut body = String::new();
             while !body.contains("live-target") {
@@ -1552,7 +1828,9 @@ mod tests {
 
         #[tokio::test]
         async fn dashboard_presence_timeline_returns_events() {
-            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind");
             let port = listener.local_addr().unwrap().port();
 
             let store = Arc::new(std::sync::Mutex::new(
@@ -1573,7 +1851,12 @@ mod tests {
                 s.sync_presence(
                     "win",
                     &[
-                        up("s1", "claude", Some("tunaRound"), Some("win-claude-tunaRound")),
+                        up(
+                            "s1",
+                            "claude",
+                            Some("tunaRound"),
+                            Some("win-claude-tunaRound"),
+                        ),
                         up("s2", "codex", None, None),
                     ],
                     "2026-07-12 10:00:00",
@@ -1581,28 +1864,45 @@ mod tests {
                 s.mark_human_input("s1", "2026-07-12 10:00:05");
                 s.sync_presence(
                     "win",
-                    &[up("s1", "claude", Some("tunaRound"), Some("win-claude-tunaRound"))],
+                    &[up(
+                        "s1",
+                        "claude",
+                        Some("tunaRound"),
+                        Some("win-claude-tunaRound"),
+                    )],
                     "2026-07-12 10:00:15",
                 );
             }
 
-            let retriever = Arc::new(NullRetriever) as Arc<dyn crate::orchestrator::ContextRetriever>;
+            let retriever =
+                Arc::new(NullRetriever) as Arc<dyn crate::orchestrator::ContextRetriever>;
             let store_for_server = store.clone();
             tokio::spawn(async move {
                 let _ = serve_http_mcp_on_listener(
-                    listener, retriever, None, None, None, None, store_for_server,
+                    listener,
+                    retriever,
+                    None,
+                    None,
+                    None,
+                    None,
+                    store_for_server,
                 )
                 .await;
             });
             tokio::time::sleep(std::time::Duration::from_millis(120)).await;
 
-            let resp = reqwest::get(format!("http://127.0.0.1:{port}/dashboard/presence-timeline"))
-                .await
-                .expect("presence-timeline 접속 실패");
+            let resp = reqwest::get(format!(
+                "http://127.0.0.1:{port}/dashboard/presence-timeline"
+            ))
+            .await
+            .expect("presence-timeline 접속 실패");
             assert_eq!(resp.status(), 200);
             let body = resp.text().await.expect("본문");
             let events: Vec<serde_json::Value> = serde_json::from_str(&body).expect("JSON 배열");
-            let types: Vec<&str> = events.iter().filter_map(|e| e["event_type"].as_str()).collect();
+            let types: Vec<&str> = events
+                .iter()
+                .filter_map(|e| e["event_type"].as_str())
+                .collect();
             // appear(s1,s2) + human_input(s1) + disappear(s2 stale) = 4건.
             assert_eq!(events.len(), 4, "이벤트 4건이어야: {body}");
             assert!(types.contains(&"appear"));
@@ -1614,10 +1914,11 @@ mod tests {
             assert_eq!(events[0]["detail"].as_str(), Some("stale"));
 
             // limit 상한 반영.
-            let resp2 =
-                reqwest::get(format!("http://127.0.0.1:{port}/dashboard/presence-timeline?limit=1"))
-                    .await
-                    .expect("limit 접속 실패");
+            let resp2 = reqwest::get(format!(
+                "http://127.0.0.1:{port}/dashboard/presence-timeline?limit=1"
+            ))
+            .await
+            .expect("limit 접속 실패");
             assert_eq!(resp2.status(), 200);
             let ev2: Vec<serde_json::Value> =
                 serde_json::from_str(&resp2.text().await.expect("본문2")).expect("JSON2");
@@ -1629,8 +1930,14 @@ mod tests {
             // 와일드카드 host는 loopback으로, 일반 host는 그대로.
             assert_eq!(core_local_url("0.0.0.0:8771"), "http://127.0.0.1:8771/mcp");
             assert_eq!(core_local_url("[::]:8771"), "http://127.0.0.1:8771/mcp");
-            assert_eq!(core_local_url("127.0.0.1:8771"), "http://127.0.0.1:8771/mcp");
-            assert_eq!(core_local_url("192.0.2.20:9000"), "http://192.0.2.20:9000/mcp");
+            assert_eq!(
+                core_local_url("127.0.0.1:8771"),
+                "http://127.0.0.1:8771/mcp"
+            );
+            assert_eq!(
+                core_local_url("192.0.2.20:9000"),
+                "http://192.0.2.20:9000/mcp"
+            );
         }
 
         #[test]
@@ -1643,15 +1950,26 @@ mod tests {
         #[tokio::test]
         async fn http_mcp_bearer_auth() {
             // 포트 :0 으로 바인드해 OS가 빈 포트를 할당하도록 한다(포트 경합 없음).
-            let listener =
-                tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind 실패");
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind 실패");
             let port = listener.local_addr().unwrap().port();
 
-            let retriever = Arc::new(NullRetriever) as Arc<dyn crate::orchestrator::ContextRetriever>;
+            let retriever =
+                Arc::new(NullRetriever) as Arc<dyn crate::orchestrator::ContextRetriever>;
             let token = Some("secret-tok".to_string());
 
             tokio::spawn(async move {
-                let _ = serve_http_mcp_on_listener(listener, retriever, None, None, None, token, test_a2a_store()).await;
+                let _ = serve_http_mcp_on_listener(
+                    listener,
+                    retriever,
+                    None,
+                    None,
+                    None,
+                    token,
+                    test_a2a_store(),
+                )
+                .await;
             });
             // axum이 accept를 시작할 시간을 준다.
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -1710,14 +2028,25 @@ mod tests {
         #[tokio::test]
         async fn http_mcp_no_token_allows_all() {
             // token=None이면 미들웨어 없이 모든 요청 통과.
-            let listener =
-                tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind 실패");
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind 실패");
             let port = listener.local_addr().unwrap().port();
 
-            let retriever = Arc::new(NullRetriever) as Arc<dyn crate::orchestrator::ContextRetriever>;
+            let retriever =
+                Arc::new(NullRetriever) as Arc<dyn crate::orchestrator::ContextRetriever>;
 
             tokio::spawn(async move {
-                let _ = serve_http_mcp_on_listener(listener, retriever, None, None, None, None, test_a2a_store()).await;
+                let _ = serve_http_mcp_on_listener(
+                    listener,
+                    retriever,
+                    None,
+                    None,
+                    None,
+                    None,
+                    test_a2a_store(),
+                )
+                .await;
             });
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
@@ -1755,8 +2084,20 @@ mod tests {
         let stream = dashboard_event_json_stream(rx);
         futures_util::pin_mut!(stream);
 
-        let task_a = Task::new("task-a", None, "win-claude", "mac-claude", "2026-07-06 10:00:00");
-        let mut task_b = Task::new("task-b", None, "win-claude", "mac-codex", "2026-07-06 10:01:00");
+        let task_a = Task::new(
+            "task-a",
+            None,
+            "win-claude",
+            "mac-claude",
+            "2026-07-06 10:00:00",
+        );
+        let mut task_b = Task::new(
+            "task-b",
+            None,
+            "win-claude",
+            "mac-codex",
+            "2026-07-06 10:01:00",
+        );
         task_b.state = TaskState::Completed;
         tx.send(TaskEvent::Status(task_a.clone())).unwrap();
         tx.send(TaskEvent::Completed(task_b.clone())).unwrap();
@@ -1793,7 +2134,10 @@ mod tests {
             task.state = state;
             let frame: serde_json::Value =
                 serde_json::from_str(&dashboard_envelope_json(&task)).unwrap();
-            assert_eq!(frame["event"], expected, "state={state:?}의 envelope 매핑이 §5-2와 다름");
+            assert_eq!(
+                frame["event"], expected,
+                "state={state:?}의 envelope 매핑이 §5-2와 다름"
+            );
             assert_eq!(frame["task"]["id"], "t1");
         }
     }
@@ -1802,12 +2146,18 @@ mod tests {
     #[test]
     fn parse_dashboard_events_query_defaults_and_each_param() {
         // 무파라미터 = 기본(replay 0, since/dispatcher 없음) = 현행 라이브 전용.
-        assert_eq!(parse_dashboard_events_query(""), DashboardEventsQuery::default());
+        assert_eq!(
+            parse_dashboard_events_query(""),
+            DashboardEventsQuery::default()
+        );
         // replay 단독.
         assert_eq!(parse_dashboard_events_query("replay=50").replay, 50);
         // 파싱 불가 replay는 0(무시), 상한 초과는 상한으로 클램프.
         assert_eq!(parse_dashboard_events_query("replay=abc").replay, 0);
-        assert_eq!(parse_dashboard_events_query("replay=999999").replay, DASHBOARD_REPLAY_MAX);
+        assert_eq!(
+            parse_dashboard_events_query("replay=999999").replay,
+            DASHBOARD_REPLAY_MAX
+        );
         // since(%20·%3A 인코딩) + dispatcher 조합.
         let q = parse_dashboard_events_query(
             "since=2026-07-11%2009%3A00%3A00&dispatcher=win-opus-boss",
@@ -1822,7 +2172,10 @@ mod tests {
         assert_eq!(q.since, None);
         assert_eq!(q.dispatcher, None);
         // 알 수 없는 키는 무시.
-        assert_eq!(parse_dashboard_events_query("foo=bar"), DashboardEventsQuery::default());
+        assert_eq!(
+            parse_dashboard_events_query("foo=bar"),
+            DashboardEventsQuery::default()
+        );
     }
 
     /// P2 리뷰 이월(§5-3 하드닝): ISO8601 'T' 구분자·말미 'Z'가 혼입돼도 DB datetime 포맷으로
@@ -1842,7 +2195,10 @@ mod tests {
     #[cfg(feature = "serve")]
     #[test]
     fn percent_decode_handles_plus_hex_and_malformed_sequences() {
-        assert_eq!(percent_decode("2026-07-11%2009%3A00%3A00"), "2026-07-11 09:00:00");
+        assert_eq!(
+            percent_decode("2026-07-11%2009%3A00%3A00"),
+            "2026-07-11 09:00:00"
+        );
         assert_eq!(percent_decode("a+b"), "a b");
         assert_eq!(percent_decode("plain"), "plain");
         // 불완전/비-hex %시퀀스는 그대로 통과(패닉·소실 없음).

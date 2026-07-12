@@ -46,7 +46,8 @@ fn insert_opt<T: Serialize>(map: &mut Map<String, Value>, key: &str, value: Opti
     if let Some(v) = value {
         map.insert(
             key.to_string(),
-            serde_json::to_value(v).expect("ApprovalPolicy/SandboxMode/String 직렬화는 실패하지 않음"),
+            serde_json::to_value(v)
+                .expect("ApprovalPolicy/SandboxMode/String 직렬화는 실패하지 않음"),
         );
     }
 }
@@ -301,9 +302,13 @@ mod tests {
 
     #[test]
     fn thread_resume_request_carries_thread_id() {
-        let req = build_thread_resume_request(3, "019f2f6d-202f-7602-a402-a4d1ffdc8d85", None, None);
+        let req =
+            build_thread_resume_request(3, "019f2f6d-202f-7602-a402-a4d1ffdc8d85", None, None);
         assert_eq!(req["method"], "thread/resume");
-        assert_eq!(req["params"]["threadId"], "019f2f6d-202f-7602-a402-a4d1ffdc8d85");
+        assert_eq!(
+            req["params"]["threadId"],
+            "019f2f6d-202f-7602-a402-a4d1ffdc8d85"
+        );
     }
 
     #[test]
@@ -315,7 +320,10 @@ mod tests {
             Some(ApprovalPolicy::Never),
         );
         assert_eq!(req["method"], "turn/start");
-        assert_eq!(req["params"]["threadId"], "019f2f6d-202f-7602-a402-a4d1ffdc8d85");
+        assert_eq!(
+            req["params"]["threadId"],
+            "019f2f6d-202f-7602-a402-a4d1ffdc8d85"
+        );
         assert_eq!(req["params"]["input"][0]["type"], "text");
         assert_eq!(req["params"]["input"][0]["text"], "1+1?");
         assert_eq!(req["params"]["approvalPolicy"], "never");
@@ -401,7 +409,10 @@ mod tests {
     #[test]
     fn build_elicitation_accept_matches_expected_shape() {
         let resp = build_elicitation_accept(&json!(42));
-        assert_eq!(resp, json!({ "jsonrpc": "2.0", "id": 42, "result": { "action": "accept" } }));
+        assert_eq!(
+            resp,
+            json!({ "jsonrpc": "2.0", "id": 42, "result": { "action": "accept" } })
+        );
     }
 
     // -- item/completed(agentMessage final) (P0 실측 픽스처) ---------------

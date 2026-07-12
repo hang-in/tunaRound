@@ -43,12 +43,18 @@ impl TaskState {
 
     /// dispatcher가 여전히 응답을 기다리는 상태인가. list_open_tasks_for의 SQL 필터와 의미를 동기 유지한다.
     pub fn is_open(&self) -> bool {
-        matches!(self, TaskState::Submitted | TaskState::Working | TaskState::InputRequired)
+        matches!(
+            self,
+            TaskState::Submitted | TaskState::Working | TaskState::InputRequired
+        )
     }
 
     /// 종료 상태인가(is_open의 종료측 대응). SSE 스트리밍의 `final` 플래그 산출에 쓰인다.
     pub fn is_terminal(&self) -> bool {
-        matches!(self, TaskState::Completed | TaskState::Failed | TaskState::Canceled)
+        matches!(
+            self,
+            TaskState::Completed | TaskState::Failed | TaskState::Canceled
+        )
     }
 }
 
@@ -185,22 +191,42 @@ pub struct StreamResponse {
 impl StreamResponse {
     /// 초기 task 스냅샷 프레임(§2.2 1단계, SendStreamingMessage 최초 submitted 프레임).
     pub fn from_task(task: Task) -> Self {
-        StreamResponse { task: Some(task), message: None, status_update: None, artifact_update: None }
+        StreamResponse {
+            task: Some(task),
+            message: None,
+            status_update: None,
+            artifact_update: None,
+        }
     }
 
     /// message 프레임(현재 매핑 경로에선 미사용이나 spec 표면 완전성을 위해 제공).
     pub fn from_message(message: Message) -> Self {
-        StreamResponse { task: None, message: Some(message), status_update: None, artifact_update: None }
+        StreamResponse {
+            task: None,
+            message: Some(message),
+            status_update: None,
+            artifact_update: None,
+        }
     }
 
     /// statusUpdate 프레임.
     pub fn from_status(status_update: TaskStatusUpdateEvent) -> Self {
-        StreamResponse { task: None, message: None, status_update: Some(status_update), artifact_update: None }
+        StreamResponse {
+            task: None,
+            message: None,
+            status_update: Some(status_update),
+            artifact_update: None,
+        }
     }
 
     /// artifactUpdate 프레임.
     pub fn from_artifact(artifact_update: TaskArtifactUpdateEvent) -> Self {
-        StreamResponse { task: None, message: None, status_update: None, artifact_update: Some(artifact_update) }
+        StreamResponse {
+            task: None,
+            message: None,
+            status_update: None,
+            artifact_update: Some(artifact_update),
+        }
     }
 }
 
@@ -450,7 +476,13 @@ mod tests {
 
     #[test]
     fn task_new_sets_submitted_and_stamps_given_timestamp() {
-        let t = Task::new("t1", Some("ctx1".into()), "win", "mac", "2026-07-02 09:00:00");
+        let t = Task::new(
+            "t1",
+            Some("ctx1".into()),
+            "win",
+            "mac",
+            "2026-07-02 09:00:00",
+        );
         assert_eq!(t.state, TaskState::Submitted);
         assert_eq!(t.context_id.as_deref(), Some("ctx1"));
         assert_eq!(t.created_at, "2026-07-02 09:00:00");
@@ -476,23 +508,63 @@ mod tests {
             context_id: Some("ctx1".into()),
         };
         let msg_json = serde_json::to_value(&msg).unwrap();
-        assert!(msg_json.get("messageId").is_some(), "messageId 없음: {msg_json}");
+        assert!(
+            msg_json.get("messageId").is_some(),
+            "messageId 없음: {msg_json}"
+        );
         assert!(msg_json.get("taskId").is_some(), "taskId 없음: {msg_json}");
-        assert!(msg_json.get("contextId").is_some(), "contextId 없음: {msg_json}");
-        assert!(msg_json.get("message_id").is_none(), "snake_case 잔존: {msg_json}");
+        assert!(
+            msg_json.get("contextId").is_some(),
+            "contextId 없음: {msg_json}"
+        );
+        assert!(
+            msg_json.get("message_id").is_none(),
+            "snake_case 잔존: {msg_json}"
+        );
         let part_json = &msg_json["parts"][0];
-        assert!(part_json.get("mediaType").is_some(), "mediaType 없음: {part_json}");
+        assert!(
+            part_json.get("mediaType").is_some(),
+            "mediaType 없음: {part_json}"
+        );
 
-        let mut task = Task::new("t1", Some("ctx1".into()), "win-claude", "mac-claude", "2026-07-02 09:00:00");
+        let mut task = Task::new(
+            "t1",
+            Some("ctx1".into()),
+            "win-claude",
+            "mac-claude",
+            "2026-07-02 09:00:00",
+        );
         task.status_message = Some(msg.clone());
-        task.artifacts = vec![Artifact { artifact_id: "a1".into(), name: None, parts: vec![] }];
+        task.artifacts = vec![Artifact {
+            artifact_id: "a1".into(),
+            name: None,
+            parts: vec![],
+        }];
         let task_json = serde_json::to_value(&task).unwrap();
-        assert!(task_json.get("contextId").is_some(), "contextId 없음: {task_json}");
-        assert!(task_json.get("fromAgent").is_some(), "fromAgent 없음: {task_json}");
-        assert!(task_json.get("toAgent").is_some(), "toAgent 없음: {task_json}");
-        assert!(task_json.get("statusMessage").is_some(), "statusMessage 없음: {task_json}");
-        assert!(task_json.get("createdAt").is_some(), "createdAt 없음: {task_json}");
-        assert!(task_json.get("updatedAt").is_some(), "updatedAt 없음: {task_json}");
+        assert!(
+            task_json.get("contextId").is_some(),
+            "contextId 없음: {task_json}"
+        );
+        assert!(
+            task_json.get("fromAgent").is_some(),
+            "fromAgent 없음: {task_json}"
+        );
+        assert!(
+            task_json.get("toAgent").is_some(),
+            "toAgent 없음: {task_json}"
+        );
+        assert!(
+            task_json.get("statusMessage").is_some(),
+            "statusMessage 없음: {task_json}"
+        );
+        assert!(
+            task_json.get("createdAt").is_some(),
+            "createdAt 없음: {task_json}"
+        );
+        assert!(
+            task_json.get("updatedAt").is_some(),
+            "updatedAt 없음: {task_json}"
+        );
         assert_eq!(task_json["artifacts"][0]["artifactId"], "a1");
         // state는 snake_case 그대로(A2A wire 관례, task 지시로 변경 금지).
         assert_eq!(task_json["state"], "submitted");
@@ -506,7 +578,10 @@ mod tests {
         Message {
             message_id: id.into(),
             role: "user".into(),
-            parts: vec![Part { text: Some("내용".into()), ..Default::default() }],
+            parts: vec![Part {
+                text: Some("내용".into()),
+                ..Default::default()
+            }],
             task_id: Some("t1".into()),
             context_id: None,
         }
@@ -518,7 +593,10 @@ mod tests {
         let artifacts = vec![Artifact {
             artifact_id: "a1".into(),
             name: Some("결과".into()),
-            parts: vec![Part { text: Some("산출물".into()), ..Default::default() }],
+            parts: vec![Part {
+                text: Some("산출물".into()),
+                ..Default::default()
+            }],
         }];
         let history = vec![sample_message("h1"), sample_message("h2")];
 
@@ -623,7 +701,13 @@ mod tests {
     }
 
     fn sample_task(state: TaskState) -> Task {
-        let mut t = Task::new("t1", Some("ctx1".into()), "win-claude", "mac-claude", "2026-07-03 10:00:00");
+        let mut t = Task::new(
+            "t1",
+            Some("ctx1".into()),
+            "win-claude",
+            "mac-claude",
+            "2026-07-03 10:00:00",
+        );
         t.state = state;
         t.updated_at = "2026-07-03 10:05:00".into();
         t
@@ -634,7 +718,11 @@ mod tests {
         let ev = TaskStatusUpdateEvent {
             task_id: "t1".into(),
             context_id: Some("ctx1".into()),
-            status: TaskStatus { state: TaskState::Working, message: None, timestamp: None },
+            status: TaskStatus {
+                state: TaskState::Working,
+                message: None,
+                timestamp: None,
+            },
             is_final: false,
             metadata: None,
         };
@@ -642,8 +730,14 @@ mod tests {
         assert_eq!(json["taskId"], "t1");
         assert_eq!(json["status"]["state"], "working");
         assert_eq!(json["final"], false);
-        assert!(json.get("is_final").is_none(), "is_final 스네이크케이스 잔존: {json}");
-        assert!(json.get("isFinal").is_none(), "isFinal 잘못된 캐멀케이스 잔존: {json}");
+        assert!(
+            json.get("is_final").is_none(),
+            "is_final 스네이크케이스 잔존: {json}"
+        );
+        assert!(
+            json.get("isFinal").is_none(),
+            "isFinal 잘못된 캐멀케이스 잔존: {json}"
+        );
     }
 
     #[test]
@@ -651,13 +745,20 @@ mod tests {
         let ev = TaskStatusUpdateEvent {
             task_id: "t1".into(),
             context_id: None,
-            status: TaskStatus { state: TaskState::Working, message: None, timestamp: None },
+            status: TaskStatus {
+                state: TaskState::Working,
+                message: None,
+                timestamp: None,
+            },
             is_final: false,
             metadata: None,
         };
         let resp = StreamResponse::from_status(ev);
         let json = serde_json::to_value(&resp).unwrap();
-        assert!(json.get("statusUpdate").is_some(), "statusUpdate 없음: {json}");
+        assert!(
+            json.get("statusUpdate").is_some(),
+            "statusUpdate 없음: {json}"
+        );
         assert!(json.get("task").is_none());
         assert!(json.get("message").is_none());
         assert!(json.get("artifactUpdate").is_none());
@@ -668,7 +769,11 @@ mod tests {
         let ev = TaskArtifactUpdateEvent {
             task_id: "t1".into(),
             context_id: None,
-            artifact: Artifact { artifact_id: "a1".into(), name: None, parts: vec![] },
+            artifact: Artifact {
+                artifact_id: "a1".into(),
+                name: None,
+                parts: vec![],
+            },
             append: false,
             last_chunk: true,
             metadata: None,
@@ -703,11 +808,18 @@ mod tests {
     #[test]
     fn task_event_to_frames_completed_yields_artifacts_then_final_status() {
         let mut task = sample_task(TaskState::Completed);
-        task.artifacts = vec![Artifact { artifact_id: "a1".into(), name: None, parts: vec![] }];
+        task.artifacts = vec![Artifact {
+            artifact_id: "a1".into(),
+            name: None,
+            parts: vec![],
+        }];
         let frames = task_event_to_frames(&TaskEvent::Completed(task));
         assert_eq!(frames.len(), 2);
 
-        let artifact_update = frames[0].artifact_update.as_ref().expect("artifactUpdate 없음");
+        let artifact_update = frames[0]
+            .artifact_update
+            .as_ref()
+            .expect("artifactUpdate 없음");
         assert!(artifact_update.last_chunk);
         assert_eq!(artifact_update.artifact.artifact_id, "a1");
 
@@ -733,7 +845,10 @@ mod tests {
     #[test]
     fn parse_sql_datetime_roundtrips_via_days_from_civil() {
         // 2026-07-04는 1970-01-01로부터 20638일(윤년 계산 포함 수동 검산)이다.
-        assert_eq!(parse_sql_datetime("2026-07-04 00:00:00"), Some(20638 * 86400));
+        assert_eq!(
+            parse_sql_datetime("2026-07-04 00:00:00"),
+            Some(20638 * 86400)
+        );
     }
 
     #[test]
@@ -747,13 +862,19 @@ mod tests {
 
     #[test]
     fn age_secs_computes_positive_difference() {
-        assert_eq!(age_secs("2026-07-04 00:10:00", "2026-07-04 00:00:00"), Some(600));
+        assert_eq!(
+            age_secs("2026-07-04 00:10:00", "2026-07-04 00:00:00"),
+            Some(600)
+        );
     }
 
     #[test]
     fn age_secs_clamps_negative_to_zero() {
         // now < then(시계 역행 또는 미래 timestamp): 음수 대신 0.
-        assert_eq!(age_secs("2026-07-04 00:00:00", "2026-07-04 00:10:00"), Some(0));
+        assert_eq!(
+            age_secs("2026-07-04 00:00:00", "2026-07-04 00:10:00"),
+            Some(0)
+        );
     }
 
     #[test]

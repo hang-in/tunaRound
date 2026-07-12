@@ -24,7 +24,12 @@ pub fn project_from_cwd_normalized(cwd: Option<&str>, home: Option<&Path>) -> Op
     if let Some(h) = home {
         let p = Path::new(cwd);
         // 경로 문자열 비교(canonicalize는 존재하지 않는 원격 경로에서 실패) - 구분자만 통일.
-        let norm = |s: &Path| s.to_string_lossy().replace('\\', "/").trim_end_matches('/').to_lowercase();
+        let norm = |s: &Path| {
+            s.to_string_lossy()
+                .replace('\\', "/")
+                .trim_end_matches('/')
+                .to_lowercase()
+        };
         if norm(p) == norm(h) {
             return Some("home".to_string());
         }
@@ -53,14 +58,21 @@ pub fn parse_codex_meta_line(line: &str) -> Option<(String, Option<String>, Opti
         .and_then(|x| x.as_str())?
         .to_string();
     let cwd = p.get("cwd").and_then(|c| c.as_str()).map(str::to_string);
-    let originator = p.get("originator").and_then(|o| o.as_str()).map(str::to_string);
+    let originator = p
+        .get("originator")
+        .and_then(|o| o.as_str())
+        .map(str::to_string);
     Some((id, cwd, originator))
 }
 
 /// 기본 codex 세션 디렉토리(`~/.codex/sessions`). HOME 미확장이면 None.
 pub fn default_codex_sessions_dir() -> Option<PathBuf> {
     let expanded = crate::config::expand_home("~/.codex/sessions");
-    if expanded.starts_with("~/") { None } else { Some(PathBuf::from(expanded)) }
+    if expanded.starts_with("~/") {
+        None
+    } else {
+        Some(PathBuf::from(expanded))
+    }
 }
 
 /// codex rollout tail 스캔 상한(256KB 역방향). 세션당 마지막 사람 입력 시각만 필요하므로 전체를 읽지 않는다.
@@ -103,9 +115,17 @@ pub fn normalize_iso_to_db_datetime(ts: &str) -> Option<String> {
     let mut parts = replaced.split_whitespace();
     let date = parts.next()?;
     let time = parts.next()?;
-    let core_time = time.split(['.', 'Z', '+', '-']).next().unwrap_or(time).trim();
+    let core_time = time
+        .split(['.', 'Z', '+', '-'])
+        .next()
+        .unwrap_or(time)
+        .trim();
     let core = format!("{date} {core_time}");
-    if is_db_datetime_19(&core) { Some(core) } else { None }
+    if is_db_datetime_19(&core) {
+        Some(core)
+    } else {
+        None
+    }
 }
 
 /// user_message가 사람 입력인지(= relay 기계 주입이 아닌지) 판정한다(§5-6 고정 계약). relay 주입은
@@ -126,20 +146,31 @@ pub fn parse_codex_last_user_input(path: &Path, max_tail: usize) -> Option<Strin
     let text = String::from_utf8_lossy(&tail);
     let mut latest: Option<String> = None;
     for line in text.lines() {
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(line.trim()) else { continue };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line.trim()) else {
+            continue;
+        };
         if v.get("type").and_then(|t| t.as_str()) != Some("event_msg") {
             continue;
         }
-        let Some(payload) = v.get("payload") else { continue };
+        let Some(payload) = v.get("payload") else {
+            continue;
+        };
         if payload.get("type").and_then(|t| t.as_str()) != Some("user_message") {
             continue;
         }
-        let msg = payload.get("message").and_then(|m| m.as_str()).unwrap_or("");
+        let msg = payload
+            .get("message")
+            .and_then(|m| m.as_str())
+            .unwrap_or("");
         if !message_is_human_input(msg) {
             continue; // relay 기계 주입 = 사람 입력 아님.
         }
-        let Some(ts) = v.get("timestamp").and_then(|t| t.as_str()) else { continue };
-        let Some(norm) = normalize_iso_to_db_datetime(ts) else { continue };
+        let Some(ts) = v.get("timestamp").and_then(|t| t.as_str()) else {
+            continue;
+        };
+        let Some(norm) = normalize_iso_to_db_datetime(ts) else {
+            continue;
+        };
         match &latest {
             Some(cur) if norm.as_str() <= cur.as_str() => {}
             _ => latest = Some(norm),
@@ -173,7 +204,9 @@ pub fn enumerate_codex_sessions(
         if visited > 10_000 {
             break;
         }
-        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
         for e in entries.flatten() {
             let path = e.path();
             if path.is_dir() {
@@ -181,7 +214,9 @@ pub fn enumerate_codex_sessions(
                 continue;
             }
             let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            if !name.starts_with("rollout-") || path.extension().and_then(|x| x.to_str()) != Some("jsonl") {
+            if !name.starts_with("rollout-")
+                || path.extension().and_then(|x| x.to_str()) != Some("jsonl")
+            {
                 continue;
             }
             let Ok(meta) = e.metadata() else { continue };
@@ -189,8 +224,12 @@ pub fn enumerate_codex_sessions(
             if crate::discover::age_secs_since(mtime, now) as u64 > stale.as_secs() {
                 continue;
             }
-            let Some(first) = read_first_line(&path) else { continue };
-            let Some((uuid, cwd, originator)) = parse_codex_meta_line(&first) else { continue };
+            let Some(first) = read_first_line(&path) else {
+                continue;
+            };
+            let Some((uuid, cwd, originator)) = parse_codex_meta_line(&first) else {
+                continue;
+            };
             if originator.as_deref() != Some("codex-tui") {
                 continue; // exec/워커 rollout은 로스터 대상 아님.
             }
@@ -218,11 +257,17 @@ pub fn enumerate_codex_sessions(
                 }
             },
         };
-        out.push(LiveSession { uuid, runner: "codex".to_string(), project, human_input_at });
+        out.push(LiveSession {
+            uuid,
+            runner: "codex".to_string(),
+            project,
+            human_input_at,
+        });
     }
     // 이번 주기에 사라진 세션의 캐시 항목 정리(무한 성장 방지).
     if let Some(cache) = input_cache.as_mut() {
-        let present: std::collections::HashSet<&str> = out.iter().map(|s| s.uuid.as_str()).collect();
+        let present: std::collections::HashSet<&str> =
+            out.iter().map(|s| s.uuid.as_str()).collect();
         cache.retain(|k, _| present.contains(k.as_str()));
     }
     out.sort_by(|a, b| a.uuid.cmp(&b.uuid));
@@ -341,7 +386,10 @@ pub fn count_matching_lines(text: &str, name: &str, windows: bool) -> usize {
     let exe = format!("{needle}.exe");
     let matches_token = |tok: &str| {
         let tok = tok.trim_matches('"').trim();
-        let base = std::path::Path::new(tok).file_name().and_then(|f| f.to_str()).unwrap_or(tok);
+        let base = std::path::Path::new(tok)
+            .file_name()
+            .and_then(|f| f.to_str())
+            .unwrap_or(tok);
         base == needle || base == exe
     };
     text.lines()
@@ -382,7 +430,10 @@ pub fn runner_pids(text: &str, name: &str, windows: bool) -> std::collections::H
     let exe = format!("{needle}.exe");
     let matches_token = |tok: &str| {
         let tok = tok.trim_matches('"').trim();
-        let base = std::path::Path::new(tok).file_name().and_then(|f| f.to_str()).unwrap_or(tok);
+        let base = std::path::Path::new(tok)
+            .file_name()
+            .and_then(|f| f.to_str())
+            .unwrap_or(tok);
         base == needle || base == exe
     };
     text.lines()
@@ -393,7 +444,10 @@ pub fn runner_pids(text: &str, name: &str, windows: bool) -> std::collections::H
                 if !fields.next().is_some_and(matches_token) {
                     return None;
                 }
-                fields.next().map(|s| s.trim_matches('"').trim()).and_then(|p| p.parse::<u32>().ok())
+                fields
+                    .next()
+                    .map(|s| s.trim_matches('"').trim())
+                    .and_then(|p| p.parse::<u32>().ok())
             } else {
                 // `ps -o pid=,args=`: 첫 토큰=pid, argv 앞 3개 basename이 러너면 그 pid를 취한다.
                 let mut toks = l.split_whitespace();
@@ -452,7 +506,10 @@ pub fn is_session_live(marker: &MarkerState, alive: &std::collections::HashSet<u
 /// tombstone 세션만 제거한다(순수부). PID 생존 판정과 달리 프로세스 스냅샷이 필요 없으므로,
 /// 스냅샷 실패(tasklist 행·부하) 주기에도 항상 적용한다(깨끗한 종료 = 스냅샷 무관 확정 죽음).
 pub fn filter_tombstoned(sessions: Vec<LiveSession>, marker_dir: &Path) -> Vec<LiveSession> {
-    sessions.into_iter().filter(|s| read_marker(marker_dir, &s.uuid) != MarkerState::Dead).collect()
+    sessions
+        .into_iter()
+        .filter(|s| read_marker(marker_dir, &s.uuid) != MarkerState::Dead)
+        .collect()
 }
 
 /// 세션 목록에 마커 생존 필터를 적용한다(v2-44 §10: /clear·창닫기·크래시 유령 즉시 제거).
@@ -477,7 +534,8 @@ pub fn live_idle_marker_uuids(
     claude_pids: &std::collections::HashSet<u32>,
 ) -> std::collections::HashSet<String> {
     // pid → (그 pid를 가리키는 마커 중 mtime 최신 uuid, 그 mtime). 동률 mtime은 먼저 본 것 유지.
-    let mut best: std::collections::HashMap<u32, (&str, SystemTime)> = std::collections::HashMap::new();
+    let mut best: std::collections::HashMap<u32, (&str, SystemTime)> =
+        std::collections::HashMap::new();
     for (uuid, pid, mtime) in markers {
         if !claude_pids.contains(pid) {
             continue; // 가드①: 죽었거나 claude 아님.
@@ -538,9 +596,13 @@ pub fn enumerate_idle_marker_sessions(
         if path.extension().and_then(|x| x.to_str()) != Some("ctx") {
             continue;
         }
-        let Some(uuid) = path.file_stem().and_then(|s| s.to_str()) else { continue };
+        let Some(uuid) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
         // 내용 파싱은 read_marker에 위임(Pid/Unknown/Dead/NoMarker 규약 공유). Pid만 P8 대상.
-        let MarkerState::Pid(pid) = read_marker(marker_dir, uuid) else { continue };
+        let MarkerState::Pid(pid) = read_marker(marker_dir, uuid) else {
+            continue;
+        };
         let Ok(meta) = e.metadata() else { continue };
         let Ok(mtime) = meta.modified() else { continue };
         markers.push((uuid.to_string(), pid, mtime));
@@ -550,18 +612,27 @@ pub fn enumerate_idle_marker_sessions(
     // 3) 기존에 없는 uuid만 jsonl에서 project를 뽑아 LiveSession 생성(내부/자동화/temp cwd 필터 존중).
     //    projects_dir 서브디렉토리 목록을 1회만 읽어 재사용한다(gemini 리뷰: 세션마다 read_dir 반복 회피).
     let subdirs: Vec<PathBuf> = std::fs::read_dir(projects_dir)
-        .map(|rd| rd.flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect())
+        .map(|rd| {
+            rd.flatten()
+                .map(|e| e.path())
+                .filter(|p| p.is_dir())
+                .collect()
+        })
         .unwrap_or_default();
     let mut out: Vec<LiveSession> = Vec::new();
     for uuid in keep {
         if existing.contains(&uuid) {
             continue; // 신선도 창으로 이미 잡힘(기존 우선, 중복 방지).
         }
-        let Some(path) = find_session_jsonl(&subdirs, &uuid) else { continue };
+        let Some(path) = find_session_jsonl(&subdirs, &uuid) else {
+            continue;
+        };
         let (cwd, first_user) = crate::discover::scan_jsonl_head(&path, 60);
         // discover 열거와 같은 노이즈 필터(claude-mem observer·secall automation·temp 헤드리스) 존중.
         if cwd.as_deref().is_some_and(crate::discover::is_internal_cwd)
-            || first_user.as_deref().is_some_and(crate::discover::is_automation_first_message)
+            || first_user
+                .as_deref()
+                .is_some_and(crate::discover::is_automation_first_message)
             || cwd.as_deref().is_some_and(is_temp_cwd)
         {
             continue;
@@ -581,9 +652,16 @@ pub fn enumerate_idle_marker_sessions(
 
 /// 프로세스 게이트: 해당 러너 프로세스가 확실히 0개면(count=Some(0)) 그 러너 세션을 전부 제외한다.
 /// None(조회 실패)이나 1개 이상이면 그대로 둔다(파일 신선도 창이 상한).
-pub fn apply_process_gate(sessions: Vec<LiveSession>, runner: &str, count: Option<usize>) -> Vec<LiveSession> {
+pub fn apply_process_gate(
+    sessions: Vec<LiveSession>,
+    runner: &str,
+    count: Option<usize>,
+) -> Vec<LiveSession> {
     match count {
-        Some(0) => sessions.into_iter().filter(|s| s.runner != runner).collect(),
+        Some(0) => sessions
+            .into_iter()
+            .filter(|s| s.runner != runner)
+            .collect(),
         _ => sessions,
     }
 }
@@ -593,7 +671,11 @@ pub fn to_report_json(machine: &str, sessions: &[LiveSession]) -> serde_json::Va
     let arr: Vec<serde_json::Value> = sessions
         .iter()
         .map(|s| {
-            let display = format!("{machine}-{}-{}", s.runner, s.project.as_deref().unwrap_or("unknown"));
+            let display = format!(
+                "{machine}-{}-{}",
+                s.runner,
+                s.project.as_deref().unwrap_or("unknown")
+            );
             serde_json::json!({
                 "uuid": s.uuid,
                 "runner": s.runner,
@@ -624,9 +706,15 @@ mod tests {
     #[test]
     fn project_normalizes_home_and_falls_back_to_basename() {
         let home = Path::new("C:\\Users\\me");
-        assert_eq!(project_from_cwd_normalized(Some("C:\\Users\\me"), Some(home)), Some("home".to_string()));
+        assert_eq!(
+            project_from_cwd_normalized(Some("C:\\Users\\me"), Some(home)),
+            Some("home".to_string())
+        );
         // 대소문자·구분자 차이도 home으로 인식.
-        assert_eq!(project_from_cwd_normalized(Some("c:/users/me/"), Some(home)), Some("home".to_string()));
+        assert_eq!(
+            project_from_cwd_normalized(Some("c:/users/me/"), Some(home)),
+            Some("home".to_string())
+        );
         assert_eq!(
             project_from_cwd_normalized(Some("C:\\Users\\me\\tunaRound"), Some(home)),
             Some("tunaRound".to_string())
@@ -641,7 +729,10 @@ mod tests {
         let unix = "  11 claude --resume abc\n  22 /usr/local/bin/claude\n  33 node /home/u/.npm/bin/claude --flag\n  44 ps -ax\n  55 tunaround poll --tags a b runner=claude\n";
         assert_eq!(count_matching_lines(unix, "claude", false), 3);
         // node 래퍼가 2번째 토큰이 아니라도 argv 3토큰 안이면 잡힌다.
-        assert_eq!(count_matching_lines("77 env FOO=1 /opt/claude serve\n", "claude", false), 1);
+        assert_eq!(
+            count_matching_lines("77 env FOO=1 /opt/claude serve\n", "claude", false),
+            1
+        );
         // win CSV: 이미지명 필드만 본다.
         let win = "\"claude.exe\",\"123\",\"Console\"\n\"notepad.exe\",\"9\",\"Console\"\n\"x.exe\",\"1\",\"claude\"\n";
         assert_eq!(count_matching_lines(win, "claude", true), 1);
@@ -692,7 +783,12 @@ mod tests {
 
     #[test]
     fn process_gate_drops_runner_only_when_zero() {
-        let s = |r: &str| LiveSession { uuid: r.to_string(), runner: r.to_string(), project: None, human_input_at: None };
+        let s = |r: &str| LiveSession {
+            uuid: r.to_string(),
+            runner: r.to_string(),
+            project: None,
+            human_input_at: None,
+        };
         let all = vec![s("claude"), s("codex")];
         // 확실한 0 → 해당 러너만 제거.
         let gated = apply_process_gate(all.clone(), "codex", Some(0));
@@ -717,13 +813,25 @@ mod tests {
             "rollout-2026-07-11T02-bbb.jsonl",
             r#"{"type":"session_meta","payload":{"session_id":"exec-1","cwd":"/u/x/projA","originator":"codex exec"}}"#,
         );
-        mk("not-a-rollout.jsonl", r#"{"type":"session_meta","payload":{"session_id":"zzz","originator":"codex-tui"}}"#);
-        let found = enumerate_codex_sessions(&dir, SystemTime::now(), Duration::from_secs(3600), None, None);
+        mk(
+            "not-a-rollout.jsonl",
+            r#"{"type":"session_meta","payload":{"session_id":"zzz","originator":"codex-tui"}}"#,
+        );
+        let found = enumerate_codex_sessions(
+            &dir,
+            SystemTime::now(),
+            Duration::from_secs(3600),
+            None,
+            None,
+        );
         std::fs::remove_dir_all(&dir).ok();
         assert_eq!(found.len(), 1, "TUI 세션만: {found:?}");
         assert_eq!(found[0].uuid, "tui-1");
         assert_eq!(found[0].project.as_deref(), Some("projA"));
-        assert_eq!(found[0].human_input_at, None, "input_cache 없으면 신호 스캔 생략");
+        assert_eq!(
+            found[0].human_input_at, None,
+            "input_cache 없으면 신호 스캔 생략"
+        );
     }
 
     #[test]
@@ -744,13 +852,28 @@ mod tests {
 
     #[test]
     fn normalize_iso_to_db_datetime_handles_t_frac_z_offset() {
-        assert_eq!(normalize_iso_to_db_datetime("2026-07-11T09:00:00.894Z").as_deref(), Some("2026-07-11 09:00:00"));
-        assert_eq!(normalize_iso_to_db_datetime("2026-07-11T09:00:00Z").as_deref(), Some("2026-07-11 09:00:00"));
-        assert_eq!(normalize_iso_to_db_datetime("2026-07-11T09:00:00+09:00").as_deref(), Some("2026-07-11 09:00:00"));
+        assert_eq!(
+            normalize_iso_to_db_datetime("2026-07-11T09:00:00.894Z").as_deref(),
+            Some("2026-07-11 09:00:00")
+        );
+        assert_eq!(
+            normalize_iso_to_db_datetime("2026-07-11T09:00:00Z").as_deref(),
+            Some("2026-07-11 09:00:00")
+        );
+        assert_eq!(
+            normalize_iso_to_db_datetime("2026-07-11T09:00:00+09:00").as_deref(),
+            Some("2026-07-11 09:00:00")
+        );
         // 음수 offset도 날짜의 '-'와 혼동 없이 처리(gemini 리뷰).
-        assert_eq!(normalize_iso_to_db_datetime("2026-07-11T09:00:00-05:00").as_deref(), Some("2026-07-11 09:00:00"));
+        assert_eq!(
+            normalize_iso_to_db_datetime("2026-07-11T09:00:00-05:00").as_deref(),
+            Some("2026-07-11 09:00:00")
+        );
         // 이미 DB 포맷이면 그대로.
-        assert_eq!(normalize_iso_to_db_datetime("2026-07-11 09:00:00").as_deref(), Some("2026-07-11 09:00:00"));
+        assert_eq!(
+            normalize_iso_to_db_datetime("2026-07-11 09:00:00").as_deref(),
+            Some("2026-07-11 09:00:00")
+        );
         // 형태 불량은 None(오염 방어).
         assert_eq!(normalize_iso_to_db_datetime("어제"), None);
         assert_eq!(normalize_iso_to_db_datetime("2026-07-11T09:00"), None);
@@ -760,7 +883,9 @@ mod tests {
     fn message_is_human_input_excludes_relay_prefix() {
         assert!(message_is_human_input("현재 WSL 설정 확인 바람"));
         // relay 주입(build_inject_text prefix)은 사람 입력 아님(§5-6). 실제 출력은 선행 공백이 없다.
-        assert!(!message_is_human_input(&crate::codex_relay::build_inject_text("t1", "요청")));
+        assert!(!message_is_human_input(
+            &crate::codex_relay::build_inject_text("t1", "요청")
+        ));
         assert!(!message_is_human_input("브로커 task abc 가 배달됐다"));
         // 선행 공백이 붙은 형태는 relay가 만들지 않으므로 사람 입력으로 남긴다(trim 안 함 = 오분류 좁힘).
         assert!(message_is_human_input("  브로커 task 이거 뭐야"));
@@ -772,11 +897,16 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("rollout.jsonl");
         let body = concat!(
-            r#"{"timestamp":"2026-07-11T09:00:00.100Z","type":"session_meta","payload":{"session_id":"s","originator":"codex-tui"}}"#, "\n",
-            r#"{"timestamp":"2026-07-11T09:01:00.200Z","type":"event_msg","payload":{"type":"user_message","message":"첫 질문"}}"#, "\n",
-            r#"{"timestamp":"2026-07-11T09:02:00.300Z","type":"event_msg","payload":{"type":"agent_message","message":"답변"}}"#, "\n",
-            r#"{"timestamp":"2026-07-11T09:03:00.400Z","type":"event_msg","payload":{"type":"user_message","message":"브로커 task xyz 가 배달됐다(이미 claim됨)"}}"#, "\n",
-            r#"{"timestamp":"2026-07-11T09:04:00.500Z","type":"event_msg","payload":{"type":"user_message","message":"둘째 질문"}}"#, "\n",
+            r#"{"timestamp":"2026-07-11T09:00:00.100Z","type":"session_meta","payload":{"session_id":"s","originator":"codex-tui"}}"#,
+            "\n",
+            r#"{"timestamp":"2026-07-11T09:01:00.200Z","type":"event_msg","payload":{"type":"user_message","message":"첫 질문"}}"#,
+            "\n",
+            r#"{"timestamp":"2026-07-11T09:02:00.300Z","type":"event_msg","payload":{"type":"agent_message","message":"답변"}}"#,
+            "\n",
+            r#"{"timestamp":"2026-07-11T09:03:00.400Z","type":"event_msg","payload":{"type":"user_message","message":"브로커 task xyz 가 배달됐다(이미 claim됨)"}}"#,
+            "\n",
+            r#"{"timestamp":"2026-07-11T09:04:00.500Z","type":"event_msg","payload":{"type":"user_message","message":"둘째 질문"}}"#,
+            "\n",
         );
         std::fs::write(&path, body).unwrap();
         let got = parse_codex_last_user_input(&path, CODEX_TAIL_BYTES);
@@ -787,11 +917,13 @@ mod tests {
 
     #[test]
     fn parse_codex_last_user_input_none_when_only_relay() {
-        let dir = std::env::temp_dir().join(format!("tuna-codex-relay-only-{}", std::process::id()));
+        let dir =
+            std::env::temp_dir().join(format!("tuna-codex-relay-only-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("rollout.jsonl");
         let body = concat!(
-            r#"{"timestamp":"2026-07-11T09:03:00Z","type":"event_msg","payload":{"type":"user_message","message":"브로커 task xyz 가 배달됐다"}}"#, "\n",
+            r#"{"timestamp":"2026-07-11T09:03:00Z","type":"event_msg","payload":{"type":"user_message","message":"브로커 task xyz 가 배달됐다"}}"#,
+            "\n",
         );
         std::fs::write(&path, body).unwrap();
         let got = parse_codex_last_user_input(&path, CODEX_TAIL_BYTES);
@@ -812,13 +944,33 @@ mod tests {
             ),
         ).unwrap();
         let mut cache = CodexInputCache::new();
-        let found = enumerate_codex_sessions(&dir, SystemTime::now(), Duration::from_secs(3600), None, Some(&mut cache));
+        let found = enumerate_codex_sessions(
+            &dir,
+            SystemTime::now(),
+            Duration::from_secs(3600),
+            None,
+            Some(&mut cache),
+        );
         assert_eq!(found.len(), 1);
-        assert_eq!(found[0].human_input_at.as_deref(), Some("2026-07-11 09:05:00"), "tail 스캔이 사람 입력 시각 추출");
+        assert_eq!(
+            found[0].human_input_at.as_deref(),
+            Some("2026-07-11 09:05:00"),
+            "tail 스캔이 사람 입력 시각 추출"
+        );
         // 캐시에 mtime+값 저장 → 같은 파일 재스캔 시 재사용(mtime 무변경).
         assert!(cache.contains_key("tui-1"));
-        let found2 = enumerate_codex_sessions(&dir, SystemTime::now(), Duration::from_secs(3600), None, Some(&mut cache));
-        assert_eq!(found2[0].human_input_at.as_deref(), Some("2026-07-11 09:05:00"), "캐시 재사용도 동일 값");
+        let found2 = enumerate_codex_sessions(
+            &dir,
+            SystemTime::now(),
+            Duration::from_secs(3600),
+            None,
+            Some(&mut cache),
+        );
+        assert_eq!(
+            found2[0].human_input_at.as_deref(),
+            Some("2026-07-11 09:05:00"),
+            "캐시 재사용도 동일 값"
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 
@@ -837,8 +989,15 @@ mod tests {
         );
         use std::collections::HashSet;
         let pids = runner_pids(unix, "claude", false);
-        assert_eq!(pids, [11u32, 22, 33].into_iter().collect::<HashSet<_>>(), "claude 프로세스 pid만: {pids:?}");
-        assert_eq!(runner_pids(unix, "codex", false), [44u32].into_iter().collect::<HashSet<_>>());
+        assert_eq!(
+            pids,
+            [11u32, 22, 33].into_iter().collect::<HashSet<_>>(),
+            "claude 프로세스 pid만: {pids:?}"
+        );
+        assert_eq!(
+            runner_pids(unix, "codex", false),
+            [44u32].into_iter().collect::<HashSet<_>>()
+        );
         // win CSV: 이미지명 필드가 claude(.exe)인 행의 2번째 필드 pid만. 뒤 필드의 우연 매칭은 무시.
         let win = concat!(
             "\"claude.exe\",\"123\",\"Console\"\n",
@@ -847,7 +1006,11 @@ mod tests {
             "\"CLAUDE.EXE\",\"456\",\"Console\"\n",
         );
         let pids = runner_pids(win, "claude", true);
-        assert_eq!(pids, [123u32, 456].into_iter().collect::<HashSet<_>>(), "이미지명=claude.exe 행만(대소문자 무관): {pids:?}");
+        assert_eq!(
+            pids,
+            [123u32, 456].into_iter().collect::<HashSet<_>>(),
+            "이미지명=claude.exe 행만(대소문자 무관): {pids:?}"
+        );
     }
 
     #[test]
@@ -856,11 +1019,15 @@ mod tests {
         let t = |n: u64| SystemTime::UNIX_EPOCH + Duration::from_secs(n);
         let claude_pids: HashSet<u32> = [100u32, 200].into_iter().collect();
         let markers = vec![
-            ("live".to_string(), 100u32, t(10)),   // 살아있는 claude pid → 유지.
-            ("dead".to_string(), 999u32, t(20)),   // 스냅샷에 없는 pid(죽음/비claude) → 제외(가드①).
+            ("live".to_string(), 100u32, t(10)), // 살아있는 claude pid → 유지.
+            ("dead".to_string(), 999u32, t(20)), // 스냅샷에 없는 pid(죽음/비claude) → 제외(가드①).
         ];
         let keep = live_idle_marker_uuids(&markers, &claude_pids);
-        assert_eq!(keep, ["live".to_string()].into_iter().collect::<HashSet<_>>(), "가드①: 산 claude pid만: {keep:?}");
+        assert_eq!(
+            keep,
+            ["live".to_string()].into_iter().collect::<HashSet<_>>(),
+            "가드①: 산 claude pid만: {keep:?}"
+        );
     }
 
     #[test]
@@ -875,7 +1042,11 @@ mod tests {
             ("stale-b".to_string(), 100u32, t(20)),
         ];
         let keep = live_idle_marker_uuids(&markers, &claude_pids);
-        assert_eq!(keep, ["newest".to_string()].into_iter().collect::<HashSet<_>>(), "가드②: mtime 최신 하나만: {keep:?}");
+        assert_eq!(
+            keep,
+            ["newest".to_string()].into_iter().collect::<HashSet<_>>(),
+            "가드②: mtime 최신 하나만: {keep:?}"
+        );
     }
 
     #[test]
@@ -908,22 +1079,45 @@ mod tests {
 
         let claude_pids: HashSet<u32> = [100u32, 200, 300].into_iter().collect();
         let existing: HashSet<String> = HashSet::new();
-        let found = enumerate_idle_marker_sessions(&marker_dir, &projects_dir, &claude_pids, &existing, None);
+        let found = enumerate_idle_marker_sessions(
+            &marker_dir,
+            &projects_dir,
+            &claude_pids,
+            &existing,
+            None,
+        );
         let uuids: Vec<&str> = found.iter().map(|s| s.uuid.as_str()).collect();
-        assert_eq!(uuids, vec!["idle-1"], "유휴 열림 세션만 되살림(automation·dead·unknown·orphan 제외): {uuids:?}");
+        assert_eq!(
+            uuids,
+            vec!["idle-1"],
+            "유휴 열림 세션만 되살림(automation·dead·unknown·orphan 제외): {uuids:?}"
+        );
         assert_eq!(found[0].runner, "claude");
         assert_eq!(found[0].project.as_deref(), Some("tunaRound"));
         assert_eq!(found[0].human_input_at, None);
 
         // 이미 신선도 창으로 잡힌(existing) uuid는 다시 추가하지 않는다(기존 우선).
         let existing2: HashSet<String> = ["idle-1".to_string()].into_iter().collect();
-        let none = enumerate_idle_marker_sessions(&marker_dir, &projects_dir, &claude_pids, &existing2, None);
-        assert!(none.is_empty(), "existing에 있으면 중복 추가 안 함: {none:?}");
+        let none = enumerate_idle_marker_sessions(
+            &marker_dir,
+            &projects_dir,
+            &claude_pids,
+            &existing2,
+            None,
+        );
+        assert!(
+            none.is_empty(),
+            "existing에 있으면 중복 추가 안 함: {none:?}"
+        );
 
         // pid가 죽으면(가드①) 되살리지 않는다.
         let dead_pids: HashSet<u32> = HashSet::new();
-        let none2 = enumerate_idle_marker_sessions(&marker_dir, &projects_dir, &dead_pids, &existing, None);
-        assert!(none2.is_empty(), "산 claude pid 없으면 되살림 없음: {none2:?}");
+        let none2 =
+            enumerate_idle_marker_sessions(&marker_dir, &projects_dir, &dead_pids, &existing, None);
+        assert!(
+            none2.is_empty(),
+            "산 claude pid 없으면 되살림 없음: {none2:?}"
+        );
 
         std::fs::remove_dir_all(&base).ok();
     }

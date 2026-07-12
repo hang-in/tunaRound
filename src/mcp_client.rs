@@ -86,7 +86,10 @@ impl McpHttpClient {
     }
 
     /// 핸드셰이크를 수행해 클라이언트를 구성한다.
-    pub async fn connect(mcp_url: impl Into<String>, token: Option<String>) -> Result<Self, String> {
+    pub async fn connect(
+        mcp_url: impl Into<String>,
+        token: Option<String>,
+    ) -> Result<Self, String> {
         let mcp_url = mcp_url.into();
         // 타임아웃 없는 기본 클라이언트는 응답이 멎은 코어(방화벽 drop 등)에 무기한 대기해
         // 상주 데몬(presence-scan·poll) 전체를 정지시킨다(봇리뷰 Major). MCP 툴 호출은 단문이라
@@ -150,7 +153,10 @@ impl McpHttpClient {
 
         let status = resp.status();
         if !status.is_success() {
-            return Err((status, format!("tools/call({name}) 응답 실패: HTTP {status}")));
+            return Err((
+                status,
+                format!("tools/call({name}) 응답 실패: HTTP {status}"),
+            ));
         }
 
         let text = resp
@@ -189,7 +195,8 @@ impl McpHttpClient {
 
     /// poll_tasks(agent) 얇은 래퍼.
     pub async fn poll_tasks(&self, agent: &str) -> Result<String, String> {
-        self.call_tool("poll_tasks", json!({ "agent": agent })).await
+        self.call_tool("poll_tasks", json!({ "agent": agent }))
+            .await
     }
 
     /// claim_task(task_id, agent, runner) 얇은 래퍼. agent는 lease 소유자(claimed_by)로 기록되어
@@ -230,8 +237,11 @@ impl McpHttpClient {
         reason: &str,
         agent: Option<&str>,
     ) -> Result<String, String> {
-        self.call_tool("fail_task", json!({ "task_id": task_id, "reason": reason, "agent": agent }))
-            .await
+        self.call_tool(
+            "fail_task",
+            json!({ "task_id": task_id, "reason": reason, "agent": agent }),
+        )
+        .await
     }
 
     /// register_agent(uuid, tags, display_name) 얇은 래퍼(워커/세션 자기 등록).
@@ -241,8 +251,11 @@ impl McpHttpClient {
         tags: Option<&str>,
         display_name: Option<&str>,
     ) -> Result<String, String> {
-        self.call_tool("register_agent", json!({ "uuid": uuid, "tags": tags, "display_name": display_name }))
-            .await
+        self.call_tool(
+            "register_agent",
+            json!({ "uuid": uuid, "tags": tags, "display_name": display_name }),
+        )
+        .await
     }
 
     /// heartbeat(uuid) 얇은 래퍼(주기 ping으로 online 유지).
@@ -252,30 +265,44 @@ impl McpHttpClient {
 
     /// list_agents(selector) 얇은 래퍼(online 에이전트 발견).
     pub async fn list_agents(&self, selector: Option<&str>) -> Result<String, String> {
-        self.call_tool("list_agents", json!({ "selector": selector })).await
+        self.call_tool("list_agents", json!({ "selector": selector }))
+            .await
     }
 
     /// report_presence(machine, sessions) 얇은 래퍼(presence 스캐너의 일괄 동기화, v2-44).
     /// sessions는 `[{uuid,runner,project?,display_name?}, ...]` JSON 배열.
     pub async fn report_presence(&self, machine: &str, sessions: Value) -> Result<String, String> {
-        self.call_tool("report_presence", json!({ "machine": machine, "sessions": sessions })).await
+        self.call_tool(
+            "report_presence",
+            json!({ "machine": machine, "sessions": sessions }),
+        )
+        .await
     }
 
     /// get_task(task_id) 얇은 래퍼(task 상태·결과 확인, `tunaround task get`용).
     pub async fn get_task(&self, task_id: &str) -> Result<String, String> {
-        self.call_tool("get_task", json!({ "task_id": task_id })).await
+        self.call_tool("get_task", json!({ "task_id": task_id }))
+            .await
     }
 
     /// extend_task_lease(task_id, agent) 얇은 래퍼(워커가 실행 중 자기 task의 lease를 주기 연장,
     /// 장기 task requeue 방지, v2-49 #6). agent는 claimed_by와 일치해야 성공한다.
     pub async fn extend_lease(&self, task_id: &str, agent: &str) -> Result<String, String> {
-        self.call_tool("extend_task_lease", json!({ "task_id": task_id, "agent": agent })).await
+        self.call_tool(
+            "extend_task_lease",
+            json!({ "task_id": task_id, "agent": agent }),
+        )
+        .await
     }
 
     /// cancel_task(task_id, reason) 얇은 래퍼(잘못 보냈거나 더 필요 없는 열린 task 취소, `tunaround
     /// task cancel`용).
     pub async fn cancel_task(&self, task_id: &str, reason: Option<&str>) -> Result<String, String> {
-        self.call_tool("cancel_task", json!({ "task_id": task_id, "reason": reason })).await
+        self.call_tool(
+            "cancel_task",
+            json!({ "task_id": task_id, "reason": reason }),
+        )
+        .await
     }
 }
 
@@ -289,7 +316,9 @@ fn parse_jsonrpc_sse(text: &str, tool_name: &str) -> Result<String, String> {
         .filter_map(|line| line.strip_prefix("data: "))
         .filter(|data| !data.is_empty())
         .find_map(|data| serde_json::from_str::<Value>(data).ok())
-        .ok_or_else(|| format!("tools/call({tool_name}) 응답에서 JSON-RPC 페이로드를 못 찾음: {text}"))?;
+        .ok_or_else(|| {
+            format!("tools/call({tool_name}) 응답에서 JSON-RPC 페이로드를 못 찾음: {text}")
+        })?;
 
     if let Some(err) = payload.get("error") {
         return Err(format!("tools/call({tool_name}) JSON-RPC 에러: {err}"));
@@ -299,7 +328,10 @@ fn parse_jsonrpc_sse(text: &str, tool_name: &str) -> Result<String, String> {
         .get("result")
         .ok_or_else(|| format!("tools/call({tool_name}) 응답에 result 없음: {text}"))?;
 
-    let is_error = result.get("isError").and_then(|v| v.as_bool()).unwrap_or(false);
+    let is_error = result
+        .get("isError")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
 
     let content_text = result
         .get("content")
@@ -315,8 +347,9 @@ fn parse_jsonrpc_sse(text: &str, tool_name: &str) -> Result<String, String> {
         }));
     }
 
-    content_text
-        .ok_or_else(|| format!("tools/call({tool_name}) 응답에서 content[0].text를 못 찾음: {text}"))
+    content_text.ok_or_else(|| {
+        format!("tools/call({tool_name}) 응답에서 content[0].text를 못 찾음: {text}")
+    })
 }
 
 #[cfg(all(test, feature = "worker", feature = "serve"))]
@@ -443,16 +476,31 @@ mod tests {
     #[tokio::test]
     async fn register_list_send_by_selector_get_task_e2e() {
         let url = spawn_test_server(None).await;
-        let client = McpHttpClient::connect(url, None).await.expect("connect 성공해야 함");
+        let client = McpHttpClient::connect(url, None)
+            .await
+            .expect("connect 성공해야 함");
 
         let register_text = client
-            .register_agent("worker-uuid-1", Some("runner=claude,machine=win"), Some("win-claude"))
+            .register_agent(
+                "worker-uuid-1",
+                Some("runner=claude,machine=win"),
+                Some("win-claude"),
+            )
             .await
             .expect("register_agent 성공해야 함");
-        assert!(register_text.contains("worker-uuid-1"), "register 응답 불일치: {register_text}");
+        assert!(
+            register_text.contains("worker-uuid-1"),
+            "register 응답 불일치: {register_text}"
+        );
 
-        let list_text = client.list_agents(Some("runner=claude")).await.expect("list_agents 성공해야 함");
-        assert!(list_text.contains("worker-uuid-1"), "list_agents에 등록된 uuid 없음: {list_text}");
+        let list_text = client
+            .list_agents(Some("runner=claude"))
+            .await
+            .expect("list_agents 성공해야 함");
+        assert!(
+            list_text.contains("worker-uuid-1"),
+            "list_agents에 등록된 uuid 없음: {list_text}"
+        );
 
         let send_text = client
             .call_tool(
@@ -467,7 +515,10 @@ mod tests {
             )
             .await
             .expect("send_task(to_selector) 성공해야 함");
-        assert!(send_text.contains("state=submitted"), "send_task 응답 불일치: {send_text}");
+        assert!(
+            send_text.contains("state=submitted"),
+            "send_task 응답 불일치: {send_text}"
+        );
         let task_id = send_text
             .split("task_id=")
             .nth(1)
@@ -479,7 +530,13 @@ mod tests {
             .call_tool("get_task", json!({ "task_id": task_id }))
             .await
             .expect("get_task 성공해야 함");
-        assert!(get_text.contains(&task_id), "get_task 응답에 task_id 없음: {get_text}");
-        assert!(get_text.contains("state=submitted"), "get_task는 아직 완료 아니어야 함: {get_text}");
+        assert!(
+            get_text.contains(&task_id),
+            "get_task 응답에 task_id 없음: {get_text}"
+        );
+        assert!(
+            get_text.contains("state=submitted"),
+            "get_task는 아직 완료 아니어야 함: {get_text}"
+        );
     }
 }

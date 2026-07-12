@@ -17,7 +17,10 @@ struct SeenSet {
 
 impl SeenSet {
     fn new() -> Self {
-        Self { set: HashSet::new(), order: VecDeque::new() }
+        Self {
+            set: HashSet::new(),
+            order: VecDeque::new(),
+        }
     }
 
     /// 새 id면 기억하고 true, 이미 본 id면 false. 상한 초과분은 오래된 것부터 방출한다.
@@ -41,9 +44,19 @@ impl SeenSet {
 fn watermark_file_name(dispatcher: &str) -> String {
     let safe: String = dispatcher
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '-' | '_') { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_') {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
-    let safe = if safe.is_empty() { "all".to_string() } else { safe };
+    let safe = if safe.is_empty() {
+        "all".to_string()
+    } else {
+        safe
+    };
     format!("watch-results-{safe}.since")
 }
 
@@ -136,7 +149,10 @@ struct WatermarkFile {
 
 impl WatermarkFile {
     fn at(path: Option<std::path::PathBuf>) -> Self {
-        Self { path, last_written: None }
+        Self {
+            path,
+            last_written: None,
+        }
     }
 
     /// 파일에서 워터마크를 읽는다. 없거나 형태 불량이면 None(재생 없이 라이브부터).
@@ -168,7 +184,11 @@ impl WatermarkFile {
         };
         // 마지막 기록값 이하(같거나 과거)면 재기록하지 않는다(단조 보장 + 같은 값 IO 절약).
         // is_some_and = 이 파일의 기존 관용구(connection_was_healthy와 동형, gemini 리뷰 반영).
-        if self.last_written.as_deref().is_some_and(|lw| ts.as_str() <= lw) {
+        if self
+            .last_written
+            .as_deref()
+            .is_some_and(|lw| ts.as_str() <= lw)
+        {
             return;
         }
         if let Some(dir) = path.parent() {
@@ -201,7 +221,12 @@ fn extract_result_text(task: &serde_json::Value) -> String {
         .and_then(|t| t.as_str());
     match from_artifact.or(from_status) {
         // \r도 제거한다(터미널에서 \r은 커서를 줄 앞으로 보내 기존 출력을 덮어쓴다).
-        Some(t) => t.replace('\r', "").replace('\n', " ").chars().take(160).collect(),
+        Some(t) => t
+            .replace('\r', "")
+            .replace('\n', " ")
+            .chars()
+            .take(160)
+            .collect(),
         None => "(내용 없음)".to_string(),
     }
 }
@@ -236,9 +261,15 @@ fn parse_result_line(data: &str, dispatcher: &str, seen: &mut SeenSet) -> Option
     let to = task.get("toAgent").and_then(|x| x.as_str()).unwrap_or("?");
     let short: String = id.chars().take(8).collect();
     Some(ResultLine {
-        line: format!("RESULT {short} {state} <- {to} :: {}", extract_result_text(task)),
+        line: format!(
+            "RESULT {short} {state} <- {to} :: {}",
+            extract_result_text(task)
+        ),
         is_failed: state == "failed",
-        updated_at: task.get("updatedAt").and_then(|x| x.as_str()).map(str::to_string),
+        updated_at: task
+            .get("updatedAt")
+            .and_then(|x| x.as_str())
+            .map(str::to_string),
     })
 }
 
@@ -261,7 +292,8 @@ const MIN_HEALTHY_SECS: u64 = 30;
 /// 실패 연쇄 리셋 판정: 2xx 스트림 수립 후(None=수립 실패) 최소 생존 시간을 넘긴 접속만 "건강했다".
 /// 생존 시간은 수립 시점부터 잰다(접속 수립에 쓴 핸드셰이크 시간을 생존으로 오산하지 않게, 리뷰 반영).
 fn connection_was_healthy(lived_after_connect: Option<std::time::Duration>) -> bool {
-    lived_after_connect.is_some_and(|lived| lived >= std::time::Duration::from_secs(MIN_HEALTHY_SECS))
+    lived_after_connect
+        .is_some_and(|lived| lived >= std::time::Duration::from_secs(MIN_HEALTHY_SECS))
 }
 
 /// 재접속을 넘어 유지되는 인박스 상태(재접속 루프 바깥 소유): terminal dedup(seen)·digest 묶음(pending)·
@@ -408,7 +440,9 @@ pub async fn run(
         .map_err(|e| format!("watch-results: 클라이언트 구성 실패: {e}"))?;
     let mut file = WatermarkFile::at(state_dir().map(|d| d.join(watermark_file_name(dispatcher))));
     if file.path.is_none() {
-        eprintln!("[watch-results] 상태 디렉터리 없음(LOCALAPPDATA/HOME 미설정) - 워터마크는 메모리에만 유지");
+        eprintln!(
+            "[watch-results] 상태 디렉터리 없음(LOCALAPPDATA/HOME 미설정) - 워터마크는 메모리에만 유지"
+        );
     }
     let watermark = match since_override {
         // --since 수동 오버라이드(상태 파일보다 우선). 'T'/'Z'는 서버 파서와 같은 규칙으로 정규화.
@@ -497,14 +531,28 @@ mod tests {
     #[test]
     fn completed_from_dispatcher_yields_result() {
         let mut seen = SeenSet::new();
-        let r = parse_result_line(&ev("completed", "dashboard", "mac-claude-sup", "abc12345xyz", Some("발견 6건")), "dashboard", &mut seen);
+        let r = parse_result_line(
+            &ev(
+                "completed",
+                "dashboard",
+                "mac-claude-sup",
+                "abc12345xyz",
+                Some("발견 6건"),
+            ),
+            "dashboard",
+            &mut seen,
+        );
         let r = r.unwrap();
         assert!(r.line.contains("RESULT abc12345"));
         assert!(r.line.contains("completed"));
         assert!(r.line.contains("mac-claude-sup"));
         assert!(r.line.contains("발견 6건"));
         assert!(!r.is_failed, "completed는 digest 묶음 대상");
-        assert_eq!(r.updated_at.as_deref(), Some("2026-07-11 09:00:00"), "서버 updatedAt = 워터마크 후보");
+        assert_eq!(
+            r.updated_at.as_deref(),
+            Some("2026-07-11 09:00:00"),
+            "서버 updatedAt = 워터마크 후보"
+        );
     }
 
     #[test]
@@ -519,14 +567,31 @@ mod tests {
         assert!(r.line.contains("failed"));
         assert!(r.line.contains("BLOCKED"));
         assert!(r.is_failed, "failed는 digest 무관 즉시 알림");
-        assert_eq!(r.updated_at, None, "updatedAt 없는 이벤트는 워터마크 후보 없음(전진 안 함)");
+        assert_eq!(
+            r.updated_at, None,
+            "updatedAt 없는 이벤트는 워터마크 후보 없음(전진 안 함)"
+        );
     }
 
     #[test]
     fn non_terminal_and_other_dispatcher_filtered() {
         let mut seen = SeenSet::new();
-        assert!(parse_result_line(&ev("working", "dashboard", "x", "1", None), "dashboard", &mut seen).is_none());
-        assert!(parse_result_line(&ev("completed", "other", "x", "2", None), "dashboard", &mut seen).is_none());
+        assert!(
+            parse_result_line(
+                &ev("working", "dashboard", "x", "1", None),
+                "dashboard",
+                &mut seen
+            )
+            .is_none()
+        );
+        assert!(
+            parse_result_line(
+                &ev("completed", "other", "x", "2", None),
+                "dashboard",
+                &mut seen
+            )
+            .is_none()
+        );
     }
 
     #[test]
@@ -563,9 +628,13 @@ mod tests {
         assert!(!connection_was_healthy(None));
         // 수립했어도 즉시 닫히면(크래시루프 브로커) 건강 아님 = 카운터가 계속 쌓여 포기 가능.
         assert!(!connection_was_healthy(Some(Duration::from_secs(1))));
-        assert!(!connection_was_healthy(Some(Duration::from_secs(MIN_HEALTHY_SECS - 1))));
+        assert!(!connection_was_healthy(Some(Duration::from_secs(
+            MIN_HEALTHY_SECS - 1
+        ))));
         // 수립 시점부터 잰 순수 생존이 최소치를 넘긴 접속만 리셋 근거.
-        assert!(connection_was_healthy(Some(Duration::from_secs(MIN_HEALTHY_SECS))));
+        assert!(connection_was_healthy(Some(Duration::from_secs(
+            MIN_HEALTHY_SECS
+        ))));
         assert!(connection_was_healthy(Some(Duration::from_secs(3600))));
     }
 
@@ -579,8 +648,14 @@ mod tests {
             seen.insert(&format!("id-{i}"));
         }
         assert!(seen.set.len() <= SEEN_CAP, "상한 유지");
-        assert!(seen.insert("a"), "방출된 가장 오래된 id는 다시 새 것으로 취급");
-        assert!(!seen.insert(&format!("id-{}", SEEN_CAP - 1)), "최근 id는 여전히 dedup");
+        assert!(
+            seen.insert("a"),
+            "방출된 가장 오래된 id는 다시 새 것으로 취급"
+        );
+        assert!(
+            !seen.insert(&format!("id-{}", SEEN_CAP - 1)),
+            "최근 id는 여전히 dedup"
+        );
     }
 
     #[test]
@@ -597,7 +672,10 @@ mod tests {
     #[test]
     fn watermark_file_name_sanitizes_and_defaults() {
         // 정상 id는 불변.
-        assert_eq!(watermark_file_name("win-opus-boss"), "watch-results-win-opus-boss.since");
+        assert_eq!(
+            watermark_file_name("win-opus-boss"),
+            "watch-results-win-opus-boss.since"
+        );
         // 빈 dispatcher(전체 관측)는 "all"(파일명 성립).
         assert_eq!(watermark_file_name(""), "watch-results-all.since");
         // 경로 문자·비ASCII는 '_' 치환(네임스페이스 탈출 방지).
@@ -608,7 +686,10 @@ mod tests {
     #[test]
     fn is_db_datetime_accepts_only_db_format() {
         assert!(is_db_datetime("2026-07-11 09:00:00"));
-        assert!(!is_db_datetime("2026-07-11T09:00:00"), "ISO 'T' 구분자는 거부(사전순 왜곡)");
+        assert!(
+            !is_db_datetime("2026-07-11T09:00:00"),
+            "ISO 'T' 구분자는 거부(사전순 왜곡)"
+        );
         assert!(!is_db_datetime("2026-07-11 09:00:00Z"));
         assert!(!is_db_datetime("2026-07-11 09:00"));
         assert!(!is_db_datetime(""));
@@ -617,8 +698,15 @@ mod tests {
 
     #[test]
     fn encode_query_value_escapes_space_and_colon() {
-        assert_eq!(encode_query_value("2026-07-11 09:00:00"), "2026-07-11%2009%3A00%3A00");
-        assert_eq!(encode_query_value("win-opus-boss"), "win-opus-boss", "unreserved는 불변");
+        assert_eq!(
+            encode_query_value("2026-07-11 09:00:00"),
+            "2026-07-11%2009%3A00%3A00"
+        );
+        assert_eq!(
+            encode_query_value("win-opus-boss"),
+            "win-opus-boss",
+            "unreserved는 불변"
+        );
     }
 
     #[test]
@@ -630,7 +718,11 @@ mod tests {
         );
         // 워터마크 + dispatcher = 재생 구독.
         assert_eq!(
-            build_events_url("http://127.0.0.1:8770", "dashboard", Some("2026-07-11 09:00:00")),
+            build_events_url(
+                "http://127.0.0.1:8770",
+                "dashboard",
+                Some("2026-07-11 09:00:00")
+            ),
             "http://127.0.0.1:8770/dashboard/events?since=2026-07-11%2009%3A00%3A00&dispatcher=dashboard"
         );
         // 빈 dispatcher는 파라미터 생략(전체 관측 의미를 서버 질의까지 유지).
@@ -646,14 +738,26 @@ mod tests {
         advance_watermark(&mut w, "2026-07-11 09:00:00");
         assert_eq!(w.as_deref(), Some("2026-07-11 09:00:00"), "첫 값 채택");
         advance_watermark(&mut w, "2026-07-11 08:00:00");
-        assert_eq!(w.as_deref(), Some("2026-07-11 09:00:00"), "과거 값으로 후퇴 금지");
+        assert_eq!(
+            w.as_deref(),
+            Some("2026-07-11 09:00:00"),
+            "과거 값으로 후퇴 금지"
+        );
         advance_watermark(&mut w, "2026-07-11 09:00:00");
         assert_eq!(w.as_deref(), Some("2026-07-11 09:00:00"), "같은 값은 유지");
         advance_watermark(&mut w, "2026-07-11 10:30:00");
-        assert_eq!(w.as_deref(), Some("2026-07-11 10:30:00"), "미래 값으로 전진");
+        assert_eq!(
+            w.as_deref(),
+            Some("2026-07-11 10:30:00"),
+            "미래 값으로 전진"
+        );
         advance_watermark(&mut w, "2026-07-11T23:59:59");
         advance_watermark(&mut w, "garbage");
-        assert_eq!(w.as_deref(), Some("2026-07-11 10:30:00"), "포맷 불량은 무시(비교 오염 방어)");
+        assert_eq!(
+            w.as_deref(),
+            Some("2026-07-11 10:30:00"),
+            "포맷 불량은 무시(비교 오염 방어)"
+        );
     }
 
     #[test]
@@ -704,11 +808,19 @@ mod tests {
         // 과거 값(오버라이드 되감기 시나리오)은 무시 - 파일은 더 새 값을 유지한다.
         file.persist(&Some("2026-07-11 08:00:00".to_string()));
         let mut reread = WatermarkFile::at(Some(path.clone()));
-        assert_eq!(reread.load().as_deref(), Some("2026-07-11 10:00:00"), "과거 값으로 되감기지 않음");
+        assert_eq!(
+            reread.load().as_deref(),
+            Some("2026-07-11 10:00:00"),
+            "과거 값으로 되감기지 않음"
+        );
         // 더 새 값은 정상 전진 기록.
         file.persist(&Some("2026-07-11 11:00:00".to_string()));
         let mut reread = WatermarkFile::at(Some(path.clone()));
-        assert_eq!(reread.load().as_deref(), Some("2026-07-11 11:00:00"), "새 값은 전진 기록");
+        assert_eq!(
+            reread.load().as_deref(),
+            Some("2026-07-11 11:00:00"),
+            "새 값은 전진 기록"
+        );
 
         let _ = std::fs::remove_file(&path);
     }
@@ -733,7 +845,10 @@ mod tests {
         // pending이 비면 기록된다.
         state.pending.clear();
         state.persist_if_drained();
-        assert_eq!(std::fs::read_to_string(&path).unwrap().trim(), "2026-07-11 09:00:00");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap().trim(),
+            "2026-07-11 09:00:00"
+        );
 
         let _ = std::fs::remove_file(&path);
     }

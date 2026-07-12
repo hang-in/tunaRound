@@ -50,7 +50,9 @@ pub(crate) fn build_query_tokenizer(ctx: &str) -> Box<dyn Fn(&str) -> String + S
 pub(crate) fn build_embedder() -> Option<Box<dyn tunaround::store::embedding::Embedder>> {
     #[cfg(feature = "semantic")]
     {
-        Some(Box::new(tunaround::store::embedding::OllamaEmbedder::from_env()))
+        Some(Box::new(
+            tunaround::store::embedding::OllamaEmbedder::from_env(),
+        ))
     }
     #[cfg(not(feature = "semantic"))]
     {
@@ -108,7 +110,10 @@ pub(crate) fn build_http_mcp_backends(ctx: &str, db_str: &str) -> HttpMcpBackend
     let transcript_reader = tunaround::store::retriever::SqliteTranscriptReader::new(store2);
     let reader_arc: Option<std::sync::Arc<dyn tunaround::orchestrator::TranscriptReader>> =
         Some(std::sync::Arc::new(transcript_reader));
-    let writer = tunaround::store::retriever::SqliteTranscriptWriter::new(store3, build_index_tokenizer(ctx));
+    let writer = tunaround::store::retriever::SqliteTranscriptWriter::new(
+        store3,
+        build_index_tokenizer(ctx),
+    );
     let writer_arc = std::sync::Arc::new(writer)
         as std::sync::Arc<dyn tunaround::orchestrator::TranscriptWriter>;
     // A2A JSON-RPC 핸들러(a2a_server)가 create_task/get_task 등 SqliteStore 메서드를 직접 호출한다
@@ -167,11 +172,17 @@ pub(crate) fn run_observe(sid: String, db_path: Option<String>) {
 pub(crate) fn run_reindex(db_path: &Option<String>) {
     let db_str = match db_path {
         Some(p) => p.clone(),
-        None => { eprintln!("[reindex] --db <경로> 필요"); std::process::exit(1); }
+        None => {
+            eprintln!("[reindex] --db <경로> 필요");
+            std::process::exit(1);
+        }
     };
     let store = match tunaround::store::sqlite::SqliteStore::open(&db_str) {
         Ok(s) => s,
-        Err(e) => { eprintln!("[reindex] DB 열기 실패: {e}"); std::process::exit(1); }
+        Err(e) => {
+            eprintln!("[reindex] DB 열기 실패: {e}");
+            std::process::exit(1);
+        }
     };
     // 색인용 fts 토크나이저 + 벡터 임베더(semantic이면 재임베딩; model_id 키로 모델 교체 시 갱신).
     let tok = build_index_tokenizer("reindex");
@@ -180,12 +191,17 @@ pub(crate) fn run_reindex(db_path: &Option<String>) {
     let before = store.index_stats().unwrap_or((0, 0, 0, 0, 0));
     let sessions = match store.list_sessions() {
         Ok(v) => v,
-        Err(e) => { eprintln!("[reindex] 세션 목록 실패: {e}"); std::process::exit(1); }
+        Err(e) => {
+            eprintln!("[reindex] 세션 목록 실패: {e}");
+            std::process::exit(1);
+        }
     };
     println!("[reindex] 세션 {}개 재색인 시작...", sessions.len());
     let mut ok = 0usize;
     for sid in &sessions {
-        let Ok(Some(ss)) = store.load_session(sid) else { continue; };
+        let Ok(Some(ss)) = store.load_session(sid) else {
+            continue;
+        };
         // FTS 재생성(전량 교체).
         if let Err(e) = store.save_session(sid, &ss, |t| tok(t)) {
             eprintln!("[reindex] {sid} FTS 재색인 실패: {e}");
@@ -200,10 +216,19 @@ pub(crate) fn run_reindex(db_path: &Option<String>) {
         ok += 1;
     }
     let after = store.index_stats().unwrap_or((0, 0, 0, 0, 0));
-    println!("[reindex] 완료: {ok}/{} 세션. 인덱스(전): sessions={} messages={} fts={} vectors={} validity={}",
-        sessions.len(), before.0, before.1, before.2, before.3, before.4);
-    println!("[reindex] 인덱스(후): sessions={} messages={} fts={} vectors={} validity={}",
-        after.0, after.1, after.2, after.3, after.4);
+    println!(
+        "[reindex] 완료: {ok}/{} 세션. 인덱스(전): sessions={} messages={} fts={} vectors={} validity={}",
+        sessions.len(),
+        before.0,
+        before.1,
+        before.2,
+        before.3,
+        before.4
+    );
+    println!(
+        "[reindex] 인덱스(후): sessions={} messages={} fts={} vectors={} validity={}",
+        after.0, after.1, after.2, after.3, after.4
+    );
 }
 
 /// --mcp-search 모드: REPL 대신 stdio MCP 검색 서버 기동(mcp 피처 전용).
@@ -237,13 +262,19 @@ pub(crate) fn run_mcp_search(
         }
     };
     let retriever = tunaround::store::retriever::SqliteRetriever::new(store, tok, emb);
-    let retriever_arc =
-        std::sync::Arc::new(retriever) as std::sync::Arc<dyn tunaround::orchestrator::ContextRetriever>;
+    let retriever_arc = std::sync::Arc::new(retriever)
+        as std::sync::Arc<dyn tunaround::orchestrator::ContextRetriever>;
     let transcript_reader = tunaround::store::retriever::SqliteTranscriptReader::new(store2);
     let reader_arc: Option<std::sync::Arc<dyn tunaround::orchestrator::TranscriptReader>> =
         Some(std::sync::Arc::new(transcript_reader));
-    let mcp_default_session = mcp_session_id.clone().unwrap_or_else(|| "default".to_string());
-    if let Err(e) = rt.block_on(tunaround::mcp::start_mcp_server(retriever_arc, reader_arc, mcp_default_session)) {
+    let mcp_default_session = mcp_session_id
+        .clone()
+        .unwrap_or_else(|| "default".to_string());
+    if let Err(e) = rt.block_on(tunaround::mcp::start_mcp_server(
+        retriever_arc,
+        reader_arc,
+        mcp_default_session,
+    )) {
         eprintln!("[mcp-search] 서버 오류: {e}");
         std::process::exit(1);
     }
@@ -262,16 +293,29 @@ pub(crate) fn run_serve_mcp(
         {
             match db_path {
                 Some(p) => p.clone(),
-                None => { eprintln!("[serve-mcp] --db <경로> 필요"); std::process::exit(1); }
+                None => {
+                    eprintln!("[serve-mcp] --db <경로> 필요");
+                    std::process::exit(1);
+                }
             }
         }
         #[cfg(not(feature = "sqlite"))]
-        { eprintln!("[serve-mcp] sqlite 피처 없음"); std::process::exit(1); }
+        {
+            eprintln!("[serve-mcp] sqlite 피처 없음");
+            std::process::exit(1);
+        }
     };
-    let (retriever_arc, reader_arc, writer_arc, a2a_store_arc) = build_http_mcp_backends("serve-mcp", &db_str);
+    let (retriever_arc, reader_arc, writer_arc, a2a_store_arc) =
+        build_http_mcp_backends("serve-mcp", &db_str);
     // 헤드리스 코어: post_turn 활성(단일 writer라 클로버 없음), 로스터 없음.
     if let Err(e) = rt.block_on(tunaround::mcp::start_http_mcp_server(
-        addr, retriever_arc, reader_arc, Some(writer_arc), None, serve_token.clone(), a2a_store_arc,
+        addr,
+        retriever_arc,
+        reader_arc,
+        Some(writer_arc),
+        None,
+        serve_token.clone(),
+        a2a_store_arc,
     )) {
         eprintln!("[serve-mcp] 서버 오류: {e}");
         std::process::exit(1);
@@ -292,7 +336,10 @@ pub(crate) fn run_node(rt: &tokio::runtime::Runtime, a: crate::cli::NodeArgs) {
 
     // 코어 URL 결정. core="self"면 이 프로세스가 브로커를 전용 스레드로 기동한다.
     let core_url = if cfg.core == "self" {
-        let listen = cfg.listen.clone().unwrap_or_else(|| "0.0.0.0:8770".to_string());
+        let listen = cfg
+            .listen
+            .clone()
+            .unwrap_or_else(|| "0.0.0.0:8770".to_string());
         let db_str =
             tunaround::config::expand_home(cfg.db.as_deref().unwrap_or("~/.tunaround/broker.db"));
         // set-and-forget: 브로커 db 상위 디렉터리를 자동 생성(첫 실행 시 ~/.tunaround 없을 수 있음).
@@ -318,7 +365,13 @@ pub(crate) fn run_node(rt: &tokio::runtime::Runtime, a: crate::cli::NodeArgs) {
             };
             srt.block_on(async move {
                 if let Err(e) = tunaround::mcp::start_http_mcp_server(
-                    &addr2, retriever_arc, reader_arc, Some(writer_arc), None, tok2, a2a_store_arc,
+                    &addr2,
+                    retriever_arc,
+                    reader_arc,
+                    Some(writer_arc),
+                    None,
+                    tok2,
+                    a2a_store_arc,
                 )
                 .await
                 {
@@ -358,8 +411,12 @@ pub(crate) fn run_node(rt: &tokio::runtime::Runtime, a: crate::cli::NodeArgs) {
     }
 
     // 자동 레인: 각 워커 루프를 동시에 상주 실행한다.
-    let auto: Vec<tunaround::config::Lane> =
-        cfg.lane.iter().filter(|l| !l.is_supervised()).cloned().collect();
+    let auto: Vec<tunaround::config::Lane> = cfg
+        .lane
+        .iter()
+        .filter(|l| !l.is_supervised())
+        .cloned()
+        .collect();
     eprintln!("[node] 자동 레인 {}개, core={core_url}", auto.len());
 
     rt.block_on(async {
@@ -402,11 +459,15 @@ pub(crate) fn run_node(rt: &tokio::runtime::Runtime, a: crate::cli::NodeArgs) {
                     // 로스터 태그 형식 검증(k=v,k=v). 잘못된 형식이면 register 전에 이 레인만 거부한다
                     // (parse_context_map fail-fast와 동일 패턴, register_agent가 쓰는 parse_tags 재사용).
                     if let Some(t) = &l.tags {
-                        tunaround::store::agents::parse_tags(t)
-                            .map_err(|e| format!("lane '{}' tags 형식 오류(k=v,k=v 필요): {e}", l.agent))?;
+                        tunaround::store::agents::parse_tags(t).map_err(|e| {
+                            format!("lane '{}' tags 형식 오류(k=v,k=v 필요): {e}", l.agent)
+                        })?;
                     }
                     let client = crate::cli_node::connect_with_retry(&core_url, &token, 20).await?;
-                    eprintln!("[node] 레인 '{}' 연결 OK, 폴링 시작(interval {}s)", l.agent, l.interval);
+                    eprintln!(
+                        "[node] 레인 '{}' 연결 OK, 폴링 시작(interval {}s)",
+                        l.agent, l.interval
+                    );
                     tunaround::worker::run_worker_loop(
                         &client,
                         runner,
@@ -452,11 +513,17 @@ pub(crate) fn build_participants(
         Some(p) => {
             let roster = match tunaround::roster::load_roster(p) {
                 Ok(r) => r,
-                Err(e) => { eprintln!("[로스터 실패] {e}"); std::process::exit(1); }
+                Err(e) => {
+                    eprintln!("[로스터 실패] {e}");
+                    std::process::exit(1);
+                }
             };
             let parts = match tunaround::roster::build_participants_checked(&roster) {
                 Ok(v) => v,
-                Err(e) => { eprintln!("[로스터 실패] {e}"); std::process::exit(1); }
+                Err(e) => {
+                    eprintln!("[로스터 실패] {e}");
+                    std::process::exit(1);
+                }
             };
             #[cfg(feature = "mcp")]
             let roster_search_db: Option<&str> = db_path.as_deref();
@@ -469,7 +536,10 @@ pub(crate) fn build_participants(
                 search_token.as_deref(),
             ) {
                 Ok(r) => r,
-                Err(e) => { eprintln!("[로스터 실패] {e}"); std::process::exit(1); }
+                Err(e) => {
+                    eprintln!("[로스터 실패] {e}");
+                    std::process::exit(1);
+                }
             };
             (parts, reg)
         }
@@ -481,8 +551,8 @@ pub(crate) fn build_participants(
                 .with_search_session(Some(sid.to_string()))
                 .with_search_url(search_url.clone(), search_token.clone());
             #[cfg(not(feature = "mcp"))]
-            let claude_runner = ClaudeRunner::new()
-                .with_search_url(search_url.clone(), search_token.clone());
+            let claude_runner =
+                ClaudeRunner::new().with_search_url(search_url.clone(), search_token.clone());
             reg.insert("claude", Box::new(claude_runner));
             #[cfg(feature = "mcp")]
             let codex_runner = CodexRunner::new()
@@ -490,12 +560,20 @@ pub(crate) fn build_participants(
                 .with_search_session(Some(sid.to_string()))
                 .with_search_url(search_url.clone(), search_token.clone());
             #[cfg(not(feature = "mcp"))]
-            let codex_runner = CodexRunner::new()
-                .with_search_url(search_url.clone(), search_token.clone());
+            let codex_runner =
+                CodexRunner::new().with_search_url(search_url.clone(), search_token.clone());
             reg.insert("codex", Box::new(codex_runner));
             let parts = vec![
-                Participant { engine: "claude".into(), role: Some("proposer".into()), instruction: String::new() },
-                Participant { engine: "codex".into(), role: Some("reviewer".into()), instruction: String::new() },
+                Participant {
+                    engine: "claude".into(),
+                    role: Some("proposer".into()),
+                    instruction: String::new(),
+                },
+                Participant {
+                    engine: "codex".into(),
+                    role: Some("reviewer".into()),
+                    instruction: String::new(),
+                },
             ];
             (parts, reg)
         }
@@ -512,7 +590,9 @@ pub(crate) fn build_indexer(
             Ok(store) => {
                 let tok = build_index_tokenizer("tunaRound");
                 let emb_idx = build_embedder();
-                Some(Box::new(tunaround::store::indexer::SqliteIndexer::new(store, tok, emb_idx))
+                Some(Box::new(tunaround::store::indexer::SqliteIndexer::new(
+                    store, tok, emb_idx,
+                ))
                     as Box<dyn tunaround::store::indexer::MessageIndexer>)
             }
             Err(e) => {
@@ -534,7 +614,9 @@ pub(crate) fn build_retriever(
             Ok(store) => {
                 let tok2 = build_query_tokenizer("tunaRound");
                 let emb_ret = build_embedder();
-                Some(Box::new(tunaround::store::retriever::SqliteRetriever::new(store, tok2, emb_ret))
+                Some(Box::new(tunaround::store::retriever::SqliteRetriever::new(
+                    store, tok2, emb_ret,
+                ))
                     as Box<dyn tunaround::orchestrator::ContextRetriever>)
             }
             Err(e) => {
@@ -553,7 +635,9 @@ pub(crate) fn build_validity_sink(
 ) -> Option<Box<dyn tunaround::orchestrator::ValiditySink>> {
     match db_path {
         Some(p) => match tunaround::store::sqlite::SqliteStore::open(p) {
-            Ok(store) => Some(Box::new(tunaround::store::retriever::SqliteValiditySink::new(store))),
+            Ok(store) => Some(Box::new(
+                tunaround::store::retriever::SqliteValiditySink::new(store),
+            )),
             Err(e) => {
                 eprintln!("[tunaRound] validity sink DB 열기 실패: {e}");
                 None
@@ -570,7 +654,9 @@ pub(crate) fn build_annotation_sink(
 ) -> Option<Box<dyn tunaround::orchestrator::AnnotationSink>> {
     match db_path {
         Some(p) => match tunaround::store::sqlite::SqliteStore::open(p) {
-            Ok(store) => Some(Box::new(tunaround::store::retriever::SqliteAnnotationSink::new(store))),
+            Ok(store) => Some(Box::new(
+                tunaround::store::retriever::SqliteAnnotationSink::new(store),
+            )),
             Err(e) => {
                 eprintln!("[tunaRound] annotation sink DB 열기 실패: {e}");
                 None

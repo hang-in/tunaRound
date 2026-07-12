@@ -29,7 +29,11 @@ mod sqlite_indexer {
             tok: Box<dyn Fn(&str) -> String + Send + Sync>,
             embedder: Option<Box<dyn crate::store::embedding::Embedder>>,
         ) -> Self {
-            Self { store: std::sync::Mutex::new(store), tok, embedder }
+            Self {
+                store: std::sync::Mutex::new(store),
+                tok,
+                embedder,
+            }
         }
     }
     impl MessageIndexer for SqliteIndexer {

@@ -34,7 +34,11 @@ pub fn parse_chat_response(v: &serde_json::Value) -> Result<RunOutput, RunError>
         .and_then(|t| t.as_i64())
         .unwrap_or(0);
 
-    Ok(RunOutput { content, input_tokens, output_tokens })
+    Ok(RunOutput {
+        content,
+        input_tokens,
+        output_tokens,
+    })
 }
 
 /// OpenAI 호환 /v1/chat/completions HTTP 러너.

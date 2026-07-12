@@ -46,7 +46,10 @@ pub fn parse_tags(s: &str) -> Result<BTreeMap<String, String>, String> {
 }
 
 /// selector의 모든 (k,v)가 tags에 같은 값으로 존재하면 true(부분집합). 빈 selector는 항상 true.
-pub fn selector_matches(tags: &BTreeMap<String, String>, selector: &BTreeMap<String, String>) -> bool {
+pub fn selector_matches(
+    tags: &BTreeMap<String, String>,
+    selector: &BTreeMap<String, String>,
+) -> bool {
     selector.iter().all(|(k, v)| tags.get(k) == Some(v))
 }
 
@@ -116,8 +119,14 @@ pub fn validate_send_target(
 
 /// selector가 여러 online 에이전트에 매칭될 때 발신자에게 돌려줄 후보 목록 텍스트(task 생성은 안 함).
 pub fn format_ambiguous_candidates(selector: &str, uuids: &[String]) -> String {
-    let list = uuids.iter().map(|u| format!("- {u}")).collect::<Vec<_>>().join("\n");
-    format!("셀렉터 '{selector}'가 여러 에이전트에 매칭됩니다. to_agent로 하나를 골라 재요청하세요:\n{list}")
+    let list = uuids
+        .iter()
+        .map(|u| format!("- {u}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "셀렉터 '{selector}'가 여러 에이전트에 매칭됩니다. to_agent로 하나를 골라 재요청하세요:\n{list}"
+    )
 }
 
 #[cfg(test)]

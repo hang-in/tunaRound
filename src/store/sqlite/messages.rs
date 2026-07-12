@@ -118,7 +118,9 @@ impl SqliteStore {
     /// 재색인 전 호출하면 크래시·부분실패 후 백필의 재-append가 중복을 쌓지 않고 덮어쓴다
     /// (delete-then-append). 한 트랜잭션으로 묶어 부분 삭제가 남지 않게 한다.
     pub fn delete_session_messages(&self, session_id: &str) -> Result<(), String> {
-        self.conn.execute_batch("BEGIN;").map_err(|e| format!("sqlite: {e}"))?;
+        self.conn
+            .execute_batch("BEGIN;")
+            .map_err(|e| format!("sqlite: {e}"))?;
         let result = (|| -> Result<(), String> {
             for sql in [
                 "DELETE FROM messages_fts WHERE session_id=?1",
@@ -127,12 +129,16 @@ impl SqliteStore {
                 "DELETE FROM messages WHERE session_id=?1",
                 "DELETE FROM sessions WHERE id=?1",
             ] {
-                self.conn.execute(sql, [session_id]).map_err(|e| format!("sqlite: {e}"))?;
+                self.conn
+                    .execute(sql, [session_id])
+                    .map_err(|e| format!("sqlite: {e}"))?;
             }
             Ok(())
         })();
         if result.is_ok() {
-            self.conn.execute_batch("COMMIT;").map_err(|e| format!("sqlite: {e}"))?;
+            self.conn
+                .execute_batch("COMMIT;")
+                .map_err(|e| format!("sqlite: {e}"))?;
         } else {
             let _ = self.conn.execute_batch("ROLLBACK;");
         }
@@ -224,9 +230,9 @@ impl SqliteStore {
             [session_id],
             |row| row.get(0),
         ) {
-            Ok(v) => v,                                            // 세션 있음(head_id NULL이면 None).
+            Ok(v) => v, // 세션 있음(head_id NULL이면 None).
             Err(rusqlite::Error::QueryReturnedNoRows) => return Ok(None), // 세션 없음.
-            Err(e) => return Err(format!("sqlite: {e}")),         // 실제 DB 에러는 전파.
+            Err(e) => return Err(format!("sqlite: {e}")), // 실제 DB 에러는 전파.
         };
 
         let head: Option<u64> = head_raw.map(|h| h as u64);
@@ -353,7 +359,9 @@ impl SqliteStore {
     pub fn index_stats(&self) -> Result<(usize, usize, usize, usize, usize), String> {
         let count = |table: &str| -> Result<usize, String> {
             self.conn
-                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get::<_, i64>(0))
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| {
+                    r.get::<_, i64>(0)
+                })
                 .map(|n| n as usize)
                 .map_err(|e| format!("sqlite: {e}"))
         };
@@ -594,9 +602,21 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f64 {
     if a.len() != b.len() {
         return 0.0;
     }
-    let dot: f64 = a.iter().zip(b.iter()).map(|(x, y)| (*x as f64) * (*y as f64)).sum();
-    let norm_a: f64 = a.iter().map(|x| (*x as f64) * (*x as f64)).sum::<f64>().sqrt();
-    let norm_b: f64 = b.iter().map(|x| (*x as f64) * (*x as f64)).sum::<f64>().sqrt();
+    let dot: f64 = a
+        .iter()
+        .zip(b.iter())
+        .map(|(x, y)| (*x as f64) * (*y as f64))
+        .sum();
+    let norm_a: f64 = a
+        .iter()
+        .map(|x| (*x as f64) * (*x as f64))
+        .sum::<f64>()
+        .sqrt();
+    let norm_b: f64 = b
+        .iter()
+        .map(|x| (*x as f64) * (*x as f64))
+        .sum::<f64>()
+        .sqrt();
     if norm_a < 1e-9 || norm_b < 1e-9 {
         return 0.0;
     }
@@ -662,10 +682,22 @@ mod tests {
         db.append_turn(sid, "a2a/win", "요청문 XYZ", tok).unwrap();
         db.append_turn(sid, "a2a/mac", "결과문 ABC", tok).unwrap();
         let msg_count = |db: &SqliteStore| -> i64 {
-            db.conn.query_row("SELECT COUNT(*) FROM messages WHERE session_id=?1", [sid], |r| r.get(0)).unwrap()
+            db.conn
+                .query_row(
+                    "SELECT COUNT(*) FROM messages WHERE session_id=?1",
+                    [sid],
+                    |r| r.get(0),
+                )
+                .unwrap()
         };
         let fts_count = |db: &SqliteStore| -> i64 {
-            db.conn.query_row("SELECT COUNT(*) FROM messages_fts WHERE session_id=?1", [sid], |r| r.get(0)).unwrap()
+            db.conn
+                .query_row(
+                    "SELECT COUNT(*) FROM messages_fts WHERE session_id=?1",
+                    [sid],
+                    |r| r.get(0),
+                )
+                .unwrap()
         };
         assert_eq!(msg_count(&db), 2);
         // 재색인(크래시·부분실패 후 백필 시뮬레이션): delete 후 다시 append → 여전히 2건.
@@ -676,7 +708,11 @@ mod tests {
         assert_eq!(fts_count(&db), 2, "FTS도 멱등(중복 hit 없음)");
         // delete 없이 append만 반복하면 중복이 쌓임(대조: 비멱등 원본 동작 확인).
         db.append_turn(sid, "a2a/win", "요청문 XYZ", tok).unwrap();
-        assert_eq!(msg_count(&db), 3, "delete 없는 재-append는 중복(원본 결함 재현)");
+        assert_eq!(
+            msg_count(&db),
+            3,
+            "delete 없는 재-append는 중복(원본 결함 재현)"
+        );
     }
 
     #[test]
@@ -687,7 +723,11 @@ mod tests {
         db.save_session("s1", &ss(), |t| t.to_string()).unwrap(); // 메시지 2건(id 1, 2).
 
         // 부속 행을 두 메시지 모두에 채운다.
-        let emb = CountingEmbedder { dim: 8, model: "model-A".into(), calls: 0.into() };
+        let emb = CountingEmbedder {
+            dim: 8,
+            model: "model-A".into(),
+            calls: 0.into(),
+        };
         db.index_vectors("s1", &ss(), &emb).unwrap(); // message_vectors 2건.
         db.set_validity("s1", 1, "active", None).unwrap();
         db.set_validity("s1", 2, "active", None).unwrap(); // message_validity 2건.
@@ -718,7 +758,11 @@ mod tests {
                 .unwrap()
         };
         assert_eq!(orphan_count("message_vectors"), 0, "축소 후 orphan 벡터 0");
-        assert_eq!(orphan_count("message_validity"), 0, "축소 후 orphan 유효성 0");
+        assert_eq!(
+            orphan_count("message_validity"),
+            0,
+            "축소 후 orphan 유효성 0"
+        );
 
         // 남은 id 1의 부속 행은 보존돼야 한다(과잉 삭제 아님).
         let kept = |table: &str| -> i64 {
@@ -759,19 +803,35 @@ mod tests {
         let db = SqliteStore::open_memory().unwrap();
         db.save_session("s1", &ss(), |t| t.to_string()).unwrap(); // 메시지 2건.
 
-        let emb_a = CountingEmbedder { dim: 8, model: "model-A".into(), calls: 0.into() };
+        let emb_a = CountingEmbedder {
+            dim: 8,
+            model: "model-A".into(),
+            calls: 0.into(),
+        };
         // 최초 색인: 2건 임베드.
         db.index_vectors("s1", &ss(), &emb_a).unwrap();
-        assert_eq!(emb_a.calls.load(SeqCst), 2, "최초 색인은 모든 메시지 임베드");
+        assert_eq!(
+            emb_a.calls.load(SeqCst),
+            2,
+            "최초 색인은 모든 메시지 임베드"
+        );
 
         // 같은 모델 재색인: content_hash+model_id 일치 → skip(추가 임베드 0).
         db.index_vectors("s1", &ss(), &emb_a).unwrap();
         assert_eq!(emb_a.calls.load(SeqCst), 2, "같은 모델 재색인은 skip");
 
         // 모델 교체: model_id 불일치 → 재임베딩(2건 더).
-        let emb_b = CountingEmbedder { dim: 8, model: "model-B".into(), calls: 0.into() };
+        let emb_b = CountingEmbedder {
+            dim: 8,
+            model: "model-B".into(),
+            calls: 0.into(),
+        };
         db.index_vectors("s1", &ss(), &emb_b).unwrap();
-        assert_eq!(emb_b.calls.load(SeqCst), 2, "모델 교체 시 stale 벡터 재임베딩");
+        assert_eq!(
+            emb_b.calls.load(SeqCst),
+            2,
+            "모델 교체 시 stale 벡터 재임베딩"
+        );
 
         // 다시 model-B 재색인: 이제 일치 → skip.
         db.index_vectors("s1", &ss(), &emb_b).unwrap();
@@ -787,9 +847,16 @@ mod tests {
         // 같은 세션 재저장(전량 교체) 후에도 created_at 보존(now로 리셋 금지)이어야 한다.
         db.save_session("s", &ss(), |t| t.to_string()).unwrap();
         let ca = db.get_created_at("s", 1).unwrap();
-        assert_eq!(ca.as_deref(), Some("2020-01-01 00:00:00"), "재저장 시 created_at 보존");
+        assert_eq!(
+            ca.as_deref(),
+            Some("2020-01-01 00:00:00"),
+            "재저장 시 created_at 보존"
+        );
         // 보존값 없던 메시지(msg 2)는 now로 채워져 NULL이 아니어야 한다.
-        assert!(db.get_created_at("s", 2).unwrap().is_some(), "보존값 없는 메시지는 now로 채움");
+        assert!(
+            db.get_created_at("s", 2).unwrap().is_some(),
+            "보존값 없는 메시지는 now로 채움"
+        );
     }
 
     #[test]
@@ -821,7 +888,10 @@ mod tests {
             let ssn = db.load_session(&sid).unwrap().unwrap();
             db.save_session(&sid, &ssn, |t| t.to_string()).unwrap();
         }
-        assert!(!db.search("검색", 10).unwrap().is_empty(), "재색인 후에도 검색 유지");
+        assert!(
+            !db.search("검색", 10).unwrap().is_empty(),
+            "재색인 후에도 검색 유지"
+        );
     }
 
     #[test]
@@ -841,7 +911,8 @@ mod tests {
     fn set_validity_preserves_annotation_and_vice_versa() {
         let db = SqliteStore::open_memory().unwrap();
         // 먼저 요약/앵커 설정.
-        db.set_annotation("s1", 1, Some("결정 요약"), Some("검색\n랭킹")).unwrap();
+        db.set_annotation("s1", 1, Some("결정 요약"), Some("검색\n랭킹"))
+            .unwrap();
         // 그 다음 유효성 설정 → 요약/앵커 보존.
         db.set_validity("s1", 1, "rejected", None).unwrap();
         let v = db.get_validity("s1", 1).unwrap().unwrap();
@@ -849,19 +920,31 @@ mod tests {
         assert_eq!(v.abstraction.as_deref(), Some("결정 요약"));
         assert_eq!(v.anchors.as_deref(), Some("검색\n랭킹"));
         // 반대로 요약만 갱신(anchors=None) → valid_state·anchors 보존(부분 갱신).
-        db.set_annotation("s1", 1, Some("갱신된 요약"), None).unwrap();
+        db.set_annotation("s1", 1, Some("갱신된 요약"), None)
+            .unwrap();
         let v2 = db.get_validity("s1", 1).unwrap().unwrap();
-        assert_eq!(v2.valid_state, "rejected", "annotation 갱신이 valid_state를 덮지 않음");
+        assert_eq!(
+            v2.valid_state, "rejected",
+            "annotation 갱신이 valid_state를 덮지 않음"
+        );
         assert_eq!(v2.abstraction.as_deref(), Some("갱신된 요약"));
-        assert_eq!(v2.anchors.as_deref(), Some("검색\n랭킹"), "None 필드는 기존 값 보존(COALESCE)");
+        assert_eq!(
+            v2.anchors.as_deref(),
+            Some("검색\n랭킹"),
+            "None 필드는 기존 값 보존(COALESCE)"
+        );
     }
 
     #[test]
     fn append_turn_chains_from_head_and_returns_ids() {
         // 신규 세션에 두 번 append -> head 자식 체인(1<-2), 반환 id 1,2, head=2.
         let db = SqliteStore::open_memory().unwrap();
-        let id1 = db.append_turn("s1", "claude", "첫 발언", |t| t.to_string()).unwrap();
-        let id2 = db.append_turn("s1", "codex", "둘째 발언", |t| t.to_string()).unwrap();
+        let id1 = db
+            .append_turn("s1", "claude", "첫 발언", |t| t.to_string())
+            .unwrap();
+        let id2 = db
+            .append_turn("s1", "codex", "둘째 발언", |t| t.to_string())
+            .unwrap();
         assert_eq!((id1, id2), (1, 2));
         let back = db.load_session("s1").unwrap().expect("present");
         assert_eq!(back.head, Some(2));
@@ -875,7 +958,9 @@ mod tests {
         // save_session(전량) 후 append -> 기존 2턴 보존 + 새 턴(id 3, parent 2)이 head.
         let db = SqliteStore::open_memory().unwrap();
         db.save_session("s1", &ss(), |t| t.to_string()).unwrap();
-        let id3 = db.append_turn("s1", "claude", "원격 추가 발언", |t| t.to_string()).unwrap();
+        let id3 = db
+            .append_turn("s1", "claude", "원격 추가 발언", |t| t.to_string())
+            .unwrap();
         assert_eq!(id3, 3);
         let back = db.load_session("s1").unwrap().unwrap();
         assert_eq!(back.messages.len(), 3, "기존 2턴 + 새 턴(클로버 없음)");
@@ -887,9 +972,13 @@ mod tests {
     fn append_turn_is_fts_searchable() {
         // append한 발언이 FTS로 검색되어야 한다.
         let db = SqliteStore::open_memory().unwrap();
-        db.append_turn("s1", "claude", "이벤트소싱 설계", |t| t.to_string()).unwrap();
+        db.append_turn("s1", "claude", "이벤트소싱 설계", |t| t.to_string())
+            .unwrap();
         let hits = db.search("이벤트소싱", 10).unwrap();
-        assert!(hits.iter().any(|h| h.session_id == "s1" && h.content.contains("이벤트소싱")));
+        assert!(
+            hits.iter()
+                .any(|h| h.session_id == "s1" && h.content.contains("이벤트소싱"))
+        );
     }
 
     #[test]
@@ -930,7 +1019,9 @@ mod tests {
         let missing = db.get_message("gm", 999).expect("DB 에러 없어야 함");
         assert!(missing.is_none(), "없는 msg_id는 None이어야 함");
         // 없는 세션 -> Ok(None).
-        let no_session = db.get_message("no-such-session", 1).expect("DB 에러 없어야 함");
+        let no_session = db
+            .get_message("no-such-session", 1)
+            .expect("DB 에러 없어야 함");
         assert!(no_session.is_none(), "없는 세션은 None이어야 함");
     }
 
@@ -985,11 +1076,15 @@ mod tests {
             }],
             head: Some(1),
         };
-        db.save_session("m", &s, |t| tok.tokenize_for_fts(t)).unwrap();
+        db.save_session("m", &s, |t| tok.tokenize_for_fts(t))
+            .unwrap();
         // 쿼리도 동일 형태소화.
         let q = tok.tokenize_for_fts("검색");
         let hits = db.search(&q, 10).unwrap();
-        assert!(!hits.is_empty(), "형태소 색인이 '검색을'을 '검색'으로 잡아야 함");
+        assert!(
+            !hits.is_empty(),
+            "형태소 색인이 '검색을'을 '검색'으로 잡아야 함"
+        );
     }
 
     // 벡터 검색 테스트: sqlite 피처 전용.
@@ -1007,7 +1102,10 @@ mod tests {
 
         impl CountingMock {
             fn new(dim: usize) -> Self {
-                Self { inner: MockEmbedder::new(dim), calls: AtomicUsize::new(0) }
+                Self {
+                    inner: MockEmbedder::new(dim),
+                    calls: AtomicUsize::new(0),
+                }
             }
 
             fn call_count(&self) -> usize {
@@ -1081,7 +1179,8 @@ mod tests {
                 }],
                 head: Some(1),
             };
-            db.save_session("inc1", &session, |t| t.to_string()).unwrap();
+            db.save_session("inc1", &session, |t| t.to_string())
+                .unwrap();
 
             // 첫 번째 색인: embed 1회 호출.
             db.index_vectors("inc1", &session, &counter).unwrap();
@@ -1089,7 +1188,11 @@ mod tests {
 
             // 두 번째 색인: 동일 content_hash이므로 skip -> embed 0회 추가 호출.
             db.index_vectors("inc1", &session, &counter).unwrap();
-            assert_eq!(counter.call_count(), 1, "두 번째 색인에서 embed 추가 호출 없어야 함");
+            assert_eq!(
+                counter.call_count(),
+                1,
+                "두 번째 색인에서 embed 추가 호출 없어야 함"
+            );
         }
     }
 }

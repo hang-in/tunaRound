@@ -19,7 +19,11 @@ impl SqliteStore {
     /// 폴백). 행이 없으면 None. DB 에러도 None으로 흡수한다(★ 복원은 best-effort, 로스터를 막지 않음).
     fn load_human_input(&self, uuid: &str) -> Option<String> {
         self.conn
-            .query_row("SELECT at FROM agent_human_input WHERE uuid = ?1", [uuid], |r| r.get::<_, String>(0))
+            .query_row(
+                "SELECT at FROM agent_human_input WHERE uuid = ?1",
+                [uuid],
+                |r| r.get::<_, String>(0),
+            )
             .optional()
             .unwrap_or(None)
     }
@@ -36,7 +40,9 @@ impl SqliteStore {
 
     /// 영속 human_input_at 행을 제거(세션 소멸 GC = deregister·sync_presence stale). best-effort.
     fn delete_human_input(&self, uuid: &str) {
-        let _ = self.conn.execute("DELETE FROM agent_human_input WHERE uuid = ?1", [uuid]);
+        let _ = self
+            .conn
+            .execute("DELETE FROM agent_human_input WHERE uuid = ?1", [uuid]);
     }
 
     /// 보존기간(기본 7일) 초과 human_input_at 행을 GC한다. deregister/stale를 안 타고 남은 고아 행
@@ -237,7 +243,14 @@ impl SqliteStore {
             }
             // 등장(appear) = 직전 roster에 없던 uuid(insert 전 검사). raw edge 기록(best-effort, v2-50).
             if !roster.contains_key(&s.uuid) {
-                self.log_presence_event("appear", &s.uuid, &tags, s.display_name.as_deref(), None, now);
+                self.log_presence_event(
+                    "appear",
+                    &s.uuid,
+                    &tags,
+                    s.display_name.as_deref(),
+                    None,
+                    now,
+                );
             }
             // human_input_at 전진(codex 보고값 경로)만 영속 write-through + raw 이벤트 기록. 보고값
             // 없음(claude)·불변이면 write/log 생략 = 매 heartbeat 로깅 방지(claude ★는 mark_human_input에서).
@@ -245,7 +258,14 @@ impl SqliteStore {
                 && let Some(at) = &human_input_at
             {
                 self.persist_human_input(&s.uuid, at);
-                self.log_presence_event("human_input", &s.uuid, &tags, s.display_name.as_deref(), None, at);
+                self.log_presence_event(
+                    "human_input",
+                    &s.uuid,
+                    &tags,
+                    s.display_name.as_deref(),
+                    None,
+                    at,
+                );
             }
             roster.insert(
                 s.uuid.clone(),
@@ -298,14 +318,19 @@ impl SqliteStore {
                 .get(uuid)
                 .map(|e| (e.tags.clone(), e.display_name.clone()))
                 .unwrap_or_default();
-            self.log_presence_event("human_input", uuid, &tags, display_name.as_deref(), None, now);
+            self.log_presence_event(
+                "human_input",
+                uuid,
+                &tags,
+                display_name.as_deref(),
+                None,
+                now,
+            );
         }
         // 인메모리 갱신도 전진(advanced)일 때만 한다(CodeRabbit MAJOR). advanced와 무관하게 항상
         // 대입하면 과거·동일 시각 핑이 인메모리 ★를 과거로 되감아(★ 회귀) sync_presence의 max-merge와
         // 어긋난다. persist_human_input은 이미 단조(WHERE >)라 DB는 안전하지만 인메모리만 뚫려 있었다.
-        if advanced
-            && let Some(entry) = self.agent_roster.borrow_mut().get_mut(uuid)
-        {
+        if advanced && let Some(entry) = self.agent_roster.borrow_mut().get_mut(uuid) {
             entry.human_input_at = Some(now.to_string());
         }
         true
@@ -365,9 +390,11 @@ impl SqliteStore {
         now: &str,
         ttl_secs: i64,
     ) -> Vec<String> {
-        self.list_agents(selector, now, ttl_secs).into_iter().map(|entry| entry.uuid).collect()
+        self.list_agents(selector, now, ttl_secs)
+            .into_iter()
+            .map(|entry| entry.uuid)
+            .collect()
     }
-
 }
 
 #[cfg(test)]
@@ -375,13 +402,21 @@ mod tests {
     use super::*;
 
     fn tags(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
-        pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
     }
 
     #[test]
     fn register_then_list_agents_roundtrip() {
         let db = SqliteStore::open_memory().unwrap();
-        db.register_agent("u1", tags(&[("machine", "win")]), Some("win-claude".into()), "2026-07-04 10:00:00");
+        db.register_agent(
+            "u1",
+            tags(&[("machine", "win")]),
+            Some("win-claude".into()),
+            "2026-07-04 10:00:00",
+        );
         let found = db.list_agents(&BTreeMap::new(), "2026-07-04 10:00:10", 90);
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].uuid, "u1");
@@ -404,7 +439,10 @@ mod tests {
         db.register_agent("u1", BTreeMap::new(), None, "2026-07-04 09:00:00");
         // now 기준 1시간 경과, ttl 90초 -> offline이라 제외되어야 함.
         let found = db.list_agents(&BTreeMap::new(), "2026-07-04 10:00:00", 90);
-        assert!(found.is_empty(), "offline 에이전트는 list_agents에서 제외되어야 함");
+        assert!(
+            found.is_empty(),
+            "offline 에이전트는 list_agents에서 제외되어야 함"
+        );
     }
 
     #[test]
@@ -413,7 +451,10 @@ mod tests {
         db.register_agent("u1", BTreeMap::new(), None, "2026-07-04 10:00:00");
         // 등록된 세션 제거 = true, 이후 online 목록에서 즉시 사라짐(TTL 대기 없이).
         assert!(db.deregister_agent("u1"));
-        assert!(db.list_agents(&BTreeMap::new(), "2026-07-04 10:00:05", 90).is_empty());
+        assert!(
+            db.list_agents(&BTreeMap::new(), "2026-07-04 10:00:05", 90)
+                .is_empty()
+        );
         // 미등록/이미 제거된 uuid는 false(멱등).
         assert!(!db.deregister_agent("u1"));
         assert!(!db.deregister_agent("unknown"));
@@ -422,8 +463,18 @@ mod tests {
     #[test]
     fn resolve_selector_matches_none_one_or_many() {
         let db = SqliteStore::open_memory().unwrap();
-        db.register_agent("u1", tags(&[("machine", "win"), ("runner", "claude")]), None, "2026-07-04 10:00:00");
-        db.register_agent("u2", tags(&[("machine", "mac"), ("runner", "claude")]), None, "2026-07-04 10:00:00");
+        db.register_agent(
+            "u1",
+            tags(&[("machine", "win"), ("runner", "claude")]),
+            None,
+            "2026-07-04 10:00:00",
+        );
+        db.register_agent(
+            "u2",
+            tags(&[("machine", "mac"), ("runner", "claude")]),
+            None,
+            "2026-07-04 10:00:00",
+        );
         let now = "2026-07-04 10:00:10";
 
         let none = db.resolve_selector(&tags(&[("machine", "linux")]), now, 90);
@@ -436,7 +487,11 @@ mod tests {
         assert_eq!(many, vec!["u1".to_string(), "u2".to_string()]);
     }
 
-    fn presence(uuid: &str, runner: &str, project: Option<&str>) -> crate::store::agents::PresenceUpsert {
+    fn presence(
+        uuid: &str,
+        runner: &str,
+        project: Option<&str>,
+    ) -> crate::store::agents::PresenceUpsert {
         crate::store::agents::PresenceUpsert {
             uuid: uuid.to_string(),
             runner: runner.to_string(),
@@ -448,7 +503,10 @@ mod tests {
 
     /// 스캐너 보고값(codex 입력 신호)이 있는 presence 항목(v2-45 P5).
     fn presence_with_input(uuid: &str, at: &str) -> crate::store::agents::PresenceUpsert {
-        crate::store::agents::PresenceUpsert { human_input_at: Some(at.to_string()), ..presence(uuid, "codex", None) }
+        crate::store::agents::PresenceUpsert {
+            human_input_at: Some(at.to_string()),
+            ..presence(uuid, "codex", None)
+        }
     }
 
     #[test]
@@ -456,23 +514,58 @@ mod tests {
         let db = SqliteStore::open_memory().unwrap();
         let t0 = "2026-07-11 10:00:00";
         // 수동 등록 항목(스캐너 소유 아님): infra watcher + 타 머신 세션.
-        db.register_agent("win-codex-sup", tags(&[("machine", "win"), ("role", "infra")]), None, t0);
-        db.register_agent("mac-sess", tags(&[("machine", "mac"), ("role", "session"), ("src", "scan")]), None, t0);
+        db.register_agent(
+            "win-codex-sup",
+            tags(&[("machine", "win"), ("role", "infra")]),
+            None,
+            t0,
+        );
+        db.register_agent(
+            "mac-sess",
+            tags(&[("machine", "mac"), ("role", "session"), ("src", "scan")]),
+            None,
+            t0,
+        );
         // 1차 스캔 보고: s1, s2.
-        let (up, rm) = db.sync_presence("win", &[presence("s1", "claude", Some("tunaRound")), presence("s2", "codex", None)], t0);
+        let (up, rm) = db.sync_presence(
+            "win",
+            &[
+                presence("s1", "claude", Some("tunaRound")),
+                presence("s2", "codex", None),
+            ],
+            t0,
+        );
         assert_eq!((up, rm), (2, 0));
         let all = db.list_agents(&BTreeMap::new(), "2026-07-11 10:00:05", 90);
         assert_eq!(all.len(), 4);
         let s1 = all.iter().find(|e| e.uuid == "s1").unwrap();
         assert_eq!(s1.tags.get("role").map(String::as_str), Some("session"));
         assert_eq!(s1.tags.get("src").map(String::as_str), Some("scan"));
-        assert_eq!(s1.tags.get("project").map(String::as_str), Some("tunaRound"));
+        assert_eq!(
+            s1.tags.get("project").map(String::as_str),
+            Some("tunaRound")
+        );
         assert_eq!(s1.display_name.as_deref(), Some("win-claude-tunaRound"));
         // 2차 스캔: s2가 사라짐(exit) → 제거. 수동 등록(win-codex-sup)·타 머신(mac-sess)은 불변.
-        let (up2, rm2) = db.sync_presence("win", &[presence("s1", "claude", Some("tunaRound"))], "2026-07-11 10:00:15");
+        let (up2, rm2) = db.sync_presence(
+            "win",
+            &[presence("s1", "claude", Some("tunaRound"))],
+            "2026-07-11 10:00:15",
+        );
         assert_eq!((up2, rm2), (1, 1));
-        let after: Vec<String> = db.list_agents(&BTreeMap::new(), "2026-07-11 10:00:20", 90).into_iter().map(|e| e.uuid).collect();
-        assert_eq!(after, vec!["mac-sess".to_string(), "s1".to_string(), "win-codex-sup".to_string()]);
+        let after: Vec<String> = db
+            .list_agents(&BTreeMap::new(), "2026-07-11 10:00:20", 90)
+            .into_iter()
+            .map(|e| e.uuid)
+            .collect();
+        assert_eq!(
+            after,
+            vec![
+                "mac-sess".to_string(),
+                "s1".to_string(),
+                "win-codex-sup".to_string()
+            ]
+        );
     }
 
     #[test]
@@ -482,7 +575,11 @@ mod tests {
         db.sync_presence("win", &[presence("s1", "claude", None)], t0);
         assert!(db.mark_human_input("s1", "2026-07-11 10:00:03"));
         // 다음 스캔 upsert가 총감독 신호를 지우면 ★가 튄다(v2-42 계약과 동일하게 보존).
-        db.sync_presence("win", &[presence("s1", "claude", None)], "2026-07-11 10:00:15");
+        db.sync_presence(
+            "win",
+            &[presence("s1", "claude", None)],
+            "2026-07-11 10:00:15",
+        );
         let e = &db.list_agents(&BTreeMap::new(), "2026-07-11 10:00:20", 90)[0];
         assert_eq!(e.human_input_at.as_deref(), Some("2026-07-11 10:00:03"));
         assert_eq!(e.last_heartbeat, "2026-07-11 10:00:15");
@@ -510,9 +607,18 @@ mod tests {
         // 무장 전(로스터에 없음) 핑도 선기록되어 true(404 유실 창 제거).
         assert!(db.mark_human_input("u1", "2026-07-11 10:00:03"));
         // 이후 register가 영속 테이블에서 ★를 복원한다.
-        db.register_agent("u1", tags(&[("machine", "win")]), None, "2026-07-11 10:00:10");
+        db.register_agent(
+            "u1",
+            tags(&[("machine", "win")]),
+            None,
+            "2026-07-11 10:00:10",
+        );
         let e = &db.list_agents(&BTreeMap::new(), "2026-07-11 10:00:20", 90)[0];
-        assert_eq!(e.human_input_at.as_deref(), Some("2026-07-11 10:00:03"), "미등록 선기록이 register에서 복원");
+        assert_eq!(
+            e.human_input_at.as_deref(),
+            Some("2026-07-11 10:00:03"),
+            "미등록 선기록이 register에서 복원"
+        );
     }
 
     #[test]
@@ -521,15 +627,29 @@ mod tests {
         let p = path.to_str().unwrap();
         {
             let db = SqliteStore::open(p).unwrap();
-            db.register_agent("s1", tags(&[("machine", "win")]), None, "2026-07-11 10:00:00");
+            db.register_agent(
+                "s1",
+                tags(&[("machine", "win")]),
+                None,
+                "2026-07-11 10:00:00",
+            );
             assert!(db.mark_human_input("s1", "2026-07-11 10:00:05"));
         }
         // 재기동 = 새 SqliteStore(인메모리 로스터 비어 있음). register가 테이블에서 ★ 복원.
         {
             let db = SqliteStore::open(p).unwrap();
-            db.register_agent("s1", tags(&[("machine", "win")]), None, "2026-07-11 10:05:00");
+            db.register_agent(
+                "s1",
+                tags(&[("machine", "win")]),
+                None,
+                "2026-07-11 10:05:00",
+            );
             let e = &db.list_agents(&BTreeMap::new(), "2026-07-11 10:05:10", 90)[0];
-            assert_eq!(e.human_input_at.as_deref(), Some("2026-07-11 10:00:05"), "재기동 후 ★ 영속 복원");
+            assert_eq!(
+                e.human_input_at.as_deref(),
+                Some("2026-07-11 10:00:05"),
+                "재기동 후 ★ 영속 복원"
+            );
         }
         cleanup_db(&path);
     }
@@ -540,15 +660,27 @@ mod tests {
         let p = path.to_str().unwrap();
         {
             let db = SqliteStore::open(p).unwrap();
-            db.sync_presence("win", &[presence("s1", "claude", None)], "2026-07-11 10:00:00");
+            db.sync_presence(
+                "win",
+                &[presence("s1", "claude", None)],
+                "2026-07-11 10:00:00",
+            );
             assert!(db.mark_human_input("s1", "2026-07-11 10:00:07"));
         }
         {
             // 재기동 후 스캐너 첫 보고(sync_presence)가 테이블에서 ★를 복원해야 한다(≤15초 자동 복원).
             let db = SqliteStore::open(p).unwrap();
-            db.sync_presence("win", &[presence("s1", "claude", None)], "2026-07-11 10:05:00");
+            db.sync_presence(
+                "win",
+                &[presence("s1", "claude", None)],
+                "2026-07-11 10:05:00",
+            );
             let e = &db.list_agents(&BTreeMap::new(), "2026-07-11 10:05:10", 90)[0];
-            assert_eq!(e.human_input_at.as_deref(), Some("2026-07-11 10:00:07"), "sync가 테이블에서 ★ 복원");
+            assert_eq!(
+                e.human_input_at.as_deref(),
+                Some("2026-07-11 10:00:07"),
+                "sync가 테이블에서 ★ 복원"
+            );
         }
         cleanup_db(&path);
     }
@@ -556,12 +688,26 @@ mod tests {
     #[test]
     fn deregister_deletes_persisted_human_input() {
         let db = SqliteStore::open_memory().unwrap();
-        db.register_agent("s1", tags(&[("machine", "win")]), None, "2026-07-11 10:00:00");
+        db.register_agent(
+            "s1",
+            tags(&[("machine", "win")]),
+            None,
+            "2026-07-11 10:00:00",
+        );
         db.mark_human_input("s1", "2026-07-11 10:00:05");
         assert!(db.deregister_agent("s1"));
-        assert_eq!(db.load_human_input("s1"), None, "deregister가 영속 ★ 행도 제거");
+        assert_eq!(
+            db.load_human_input("s1"),
+            None,
+            "deregister가 영속 ★ 행도 제거"
+        );
         // 재등록해도 복원할 값이 없다.
-        db.register_agent("s1", tags(&[("machine", "win")]), None, "2026-07-11 10:10:00");
+        db.register_agent(
+            "s1",
+            tags(&[("machine", "win")]),
+            None,
+            "2026-07-11 10:10:00",
+        );
         let e = &db.list_agents(&BTreeMap::new(), "2026-07-11 10:10:05", 90)[0];
         assert_eq!(e.human_input_at, None, "제거된 ★는 재등록 시 복원 안 됨");
     }
@@ -569,11 +715,19 @@ mod tests {
     #[test]
     fn sync_presence_stale_deletes_persisted_human_input() {
         let db = SqliteStore::open_memory().unwrap();
-        db.sync_presence("win", &[presence("s1", "claude", None)], "2026-07-11 10:00:00");
+        db.sync_presence(
+            "win",
+            &[presence("s1", "claude", None)],
+            "2026-07-11 10:00:00",
+        );
         db.mark_human_input("s1", "2026-07-11 10:00:05");
         // s1이 다음 스캔 보고에서 사라짐(exit) → stale 제거 + 영속 행 GC.
         db.sync_presence("win", &[], "2026-07-11 10:00:20");
-        assert_eq!(db.load_human_input("s1"), None, "stale 제거가 영속 ★ 행도 GC");
+        assert_eq!(
+            db.load_human_input("s1"),
+            None,
+            "stale 제거가 영속 ★ 행도 GC"
+        );
     }
 
     #[test]
@@ -584,13 +738,25 @@ mod tests {
             // mark로 테이블에 기록된 ★가 이후 sync upsert를 거쳐도 소실되지 않아야 한다(sync는 인메모리
             // 값을 그대로 유지하고 테이블을 지우지 않음 - 재기동 후에도 영속 보존).
             let db = SqliteStore::open(p).unwrap();
-            db.sync_presence("win", &[presence("s1", "claude", None)], "2026-07-11 10:00:00");
+            db.sync_presence(
+                "win",
+                &[presence("s1", "claude", None)],
+                "2026-07-11 10:00:00",
+            );
             db.mark_human_input("s1", "2026-07-11 10:00:05");
-            db.sync_presence("win", &[presence("s1", "claude", None)], "2026-07-11 10:00:15");
+            db.sync_presence(
+                "win",
+                &[presence("s1", "claude", None)],
+                "2026-07-11 10:00:15",
+            );
         }
         {
             let db = SqliteStore::open(p).unwrap();
-            assert_eq!(db.load_human_input("s1").as_deref(), Some("2026-07-11 10:00:05"), "sync upsert가 영속 ★를 보존");
+            assert_eq!(
+                db.load_human_input("s1").as_deref(),
+                Some("2026-07-11 10:00:05"),
+                "sync upsert가 영속 ★를 보존"
+            );
         }
         cleanup_db(&path);
     }
@@ -603,7 +769,11 @@ mod tests {
         db.persist_human_input("fresh", "2099-01-01 00:00:00");
         db.gc_human_input();
         assert_eq!(db.load_human_input("old"), None, "보존기간 초과 행은 GC");
-        assert_eq!(db.load_human_input("fresh").as_deref(), Some("2099-01-01 00:00:00"), "신선 행은 보존");
+        assert_eq!(
+            db.load_human_input("fresh").as_deref(),
+            Some("2099-01-01 00:00:00"),
+            "신선 행은 보존"
+        );
     }
 
     #[test]
@@ -611,9 +781,17 @@ mod tests {
         let db = SqliteStore::open_memory().unwrap();
         db.persist_human_input("s1", "2026-07-11 10:00:05");
         db.persist_human_input("s1", "2026-07-11 09:00:00"); // 과거 = 무시(단조)
-        assert_eq!(db.load_human_input("s1").as_deref(), Some("2026-07-11 10:00:05"), "과거 값으로 되감기 없음");
+        assert_eq!(
+            db.load_human_input("s1").as_deref(),
+            Some("2026-07-11 10:00:05"),
+            "과거 값으로 되감기 없음"
+        );
         db.persist_human_input("s1", "2026-07-11 11:00:00"); // 미래 = 전진
-        assert_eq!(db.load_human_input("s1").as_deref(), Some("2026-07-11 11:00:00"), "새 값은 전진");
+        assert_eq!(
+            db.load_human_input("s1").as_deref(),
+            Some("2026-07-11 11:00:00"),
+            "새 값은 전진"
+        );
     }
 
     // --- v2-45 P5: 스캐너 보고값(codex 입력 신호) merge(§5-8 최종형) ---
@@ -622,35 +800,79 @@ mod tests {
     fn sync_presence_reported_input_advances_and_persists() {
         let db = SqliteStore::open_memory().unwrap();
         // codex 세션이 첫 등장 + 보고값(사람 입력 시각) → 인메모리·영속 양쪽에 반영.
-        db.sync_presence("win", &[presence_with_input("c1", "2026-07-11 10:00:05")], "2026-07-11 10:00:10");
+        db.sync_presence(
+            "win",
+            &[presence_with_input("c1", "2026-07-11 10:00:05")],
+            "2026-07-11 10:00:10",
+        );
         let e = &db.list_agents(&BTreeMap::new(), "2026-07-11 10:00:15", 90)[0];
-        assert_eq!(e.human_input_at.as_deref(), Some("2026-07-11 10:00:05"), "보고값이 로스터에 반영");
-        assert_eq!(db.load_human_input("c1").as_deref(), Some("2026-07-11 10:00:05"), "보고값이 영속에 write-through");
+        assert_eq!(
+            e.human_input_at.as_deref(),
+            Some("2026-07-11 10:00:05"),
+            "보고값이 로스터에 반영"
+        );
+        assert_eq!(
+            db.load_human_input("c1").as_deref(),
+            Some("2026-07-11 10:00:05"),
+            "보고값이 영속에 write-through"
+        );
     }
 
     #[test]
     fn sync_presence_reported_input_takes_max_not_regress() {
         let db = SqliteStore::open_memory().unwrap();
-        db.sync_presence("win", &[presence_with_input("c1", "2026-07-11 10:00:30")], "2026-07-11 10:00:31");
+        db.sync_presence(
+            "win",
+            &[presence_with_input("c1", "2026-07-11 10:00:30")],
+            "2026-07-11 10:00:31",
+        );
         // 다음 보고가 더 과거 값이어도(rollout 캐시 지연 등) 후퇴하지 않는다(max-merge).
-        db.sync_presence("win", &[presence_with_input("c1", "2026-07-11 10:00:10")], "2026-07-11 10:00:45");
+        db.sync_presence(
+            "win",
+            &[presence_with_input("c1", "2026-07-11 10:00:10")],
+            "2026-07-11 10:00:45",
+        );
         let e = &db.list_agents(&BTreeMap::new(), "2026-07-11 10:00:50", 90)[0];
-        assert_eq!(e.human_input_at.as_deref(), Some("2026-07-11 10:00:30"), "과거 보고로 후퇴 안 함");
+        assert_eq!(
+            e.human_input_at.as_deref(),
+            Some("2026-07-11 10:00:30"),
+            "과거 보고로 후퇴 안 함"
+        );
         // 더 새 보고는 전진.
-        db.sync_presence("win", &[presence_with_input("c1", "2026-07-11 10:01:00")], "2026-07-11 10:01:01");
+        db.sync_presence(
+            "win",
+            &[presence_with_input("c1", "2026-07-11 10:01:00")],
+            "2026-07-11 10:01:01",
+        );
         let e = &db.list_agents(&BTreeMap::new(), "2026-07-11 10:01:05", 90)[0];
-        assert_eq!(e.human_input_at.as_deref(), Some("2026-07-11 10:01:00"), "새 보고는 전진");
+        assert_eq!(
+            e.human_input_at.as_deref(),
+            Some("2026-07-11 10:01:00"),
+            "새 보고는 전진"
+        );
     }
 
     #[test]
     fn sync_presence_no_report_preserves_existing_star() {
         let db = SqliteStore::open_memory().unwrap();
         // 훅으로 기록된 ★(claude) 후 스캐너가 보고값 없이(None) upsert해도 보존(max-merge).
-        db.sync_presence("win", &[presence("c1", "codex", None)], "2026-07-11 10:00:00");
+        db.sync_presence(
+            "win",
+            &[presence("c1", "codex", None)],
+            "2026-07-11 10:00:00",
+        );
         db.mark_human_input("c1", "2026-07-11 10:00:05");
-        db.sync_presence("win", &[presence("c1", "codex", None)], "2026-07-11 10:00:15");
+        db.sync_presence(
+            "win",
+            &[presence("c1", "codex", None)],
+            "2026-07-11 10:00:15",
+        );
         let e = &db.list_agents(&BTreeMap::new(), "2026-07-11 10:00:20", 90)[0];
-        assert_eq!(e.human_input_at.as_deref(), Some("2026-07-11 10:00:05"), "무보고 upsert가 기존 ★ 보존");
+        assert_eq!(
+            e.human_input_at.as_deref(),
+            Some("2026-07-11 10:00:05"),
+            "무보고 upsert가 기존 ★ 보존"
+        );
     }
 
     #[test]
@@ -662,7 +884,12 @@ mod tests {
             None,
             "2026-07-04 10:00:00",
         );
-        db.register_agent("u2", tags(&[("machine", "win"), ("runner", "codex")]), None, "2026-07-04 10:00:00");
+        db.register_agent(
+            "u2",
+            tags(&[("machine", "win"), ("runner", "codex")]),
+            None,
+            "2026-07-04 10:00:00",
+        );
         let now = "2026-07-04 10:00:10";
         let found = db.list_agents(&tags(&[("machine", "win"), ("runner", "claude")]), now, 90);
         assert_eq!(found.len(), 1);
@@ -677,21 +904,32 @@ mod tests {
         // 1차 스캔: s1, s2 등장.
         db.sync_presence(
             "win",
-            &[presence("s1", "claude", Some("tunaRound")), presence("s2", "codex", None)],
+            &[
+                presence("s1", "claude", Some("tunaRound")),
+                presence("s2", "codex", None),
+            ],
             "2026-07-12 10:00:00",
         );
         // 2차 스캔: s2 사라짐(stale) + s3 새 등장. s1은 연속.
         db.sync_presence(
             "win",
-            &[presence("s1", "claude", Some("tunaRound")), presence("s3", "codex", None)],
+            &[
+                presence("s1", "claude", Some("tunaRound")),
+                presence("s3", "codex", None),
+            ],
             "2026-07-12 10:00:15",
         );
         let events = db.list_presence_events(None, 100).unwrap();
-        let appears: Vec<&str> =
-            events.iter().filter(|e| e.event_type == "appear").map(|e| e.agent_uuid.as_str()).collect();
+        let appears: Vec<&str> = events
+            .iter()
+            .filter(|e| e.event_type == "appear")
+            .map(|e| e.agent_uuid.as_str())
+            .collect();
         assert_eq!(appears.len(), 3, "s1·s2·s3 등장 = 3건");
-        let disappears: Vec<&crate::store::agents::PresenceEvent> =
-            events.iter().filter(|e| e.event_type == "disappear").collect();
+        let disappears: Vec<&crate::store::agents::PresenceEvent> = events
+            .iter()
+            .filter(|e| e.event_type == "disappear")
+            .collect();
         assert_eq!(disappears.len(), 1);
         assert_eq!(disappears[0].agent_uuid, "s2");
         assert_eq!(disappears[0].detail.as_deref(), Some("stale"));
@@ -716,28 +954,56 @@ mod tests {
             .count();
         assert_eq!(appears1, 1, "register 신규 진입 = appear 1회");
         // 같은 uuid를 스캐너가 보고해도(이미 roster에 있음) 중복 appear 없음(전이당 1회).
-        db.sync_presence("win", &[presence("w1", "worker", None)], "2026-07-12 10:00:15");
+        db.sync_presence(
+            "win",
+            &[presence("w1", "worker", None)],
+            "2026-07-12 10:00:15",
+        );
         // 재등록(재기동)도 이미 존재라 appear 추가 없음.
-        db.register_agent("w1", tags(&[("machine", "win"), ("role", "worker")]), None, "2026-07-12 10:00:30");
+        db.register_agent(
+            "w1",
+            tags(&[("machine", "win"), ("role", "worker")]),
+            None,
+            "2026-07-12 10:00:30",
+        );
         let appears2 = db
             .list_presence_events(None, 100)
             .unwrap()
             .into_iter()
             .filter(|e| e.event_type == "appear" && e.agent_uuid == "w1")
             .count();
-        assert_eq!(appears2, 1, "register→sync 재보고·재등록에도 appear는 전이당 1회");
+        assert_eq!(
+            appears2, 1,
+            "register→sync 재보고·재등록에도 appear는 전이당 1회"
+        );
     }
 
     #[test]
     fn register_after_deregister_relogs_appear() {
         let db = SqliteStore::open_memory().unwrap();
-        db.register_agent("w1", tags(&[("machine", "win")]), None, "2026-07-12 10:00:00");
+        db.register_agent(
+            "w1",
+            tags(&[("machine", "win")]),
+            None,
+            "2026-07-12 10:00:00",
+        );
         assert!(db.deregister_agent("w1")); // 부재로 전이(disappear 로깅).
         // 다시 등장 = 부재→존재 전이라 appear 재로깅(대칭: disappear 후 재appear).
-        db.register_agent("w1", tags(&[("machine", "win")]), None, "2026-07-12 10:05:00");
+        db.register_agent(
+            "w1",
+            tags(&[("machine", "win")]),
+            None,
+            "2026-07-12 10:05:00",
+        );
         let events = db.list_presence_events(None, 100).unwrap();
-        let appears = events.iter().filter(|e| e.event_type == "appear" && e.agent_uuid == "w1").count();
-        let disappears = events.iter().filter(|e| e.event_type == "disappear" && e.agent_uuid == "w1").count();
+        let appears = events
+            .iter()
+            .filter(|e| e.event_type == "appear" && e.agent_uuid == "w1")
+            .count();
+        let disappears = events
+            .iter()
+            .filter(|e| e.event_type == "disappear" && e.agent_uuid == "w1")
+            .count();
         assert_eq!(appears, 2, "부재→존재 전이가 두 번이면 appear도 2회");
         assert_eq!(disappears, 1, "deregister 1회 = disappear 1회");
     }
@@ -745,11 +1011,27 @@ mod tests {
     #[test]
     fn sync_presence_does_not_relog_appear_for_continuing_session() {
         let db = SqliteStore::open_memory().unwrap();
-        db.sync_presence("win", &[presence("s1", "claude", None)], "2026-07-12 10:00:00");
-        db.sync_presence("win", &[presence("s1", "claude", None)], "2026-07-12 10:00:15");
-        db.sync_presence("win", &[presence("s1", "claude", None)], "2026-07-12 10:00:30");
-        let appears =
-            db.list_presence_events(None, 100).unwrap().into_iter().filter(|e| e.event_type == "appear").count();
+        db.sync_presence(
+            "win",
+            &[presence("s1", "claude", None)],
+            "2026-07-12 10:00:00",
+        );
+        db.sync_presence(
+            "win",
+            &[presence("s1", "claude", None)],
+            "2026-07-12 10:00:15",
+        );
+        db.sync_presence(
+            "win",
+            &[presence("s1", "claude", None)],
+            "2026-07-12 10:00:30",
+        );
+        let appears = db
+            .list_presence_events(None, 100)
+            .unwrap()
+            .into_iter()
+            .filter(|e| e.event_type == "appear")
+            .count();
         assert_eq!(appears, 1, "연속 세션은 등장 1회만(매 스캔 재로깅 없음)");
     }
 
@@ -764,8 +1046,10 @@ mod tests {
         );
         assert!(db.deregister_agent("s1"));
         let events = db.list_presence_events(None, 100).unwrap();
-        let d: Vec<&crate::store::agents::PresenceEvent> =
-            events.iter().filter(|e| e.event_type == "disappear").collect();
+        let d: Vec<&crate::store::agents::PresenceEvent> = events
+            .iter()
+            .filter(|e| e.event_type == "disappear")
+            .collect();
         assert_eq!(d.len(), 1);
         assert_eq!(d[0].agent_uuid, "s1");
         assert_eq!(d[0].detail.as_deref(), Some("deregister"));
@@ -773,23 +1057,42 @@ mod tests {
         assert_eq!(d[0].display_name.as_deref(), Some("mac-claude"));
         // 미등록 deregister는 로스터에 없어 tags 확보 불가 = 이벤트 미기록.
         assert!(!db.deregister_agent("unknown"));
-        let d2 =
-            db.list_presence_events(None, 100).unwrap().into_iter().filter(|e| e.event_type == "disappear").count();
+        let d2 = db
+            .list_presence_events(None, 100)
+            .unwrap()
+            .into_iter()
+            .filter(|e| e.event_type == "disappear")
+            .count();
         assert_eq!(d2, 1, "미등록 deregister는 이벤트 미기록");
     }
 
     #[test]
     fn mark_human_input_logs_only_on_advance() {
         let db = SqliteStore::open_memory().unwrap();
-        db.register_agent("s1", tags(&[("machine", "win")]), None, "2026-07-12 10:00:00");
+        db.register_agent(
+            "s1",
+            tags(&[("machine", "win")]),
+            None,
+            "2026-07-12 10:00:00",
+        );
         // 인메모리 ★ 값을 읽는 헬퍼(로스터 첫 항목). 온라인 판정용 now는 register보다 살짝 뒤로.
         let star = |db: &SqliteStore| -> Option<String> {
-            db.list_agents(&BTreeMap::new(), "2026-07-12 10:00:20", 90)[0].human_input_at.clone()
+            db.list_agents(&BTreeMap::new(), "2026-07-12 10:00:20", 90)[0]
+                .human_input_at
+                .clone()
         };
         assert!(db.mark_human_input("s1", "2026-07-12 10:00:05")); // 전진(None→10:00:05)
-        assert_eq!(star(&db).as_deref(), Some("2026-07-12 10:00:05"), "첫 핑=전진 반영");
+        assert_eq!(
+            star(&db).as_deref(),
+            Some("2026-07-12 10:00:05"),
+            "첫 핑=전진 반영"
+        );
         assert!(db.mark_human_input("s1", "2026-07-12 10:00:05")); // 같은 시각 = 스킵
-        assert_eq!(star(&db).as_deref(), Some("2026-07-12 10:00:05"), "동일 핑은 인메모리 ★ 불변");
+        assert_eq!(
+            star(&db).as_deref(),
+            Some("2026-07-12 10:00:05"),
+            "동일 핑은 인메모리 ★ 불변"
+        );
         assert!(db.mark_human_input("s1", "2026-07-12 10:00:03")); // 과거 = 스킵(★ 회귀 방지)
         assert_eq!(
             star(&db).as_deref(),
@@ -797,10 +1100,16 @@ mod tests {
             "과거 핑은 인메모리 ★를 되감지 않음(MAJOR 회귀 방지)"
         );
         assert!(db.mark_human_input("s1", "2026-07-12 10:00:10")); // 전진
-        assert_eq!(star(&db).as_deref(), Some("2026-07-12 10:00:10"), "새 핑엔 전진");
+        assert_eq!(
+            star(&db).as_deref(),
+            Some("2026-07-12 10:00:10"),
+            "새 핑엔 전진"
+        );
         let events = db.list_presence_events(None, 100).unwrap();
-        let hi: Vec<&crate::store::agents::PresenceEvent> =
-            events.iter().filter(|e| e.event_type == "human_input").collect();
+        let hi: Vec<&crate::store::agents::PresenceEvent> = events
+            .iter()
+            .filter(|e| e.event_type == "human_input")
+            .collect();
         assert_eq!(hi.len(), 2, "전진(2회)에만 기록, 동일/과거 핑은 스킵");
         assert_eq!(hi[0].at, "2026-07-12 10:00:10", "최신순 = 전진 시각 그대로");
         assert_eq!(hi[1].at, "2026-07-12 10:00:05");
@@ -810,13 +1119,28 @@ mod tests {
     #[test]
     fn sync_presence_logs_human_input_on_reported_advance() {
         let db = SqliteStore::open_memory().unwrap();
-        db.sync_presence("win", &[presence_with_input("c1", "2026-07-12 10:00:05")], "2026-07-12 10:00:10");
+        db.sync_presence(
+            "win",
+            &[presence_with_input("c1", "2026-07-12 10:00:05")],
+            "2026-07-12 10:00:10",
+        );
         // 같은 보고값 재보고 = 전진 아님(스킵).
-        db.sync_presence("win", &[presence_with_input("c1", "2026-07-12 10:00:05")], "2026-07-12 10:00:20");
+        db.sync_presence(
+            "win",
+            &[presence_with_input("c1", "2026-07-12 10:00:05")],
+            "2026-07-12 10:00:20",
+        );
         // 더 새 보고 = 전진.
-        db.sync_presence("win", &[presence_with_input("c1", "2026-07-12 10:00:30")], "2026-07-12 10:00:35");
+        db.sync_presence(
+            "win",
+            &[presence_with_input("c1", "2026-07-12 10:00:30")],
+            "2026-07-12 10:00:35",
+        );
         let events = db.list_presence_events(None, 100).unwrap();
-        let hi = events.iter().filter(|e| e.event_type == "human_input").count();
+        let hi = events
+            .iter()
+            .filter(|e| e.event_type == "human_input")
+            .count();
         assert_eq!(hi, 2, "codex 보고값 전진(2회)에만 기록");
         let appears = events.iter().filter(|e| e.event_type == "appear").count();
         assert_eq!(appears, 1, "c1 등장 1회");
@@ -825,15 +1149,28 @@ mod tests {
     #[test]
     fn list_presence_events_orders_desc_and_filters_since() {
         let db = SqliteStore::open_memory().unwrap();
-        db.sync_presence("win", &[presence("s1", "claude", None)], "2026-07-12 10:00:00");
         db.sync_presence(
             "win",
-            &[presence("s1", "claude", None), presence("s2", "codex", None)],
+            &[presence("s1", "claude", None)],
+            "2026-07-12 10:00:00",
+        );
+        db.sync_presence(
+            "win",
+            &[
+                presence("s1", "claude", None),
+                presence("s2", "codex", None),
+            ],
             "2026-07-12 10:05:00",
         );
         let all = db.list_presence_events(None, 100).unwrap();
-        assert_eq!(all.first().unwrap().agent_uuid, "s2", "최신(s2 등장)이 먼저");
-        let recent = db.list_presence_events(Some("2026-07-12 10:01:00"), 100).unwrap();
+        assert_eq!(
+            all.first().unwrap().agent_uuid,
+            "s2",
+            "최신(s2 등장)이 먼저"
+        );
+        let recent = db
+            .list_presence_events(Some("2026-07-12 10:01:00"), 100)
+            .unwrap();
         assert_eq!(recent.len(), 1, "since 이후만");
         assert_eq!(recent[0].agent_uuid, "s2");
         let capped = db.list_presence_events(None, 1).unwrap();

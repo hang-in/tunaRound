@@ -148,12 +148,19 @@ pub fn enumerate_claude_sessions(
             // 도구 생성 자동화 세션은 후보에서 제외(false positive):
             //   claude-mem observer(cwd=~/.claude-mem/) + secall 위키/저널(첫 메시지 <!-- 마커).
             if cwd.as_deref().is_some_and(is_internal_cwd)
-                || first_user.as_deref().is_some_and(is_automation_first_message)
+                || first_user
+                    .as_deref()
+                    .is_some_and(is_automation_first_message)
             {
                 continue;
             }
             let project = cwd.as_deref().and_then(project_from_cwd);
-            out.push(DiscoveredSession { uuid: uuid.to_string(), project, age_secs: age, cwd });
+            out.push(DiscoveredSession {
+                uuid: uuid.to_string(),
+                project,
+                age_secs: age,
+                cwd,
+            });
         }
     }
     out.sort_by(|a, b| a.uuid.cmp(&b.uuid));
@@ -163,7 +170,9 @@ pub fn enumerate_claude_sessions(
 /// 이 리포터의 머신 식별자를 정한다. `TUNA_MACHINE` env 우선, 없으면 빌드 타깃 OS로 추정
 /// (macOS=mac, Windows=win, 그 외=unix). 크로스머신 발견 시 후보의 machine 뱃지로 쓰인다.
 pub fn default_machine() -> String {
-    let env_machine = std::env::var("TUNA_MACHINE").ok().filter(|m| !m.trim().is_empty());
+    let env_machine = std::env::var("TUNA_MACHINE")
+        .ok()
+        .filter(|m| !m.trim().is_empty());
     if let Some(m) = env_machine {
         return m;
     }
@@ -182,8 +191,14 @@ mod tests {
 
     #[test]
     fn project_from_cwd_extracts_last_segment() {
-        assert_eq!(project_from_cwd("D:\\privateProject\\tunaRound"), Some("tunaRound".to_string()));
-        assert_eq!(project_from_cwd("/home/u/folkProject/my-harness"), Some("my-harness".to_string()));
+        assert_eq!(
+            project_from_cwd("D:\\privateProject\\tunaRound"),
+            Some("tunaRound".to_string())
+        );
+        assert_eq!(
+            project_from_cwd("/home/u/folkProject/my-harness"),
+            Some("my-harness".to_string())
+        );
         // 후행 분리자 무시.
         assert_eq!(project_from_cwd("/home/u/proj/"), Some("proj".to_string()));
         assert_eq!(project_from_cwd(""), None);
@@ -193,7 +208,9 @@ mod tests {
     #[test]
     fn is_internal_cwd_excludes_claude_mem() {
         assert!(is_internal_cwd("/Users/d9ng/.claude-mem/observer-sessions"));
-        assert!(is_internal_cwd("C:\\Users\\d9ng\\.claude-mem\\observer-sessions"));
+        assert!(is_internal_cwd(
+            "C:\\Users\\d9ng\\.claude-mem\\observer-sessions"
+        ));
         assert!(is_internal_cwd("/home/u/.claude-mem"));
         assert!(!is_internal_cwd("/Users/d9ng/privateProject/tunaRound"));
         assert!(!is_internal_cwd("/home/u/secall"));
@@ -201,9 +218,13 @@ mod tests {
 
     #[test]
     fn is_automation_first_message_detects_html_comment_marker() {
-        assert!(is_automation_first_message("<!-- secall:wiki-update -->\n# Wiki Deep Pass"));
+        assert!(is_automation_first_message(
+            "<!-- secall:wiki-update -->\n# Wiki Deep Pass"
+        ));
         assert!(is_automation_first_message("  \n<!-- secall:journal -->")); // 선행 공백 허용
-        assert!(!is_automation_first_message("이 레포에서 src/worker.rs를 요약해줘"));
+        assert!(!is_automation_first_message(
+            "이 레포에서 src/worker.rs를 요약해줘"
+        ));
         assert!(!is_automation_first_message("node 자동레인 테스트: 1+1은?"));
     }
 
@@ -230,14 +251,20 @@ mod tests {
         let found = enumerate_claude_sessions(&base, now, Duration::from_secs(3600));
         let uuids: Vec<&str> = found.iter().map(|s| s.uuid.as_str()).collect();
         assert!(uuids.contains(&"aaaa-1111"), "정상 세션은 포함: {uuids:?}");
-        assert!(!uuids.contains(&"bbbb-2222"), "automation 세션은 제외: {uuids:?}");
+        assert!(
+            !uuids.contains(&"bbbb-2222"),
+            "automation 세션은 제외: {uuids:?}"
+        );
         std::fs::remove_dir_all(&base).ok();
     }
 
     #[test]
     fn parse_cwd_from_jsonl_line_reads_cwd_field() {
         let line = r#"{"type":"user","cwd":"D:\\privateProject\\tunaRound","sessionId":"abc"}"#;
-        assert_eq!(parse_cwd_from_jsonl_line(line), Some("D:\\privateProject\\tunaRound".to_string()));
+        assert_eq!(
+            parse_cwd_from_jsonl_line(line),
+            Some("D:\\privateProject\\tunaRound".to_string())
+        );
         // cwd 없으면 None.
         assert_eq!(parse_cwd_from_jsonl_line(r#"{"type":"user"}"#), None);
         // JSON 아니면 None.
@@ -285,5 +312,4 @@ mod tests {
 
         std::fs::remove_dir_all(&base).ok();
     }
-
 }

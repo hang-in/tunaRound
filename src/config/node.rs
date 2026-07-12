@@ -130,8 +130,10 @@ pub fn discover_node_config_path(explicit: Option<&str>) -> Result<Option<String
             Err(format!("node 설정 파일을 찾을 수 없습니다: {p}"))
         };
     }
-    let candidates =
-        vec!["tunaround.node.toml".to_string(), expand_home("~/.tunaround/node.toml")];
+    let candidates = vec![
+        "tunaround.node.toml".to_string(),
+        expand_home("~/.tunaround/node.toml"),
+    ];
     Ok(first_existing(&candidates))
 }
 
@@ -143,7 +145,10 @@ pub fn load_node_config(explicit: Option<&str>) -> Result<NodeConfig, String> {
                 .map_err(|e| format!("node 설정 읽기 실패 ({path}): {e}"))?;
             parse_node_config(&text)
         }
-        None => Err("node 설정이 없습니다. `tunaround init`으로 생성하거나 --config로 지정하세요.".to_string()),
+        None => Err(
+            "node 설정이 없습니다. `tunaround init`으로 생성하거나 --config로 지정하세요."
+                .to_string(),
+        ),
     }
 }
 
@@ -183,7 +188,11 @@ kind = "supervised"
         assert!(auto.is_write());
         assert!(!auto.is_supervised());
         assert_eq!(auto.interval, 20, "interval 기본 20");
-        assert_eq!(auto.tags.as_deref(), Some("machine=mac,runner=codex,role=worker"), "lane 태그 파싱");
+        assert_eq!(
+            auto.tags.as_deref(),
+            Some("machine=mac,runner=codex,role=worker"),
+            "lane 태그 파싱"
+        );
 
         let sup = &cfg.lane[1];
         assert!(sup.is_supervised());
@@ -210,7 +219,8 @@ kind = "supervised"
     #[test]
     fn parse_node_config_rejects_unknown_kind() {
         // 오타 kind는 거부(감독 레인이 조용히 자동 실행으로 강등되는 사고 방지, coderabbit 보안 지적).
-        let err = parse_node_config("[[lane]]\nagent = \"w\"\nkind = \"supervized\"\n").unwrap_err();
+        let err =
+            parse_node_config("[[lane]]\nagent = \"w\"\nkind = \"supervized\"\n").unwrap_err();
         assert!(err.contains("kind"), "에러 메시지: {err}");
         // 정상 값은 통과.
         assert!(parse_node_config("[[lane]]\nagent = \"w\"\nkind = \"auto\"\n").is_ok());
@@ -221,7 +231,10 @@ kind = "supervised"
     fn resolve_node_token_env_plain_and_none() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         assert_eq!(resolve_node_token(None), None);
-        assert_eq!(resolve_node_token(Some("plain-token")), Some("plain-token".to_string()));
+        assert_eq!(
+            resolve_node_token(Some("plain-token")),
+            Some("plain-token".to_string())
+        );
 
         unsafe {
             std::env::set_var("TUNAROUND_TEST_NODE_TOK_XYZ", "from-env-node");
@@ -231,7 +244,10 @@ kind = "supervised"
             Some("from-env-node".to_string())
         );
         // 없는 env는 None(설정은 됐으나 값 없음).
-        assert_eq!(resolve_node_token(Some("@env:TUNAROUND_TEST_NODE_TOK_ABSENT")), None);
+        assert_eq!(
+            resolve_node_token(Some("@env:TUNAROUND_TEST_NODE_TOK_ABSENT")),
+            None
+        );
         unsafe {
             std::env::remove_var("TUNAROUND_TEST_NODE_TOK_XYZ");
         }

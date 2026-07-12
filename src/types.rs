@@ -15,6 +15,10 @@ pub struct Utterance {
 impl Utterance {
     /// abstraction 없는 발언(대다수 경로). `Utterance { speaker, content }` 리터럴 대체용 헬퍼.
     pub fn new(speaker: impl Into<String>, content: impl Into<String>) -> Self {
-        Self { speaker: speaker.into(), content: content.into(), abstraction: None }
+        Self {
+            speaker: speaker.into(),
+            content: content.into(),
+            abstraction: None,
+        }
     }
 }

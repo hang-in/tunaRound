@@ -89,7 +89,10 @@ pub fn parse_open_tasks(poll_text: &str) -> Vec<ParsedTask> {
 
     for (idx, &start) in starts.iter().enumerate() {
         // 다음 블록 헤더 직전의 "\n\n" 구분자는 이 블록의 msg에서 제외한다.
-        let block_end = starts.get(idx + 1).map(|&next| next - 2).unwrap_or(poll_text.len());
+        let block_end = starts
+            .get(idx + 1)
+            .map(|&next| next - 2)
+            .unwrap_or(poll_text.len());
         let block = &poll_text[start..block_end];
 
         // block = "[<32hex id>] from=<from_agent> state=<state> msg=<msg...>"
@@ -117,14 +120,23 @@ pub fn parse_open_tasks(poll_text: &str) -> Vec<ParsedTask> {
             Some(cp) => {
                 let state = state_token(&between[..cp]);
                 let ctx_raw = &between[cp + ctx_marker.len()..];
-                let context_id = if ctx_raw == "-" { None } else { Some(ctx_raw.to_string()) };
+                let context_id = if ctx_raw == "-" {
+                    None
+                } else {
+                    Some(ctx_raw.to_string())
+                };
                 (state, context_id)
             }
             None => (state_token(between), None),
         };
 
         let id = block[1..1 + ID_LEN].to_string();
-        tasks.push(ParsedTask { id, state, context_id, msg });
+        tasks.push(ParsedTask {
+            id,
+            state,
+            context_id,
+            msg,
+        });
     }
 
     tasks
@@ -156,7 +168,11 @@ fn paths_overlap(a: &std::path::Path, b: &std::path::Path) -> bool {
 /// 여부를 보수적으로 보는 데는 충분하다.
 fn normalize_lexically(p: &std::path::Path, base: &std::path::Path) -> std::path::PathBuf {
     use std::path::{Component, PathBuf};
-    let combined: PathBuf = if p.is_absolute() { p.to_path_buf() } else { base.join(p) };
+    let combined: PathBuf = if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        base.join(p)
+    };
     let mut out = PathBuf::new();
     for comp in combined.components() {
         match comp {
@@ -211,15 +227,19 @@ pub fn parse_context_map(spec: &str) -> Result<std::collections::HashMap<String,
         if entry.is_empty() {
             continue;
         }
-        let (k, v) = entry
-            .split_once('=')
-            .ok_or_else(|| format!("--context-map 항목이 'key=value' 형식이 아닙니다: {entry:?}"))?;
+        let (k, v) = entry.split_once('=').ok_or_else(|| {
+            format!("--context-map 항목이 'key=value' 형식이 아닙니다: {entry:?}")
+        })?;
         let (k, v) = (k.trim(), v.trim());
         if k.is_empty() || v.is_empty() {
-            return Err(format!("--context-map 항목의 key 또는 value가 비어있습니다: {entry:?}"));
+            return Err(format!(
+                "--context-map 항목의 key 또는 value가 비어있습니다: {entry:?}"
+            ));
         }
         if let Some(prev) = map.insert(k.to_string(), v.to_string()) {
-            return Err(format!("--context-map에 중복 key '{k}'가 있습니다(이전 값 {prev:?})"));
+            return Err(format!(
+                "--context-map에 중복 key '{k}'가 있습니다(이전 값 {prev:?})"
+            ));
         }
     }
     Ok(map)
@@ -229,12 +249,20 @@ pub fn parse_context_map(spec: &str) -> Result<std::collections::HashMap<String,
 /// 조합해 32 hex로 만든다. 개인 규모 로스터 키로 충분한 유일성(서버 randomblob(16)의 client-side 대체).
 pub fn generate_agent_uuid() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
-    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(0);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
     let pid = std::process::id();
     // hostname을 간단한 FNV-1a 32bit로 접어 엔트로피 보강(머신 간 충돌 완화).
-    let host = std::env::var("COMPUTERNAME").or_else(|_| std::env::var("HOSTNAME")).unwrap_or_default();
+    let host = std::env::var("COMPUTERNAME")
+        .or_else(|_| std::env::var("HOSTNAME"))
+        .unwrap_or_default();
     let mut h: u32 = 0x811c9dc5;
-    for b in host.bytes() { h ^= b as u32; h = h.wrapping_mul(0x0100_0193); }
+    for b in host.bytes() {
+        h ^= b as u32;
+        h = h.wrapping_mul(0x0100_0193);
+    }
     format!("{nanos:016x}{pid:08x}{h:08x}")
 }
 
@@ -284,8 +312,17 @@ pub async fn run_worker_loop(
             Err(e) => eprintln!("[work] heartbeat 실패(무시): {e}"),
         }
 
-        run_one_pass(client, &runner, agent, runner_name, &model, &project_path, &context_map, mode)
-            .await;
+        run_one_pass(
+            client,
+            &runner,
+            agent,
+            runner_name,
+            &model,
+            &project_path,
+            &context_map,
+            mode,
+        )
+        .await;
 
         if once {
             return Ok(());
@@ -302,8 +339,11 @@ fn collect_new_submitted(
     seen: &mut std::collections::HashSet<String>,
 ) -> Vec<ParsedTask> {
     let tasks = parse_open_tasks(poll_text);
-    let active: std::collections::HashSet<&str> =
-        tasks.iter().filter(|t| t.state == "submitted").map(|t| t.id.as_str()).collect();
+    let active: std::collections::HashSet<&str> = tasks
+        .iter()
+        .filter(|t| t.state == "submitted")
+        .map(|t| t.id.as_str())
+        .collect();
     seen.retain(|id| active.contains(id.as_str()));
     let mut fresh = Vec::new();
     for t in tasks {
@@ -345,7 +385,9 @@ fn run_on_task(cmd: &str, id: &str, msg: &str) {
         c.arg("-c").arg(&expanded);
         c
     };
-    command.env("TUNAROUND_TASK_ID", id).env("TUNAROUND_TASK_MSG", msg);
+    command
+        .env("TUNAROUND_TASK_ID", id)
+        .env("TUNAROUND_TASK_MSG", msg);
     eprintln!("[poll] on-task 실행: task {id}");
     let mut child = match command.spawn() {
         Ok(c) => c,
@@ -371,7 +413,9 @@ fn run_on_task(cmd: &str, id: &str, msg: &str) {
                 if start.elapsed() >= timeout {
                     let _ = child.kill();
                     let _ = child.wait();
-                    eprintln!("[poll] on-task 타임아웃({ON_TASK_TIMEOUT_SECS}s) 강제 종료: task {id}");
+                    eprintln!(
+                        "[poll] on-task 타임아웃({ON_TASK_TIMEOUT_SECS}s) 강제 종료: task {id}"
+                    );
                     return;
                 }
                 std::thread::sleep(Duration::from_millis(200));
@@ -414,7 +458,10 @@ pub async fn run_poll_loop(
     let mut skip_heartbeat = if !register {
         true
     } else {
-        match client.register_agent(agent, tags.as_deref(), display_name).await {
+        match client
+            .register_agent(agent, tags.as_deref(), display_name)
+            .await
+        {
             Ok(msg) => {
                 eprintln!("[poll] 로스터 등록: {msg}");
                 true
@@ -436,7 +483,10 @@ pub async fn run_poll_loop(
             match client.heartbeat(agent).await {
                 Ok(resp) if needs_reregister(&resp) => {
                     eprintln!("[poll] 코어 재기동 감지 -> 재등록 시도");
-                    match client.register_agent(agent, tags.as_deref(), display_name).await {
+                    match client
+                        .register_agent(agent, tags.as_deref(), display_name)
+                        .await
+                    {
                         Ok(msg) => eprintln!("[poll] 재등록 성공: {msg}"),
                         Err(e) => eprintln!("[poll] 재등록 실패: {e}"),
                     }
@@ -450,15 +500,20 @@ pub async fn run_poll_loop(
             Ok(text) => {
                 for t in collect_new_submitted(&text, &mut seen) {
                     // Monitor 이벤트 = stdout 한 줄. 파이프는 블록 버퍼라 flush로 즉시 전달한다.
-                    let preview: String =
-                        t.msg.chars().take(80).collect::<String>().replace('\n', " ");
+                    let preview: String = t
+                        .msg
+                        .chars()
+                        .take(80)
+                        .collect::<String>()
+                        .replace('\n', " ");
                     println!("TASK {} :: {preview}", t.id);
                     let _ = std::io::stdout().flush();
                     // on-task 글루: 블로킹 명령(codex exec resume 등)이라 spawn_blocking으로 await한다
                     // (reactor는 안 막으면서 순차 처리 - 책임자는 한 번에 하나씩 다룬다).
                     if let Some(cmd) = on_task {
                         let (cmd, id, msg) = (cmd.to_string(), t.id.clone(), t.msg.clone());
-                        let _ = tokio::task::spawn_blocking(move || run_on_task(&cmd, &id, &msg)).await;
+                        let _ =
+                            tokio::task::spawn_blocking(move || run_on_task(&cmd, &id, &msg)).await;
                     }
                 }
             }
@@ -495,15 +550,21 @@ async fn run_one_pass(
     let tasks = parse_open_tasks(&poll_text);
     for t in tasks.iter().filter(|t| t.state == "submitted") {
         eprintln!("[work] task {} claim 시도", t.id);
-        if let Err(e) = client.claim_task(&t.id, Some(agent), Some(runner_name)).await {
+        if let Err(e) = client
+            .claim_task(&t.id, Some(agent), Some(runner_name))
+            .await
+        {
             eprintln!("[work] task {} claim 실패: {e}", t.id);
             continue;
         }
 
         // 프로젝트 라우팅: task의 context_id가 --context-map에 있으면 그 project-path로 실행하고,
         // 없으면 기본 --project-path로 폴백한다. 데몬 하나가 여러 프로젝트를 배분할 수 있다.
-        let resolved_project =
-            resolve_project_path(t.context_id.as_deref(), context_map, project_path.as_deref());
+        let resolved_project = resolve_project_path(
+            t.context_id.as_deref(),
+            context_map,
+            project_path.as_deref(),
+        );
         if let Some(cid) = t.context_id.as_deref()
             && let Some(p) = context_map.get(cid)
         {
@@ -575,7 +636,10 @@ async fn run_one_pass(
             }
             Err(_canceled) => {
                 eprintln!("[work] task {} 러너 스레드 취소(결과 유실)", t.id);
-                if let Err(fe) = client.fail_task(&t.id, "러너 스레드 취소(결과 유실)", Some(agent)).await {
+                if let Err(fe) = client
+                    .fail_task(&t.id, "러너 스레드 취소(결과 유실)", Some(agent))
+                    .await
+                {
                     eprintln!("[work] task {} fail 처리 실패: {fe}", t.id);
                 }
             }
@@ -623,7 +687,8 @@ mod tests {
     #[test]
     fn parse_open_tasks_msg_with_embedded_newlines() {
         let id = "3".repeat(32);
-        let text = format!("[{id}] from=win-claude state=submitted msg=1번\n2번\n\n3번(빈 줄 포함)");
+        let text =
+            format!("[{id}] from=win-claude state=submitted msg=1번\n2번\n\n3번(빈 줄 포함)");
         let tasks = parse_open_tasks(&text);
         assert_eq!(tasks.len(), 1);
         assert_eq!(tasks[0].msg, "1번\n2번\n\n3번(빈 줄 포함)");
@@ -681,10 +746,18 @@ mod tests {
         );
         let tasks = parse_open_tasks(&text);
         assert_eq!(tasks.len(), 2);
-        assert_eq!(tasks[0].state, "submitted", "no-consumer 주석이 state를 오염시킴: {:?}", tasks[0].state);
+        assert_eq!(
+            tasks[0].state, "submitted",
+            "no-consumer 주석이 state를 오염시킴: {:?}",
+            tasks[0].state
+        );
         assert_eq!(tasks[0].context_id.as_deref(), Some("projA"));
         assert_eq!(tasks[0].msg, "오래된 작업");
-        assert_eq!(tasks[1].state, "working", "stuck 주석이 state를 오염시킴: {:?}", tasks[1].state);
+        assert_eq!(
+            tasks[1].state, "working",
+            "stuck 주석이 state를 오염시킴: {:?}",
+            tasks[1].state
+        );
         assert_eq!(tasks[1].context_id, None);
         assert_eq!(tasks[1].msg, "멈춘 작업");
     }
@@ -735,7 +808,11 @@ mod tests {
         assert!(collect_new_submitted(&empty, &mut seen).is_empty());
         assert!(seen.is_empty(), "사라진 id는 seen에서 제거되어야 함");
         // 같은 id가 다시 submitted -> 재알림.
-        assert_eq!(collect_new_submitted(&present, &mut seen).len(), 1, "재등장 시 다시 알림");
+        assert_eq!(
+            collect_new_submitted(&present, &mut seen).len(),
+            1,
+            "재등장 시 다시 알림"
+        );
     }
 
     #[test]
@@ -753,11 +830,20 @@ mod tests {
         let mut map = std::collections::HashMap::new();
         map.insert("projA".to_string(), "/repos/A".to_string());
         // 매핑에 있으면 그 경로.
-        assert_eq!(resolve_project_path(Some("projA"), &map, Some("/default")), Some("/repos/A".to_string()));
+        assert_eq!(
+            resolve_project_path(Some("projA"), &map, Some("/default")),
+            Some("/repos/A".to_string())
+        );
         // context_id가 매핑에 없으면 기본값.
-        assert_eq!(resolve_project_path(Some("projX"), &map, Some("/default")), Some("/default".to_string()));
+        assert_eq!(
+            resolve_project_path(Some("projX"), &map, Some("/default")),
+            Some("/default".to_string())
+        );
         // context_id 자체가 없으면 기본값.
-        assert_eq!(resolve_project_path(None, &map, Some("/default")), Some("/default".to_string()));
+        assert_eq!(
+            resolve_project_path(None, &map, Some("/default")),
+            Some("/default".to_string())
+        );
         // 매핑도 기본값도 없으면 None.
         assert_eq!(resolve_project_path(Some("projX"), &map, None), None);
     }
@@ -796,7 +882,8 @@ mod tests {
 
     #[test]
     fn substitute_task_placeholders_replaces_id_only() {
-        let out = substitute_task_placeholders("codex exec resume --last \"task {id} 처리\"", "abc123");
+        let out =
+            substitute_task_placeholders("codex exec resume --last \"task {id} 처리\"", "abc123");
         assert_eq!(out, "codex exec resume --last \"task abc123 처리\"");
         // {id}가 여러 번 나와도 모두 치환.
         assert_eq!(substitute_task_placeholders("{id}-{id}", "x"), "x-x");
@@ -857,11 +944,20 @@ mod tests {
         use std::path::Path;
         let base = Path::new("/home/user/repo");
         // 상대경로는 base에 이어붙는다.
-        assert_eq!(normalize_lexically(Path::new("sub"), base), Path::new("/home/user/repo/sub"));
+        assert_eq!(
+            normalize_lexically(Path::new("sub"), base),
+            Path::new("/home/user/repo/sub")
+        );
         // `.`은 무시, `..`은 pop.
-        assert_eq!(normalize_lexically(Path::new("./a/../b"), base), Path::new("/home/user/repo/b"));
+        assert_eq!(
+            normalize_lexically(Path::new("./a/../b"), base),
+            Path::new("/home/user/repo/b")
+        );
         // 절대경로는 base 무시.
-        assert_eq!(normalize_lexically(Path::new("/x/y/../z"), base), Path::new("/x/z"));
+        assert_eq!(
+            normalize_lexically(Path::new("/x/y/../z"), base),
+            Path::new("/x/z")
+        );
     }
 
     #[test]
@@ -887,7 +983,9 @@ mod tests {
 
     #[test]
     fn needs_reregister_detects_missing_registration() {
-        assert!(needs_reregister("미등록 uuid=x(register_agent 먼저 호출하세요)"));
+        assert!(needs_reregister(
+            "미등록 uuid=x(register_agent 먼저 호출하세요)"
+        ));
         assert!(!needs_reregister("heartbeat 갱신: x"));
     }
 }

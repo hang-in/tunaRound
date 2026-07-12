@@ -4,7 +4,7 @@ use std::io::{self, Write};
 
 use clap::Parser;
 use tunaround::orchestrator::{ContextMode, MapRegistry, Participant};
-use tunaround::repl::{parse_command, Session, StepOutcome};
+use tunaround::repl::{Session, StepOutcome, parse_command};
 
 mod cli;
 #[cfg(feature = "worker")]
@@ -20,7 +20,9 @@ use cli::*;
 #[allow(unused_assignments)]
 fn main() {
     let cli = Cli::parse();
-    let command = cli.command.unwrap_or_else(|| Commands::Chat(ChatArgs::default()));
+    let command = cli
+        .command
+        .unwrap_or_else(|| Commands::Chat(ChatArgs::default()));
 
     let mut roster_path: Option<String> = None;
     let mut state_path: Option<String> = None;
@@ -256,40 +258,42 @@ fn main() {
                     std::process::exit(1);
                 }
             }
-            Ok(Some(cfg)) => match tunaround::config::select_profile(&cfg, profile_name.as_deref(), true) {
-                Ok(selected) => {
-                    #[cfg(feature = "sqlite")]
-                    let db_for_merge = db_path.clone();
-                    #[cfg(not(feature = "sqlite"))]
-                    let db_for_merge: Option<String> = None;
-                    let merged = tunaround::config::merge_profile_into(
-                        tunaround::config::MergedSessionArgs {
-                            db: db_for_merge,
-                            roster: roster_path.clone(),
-                            recent_turns,
-                            pull_context,
-                            session: session_arg.clone(),
-                            search_url: search_url.clone(),
-                            search_token: search_token.clone(),
-                        },
-                        selected,
-                    );
-                    #[cfg(feature = "sqlite")]
-                    {
-                        db_path = merged.db;
+            Ok(Some(cfg)) => {
+                match tunaround::config::select_profile(&cfg, profile_name.as_deref(), true) {
+                    Ok(selected) => {
+                        #[cfg(feature = "sqlite")]
+                        let db_for_merge = db_path.clone();
+                        #[cfg(not(feature = "sqlite"))]
+                        let db_for_merge: Option<String> = None;
+                        let merged = tunaround::config::merge_profile_into(
+                            tunaround::config::MergedSessionArgs {
+                                db: db_for_merge,
+                                roster: roster_path.clone(),
+                                recent_turns,
+                                pull_context,
+                                session: session_arg.clone(),
+                                search_url: search_url.clone(),
+                                search_token: search_token.clone(),
+                            },
+                            selected,
+                        );
+                        #[cfg(feature = "sqlite")]
+                        {
+                            db_path = merged.db;
+                        }
+                        roster_path = merged.roster;
+                        recent_turns = merged.recent_turns;
+                        pull_context = merged.pull_context;
+                        session_arg = merged.session;
+                        search_url = merged.search_url;
+                        search_token = merged.search_token;
                     }
-                    roster_path = merged.roster;
-                    recent_turns = merged.recent_turns;
-                    pull_context = merged.pull_context;
-                    session_arg = merged.session;
-                    search_url = merged.search_url;
-                    search_token = merged.search_token;
+                    Err(e) => {
+                        eprintln!("[설정] {e}");
+                        std::process::exit(1);
+                    }
                 }
-                Err(e) => {
-                    eprintln!("[설정] {e}");
-                    std::process::exit(1);
-                }
-            },
+            }
             Err(e) => {
                 eprintln!("[설정] {e}");
                 std::process::exit(1);
@@ -406,7 +410,9 @@ fn main() {
         }
         // 로컬 좌석을 in-process 코어에 배선(명시 --search-url이 있으면 그쪽 우선).
         if search_url.is_some() {
-            eprintln!("[core] 명시 --search-url이 있어 로컬 좌석은 그 URL을 사용합니다(코어는 {addr}에서 원격용으로 서빙).");
+            eprintln!(
+                "[core] 명시 --search-url이 있어 로컬 좌석은 그 URL을 사용합니다(코어는 {addr}에서 원격용으로 서빙)."
+            );
         } else {
             let local_url = tunaround::mcp::core_local_url(&addr);
             eprintln!("[core] 로컬 좌석을 in-process 코어에 배선: {local_url}");
@@ -433,15 +439,16 @@ fn main() {
 
     // --core 로스터 스냅샷: participants가 session에 이동되기 전 좌석 구성을 캡처(get_roster 노출용).
     #[cfg(feature = "serve")]
-    let core_roster: Option<Vec<tunaround::orchestrator::RosterSeat>> = core_addr.as_ref().map(|_| {
-        participants
-            .iter()
-            .map(|p| tunaround::orchestrator::RosterSeat {
-                engine: p.engine.clone(),
-                role: p.role.clone(),
-            })
-            .collect()
-    });
+    let core_roster: Option<Vec<tunaround::orchestrator::RosterSeat>> =
+        core_addr.as_ref().map(|_| {
+            participants
+                .iter()
+                .map(|p| tunaround::orchestrator::RosterSeat {
+                    engine: p.engine.clone(),
+                    role: p.role.clone(),
+                })
+                .collect()
+        });
 
     // SQLite 인덱서 생성(feature-gated). --db 없거나 sqlite off면 None=기존 동작 불변.
     #[cfg(feature = "sqlite")]
@@ -467,7 +474,12 @@ fn main() {
         match tunaround::store::load_session(p) {
             Ok(ss) => {
                 println!("(이어받음: {p})");
-                let mut s = Session::new_with_indexer(participants, Box::new(registry), sid.clone(), indexer);
+                let mut s = Session::new_with_indexer(
+                    participants,
+                    Box::new(registry),
+                    sid.clone(),
+                    indexer,
+                );
                 s.seed_from(ss);
                 s
             }
@@ -480,7 +492,8 @@ fn main() {
         // --session <id>: SQLite 세션(--db)에서 재개. --db 없으면 새 세션(안내).
         #[cfg(feature = "sqlite")]
         {
-            let mut s = Session::new_with_indexer(participants, Box::new(registry), sid.clone(), indexer);
+            let mut s =
+                Session::new_with_indexer(participants, Box::new(registry), sid.clone(), indexer);
             match &db_path {
                 Some(p) => match tunaround::store::sqlite::SqliteStore::open(p) {
                     Ok(store) => match store.load_session(&sid) {
@@ -561,7 +574,8 @@ fn main() {
             }
         }
         // HTTP MCP 코어 백엔드 + 전용 스레드(자체 런타임 block_on) 서빙(로스터 포함).
-        let (retriever_arc, reader_arc, writer_arc, a2a_store_arc) = cli_run::build_http_mcp_backends("core", &db_str);
+        let (retriever_arc, reader_arc, writer_arc, a2a_store_arc) =
+            cli_run::build_http_mcp_backends("core", &db_str);
         let serve_tok = serve_token.clone();
         let addr_owned = addr.clone();
         // 메인 스레드는 동기 블로킹 REPL(std stdin)이라 공유 rt에 spawn하면 서버 accept 루프가
@@ -570,12 +584,23 @@ fn main() {
         std::thread::spawn(move || {
             let srt = match tokio::runtime::Runtime::new() {
                 Ok(r) => r,
-                Err(e) => { eprintln!("[core] 서버 런타임 생성 실패: {e}"); return; }
+                Err(e) => {
+                    eprintln!("[core] 서버 런타임 생성 실패: {e}");
+                    return;
+                }
             };
             srt.block_on(async move {
                 if let Err(e) = tunaround::mcp::start_http_mcp_server(
-                    &addr_owned, retriever_arc, reader_arc, Some(writer_arc), core_roster, serve_tok, a2a_store_arc,
-                ).await {
+                    &addr_owned,
+                    retriever_arc,
+                    reader_arc,
+                    Some(writer_arc),
+                    core_roster,
+                    serve_tok,
+                    a2a_store_arc,
+                )
+                .await
+                {
                     eprintln!("[core] HTTP MCP 서버 종료: {e}");
                 }
             });
@@ -583,7 +608,10 @@ fn main() {
         // REPL core-sync: 코어 DB(--db)를 권위로 삼아 매 라운드 adopt + append_turn 쓰기.
         match tunaround::store::sqlite::SqliteStore::open(&db_str) {
             Ok(store) => {
-                let core_sync = tunaround::store::retriever::SqliteCoreSync::new(store, cli_run::build_index_tokenizer("core"));
+                let core_sync = tunaround::store::retriever::SqliteCoreSync::new(
+                    store,
+                    cli_run::build_index_tokenizer("core"),
+                );
                 session = session.with_core_sync(Some(Box::new(core_sync)));
             }
             Err(e) => eprintln!("[core] core-sync DB 열기 실패(병합 비활성): {e}"),

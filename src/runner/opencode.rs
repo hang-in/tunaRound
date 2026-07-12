@@ -1,6 +1,6 @@
 // opencode run --format json 엔진 러너(JSONL text/step_finish 파싱).
 
-use super::exec::{run_with_watchdog, ExecSpec};
+use super::exec::{ExecSpec, run_with_watchdog};
 use super::{RunError, RunInput, RunOutput, Runner};
 use std::time::Duration;
 
@@ -181,7 +181,11 @@ mod tests {
         // watchdog idle 타임아웃 실경로 커버(형제 러너와 동형): 무출력 sleep 바이너리 → Timeout.
         let bin = fake_sleep_bin("tuna_fake_sleep_opencode");
         let r = OpencodeRunner::with_bin(&bin).with_idle_timeout(Duration::from_millis(150));
-        let input = RunInput { prompt: "x".into(), mode: RunMode::ReadOnly, ..Default::default() };
+        let input = RunInput {
+            prompt: "x".into(),
+            mode: RunMode::ReadOnly,
+            ..Default::default()
+        };
         assert!(matches!(r.run(&input), Err(RunError::Timeout(_))));
     }
 }

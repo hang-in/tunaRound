@@ -69,8 +69,14 @@ mod guard_tests {
     #[test]
     fn write_guard_prefix_write_mode_includes_directive() {
         let prefix = write_guard_prefix(RunMode::Write);
-        assert!(prefix.contains(WRITE_GUARD_DIRECTIVE), "Write 모드 prefix에 지시문이 없음: {prefix}");
-        assert!(prefix.ends_with("\n\n"), "prefix가 개행 둘로 끝나지 않음: {prefix:?}");
+        assert!(
+            prefix.contains(WRITE_GUARD_DIRECTIVE),
+            "Write 모드 prefix에 지시문이 없음: {prefix}"
+        );
+        assert!(
+            prefix.ends_with("\n\n"),
+            "prefix가 개행 둘로 끝나지 않음: {prefix:?}"
+        );
     }
 
     #[test]

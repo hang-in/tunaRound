@@ -36,8 +36,8 @@ pub fn parse_roster(json: &str) -> Result<Roster, String> {
 
 /// 파일에서 로스터를 읽어 파싱한다.
 pub fn load_roster(path: &str) -> Result<Roster, String> {
-    let text = std::fs::read_to_string(path)
-        .map_err(|e| format!("로스터 읽기 실패 ({path}): {e}"))?;
+    let text =
+        std::fs::read_to_string(path).map_err(|e| format!("로스터 읽기 실패 ({path}): {e}"))?;
     parse_roster(&text)
 }
 
@@ -84,7 +84,10 @@ pub fn build_registry(
                 Box::new(
                     ClaudeRunner::new()
                         .with_search_db(search_db.map(String::from))
-                        .with_search_url(search_url.map(String::from), search_token.map(String::from)),
+                        .with_search_url(
+                            search_url.map(String::from),
+                            search_token.map(String::from),
+                        ),
                 ),
             ),
             "codex" => reg.insert(
@@ -92,7 +95,10 @@ pub fn build_registry(
                 Box::new(
                     CodexRunner::new()
                         .with_search_db(search_db.map(String::from))
-                        .with_search_url(search_url.map(String::from), search_token.map(String::from)),
+                        .with_search_url(
+                            search_url.map(String::from),
+                            search_token.map(String::from),
+                        ),
                 ),
             ),
             "opencode" => reg.insert(
@@ -111,9 +117,9 @@ pub fn build_registry(
                                 .and_then(|e| std::env::var(e).ok());
                             reg.insert(
                                 other,
-                                Box::new(
-                                    crate::runner::http::OpenAiChatRunner::new(base, mdl, api_key),
-                                ),
+                                Box::new(crate::runner::http::OpenAiChatRunner::new(
+                                    base, mdl, api_key,
+                                )),
                             );
                         }
                         _ => {
@@ -126,11 +132,11 @@ pub fn build_registry(
                 #[cfg(not(feature = "engines"))]
                 {
                     if seat.base_url.is_some() {
-                        return Err(format!(
-                            "HTTP 엔진엔 engines feature가 필요합니다: {other}"
-                        ));
+                        return Err(format!("HTTP 엔진엔 engines feature가 필요합니다: {other}"));
                     } else {
-                        return Err(format!("알 수 없는 엔진: {other} (지원: claude, codex, opencode)"));
+                        return Err(format!(
+                            "알 수 없는 엔진: {other} (지원: claude, codex, opencode)"
+                        ));
                     }
                 }
             }
@@ -153,8 +159,8 @@ mod tests {
         let roster: Roster = parse_roster(json).expect("ok");
         assert_eq!(roster.seats.len(), 2);
         assert_eq!(roster.seats[0].role.as_deref(), Some("proposer"));
-        assert_eq!(roster.seats[1].role, None);         // 기본 None
-        assert_eq!(roster.seats[1].instruction, "");    // 기본 빈 문자열
+        assert_eq!(roster.seats[1].role, None); // 기본 None
+        assert_eq!(roster.seats[1].instruction, ""); // 기본 빈 문자열
     }
 
     #[test]
@@ -172,8 +178,7 @@ mod tests {
 
     #[test]
     fn build_registry_known_engines_ok() {
-        let roster =
-            parse_roster(r#"{"seats":[{"engine":"claude"},{"engine":"codex"}]}"#).unwrap();
+        let roster = parse_roster(r#"{"seats":[{"engine":"claude"},{"engine":"codex"}]}"#).unwrap();
         assert!(build_registry(&roster, None, None, None).is_ok());
     }
 
@@ -186,17 +191,23 @@ mod tests {
 
     #[test]
     fn build_registry_with_search_db_ok() {
-        let roster =
-            parse_roster(r#"{"seats":[{"engine":"claude"},{"engine":"codex"}]}"#).unwrap();
+        let roster = parse_roster(r#"{"seats":[{"engine":"claude"},{"engine":"codex"}]}"#).unwrap();
         assert!(build_registry(&roster, Some("x.db"), None, None).is_ok());
     }
 
     #[test]
     fn build_registry_with_search_url_ok() {
         // search_url 설정 시 레지스트리 구성이 정상적으로 완료된다.
-        let roster =
-            parse_roster(r#"{"seats":[{"engine":"claude"},{"engine":"codex"}]}"#).unwrap();
-        assert!(build_registry(&roster, None, Some("http://127.0.0.1:8080/mcp"), Some("tok")).is_ok());
+        let roster = parse_roster(r#"{"seats":[{"engine":"claude"},{"engine":"codex"}]}"#).unwrap();
+        assert!(
+            build_registry(
+                &roster,
+                None,
+                Some("http://127.0.0.1:8080/mcp"),
+                Some("tok")
+            )
+            .is_ok()
+        );
     }
 
     #[test]

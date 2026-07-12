@@ -1,6 +1,6 @@
 // Codex exec --json argv·파싱·dedup 순수함수 + CodexRunner.
 
-use super::exec::{run_with_watchdog, ExecSpec};
+use super::exec::{ExecSpec, run_with_watchdog};
 use super::{RunError, RunInput, RunMode, RunOutput, Runner};
 use std::time::Duration;
 
@@ -33,8 +33,14 @@ pub(crate) fn parse_codex_stream(stdout: &str) -> RunOutput {
             }
             "turn.completed" => {
                 if let Some(usage) = event.get("usage") {
-                    input_tokens += usage.get("input_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
-                    output_tokens += usage.get("output_tokens").and_then(|v| v.as_i64()).unwrap_or(0);
+                    input_tokens += usage
+                        .get("input_tokens")
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(0);
+                    output_tokens += usage
+                        .get("output_tokens")
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(0);
                 }
             }
             _ => {}
@@ -188,29 +194,32 @@ impl CodexRunner {
             }
             v
         } else {
-            self.search_db.as_ref().map(|db| {
-                let exe = std::env::current_exe()
-                    .ok()
-                    .and_then(|p| p.to_str().map(String::from))
-                    .unwrap_or_else(|| "tunaround".into());
-                let mut items = vec![
-                    "mcp-search".to_string(),
-                    "--db".to_string(),
-                    db.clone(),
-                ];
-                if let Some(sid) = &self.search_session {
-                    items.push("--session-id".into());
-                    items.push(sid.clone());
-                }
-                let arr = items.iter().map(|a| toml_basic(a)).collect::<Vec<_>>().join(",");
-                let args_toml = format!("mcp_servers.tuna-search.args=[{arr}]");
-                vec![
-                    "-c".into(),
-                    format!("mcp_servers.tuna-search.command={}", toml_basic(&exe)),
-                    "-c".into(),
-                    args_toml,
-                ]
-            }).unwrap_or_default()
+            self.search_db
+                .as_ref()
+                .map(|db| {
+                    let exe = std::env::current_exe()
+                        .ok()
+                        .and_then(|p| p.to_str().map(String::from))
+                        .unwrap_or_else(|| "tunaround".into());
+                    let mut items = vec!["mcp-search".to_string(), "--db".to_string(), db.clone()];
+                    if let Some(sid) = &self.search_session {
+                        items.push("--session-id".into());
+                        items.push(sid.clone());
+                    }
+                    let arr = items
+                        .iter()
+                        .map(|a| toml_basic(a))
+                        .collect::<Vec<_>>()
+                        .join(",");
+                    let args_toml = format!("mcp_servers.tuna-search.args=[{arr}]");
+                    vec![
+                        "-c".into(),
+                        format!("mcp_servers.tuna-search.command={}", toml_basic(&exe)),
+                        "-c".into(),
+                        args_toml,
+                    ]
+                })
+                .unwrap_or_default()
         };
         (mcp_args, child_env)
     }
@@ -308,9 +317,12 @@ mod tests {
     #[test]
     fn parse_extracts_agent_message_and_tokens() {
         let stdout = concat!(
-            r#"{"type":"thread.started"}"#, "\n",
-            r#"{"type":"item.completed","item":{"type":"agent_message","text":"설계 의견입니다."}}"#, "\n",
-            r#"{"type":"turn.completed","usage":{"input_tokens":12,"output_tokens":34}}"#, "\n",
+            r#"{"type":"thread.started"}"#,
+            "\n",
+            r#"{"type":"item.completed","item":{"type":"agent_message","text":"설계 의견입니다."}}"#,
+            "\n",
+            r#"{"type":"turn.completed","usage":{"input_tokens":12,"output_tokens":34}}"#,
+            "\n",
         );
         let out = parse_codex_stream(stdout);
         assert_eq!(out.content, "설계 의견입니다.");
@@ -328,8 +340,10 @@ mod tests {
     #[test]
     fn parse_dedups_repeated_agent_message() {
         let stdout = concat!(
-            r#"{"type":"item.completed","item":{"type":"agent_message","text":"답"}}"#, "\n",
-            r#"{"type":"item.completed","item":{"type":"agent_message","text":"답 확장"}}"#, "\n",
+            r#"{"type":"item.completed","item":{"type":"agent_message","text":"답"}}"#,
+            "\n",
+            r#"{"type":"item.completed","item":{"type":"agent_message","text":"답 확장"}}"#,
+            "\n",
         );
         let out = parse_codex_stream(stdout);
         assert_eq!(out.content, "답 확장");
@@ -337,7 +351,11 @@ mod tests {
 
     #[test]
     fn args_write_mode_uses_workspace_write() {
-        let input = RunInput { prompt: "p".into(), mode: RunMode::Write, ..Default::default() };
+        let input = RunInput {
+            prompt: "p".into(),
+            mode: RunMode::Write,
+            ..Default::default()
+        };
         let args = build_codex_args(&input, &[], false);
         let joined = args.join(" ");
         assert!(joined.contains("--sandbox workspace-write"));
@@ -361,16 +379,31 @@ mod tests {
     #[test]
     fn args_readonly_bypass_replaces_sandbox() {
         // bypass=true(pull+ReadOnly+MCP)면 read-only 샌드박스 대신 위험 우회 플래그를 쓴다.
-        let input = RunInput { prompt: "p".into(), mode: RunMode::ReadOnly, pull: true, ..Default::default() };
+        let input = RunInput {
+            prompt: "p".into(),
+            mode: RunMode::ReadOnly,
+            pull: true,
+            ..Default::default()
+        };
         let args = build_codex_args(&input, &[], true);
         let joined = args.join(" ");
-        assert!(joined.contains("--dangerously-bypass-approvals-and-sandbox"), "bypass 플래그 없음: {joined}");
-        assert!(!joined.contains("--sandbox read-only"), "bypass인데 read-only 샌드박스 잔존: {joined}");
+        assert!(
+            joined.contains("--dangerously-bypass-approvals-and-sandbox"),
+            "bypass 플래그 없음: {joined}"
+        );
+        assert!(
+            !joined.contains("--sandbox read-only"),
+            "bypass인데 read-only 샌드박스 잔존: {joined}"
+        );
     }
 
     #[test]
     fn args_with_mcp_args_appends_c_flags() {
-        let input = RunInput { prompt: "q".into(), mode: RunMode::ReadOnly, ..Default::default() };
+        let input = RunInput {
+            prompt: "q".into(),
+            mode: RunMode::ReadOnly,
+            ..Default::default()
+        };
         let mcp_args = vec![
             "-c".to_string(),
             "mcp_servers.tuna-search.command=\"/usr/bin/tunaround\"".to_string(),
@@ -380,10 +413,16 @@ mod tests {
         let args = build_codex_args(&input, &mcp_args, false);
         let joined = args.join(" ");
         assert!(joined.contains("-c"), "-c 플래그 없음: {joined}");
-        assert!(joined.contains("mcp_servers.tuna-search"), "서버 이름 없음: {joined}");
+        assert!(
+            joined.contains("mcp_servers.tuna-search"),
+            "서버 이름 없음: {joined}"
+        );
         // 빈 슬라이스면 -c 없음.
         let args_none = build_codex_args(&input, &[], false);
-        assert!(!args_none.join(" ").contains("mcp_servers.tuna-search"), "mcp_args 없는데 포함됨");
+        assert!(
+            !args_none.join(" ").contains("mcp_servers.tuna-search"),
+            "mcp_args 없는데 포함됨"
+        );
     }
 
     #[test]
@@ -394,7 +433,10 @@ mod tests {
         let (mcp_args, _env) = runner.build_mcp_wiring();
         let joined = mcp_args.join(" ");
         assert!(joined.contains("-c"), "-c 없음: {joined}");
-        assert!(joined.contains("mcp_servers.tuna-search.url"), "url 키 없음: {joined}");
+        assert!(
+            joined.contains("mcp_servers.tuna-search.url"),
+            "url 키 없음: {joined}"
+        );
         assert!(joined.contains(url), "url 값 없음: {joined}");
     }
 
@@ -402,14 +444,26 @@ mod tests {
     fn with_search_token_wires_bearer_env_not_argv() {
         // token 주입 시 config엔 bearer_token_env_var(변수명)만, 실제 토큰은 자식 env로 간다(argv 비노출).
         let url = "http://127.0.0.1:8080/mcp";
-        let runner = CodexRunner::new().with_search_url(Some(url.into()), Some("secret-tok".into()));
+        let runner =
+            CodexRunner::new().with_search_url(Some(url.into()), Some("secret-tok".into()));
         let (mcp_args, env) = runner.build_mcp_wiring();
         let joined = mcp_args.join(" ");
-        assert!(joined.contains("bearer_token_env_var"), "bearer_token_env_var 키 없음: {joined}");
-        assert!(joined.contains(BEARER_TOKEN_ENV), "env 변수명 없음: {joined}");
-        assert!(!joined.contains("secret-tok"), "토큰이 argv에 노출됨: {joined}");
+        assert!(
+            joined.contains("bearer_token_env_var"),
+            "bearer_token_env_var 키 없음: {joined}"
+        );
+        assert!(
+            joined.contains(BEARER_TOKEN_ENV),
+            "env 변수명 없음: {joined}"
+        );
+        assert!(
+            !joined.contains("secret-tok"),
+            "토큰이 argv에 노출됨: {joined}"
+        );
         assert_eq!(
-            env.iter().find(|(k, _)| k == BEARER_TOKEN_ENV).map(|(_, v)| v.as_str()),
+            env.iter()
+                .find(|(k, _)| k == BEARER_TOKEN_ENV)
+                .map(|(_, v)| v.as_str()),
             Some("secret-tok"),
             "env에 토큰 주입 안 됨: {env:?}"
         );
@@ -421,7 +475,10 @@ mod tests {
         let url = "http://127.0.0.1:8080/mcp";
         let runner = CodexRunner::new().with_search_url(Some(url.into()), None);
         let (mcp_args, env) = runner.build_mcp_wiring();
-        assert!(!mcp_args.join(" ").contains("bearer_token_env_var"), "토큰 없는데 bearer 키 포함");
+        assert!(
+            !mcp_args.join(" ").contains("bearer_token_env_var"),
+            "토큰 없는데 bearer 키 포함"
+        );
         assert!(env.is_empty(), "토큰 없는데 env 주입됨: {env:?}");
     }
 
@@ -434,8 +491,14 @@ mod tests {
             .with_search_url(Some(url.into()), None);
         let (mcp_args, _env) = runner.build_mcp_wiring();
         let joined = mcp_args.join(" ");
-        assert!(joined.contains("mcp_servers.tuna-search.url"), "url 배선 없음: {joined}");
-        assert!(!joined.contains("command"), "url 우선 시 command 없어야 함: {joined}");
+        assert!(
+            joined.contains("mcp_servers.tuna-search.url"),
+            "url 배선 없음: {joined}"
+        );
+        assert!(
+            !joined.contains("command"),
+            "url 우선 시 command 없어야 함: {joined}"
+        );
     }
 
     #[test]
@@ -445,8 +508,14 @@ mod tests {
         let runner = CodexRunner::new().with_search_db(Some("/tmp/x.db".into()));
         let (mcp_args, _env) = runner.build_mcp_wiring();
         let joined = mcp_args.join(" ");
-        assert!(joined.contains("\"mcp-search\""), "mcp-search 서브커맨드 형태 없음: {joined}");
-        assert!(!joined.contains("--mcp-search"), "레거시 --mcp-search 플래그 잔존: {joined}");
+        assert!(
+            joined.contains("\"mcp-search\""),
+            "mcp-search 서브커맨드 형태 없음: {joined}"
+        );
+        assert!(
+            !joined.contains("--mcp-search"),
+            "레거시 --mcp-search 플래그 잔존: {joined}"
+        );
     }
 
     #[test]
@@ -458,28 +527,51 @@ mod tests {
         let items_with = ["mcp-search", "--db", &db, "--session-id", &sid];
         let args_toml_with = format!(
             "mcp_servers.tuna-search.args=[{}]",
-            items_with.iter().map(|a| toml_basic(a)).collect::<Vec<_>>().join(",")
+            items_with
+                .iter()
+                .map(|a| toml_basic(a))
+                .collect::<Vec<_>>()
+                .join(",")
         );
-        assert!(args_toml_with.contains("--session-id"), "--session-id 없음: {args_toml_with}");
-        assert!(args_toml_with.contains("debate-session-7"), "세션 id 없음: {args_toml_with}");
+        assert!(
+            args_toml_with.contains("--session-id"),
+            "--session-id 없음: {args_toml_with}"
+        );
+        assert!(
+            args_toml_with.contains("debate-session-7"),
+            "세션 id 없음: {args_toml_with}"
+        );
         // search_session 없을 때.
         let items_without = ["mcp-search", "--db", &db];
         let args_toml_without = format!(
             "mcp_servers.tuna-search.args=[{}]",
-            items_without.iter().map(|a| toml_basic(a)).collect::<Vec<_>>().join(",")
+            items_without
+                .iter()
+                .map(|a| toml_basic(a))
+                .collect::<Vec<_>>()
+                .join(",")
         );
-        assert!(!args_toml_without.contains("--session-id"), "--session-id가 None인데 포함됨");
+        assert!(
+            !args_toml_without.contains("--session-id"),
+            "--session-id가 None인데 포함됨"
+        );
         // 빌더 필드 검증.
         let runner = CodexRunner::new()
             .with_search_db(Some(db))
             .with_search_session(Some(sid));
-        assert!(runner.search_session.is_some(), "search_session이 Some이어야 함");
+        assert!(
+            runner.search_session.is_some(),
+            "search_session이 Some이어야 함"
+        );
         assert_eq!(runner.search_session.as_deref(), Some("debate-session-7"));
         // 미설정 시 None.
         let runner_no = CodexRunner::new()
             .with_search_db(Some("/tmp/x.db".into()))
             .with_search_db(Some("/tmp/x.db".into()));
-        assert!(runner_no.search_session.is_none(), "미설정 시 None이어야 함");
+        assert!(
+            runner_no.search_session.is_none(),
+            "미설정 시 None이어야 함"
+        );
     }
 
     #[test]
@@ -500,7 +592,10 @@ mod tests {
         let inner = &quoted[1..quoted.len() - 1];
         // \" 이스케이프 시퀀스를 제거한 뒤 남는 " 가 없어야 한다(비이스케이프 주입 방지).
         let without_escaped = inner.replace("\\\"", "");
-        assert!(!without_escaped.contains('"'), "비이스케이프 큰따옴표: {inner}");
+        assert!(
+            !without_escaped.contains('"'),
+            "비이스케이프 큰따옴표: {inner}"
+        );
     }
 
     // 무출력으로 sleep하는 가짜 실행파일을 tmp에 만들어 경로를 돌려준다(OS별).
@@ -526,7 +621,11 @@ mod tests {
         let bin = fake_sleep_bin("tuna_fake_sleep_codex");
         let r =
             CodexRunner::with_bin(&bin).with_idle_timeout(std::time::Duration::from_millis(150));
-        let input = RunInput { prompt: "x".into(), mode: RunMode::ReadOnly, ..Default::default() };
+        let input = RunInput {
+            prompt: "x".into(),
+            mode: RunMode::ReadOnly,
+            ..Default::default()
+        };
         assert!(matches!(r.run(&input), Err(RunError::Timeout(_))));
     }
 }

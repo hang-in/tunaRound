@@ -42,13 +42,17 @@ pub fn parse_config(text: &str) -> Result<Config, String> {
 
 /// 경로에서 설정 파일을 읽어 파싱한다.
 pub fn load_config_file(path: &str) -> Result<Config, String> {
-    let text = std::fs::read_to_string(path).map_err(|e| format!("설정 읽기 실패 ({path}): {e}"))?;
+    let text =
+        std::fs::read_to_string(path).map_err(|e| format!("설정 읽기 실패 ({path}): {e}"))?;
     parse_config(&text)
 }
 
 /// 후보 경로 중 실제 존재하는 첫 파일을 고른다(순수 로직, 존재 확인만 수행).
 fn first_existing(paths: &[String]) -> Option<String> {
-    paths.iter().find(|p| std::path::Path::new(p).is_file()).cloned()
+    paths
+        .iter()
+        .find(|p| std::path::Path::new(p).is_file())
+        .cloned()
 }
 
 /// 설정 파일 탐색. 우선순위: 명시 경로(`--config`) > `./tunaround.toml` > `~/.config/tunaround/config.toml`.
@@ -93,7 +97,10 @@ pub fn resolve_search_token(profile: &Profile) -> Option<String> {
     if profile.search_token.is_some() {
         return profile.search_token.clone();
     }
-    profile.search_token_env.as_ref().and_then(|key| std::env::var(key).ok())
+    profile
+        .search_token_env
+        .as_ref()
+        .and_then(|key| std::env::var(key).ok())
 }
 
 /// 여러 프로파일 중 사람이 고를 때, raw 입력(번호 또는 이름)을 프로파일 이름으로 판정하는 순수 로직.
@@ -125,7 +132,9 @@ fn prompt_profile_pick(names: &[String]) -> Result<String, String> {
     print!("> ");
     let _ = std::io::stdout().flush();
     let mut line = String::new();
-    std::io::stdin().read_line(&mut line).map_err(|e| format!("입력 읽기 실패: {e}"))?;
+    std::io::stdin()
+        .read_line(&mut line)
+        .map_err(|e| format!("입력 읽기 실패: {e}"))?;
     match_profile_pick(&line, names)
 }
 
@@ -164,7 +173,11 @@ pub fn select_profile<'a>(
     if names.len() == 1 {
         return Ok(cfg.profile.get(&names[0]));
     }
-    let picked = if interactive { prompt_profile_pick(&names)? } else { names[0].clone() };
+    let picked = if interactive {
+        prompt_profile_pick(&names)?
+    } else {
+        names[0].clone()
+    };
     Ok(cfg.profile.get(&picked))
 }
 
@@ -183,7 +196,10 @@ pub struct MergedSessionArgs {
 /// CLI 값(`cli`)에 선택된 프로파일 값을 채운다. 우선순위: CLI 플래그 > 프로파일 > 없음.
 /// `pull_context`만 예외로 OR 병합한다(CLI/프로파일 중 하나라도 켜져 있으면 켜진다).
 /// `profile`이 `None`이면(프로파일 미선택) `cli`를 그대로 돌려준다.
-pub fn merge_profile_into(mut cli: MergedSessionArgs, profile: Option<&Profile>) -> MergedSessionArgs {
+pub fn merge_profile_into(
+    mut cli: MergedSessionArgs,
+    profile: Option<&Profile>,
+) -> MergedSessionArgs {
     let Some(p) = profile else {
         return cli;
     };
@@ -225,7 +241,10 @@ mod tests {
     use super::*;
 
     fn profile_with_db(db: &str) -> Profile {
-        Profile { db: Some(db.to_string()), ..Default::default() }
+        Profile {
+            db: Some(db.to_string()),
+            ..Default::default()
+        }
     }
 
     #[test]
@@ -252,7 +271,10 @@ recent_turns = 20
         assert_eq!(local.pull_context, Some(false));
         assert_eq!(local.roster, None);
         let homelab = cfg.profile.get("homelab").expect("homelab 존재");
-        assert_eq!(homelab.search_url.as_deref(), Some("https://example.internal/mcp"));
+        assert_eq!(
+            homelab.search_url.as_deref(),
+            Some("https://example.internal/mcp")
+        );
         assert_eq!(homelab.search_token_env.as_deref(), Some("TUNA_TOKEN"));
         assert_eq!(homelab.pull_context, Some(true));
         assert_eq!(homelab.recent_turns, Some(20));
@@ -275,8 +297,10 @@ recent_turns = 20
     #[test]
     fn select_profile_requested_found_and_missing() {
         let mut cfg = Config::default();
-        cfg.profile.insert("local".to_string(), profile_with_db("local.db"));
-        cfg.profile.insert("homelab".to_string(), profile_with_db("homelab.db"));
+        cfg.profile
+            .insert("local".to_string(), profile_with_db("local.db"));
+        cfg.profile
+            .insert("homelab".to_string(), profile_with_db("homelab.db"));
 
         let found = select_profile(&cfg, Some("homelab"), false).unwrap();
         assert_eq!(found.unwrap().db.as_deref(), Some("homelab.db"));
@@ -288,8 +312,10 @@ recent_turns = 20
     #[test]
     fn select_profile_uses_default_when_unspecified() {
         let mut cfg = Config::default();
-        cfg.profile.insert("local".to_string(), profile_with_db("local.db"));
-        cfg.profile.insert("homelab".to_string(), profile_with_db("homelab.db"));
+        cfg.profile
+            .insert("local".to_string(), profile_with_db("local.db"));
+        cfg.profile
+            .insert("homelab".to_string(), profile_with_db("homelab.db"));
         cfg.default_profile = Some("homelab".to_string());
 
         let picked = select_profile(&cfg, None, false).unwrap();
@@ -299,7 +325,8 @@ recent_turns = 20
     #[test]
     fn select_profile_default_pointing_to_missing_profile_errors() {
         let mut cfg = Config::default();
-        cfg.profile.insert("local".to_string(), profile_with_db("local.db"));
+        cfg.profile
+            .insert("local".to_string(), profile_with_db("local.db"));
         cfg.default_profile = Some("ghost".to_string());
 
         let err = select_profile(&cfg, None, false).unwrap_err();
@@ -309,7 +336,8 @@ recent_turns = 20
     #[test]
     fn select_profile_single_profile_auto_selected() {
         let mut cfg = Config::default();
-        cfg.profile.insert("only".to_string(), profile_with_db("only.db"));
+        cfg.profile
+            .insert("only".to_string(), profile_with_db("only.db"));
 
         let picked = select_profile(&cfg, None, false).unwrap();
         assert_eq!(picked.unwrap().db.as_deref(), Some("only.db"));
@@ -318,9 +346,12 @@ recent_turns = 20
     #[test]
     fn select_profile_multiple_no_default_noninteractive_picks_first_alphabetically() {
         let mut cfg = Config::default();
-        cfg.profile.insert("zeta".to_string(), profile_with_db("zeta.db"));
-        cfg.profile.insert("alpha".to_string(), profile_with_db("alpha.db"));
-        cfg.profile.insert("mid".to_string(), profile_with_db("mid.db"));
+        cfg.profile
+            .insert("zeta".to_string(), profile_with_db("zeta.db"));
+        cfg.profile
+            .insert("alpha".to_string(), profile_with_db("alpha.db"));
+        cfg.profile
+            .insert("mid".to_string(), profile_with_db("mid.db"));
 
         let picked = select_profile(&cfg, None, false).unwrap();
         // 이름 정렬(alpha, mid, zeta) 후 첫 항목 = 결정적 non-interactive 규칙.
@@ -329,7 +360,11 @@ recent_turns = 20
 
     #[test]
     fn match_profile_pick_by_number_and_name() {
-        let names = vec!["alpha".to_string(), "homelab".to_string(), "zeta".to_string()];
+        let names = vec![
+            "alpha".to_string(),
+            "homelab".to_string(),
+            "zeta".to_string(),
+        ];
         assert_eq!(match_profile_pick("2", &names).unwrap(), "homelab");
         assert_eq!(match_profile_pick(" alpha \n", &names).unwrap(), "alpha");
         assert!(match_profile_pick("0", &names).is_err());
@@ -352,7 +387,10 @@ recent_turns = 20
             std::env::set_var("HOME", "/home/tester");
             std::env::remove_var("USERPROFILE");
         }
-        assert_eq!(expand_home("~/.tunaround/local.db"), "/home/tester/.tunaround/local.db");
+        assert_eq!(
+            expand_home("~/.tunaround/local.db"),
+            "/home/tester/.tunaround/local.db"
+        );
         // ~/ 접두 없으면 그대로.
         assert_eq!(expand_home("/abs/path.db"), "/abs/path.db");
 
@@ -361,14 +399,20 @@ recent_turns = 20
             std::env::remove_var("HOME");
             std::env::set_var("USERPROFILE", "C:/Users/tester");
         }
-        assert_eq!(expand_home("~/.tunaround/local.db"), "C:/Users/tester/.tunaround/local.db");
+        assert_eq!(
+            expand_home("~/.tunaround/local.db"),
+            "C:/Users/tester/.tunaround/local.db"
+        );
 
         // 둘 다 없으면 원본 그대로.
         unsafe {
             std::env::remove_var("HOME");
             std::env::remove_var("USERPROFILE");
         }
-        assert_eq!(expand_home("~/.tunaround/local.db"), "~/.tunaround/local.db");
+        assert_eq!(
+            expand_home("~/.tunaround/local.db"),
+            "~/.tunaround/local.db"
+        );
 
         // 원래 값 복구.
         unsafe {
@@ -441,12 +485,19 @@ recent_turns = 20
     fn load_config_file_roundtrip_and_parse_error() {
         let dir = std::env::temp_dir();
         let path = dir.join("tunaround_test_load_config_file.toml");
-        std::fs::write(&path, "default_profile = \"local\"\n[profile.local]\ndb = \"x.db\"\n").unwrap();
+        std::fs::write(
+            &path,
+            "default_profile = \"local\"\n[profile.local]\ndb = \"x.db\"\n",
+        )
+        .unwrap();
         let path_str = path.to_string_lossy().into_owned();
 
         let cfg = load_config_file(&path_str).expect("파싱 성공");
         assert_eq!(cfg.default_profile.as_deref(), Some("local"));
-        assert_eq!(cfg.profile.get("local").unwrap().db.as_deref(), Some("x.db"));
+        assert_eq!(
+            cfg.profile.get("local").unwrap().db.as_deref(),
+            Some("x.db")
+        );
 
         std::fs::remove_file(&path).unwrap();
         assert!(load_config_file(&path_str).is_err());
@@ -454,7 +505,11 @@ recent_turns = 20
 
     #[test]
     fn merge_profile_into_none_profile_is_noop() {
-        let cli = MergedSessionArgs { db: Some("cli.db".to_string()), pull_context: true, ..Default::default() };
+        let cli = MergedSessionArgs {
+            db: Some("cli.db".to_string()),
+            pull_context: true,
+            ..Default::default()
+        };
         let merged = merge_profile_into(cli.clone(), None);
         assert_eq!(merged, cli);
     }
@@ -517,8 +572,14 @@ recent_turns = 20
 
         let merged = merge_profile_into(cli, Some(&profile));
 
-        assert_eq!(merged.db.as_deref(), Some("/home/tester/.tunaround/homelab.db"));
-        assert_eq!(merged.roster.as_deref(), Some("/home/tester/.tunaround/roster.json"));
+        assert_eq!(
+            merged.db.as_deref(),
+            Some("/home/tester/.tunaround/homelab.db")
+        );
+        assert_eq!(
+            merged.roster.as_deref(),
+            Some("/home/tester/.tunaround/roster.json")
+        );
         assert_eq!(merged.recent_turns, Some(20));
         assert!(merged.pull_context);
         assert_eq!(merged.session.as_deref(), Some("s1"));
@@ -537,13 +598,22 @@ recent_turns = 20
     #[test]
     fn merge_profile_into_pull_context_or_semantics() {
         // CLI true + 프로파일 미설정 => true 유지.
-        let cli_true = MergedSessionArgs { pull_context: true, ..Default::default() };
+        let cli_true = MergedSessionArgs {
+            pull_context: true,
+            ..Default::default()
+        };
         let profile_unset = Profile::default();
         assert!(merge_profile_into(cli_true, Some(&profile_unset)).pull_context);
 
         // CLI false + 프로파일 false => false.
-        let cli_false = MergedSessionArgs { pull_context: false, ..Default::default() };
-        let profile_false = Profile { pull_context: Some(false), ..Default::default() };
+        let cli_false = MergedSessionArgs {
+            pull_context: false,
+            ..Default::default()
+        };
+        let profile_false = Profile {
+            pull_context: Some(false),
+            ..Default::default()
+        };
         assert!(!merge_profile_into(cli_false, Some(&profile_false)).pull_context);
     }
 }
