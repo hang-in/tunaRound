@@ -48,8 +48,10 @@ jobs:
       - name: Test
         run: cargo test --features "morphology mcp serve worker" --verbose
 
-      - name: Clippy (deny warnings)
-        run: cargo clippy --features "morphology mcp serve worker" -- -D warnings
+      - name: Clippy (deny warnings, all targets)
+        # --all-targets: 테스트·벤치·예제 코드까지 lint(v2-52 P0: exec 이식성·type_complexity 같은
+        # 테스트 코드 잠복 idiom을 앞으로 CI가 잡게 한다).
+        run: cargo clippy --features "morphology mcp serve worker" --all-targets -- -D warnings
 
   # 대시보드 SPA(dashboard 피처): frontend를 먼저 npm build한 뒤 rust-embed로 임베드하는 경로를 검증한다.
   # embed 서빙 코드는 OS 독립(플랫폼 cfg 없음)이라 3-OS 매트릭스가 아니라 ubuntu 1잡으로 충분(macOS 10배 분 회피).
@@ -83,5 +85,21 @@ jobs:
       - name: Build (dashboard feature, SPA embedded)
         run: cargo build --features "morphology mcp serve worker dashboard" --verbose
 
-      - name: Clippy (dashboard, deny warnings)
-        run: cargo clippy --features "morphology mcp serve worker dashboard" -- -D warnings
+      - name: Clippy (dashboard, deny warnings, all targets)
+        run: cargo clippy --features "morphology mcp serve worker dashboard" --all-targets -- -D warnings
+
+  # 포맷 게이트: cargo fmt --all --check로 rustfmt 드리프트를 막는다(v2-52 전역 fmt 후 재발 방지).
+  # rustfmt는 소스만 읽어 빌드가 불요하므로 ubuntu 1잡으로 충분(OS 독립).
+  fmt:
+    name: fmt (rustfmt --check)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable, rustfmt)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Format check
+        run: cargo fmt --all -- --check
