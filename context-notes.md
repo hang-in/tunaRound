@@ -2,6 +2,15 @@
 
 > 작업 중 결정과 근거. 계속 append. (규율 #7) 다음 세션이 결정을 재유도하지 않게.
 
+## 2026-07-12 세션26 후반: v2-52 ④ task wire 프로토콜 구조화 (문자열→JSON, Stage 1)
+
+계약 정본 = [v2-52 task JSON 계약](docs/design/v2-52-task-json-contract_2026-07-12.md). 사용자: ⑤ 다음 ④, 지금 시작. 재론 금지:
+- **스코프 실측**: 파싱되는 문자열 프로토콜은 **poll_tasks 응답 하나뿐**(format_open_tasks 생산↔parse_open_tasks 소비). claim/complete 등은 워커가 isError만 봄(본문 미파싱), get_task/tasks는 사람용. 취약성=한글 브래킷 슬라이스 패닉 실측(worker 회귀 테스트).
+- **라이브 mesh 하위호환 설계**: `format_open_tasks`가 `TASKS_JSON <compact-json>\n\n` 프리픽스 + 기존 human 블록 병존 emit. 신 워커=JSON 우선, 구 워커=프리픽스(첫 헤더 앞 내용)를 find_header_starts가 무시하고 human 블록 파싱. **4조합(신/구 broker×worker) 전부 동작**. 이게 계약 ①②③(JSON 추가·워커 우선·문자열 하위호환)을 한 번에 달성.
+- **구 워커 안전 근거**: find_header_starts는 `[<32hex>] from=` 헤더만 찾고 첫 헤더 앞 내용은 어떤 블록에도 안 넣음. compact JSON은 실개행 없음(msg 내 `\n\n`도 `\\n\\n` 이스케이프)이라 그 안에서 거짓 헤더 못 만듦.
+- **공유 DTO 위치**: 무-게이트 crate 루트 `src/a2a_wire.rs`(mcp·worker·경량 워커 빌드 모두 접근. serde=base dep. store::a2a는 sqlite-gated라 worker 단독이 못 써서 여기로 분리). PollTaskDto{id,state(clean),context_id:Option,msg} + POLL_JSON_PREFIX + encode_poll_json(→Option)/decode_poll_json 단일 소스.
+- **④ 파서 제거=defer**: human 블록 제거 + 문자열 파싱 경로 삭제는 mesh 전체 신 바이너리 롤아웃+도그푸딩 후에만 안전(구 워커가 문자열 필요). 이 세션은 Stage 1(병존)까지.
+
 ## 2026-07-12 세션26 후반: v2-52 ⑤ store DTO ↔ 도메인 경계
 
 계약 정본 = [v2-52 store DTO 계약](docs/design/v2-52-store-dto-contract_2026-07-12.md). 사용자 결정: ⑤ 먼저(④ task JSON 후순위) + 이 세션에서 바로 구현. 재론 금지 핵심:

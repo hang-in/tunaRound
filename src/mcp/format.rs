@@ -1,6 +1,7 @@
 // A2A task/에이전트 목록을 사람이 읽는 텍스트로 조립하는 순수 포맷 헬퍼 모음.
 
 use super::*;
+use crate::a2a_wire::{PollTaskDto, encode_poll_json};
 use crate::store::a2a::{Artifact, Message, Part};
 use crate::store::agents::{
     AgentEntry, SendTarget, format_ambiguous_candidates, validate_send_target,
@@ -60,8 +61,20 @@ pub(crate) fn poll_tasks_text(store: &SqliteStore, agent: &str) -> Result<String
     Ok(format_open_tasks(agent, &tasks, &now))
 }
 
-/// task 목록을 `[id] from=... state=... msg=...` 줄들로 조립하는 순수 함수(SQLite 없이 테스트 가능).
-/// now는 health_annotation(표시 전용 stuck?/no-consumer? 주석)에 쓰인다.
+/// task의 표시/전달용 본문 텍스트(status_message 첫 텍스트, 없으면 "(본문 없음)"). human 블록과 JSON
+/// DTO가 동일 본문을 공유하도록 단일 소스로 뽑는다.
+fn task_msg_text(t: &crate::store::a2a::Task) -> &str {
+    t.status_message
+        .as_ref()
+        .and_then(|m| m.parts.first())
+        .and_then(|p| p.text.as_deref())
+        .unwrap_or("(본문 없음)")
+}
+
+/// task 목록을 워커 파싱용 `TASKS_JSON <json>` 프리픽스 라인 + 사람용 `[id] from=... state=... msg=...`
+/// 블록으로 조립하는 순수 함수(SQLite 없이 테스트 가능). now는 health_annotation(표시 전용 stuck?/
+/// no-consumer? 주석)에 쓰인다. v2-52 ④: JSON은 구 워커가 무시(첫 헤더 앞)하고 신 워커가 우선 파싱하는
+/// 하위호환 병존 형식이다. 빈 목록은 프리픽스 없이 안내 문구만(워커는 프리픽스 없으면 문자열 폴백).
 pub(crate) fn format_open_tasks(
     agent: &str,
     tasks: &[crate::store::a2a::Task],
@@ -70,15 +83,9 @@ pub(crate) fn format_open_tasks(
     if tasks.is_empty() {
         return format!("{agent} 앞 열린 task 없음");
     }
-    tasks
+    let human = tasks
         .iter()
         .map(|t| {
-            let msg = t
-                .status_message
-                .as_ref()
-                .and_then(|m| m.parts.first())
-                .and_then(|p| p.text.as_deref())
-                .unwrap_or("(본문 없음)");
             // ctx=<context_id>는 워커가 프로젝트별 라우팅(--context-map)에 쓴다. 없으면 "-".
             let ctx = t.context_id.as_deref().unwrap_or("-");
             let annotation = health_annotation(t, now);
@@ -89,11 +96,32 @@ pub(crate) fn format_open_tasks(
                 t.state.as_str(),
                 annotation,
                 ctx,
-                msg
+                task_msg_text(t)
             )
         })
         .collect::<Vec<_>>()
-        .join("\n\n")
+        .join("\n\n");
+    // v2-52 ④: 워커가 파싱하는 구조화 JSON을 프리픽스 라인으로 얹는다. state는 clean(주석 없음).
+    // context_id의 "-"는 문자열 경로(worker가 "ctx=-"→None)와 패리티를 맞춰 None으로 정규화한다
+    // (구 워커는 "-"를 라우팅 키로 못 쓰므로 신 워커도 동일하게 = 혼합 롤아웃 시 같은 거동, 적대 리뷰).
+    let dtos: Vec<PollTaskDto> = tasks
+        .iter()
+        .map(|t| PollTaskDto {
+            id: t.id.clone(),
+            state: t.state.as_str().to_string(),
+            context_id: t
+                .context_id
+                .as_deref()
+                .filter(|c| *c != "-")
+                .map(String::from),
+            msg: task_msg_text(t).to_string(),
+        })
+        .collect();
+    // 직렬화 실패(도달 불가) 시 프리픽스를 생략해 워커가 문자열 폴백하게 한다(빈 JSON으로 task 은닉 금지).
+    match encode_poll_json(&dtos) {
+        Some(prefix) => format!("{prefix}\n\n{human}"),
+        None => human,
+    }
 }
 
 /// claim_task 순수 로직: task를 working으로 전이하고 확인 텍스트를 만든다. 대상 task가 없거나 이미
@@ -417,6 +445,42 @@ mod tests {
         assert!(text.contains("win-claude"), "from_agent 누락: {text}");
         assert!(text.contains("submitted"), "state 누락: {text}");
         assert!(text.contains("리뷰 부탁"), "메시지 본문 누락: {text}");
+    }
+
+    #[test]
+    fn format_open_tasks_emits_json_prefix_and_normalizes_dash_context() {
+        // v2-52 ④: JSON 프리픽스가 붙고 human 블록도 병존한다. context_id "-"는 None으로 정규화해
+        // 문자열 경로(worker가 "ctx=-"→None)와 패리티를 맞춘다.
+        use crate::a2a_wire::decode_poll_json;
+        let id_dash = "a".repeat(32);
+        let id_proj = "b".repeat(32);
+        let tasks = vec![
+            crate::store::a2a::Task::new(
+                id_dash.clone(),
+                Some("-".to_string()),
+                "win",
+                "mac",
+                "2026-07-02 09:00:00",
+            ),
+            crate::store::a2a::Task::new(
+                id_proj.clone(),
+                Some("projA".to_string()),
+                "win",
+                "mac",
+                "2026-07-02 09:00:00",
+            ),
+        ];
+        let text = format_open_tasks("mac", &tasks, "2026-07-02 09:00:00");
+        let dtos = decode_poll_json(&text).expect("JSON 프리픽스가 있어야 함");
+        assert_eq!(dtos.len(), 2);
+        assert_eq!(dtos[0].id, id_dash);
+        assert_eq!(
+            dtos[0].context_id, None,
+            "context_id \"-\"는 None으로 정규화"
+        );
+        assert_eq!(dtos[1].context_id.as_deref(), Some("projA"));
+        // human 블록도 여전히 존재(하위호환).
+        assert!(text.contains(&format!("[{id_dash}] from=win")));
     }
 
     #[test]
