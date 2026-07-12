@@ -212,14 +212,11 @@ mod tests {
     use super::*;
     use std::time::Duration;
 
-    fn spec(args: &[&str], idle_ms: u64) -> ExecSpec {
+    /// 주어진 bin·argv로 ExecSpec을 만든다(테스트 공용 빌더).
+    fn spec_from(bin: &str, args: &[&str], idle_ms: u64) -> ExecSpec {
         ExecSpec {
-            bin: "sh".into(),
-            args: ["-c"]
-                .iter()
-                .chain(args.iter())
-                .map(|s| s.to_string())
-                .collect(),
+            bin: bin.into(),
+            args: args.iter().map(|s| s.to_string()).collect(),
             cwd: None,
             stdin: None,
             idle_timeout: Duration::from_millis(idle_ms),
@@ -228,9 +225,40 @@ mod tests {
         }
     }
 
+    // 아래 세 시나리오 헬퍼는 OS 인지형이다. sh 는 clean Windows에 없으므로,
+    // 같은 watchdog 거동(무출력 idle / 즉시 출력 / 비정상 종료)을 Unix=sh -c, Windows=cmd /C 로 각각 재현한다.
+
+    /// 무출력으로 수 초 도는 자식(idle 타임아웃 발화 검증용). Windows는 ping의 무출력 대기로 등가 재현.
+    fn spec_idle_no_output(idle_ms: u64) -> ExecSpec {
+        #[cfg(not(windows))]
+        let (bin, args): (&str, &[&str]) = ("sh", &["-c", "exec sleep 5"]);
+        // ping -n 6 = 약 5초 대기, 출력은 nul로 버려 stdout 무출력을 보장한다.
+        #[cfg(windows)]
+        let (bin, args): (&str, &[&str]) = ("cmd", &["/C", "ping -n 6 127.0.0.1 >nul"]);
+        spec_from(bin, args, idle_ms)
+    }
+
+    /// 즉시 두 줄 출력 후 정상 종료(출력이 타이머를 리셋해 오탐 타임아웃이 없음을 검증).
+    fn spec_two_lines(idle_ms: u64) -> ExecSpec {
+        #[cfg(not(windows))]
+        let (bin, args): (&str, &[&str]) = ("sh", &["-c", "printf 'line1\\nline2\\n'"]);
+        #[cfg(windows)]
+        let (bin, args): (&str, &[&str]) = ("cmd", &["/C", "echo line1&echo line2"]);
+        spec_from(bin, args, idle_ms)
+    }
+
+    /// 무출력으로 즉시 비정상 종료(Timeout 아닌 Spawn 오류로 분류되는지 검증).
+    fn spec_nonzero_exit(idle_ms: u64) -> ExecSpec {
+        #[cfg(not(windows))]
+        let (bin, args): (&str, &[&str]) = ("sh", &["-c", "exit 3"]);
+        #[cfg(windows)]
+        let (bin, args): (&str, &[&str]) = ("cmd", &["/C", "exit 3"]);
+        spec_from(bin, args, idle_ms)
+    }
+
     #[test]
     fn idle_no_output_triggers_timeout() {
-        let out = run_with_watchdog(&spec(&["exec sleep 5"], 150));
+        let out = run_with_watchdog(&spec_idle_no_output(150));
         match out {
             Err(RunError::Timeout(_)) => {}
             other => panic!("expected Timeout, got {other:?}"),
@@ -240,7 +268,7 @@ mod tests {
     #[test]
     fn output_then_exit_succeeds_no_false_timeout() {
         // 즉시 출력 후 종료 -> 타이머 리셋되어 타임아웃 없이 stdout 수집.
-        let out = run_with_watchdog(&spec(&["printf 'line1\\nline2\\n'"], 2000)).expect("ok");
+        let out = run_with_watchdog(&spec_two_lines(2000)).expect("ok");
         assert!(out.contains("line1"));
         assert!(out.contains("line2"));
     }
@@ -248,7 +276,7 @@ mod tests {
     #[test]
     fn nonzero_exit_is_spawn_error_not_timeout() {
         // 무출력이지만 즉시 비정상 종료 -> Timeout 아님(Spawn).
-        let out = run_with_watchdog(&spec(&["exit 3"], 2000));
+        let out = run_with_watchdog(&spec_nonzero_exit(2000));
         assert!(matches!(out, Err(RunError::Spawn(_))));
     }
 
@@ -269,7 +297,7 @@ mod tests {
         );
 
         let started = Instant::now();
-        let out = run_with_watchdog(&spec(&[&command], 200));
+        let out = run_with_watchdog(&spec_from("sh", &["-c", &command], 200));
         assert!(matches!(out, Err(RunError::Timeout(_))));
         assert!(
             started.elapsed() < Duration::from_secs(5),

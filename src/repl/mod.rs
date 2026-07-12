@@ -851,9 +851,12 @@ mod tests {
         );
     }
 
+    /// set_validity 캡처 튜플: (session_id, msg_id, state, by).
+    type ValidityCapture = (String, u64, String, Option<u64>);
+
     /// set_validity 호출을 캡처하는 가짜 sink.
     struct CapturingSink {
-        last: std::sync::Mutex<Option<(String, u64, String, Option<u64>)>>,
+        last: std::sync::Mutex<Option<ValidityCapture>>,
     }
     impl crate::orchestrator::ValiditySink for CapturingSink {
         fn set_validity(&self, sid: &str, msg_id: u64, state: &str, by: Option<u64>) -> Result<(), String> {
@@ -904,9 +907,12 @@ mod tests {
         }
     }
 
+    /// set_annotation 캡처 튜플: (session_id, msg_id, abstraction, anchors).
+    type AnnotationCapture = (String, u64, Option<String>, Option<String>);
+
     /// set_annotation 호출을 캡처하는 가짜 sink(session_id, msg_id, abstraction, anchors).
     struct CapturingAnnotationSink {
-        last: std::sync::Mutex<Option<(String, u64, Option<String>, Option<String>)>>,
+        last: std::sync::Mutex<Option<AnnotationCapture>>,
     }
     impl crate::orchestrator::AnnotationSink for CapturingAnnotationSink {
         fn set_annotation(&self, sid: &str, msg_id: u64, abstraction: Option<&str>, anchors: Option<&str>) -> Result<(), String> {
