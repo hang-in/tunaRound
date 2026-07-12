@@ -4,8 +4,8 @@ use tunaround::orchestrator::{MapRegistry, Participant};
 use tunaround::runner::claude::ClaudeRunner;
 use tunaround::runner::codex::CodexRunner;
 
-/// 색인용 FTS 토크나이저 closure(fts_index: 형태소+raw, indexer/writer 공용). serve 전용.
-#[cfg(feature = "serve")]
+/// 색인용 FTS 토크나이저 closure(fts_index: 형태소+raw). indexer/writer/reindex 공용.
+#[cfg(feature = "sqlite")]
 pub(crate) fn build_index_tokenizer(ctx: &str) -> Box<dyn Fn(&str) -> String + Send + Sync> {
     #[cfg(feature = "morphology")]
     {
@@ -21,6 +21,40 @@ pub(crate) fn build_index_tokenizer(ctx: &str) -> Box<dyn Fn(&str) -> String + S
     {
         let _ = ctx;
         Box::new(|s: &str| tunaround::search::fallback_fts_index(s))
+    }
+}
+
+/// 질의용 FTS 토크나이저 closure(fts_query: prefix). retriever/mcp-search/코어 공용.
+#[cfg(feature = "sqlite")]
+pub(crate) fn build_query_tokenizer(ctx: &str) -> Box<dyn Fn(&str) -> String + Send + Sync> {
+    #[cfg(feature = "morphology")]
+    {
+        match tunaround::search::tokenizer::create_tokenizer("kiwi") {
+            Ok(t) => Box::new(move |s: &str| t.fts_query(s)),
+            Err(e) => {
+                eprintln!("[{ctx}] 토크나이저 실패, 폴백: {e}");
+                Box::new(|s: &str| tunaround::search::fallback_fts_query(s))
+            }
+        }
+    }
+    #[cfg(not(feature = "morphology"))]
+    {
+        let _ = ctx;
+        Box::new(|s: &str| tunaround::search::fallback_fts_query(s))
+    }
+}
+
+/// 벡터 임베더 인스턴스(semantic이면 OllamaEmbedder, 아니면 None). indexer/retriever/reindex/코어 공용.
+/// 연결 실패는 best-effort(구성 자체는 무오류라 ctx 프리픽스 불요).
+#[cfg(feature = "sqlite")]
+pub(crate) fn build_embedder() -> Option<Box<dyn tunaround::store::embedding::Embedder>> {
+    #[cfg(feature = "semantic")]
+    {
+        Some(Box::new(tunaround::store::embedding::OllamaEmbedder::from_env()))
+    }
+    #[cfg(not(feature = "semantic"))]
+    {
+        None
     }
 }
 
@@ -44,26 +78,9 @@ pub(crate) fn build_http_mcp_backends(ctx: &str, db_str: &str) -> HttpMcpBackend
             std::process::exit(1);
         }
     };
-    // 질의용 토크나이저(fts_query: prefix). retriever 전용.
-    #[cfg(feature = "morphology")]
-    let tok: Box<dyn Fn(&str) -> String + Send + Sync> = {
-        match tunaround::search::tokenizer::create_tokenizer("kiwi") {
-            Ok(t) => Box::new(move |s: &str| t.fts_query(s)),
-            Err(e) => {
-                eprintln!("[{ctx}] 토크나이저 실패, 폴백: {e}");
-                Box::new(|s: &str| tunaround::search::fallback_fts_query(s))
-            }
-        }
-    };
-    #[cfg(not(feature = "morphology"))]
-    let tok: Box<dyn Fn(&str) -> String + Send + Sync> =
-        Box::new(|s: &str| tunaround::search::fallback_fts_query(s));
-    #[cfg(feature = "semantic")]
-    let emb: Option<Box<dyn tunaround::store::embedding::Embedder>> = {
-        Some(Box::new(tunaround::store::embedding::OllamaEmbedder::from_env()))
-    };
-    #[cfg(not(feature = "semantic"))]
-    let emb: Option<Box<dyn tunaround::store::embedding::Embedder>> = None;
+    // 질의용 토크나이저(fts_query: prefix) + 벡터 임베더.
+    let tok = build_query_tokenizer(ctx);
+    let emb = build_embedder();
     let store2 = match tunaround::store::sqlite::SqliteStore::open(db_str) {
         Ok(s) => s,
         Err(e) => {
@@ -156,27 +173,9 @@ pub(crate) fn run_reindex(db_path: &Option<String>) {
         Ok(s) => s,
         Err(e) => { eprintln!("[reindex] DB 열기 실패: {e}"); std::process::exit(1); }
     };
-    // 색인용 fts 토크나이저(fts_index: 형태소+raw).
-    #[cfg(feature = "morphology")]
-    let tok: Box<dyn Fn(&str) -> String + Send + Sync> = {
-        match tunaround::search::tokenizer::create_tokenizer("kiwi") {
-            Ok(t) => Box::new(move |s: &str| t.fts_index(s)),
-            Err(e) => {
-                eprintln!("[reindex] 토크나이저 실패, 폴백: {e}");
-                Box::new(|s: &str| tunaround::search::fallback_fts_index(s))
-            }
-        }
-    };
-    #[cfg(not(feature = "morphology"))]
-    let tok: Box<dyn Fn(&str) -> String + Send + Sync> =
-        Box::new(|s: &str| tunaround::search::fallback_fts_index(s));
-    // 벡터 임베더(semantic이면 재임베딩; model_id 키로 모델 교체 시 갱신).
-    #[cfg(feature = "semantic")]
-    let emb: Option<Box<dyn tunaround::store::embedding::Embedder>> = {
-        Some(Box::new(tunaround::store::embedding::OllamaEmbedder::from_env()))
-    };
-    #[cfg(not(feature = "semantic"))]
-    let emb: Option<Box<dyn tunaround::store::embedding::Embedder>> = None;
+    // 색인용 fts 토크나이저 + 벡터 임베더(semantic이면 재임베딩; model_id 키로 모델 교체 시 갱신).
+    let tok = build_index_tokenizer("reindex");
+    let emb = build_embedder();
 
     let before = store.index_stats().unwrap_or((0, 0, 0, 0, 0));
     let sessions = match store.list_sessions() {
@@ -228,25 +227,8 @@ pub(crate) fn run_mcp_search(
             std::process::exit(1);
         }
     };
-    #[cfg(feature = "morphology")]
-    let tok: Box<dyn Fn(&str) -> String + Send + Sync> = {
-        match tunaround::search::tokenizer::create_tokenizer("kiwi") {
-            Ok(t) => Box::new(move |s: &str| t.fts_query(s)),
-            Err(e) => {
-                eprintln!("[mcp-search] 토크나이저 실패, 폴백: {e}");
-                Box::new(|s: &str| tunaround::search::fallback_fts_query(s))
-            }
-        }
-    };
-    #[cfg(not(feature = "morphology"))]
-    let tok: Box<dyn Fn(&str) -> String + Send + Sync> =
-        Box::new(|s: &str| tunaround::search::fallback_fts_query(s));
-    #[cfg(feature = "semantic")]
-    let emb: Option<Box<dyn tunaround::store::embedding::Embedder>> = {
-        Some(Box::new(tunaround::store::embedding::OllamaEmbedder::from_env()))
-    };
-    #[cfg(not(feature = "semantic"))]
-    let emb: Option<Box<dyn tunaround::store::embedding::Embedder>> = None;
+    let tok = build_query_tokenizer("mcp-search");
+    let emb = build_embedder();
     let store2 = match tunaround::store::sqlite::SqliteStore::open(&db_str) {
         Ok(s) => s,
         Err(e) => {
@@ -528,26 +510,8 @@ pub(crate) fn build_indexer(
     match db_path {
         Some(p) => match tunaround::store::sqlite::SqliteStore::open(p) {
             Ok(store) => {
-                #[cfg(feature = "morphology")]
-                let tok: Box<dyn Fn(&str) -> String + Send + Sync> = {
-                    match tunaround::search::tokenizer::create_tokenizer("kiwi") {
-                        Ok(t) => Box::new(move |s: &str| t.fts_index(s)),
-                        Err(e) => {
-                            eprintln!("[tunaRound] 토크나이저 실패, 폴백: {e}");
-                            Box::new(|s: &str| tunaround::search::fallback_fts_index(s))
-                        }
-                    }
-                };
-                #[cfg(not(feature = "morphology"))]
-                let tok: Box<dyn Fn(&str) -> String + Send + Sync> =
-                    Box::new(|s: &str| tunaround::search::fallback_fts_index(s));
-                // semantic 피처: OllamaEmbedder 인스턴스(indexer용). 연결 실패는 best-effort.
-                #[cfg(feature = "semantic")]
-                let emb_idx: Option<Box<dyn tunaround::store::embedding::Embedder>> = {
-                    Some(Box::new(tunaround::store::embedding::OllamaEmbedder::from_env()))
-                };
-                #[cfg(not(feature = "semantic"))]
-                let emb_idx: Option<Box<dyn tunaround::store::embedding::Embedder>> = None;
+                let tok = build_index_tokenizer("tunaRound");
+                let emb_idx = build_embedder();
                 Some(Box::new(tunaround::store::indexer::SqliteIndexer::new(store, tok, emb_idx))
                     as Box<dyn tunaround::store::indexer::MessageIndexer>)
             }
@@ -568,26 +532,8 @@ pub(crate) fn build_retriever(
     match db_path {
         Some(p) => match tunaround::store::sqlite::SqliteStore::open(p) {
             Ok(store) => {
-                #[cfg(feature = "morphology")]
-                let tok2: Box<dyn Fn(&str) -> String + Send + Sync> = {
-                    match tunaround::search::tokenizer::create_tokenizer("kiwi") {
-                        Ok(t) => Box::new(move |s: &str| t.fts_query(s)),
-                        Err(e) => {
-                            eprintln!("[tunaRound] retriever 토크나이저 실패, 폴백: {e}");
-                            Box::new(|s: &str| tunaround::search::fallback_fts_query(s))
-                        }
-                    }
-                };
-                #[cfg(not(feature = "morphology"))]
-                let tok2: Box<dyn Fn(&str) -> String + Send + Sync> =
-                    Box::new(|s: &str| tunaround::search::fallback_fts_query(s));
-                // semantic 피처: OllamaEmbedder 인스턴스(retriever용). 연결 실패는 best-effort.
-                #[cfg(feature = "semantic")]
-                let emb_ret: Option<Box<dyn tunaround::store::embedding::Embedder>> = {
-                    Some(Box::new(tunaround::store::embedding::OllamaEmbedder::from_env()))
-                };
-                #[cfg(not(feature = "semantic"))]
-                let emb_ret: Option<Box<dyn tunaround::store::embedding::Embedder>> = None;
+                let tok2 = build_query_tokenizer("tunaRound");
+                let emb_ret = build_embedder();
                 Some(Box::new(tunaround::store::retriever::SqliteRetriever::new(store, tok2, emb_ret))
                     as Box<dyn tunaround::orchestrator::ContextRetriever>)
             }
