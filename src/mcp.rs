@@ -770,6 +770,7 @@ mod tests {
         let hits = vec![Utterance {
             speaker: "claude/proposer".into(),
             content: "검색 시스템 설계".into(),
+            abstraction: None,
         }];
         let server = TunaSearchServer::new(Arc::new(FakeRetriever(hits)));
         let result = server
@@ -891,8 +892,8 @@ mod tests {
     #[tokio::test]
     async fn read_transcript_with_reader_returns_content() {
         let utts = vec![
-            Utterance { speaker: "claude/proposer".into(), content: "첫 번째 발언".into() },
-            Utterance { speaker: "codex/reviewer".into(), content: "두 번째 발언".into() },
+            Utterance { speaker: "claude/proposer".into(), content: "첫 번째 발언".into(), abstraction: None },
+            Utterance { speaker: "codex/reviewer".into(), content: "두 번째 발언".into(), abstraction: None },
         ];
         let server = TunaSearchServer::new(Arc::new(FakeRetriever(vec![])))
             .with_transcript_reader(Arc::new(FakeTranscriptReader(utts)));
@@ -954,7 +955,7 @@ mod tests {
     async fn read_transcript_without_session_id_uses_default_session() {
         // session_id 파라미터 생략 시 default_session이 TranscriptReader에 전달된다.
         let capturing = Arc::new(CapturingTranscriptReader::new(vec![
-            Utterance { speaker: "claude".into(), content: "안녕".into() },
+            Utterance { speaker: "claude".into(), content: "안녕".into(), abstraction: None },
         ]));
         let server = TunaSearchServer::new(Arc::new(FakeRetriever(vec![])))
             .with_transcript_reader(capturing.clone() as Arc<dyn crate::orchestrator::TranscriptReader>)

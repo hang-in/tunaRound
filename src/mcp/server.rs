@@ -1030,7 +1030,7 @@ mod tests {
                     .lock()
                     .unwrap()
                     .iter()
-                    .map(|(s, c)| crate::orchestrator::Utterance { speaker: s.clone(), content: c.clone() })
+                    .map(|(s, c)| crate::orchestrator::Utterance { speaker: s.clone(), content: c.clone(), abstraction: None })
                     .collect())
             }
         }
