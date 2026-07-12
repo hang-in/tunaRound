@@ -530,4 +530,14 @@
 - [x] **⑥ tasks.rs 분리**(PR #87 `f795ba3`): store/sqlite/tasks.rs impl SqliteStore 21메서드를 tasks/{state,lease,replay}.rs. tasks.rs 1,880→1,341. 적대 리뷰 2슬라이스 등가.
 - [x] 스테일 브랜치 정리: 머지 origin 브랜치 전량 + 미머지 session17(v2-41 superseded 확인) 삭제. origin=main만.
 - [ ] **(defer, 전용 세션·계약 고정 먼저) ④ task 문자열→JSON**(mcp/format.rs·worker.rs, 라이브 mesh 프로토콜 동작 변경) / **⑤ store DTO**(orchestrator·repl·store 중립 도메인 타입, 아키텍처 변경). 사용자 결정 2026-07-12.
-- [ ] **(다음 세션 후보) 발견된 pre-existing 잠복 이슈 3건**: post_turn writer 실패 시 success 반환(R1 위반, quick win) / index_terminal_task delete-then-append race / OllamaEmbedder reqwest blocking 타임아웃 부재. 순수 이동 PR 범위 밖이라 미수정, 별도 처리.
+- [ ] **(다음 세션 후보) 발견된 pre-existing 잠복 이슈 3건**: post_turn writer 실패 시 success 반환(R1 위반, quick win) / index_terminal_task delete-then-append race / OllamaEmbedder reqwest blocking 타임아웃 부재. 순수 이동 PR 범위 밖이라 미수정, 별도 처리. → **세션26에서 처리**.
+
+## 세션26: 잠복 이슈 3건 (post_turn 계약·index race·embed timeout)
+
+> 브랜치 fix/post-turn-index-race-embed-timeout. 근거 context-notes.md 세션26. push·PR·머지 승인 후.
+
+- [x] **① post_turn R1 계약**(mcp/search.rs): Err 분기 success→error. None(미연결)은 success 유지. 테스트 post_turn_writer_error_returns_is_error_true(is_error=Some(true)). 클라 mcp_client.rs:344 isError→Err 매핑 확인.
+- [x] **③ embed timeout**(store/embedding.rs): Client::builder().timeout(env TUNAROUND_EMBED_TIMEOUT_SECS 기본 30s). 순수 헬퍼 timeout_secs_from + 단위테스트. 적대 리뷰 반영: 죽은 폴백 unwrap_or_else(Client::new)→expect(동작 불변, 주석 정정).
+- [x] **② index race 직렬화**(mcp/indexing.rs): a2a_store 락 하나로 delete→append→stamp 전체 직렬화(데드락 없음=락순서 a2a_store→writer 일관, backfill 비재진입). 테스트 concurrent_index_same_task_no_duplicate_turns(2스레드×40) + idempotent(공유 파일 DB). 적대 검증: 데드락 렌즈 전부 holds, race-closure holds.
+- [x] 게이트: cargo fmt --all clean + lib test 582 pass/0 fail + clippy --all-targets clean. 적대 검증 워크플로우(4렌즈+종합=GO, blocker/major 0).
+- [ ] 커밋 → push → PR → CI green + 봇 리뷰 반영 → 머지(리팩토링 트랙 자율 승인).

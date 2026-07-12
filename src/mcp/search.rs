@@ -94,11 +94,15 @@ impl TunaSearchServer {
             )]));
         };
         let sid = p.session_id.unwrap_or_else(|| self.default_session.clone());
+        // append_turn Err(전사 쓰기 DB 장애) = success로 위장하지 않는다. R1 계약(isError=true)으로 반환해
+        // 클라(mcp_client.rs의 isError 검사)가 "추가됨"과 "추가 실패"를 구분하게 한다(형제 write/mutation 툴
+        // claim/complete/fail·registry와 동일 계약. 조회족 poll/send/get/tasks는 별개로 success-with-error-text
+        // 유지). "writer 미연결"(위 None)은 미배선이라 실패 아님 → success 유지.
         match writer.append_turn(&sid, &p.speaker, &p.content) {
             Ok(id) => Ok(CallToolResult::success(vec![Content::text(format!(
                 "추가됨: session={sid} msg_id={id}"
             ))])),
-            Err(e) => Ok(CallToolResult::success(vec![Content::text(format!(
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
                 "추가 실패: {e}"
             ))])),
         }

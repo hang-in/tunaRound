@@ -307,6 +307,111 @@ mod tests {
         );
     }
 
+    /// 공유 파일 DB로 실제 writer(store3)·a2a_store(store4) 별개 연결을 재현한다(인메모리는 연결마다
+    /// 사설 DB라 공유 불가). 반환 cleanup은 writer·a2a drop 후 호출해야 파일 잠금이 풀린다(Windows).
+    fn shared_file_backends(
+        tag: &str,
+    ) -> (
+        Arc<dyn TranscriptWriter>,
+        Arc<Mutex<SqliteStore>>,
+        Vec<String>,
+    ) {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let uniq = format!(
+            "{tag}_{}_{}",
+            std::process::id(),
+            SEQ.fetch_add(1, Ordering::Relaxed)
+        );
+        let path = std::env::temp_dir().join(format!("tuna_index_{uniq}.db"));
+        let p = path.to_str().unwrap().to_string();
+        let sidecars: Vec<String> = ["", "-wal", "-shm"]
+            .iter()
+            .map(|s| format!("{p}{s}"))
+            .collect();
+        for f in &sidecars {
+            let _ = std::fs::remove_file(f);
+        }
+        let a2a = Arc::new(Mutex::new(
+            SqliteStore::open(&p).unwrap().with_task_events(),
+        ));
+        let writer: Arc<dyn TranscriptWriter> =
+            Arc::new(crate::store::retriever::SqliteTranscriptWriter::new(
+                SqliteStore::open(&p).unwrap(),
+                Box::new(|t: &str| t.to_string()),
+            ));
+        (writer, a2a, sidecars)
+    }
+
+    fn session_message_count(a2a: &Arc<Mutex<SqliteStore>>, sid: &str) -> usize {
+        a2a.lock()
+            .unwrap()
+            .load_session(sid)
+            .unwrap()
+            .map(|s| s.messages.len())
+            .unwrap_or(0)
+    }
+
+    fn payload(task_id: &str) -> indexing::TerminalIndexPayload {
+        indexing::TerminalIndexPayload {
+            task_id: task_id.to_string(),
+            from_agent: "win".to_string(),
+            to_agent: "mac".to_string(),
+            runner: None,
+            request_text: Some("요청문".to_string()),
+            result_text: Some("결과문".to_string()),
+        }
+    }
+
+    #[test]
+    fn index_terminal_task_idempotent_on_shared_store() {
+        // delete-then-append 멱등성: 같은 task를 순차 두 번 색인해도 정확히 req+res 2개만 남는다
+        // (크래시·백필 재색인 안전망). 세션25 리팩토링이 이 불변식을 깨지 않았는지 회귀 방어.
+        let (writer, a2a, sidecars) = shared_file_backends("idem");
+        let p = payload("idem-1");
+        indexing::index_terminal_task(&writer, &a2a, &p);
+        indexing::index_terminal_task(&writer, &a2a, &p);
+        assert_eq!(
+            session_message_count(&a2a, "a2a:idem-1"),
+            2,
+            "재색인해도 중복 없이 정확히 req+res"
+        );
+        drop(writer);
+        drop(a2a);
+        for f in &sidecars {
+            let _ = std::fs::remove_file(f);
+        }
+    }
+
+    #[test]
+    fn concurrent_index_same_task_no_duplicate_turns() {
+        // 직렬화 검증(이번 세션 fix): backfill(기동) vs live(종결)가 같은 sid를 동시 색인해도 색인 전체가
+        // a2a_store 락 하나로 직렬화되어 delete-then-append가 인터리빙되지 않는다 → 항상 정확히 req+res 2개.
+        // 직렬화가 없으면 delete·delete·append·append 인터리빙으로 중복(최대 4)이 생길 수 있다. fix가 있으면
+        // 결정적으로 2를 통과하고, 되돌리면 지배적 인터리빙으로 실패한다(단 fail 방향은 확률적이라 40회 반복해
+        // 스케줄 다양성으로 회귀 노출을 높인다).
+        let (writer, a2a, sidecars) = shared_file_backends("race");
+        for i in 0..40u64 {
+            let task_id = format!("race-{i}");
+            let sid = format!("a2a:{task_id}");
+            let p = payload(&task_id);
+            std::thread::scope(|s| {
+                s.spawn(|| indexing::index_terminal_task(&writer, &a2a, &p));
+                s.spawn(|| indexing::index_terminal_task(&writer, &a2a, &p));
+            });
+            assert_eq!(
+                session_message_count(&a2a, &sid),
+                2,
+                "iter {i}: 동시 색인이 중복을 만들면 안 됨(정확히 req+res)"
+            );
+        }
+        drop(writer);
+        drop(a2a);
+        for f in &sidecars {
+            let _ = std::fs::remove_file(f);
+        }
+    }
+
     #[tokio::test]
     async fn search_context_empty_retriever_returns_ok() {
         let server = TunaSearchServer::new(Arc::new(FakeRetriever(vec![])));
@@ -529,6 +634,39 @@ mod tests {
         assert!(result.is_ok());
         let text = format!("{:?}", result.unwrap().content);
         assert!(text.contains("writer 미연결"), "미연결 안내 불일치: {text}");
+    }
+
+    #[tokio::test]
+    async fn post_turn_writer_error_returns_is_error_true() {
+        // R1 계약(이번 세션 fix): append_turn 실패는 success 위장이 아니라 isError=true라야 클라
+        // (mcp_client.rs의 isError 검사)가 성공으로 오인하지 않는다(형제 툴 search_context·claim/
+        // complete/fail·registry와 동일 계약). "writer 미연결"(위 테스트)은 미배선이라 success 유지.
+        struct FailingWriter;
+        impl crate::orchestrator::TranscriptWriter for FailingWriter {
+            fn append_turn(&self, _s: &str, _sp: &str, _c: &str) -> Result<u64, String> {
+                Err("DB 잠김".into())
+            }
+        }
+        let server = TunaSearchServer::new(Arc::new(FakeRetriever(vec![])))
+            .with_transcript_writer(
+                Arc::new(FailingWriter) as Arc<dyn crate::orchestrator::TranscriptWriter>
+            )
+            .with_default_session("sess-e".to_string());
+        let result = server
+            .post_turn(Parameters(PostTurnParams {
+                session_id: None,
+                speaker: "claude/proposer".into(),
+                content: "쓰기 실패 유발".into(),
+            }))
+            .await
+            .unwrap();
+        assert_eq!(
+            result.is_error,
+            Some(true),
+            "쓰기 실패인데 isError=true가 아님"
+        );
+        let text = format!("{:?}", result.content);
+        assert!(text.contains("추가 실패"), "실패 사유 노출 불일치: {text}");
     }
 
     #[tokio::test]
