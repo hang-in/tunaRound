@@ -305,14 +305,14 @@ struct DashboardEventsQuery {
     dispatcher: Option<String>,
 }
 
-/// 재생 상한(replay·since 두 경로 공통). 재생은 피드 창(50건)용 표면이라 전 테이블 덤프 수준의
-/// N을 막는다(원격 관전자도 무인증으로 붙는 엔드포인트라 방어적 상한). since 경로는 이 상한에서
+/// 재생 상한(replay·since 두 경로 공통). 재생은 피드 창(최근 N건, 현재 200)용 표면이라 전 테이블 덤프
+/// 수준의 N을 막는다(원격 관전자도 무인증으로 붙는 엔드포인트라 방어적 상한). since 경로는 이 상한에서
 /// 잘리면 스냅샷만 보내고 스트림을 정상 종료한다(catch-up 연쇄, 핸들러 주석 참조).
 #[cfg(feature = "serve")]
 const DASHBOARD_REPLAY_MAX: usize = 500;
 
 /// 종결 task 보존기간(일, v2-45 P6b). 이보다 오래된 색인 종결 task는 기동 시 슬림화된다. §5-5:
-/// 보존기간 > 재생 지평선 + 피드 창(50건)이라 슬림화가 재생·피드를 침해하지 않는다.
+/// 보존기간 > 재생 지평선 + 피드 창(최근 N건, 현재 200)이라 슬림화가 재생·피드를 침해하지 않는다.
 #[cfg(feature = "serve")]
 const TERMINAL_RETAIN_DAYS: u32 = 30;
 
