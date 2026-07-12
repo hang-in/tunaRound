@@ -555,4 +555,5 @@
 - [x] **S5 공개 fn+seed/snapshot 중립화**(c608427): 와이어=StoredSession·레거시 폴백 내부 유지. main·store_roundtrip·fixture 갱신. production repl StoredSession 완전 제거.
 - [x] **S6 자유함수 삭제**(5571106): path_to_root/next_id/tree_summary 삭제(retriever·cli_run→active_path). to_stored/from_stored/save/load(v1 포맷)은 유지. no-default·all-features clean.
 - [x] 적대 검증 워크플로우(등가·경계·회귀범위 3렌즈 12확인점 전부 holds) = **GO**. nit 3건(주석·doc 오지칭·커버리지 미세공백) 반영. lib 585 pass·clippy --all-targets·no-default·all-features clean.
-- [ ] 커밋 → PR → CI green+봇 리뷰 → 머지(리팩토링 트랙 자율 승인).
+- [x] 커밋(8개: 계약 d3a787a·S0~S6·nit 94e4b25·봇반영 e710b2e) → **PR #90** → canonical CI green(3-OS·dashboard·fmt·plan·CodeRabbit) + 봇 처리(gemini snapshot 참조·CodeRabbit doc 3 반영 / DeepSource 자문성·문체 dispositioned) → **머지 9b2a0ce**. origin=main만.
+- [ ] **(다음) v2-52 ④ task JSON**: mcp/format.rs·worker.rs 문자열 프로토콜→JSON. **라이브 mesh 동작 변경**이라 다단계(JSON 추가→worker 우선→문자열 하위호환→파서 제거)+도그푸딩. ⑤처럼 전용 세션·계약 고정 권장. 완료 시 리팩토링 종료 → **v0.5.0 릴리즈**.
