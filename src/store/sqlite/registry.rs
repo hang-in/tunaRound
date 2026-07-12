@@ -158,6 +158,15 @@ impl SqliteStore {
             .get(uuid)
             .and_then(|e| e.human_input_at.clone())
             .or_else(|| self.load_human_input(uuid));
+        // roster 부재→존재 첫 진입이면 경로 무관 appear 1회(v2-50 대칭화). deregister가 disappear를
+        // 남기듯, register(워커·infra 경로)도 신규 uuid면 appear를 남긴다 = 짝 없는 disappear 방지.
+        // 이미 있으면 재등록(재기동/재무장)이라 생략 = 전이당 appear 1회. sync_presence의 appear는
+        // `!roster.contains_key`로 이미 여기서 들어온 uuid를 억제하므로 이중 로깅되지 않는다.
+        // insert가 tags/display_name을 소비하므로 그 전에 로깅한다.
+        let is_new = !self.agent_roster.borrow().contains_key(uuid);
+        if is_new {
+            self.log_presence_event("appear", uuid, &tags, display_name.as_deref(), None, now);
+        }
         self.agent_roster.borrow_mut().insert(
             uuid.to_string(),
             AgentEntry {
@@ -682,6 +691,50 @@ mod tests {
         assert_eq!(disappears[0].agent_uuid, "s2");
         assert_eq!(disappears[0].detail.as_deref(), Some("stale"));
         assert_eq!(disappears[0].machine.as_deref(), Some("win"));
+    }
+
+    #[test]
+    fn register_agent_logs_appear_once_and_sync_does_not_duplicate() {
+        let db = SqliteStore::open_memory().unwrap();
+        // register(워커·infra 경로) 신규 진입 = appear 1회(deregister의 disappear와 대칭).
+        db.register_agent(
+            "w1",
+            tags(&[("machine", "win"), ("role", "worker")]),
+            Some("win-worker".into()),
+            "2026-07-12 10:00:00",
+        );
+        let appears1 = db
+            .list_presence_events(None, 100)
+            .unwrap()
+            .into_iter()
+            .filter(|e| e.event_type == "appear" && e.agent_uuid == "w1")
+            .count();
+        assert_eq!(appears1, 1, "register 신규 진입 = appear 1회");
+        // 같은 uuid를 스캐너가 보고해도(이미 roster에 있음) 중복 appear 없음(전이당 1회).
+        db.sync_presence("win", &[presence("w1", "worker", None)], "2026-07-12 10:00:15");
+        // 재등록(재기동)도 이미 존재라 appear 추가 없음.
+        db.register_agent("w1", tags(&[("machine", "win"), ("role", "worker")]), None, "2026-07-12 10:00:30");
+        let appears2 = db
+            .list_presence_events(None, 100)
+            .unwrap()
+            .into_iter()
+            .filter(|e| e.event_type == "appear" && e.agent_uuid == "w1")
+            .count();
+        assert_eq!(appears2, 1, "register→sync 재보고·재등록에도 appear는 전이당 1회");
+    }
+
+    #[test]
+    fn register_after_deregister_relogs_appear() {
+        let db = SqliteStore::open_memory().unwrap();
+        db.register_agent("w1", tags(&[("machine", "win")]), None, "2026-07-12 10:00:00");
+        assert!(db.deregister_agent("w1")); // 부재로 전이(disappear 로깅).
+        // 다시 등장 = 부재→존재 전이라 appear 재로깅(대칭: disappear 후 재appear).
+        db.register_agent("w1", tags(&[("machine", "win")]), None, "2026-07-12 10:05:00");
+        let events = db.list_presence_events(None, 100).unwrap();
+        let appears = events.iter().filter(|e| e.event_type == "appear" && e.agent_uuid == "w1").count();
+        let disappears = events.iter().filter(|e| e.event_type == "disappear" && e.agent_uuid == "w1").count();
+        assert_eq!(appears, 2, "부재→존재 전이가 두 번이면 appear도 2회");
+        assert_eq!(disappears, 1, "deregister 1회 = disappear 1회");
     }
 
     #[test]

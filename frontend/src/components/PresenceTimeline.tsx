@@ -63,6 +63,13 @@ export default function PresenceTimeline() {
       <div className="timeline-header">
         <h2 className="section-title">presence 타임라인</h2>
         <span className="timeline-hint">세션 등장·소멸 + 사람입력 이력(최신순)</span>
+        {/* 첫 로드 성공 후의 폴 실패도 가시화한다(백엔드 fail-visible 원칙과 일관): stale 스냅샷을
+            오류표식 없이 렌더하면 관전자가 최신으로 오판한다. events가 있어도 최신 폴이 실패면 경고. */}
+        {!ok && events !== null ? (
+          <span className="timeline-stale" title="폴 갱신 실패 - 마지막 성공 스냅샷을 표시 중">
+            갱신 실패 · 마지막 성공 표시 중
+          </span>
+        ) : null}
       </div>
       <div className="timeline-list">
         {events === null ? (

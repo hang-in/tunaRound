@@ -47,6 +47,17 @@
 - [ ] 5) 검증: build / clippy -D warnings / test / `npm run build` 전부 green.
 - [ ] 6) 자가 적대 리뷰(마이그레이션 안전·스팸 방지·best-effort·fail-visible·read-only 원칙).
 
+## 알려진 한계 / 후속
+
+- **스캐너 flap = disappear+appear 쌍 스팸 + ★ 회귀 가시화.** 스캐너가 일시적 부분보고를 하면
+  살아있는 세션이 stale로 오제거되었다가 다음 주기에 다시 보고되어, 타임라인에 `disappear(stale)` →
+  `appear` 쌍(+ ★가 잠깐 사라졌다 돌아오는 회귀)이 남는다. **근본원인은 기존 스캐너 flap**(코어의
+  stale 제거·★ 삭제는 이 브랜치 이전부터의 동작)이고, 이 브랜치는 그 전이를 raw-edge로 **가시화만**
+  한다. raw-edge 정직성상 flap이 그대로 보이는 것은 의도된 성질이다.
+- **stale 제거 로직(핵심 mesh 동작)은 이 브랜치에서 건드리지 않는다.** 실사용에서 flap 노이즈가 크면
+  후속으로 debounce(연속 N주기 결측을 확인한 뒤에야 disappear 확정)를 검토한다. **지금은 미착수**
+  (raw 기록이 먼저, 노이즈 완화는 실측 후).
+
 ## 검증 명령
 
 - `cargo build --features "morphology mcp serve worker dashboard"`
