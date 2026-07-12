@@ -565,7 +565,7 @@ impl Session {
             self.snapshot.append(u.speaker.clone(), u.content.clone());
         }
         if let Some(idx) = &self.indexer {
-            idx.persist(&self.session_id, &StoredSession::from(&self.snapshot));
+            idx.persist(&self.session_id, &self.snapshot);
         }
     }
 
@@ -1666,11 +1666,11 @@ mod tests {
     }
     struct FakeIndexer(std::sync::Arc<std::sync::Mutex<IdxCalls>>);
     impl crate::store::indexer::MessageIndexer for FakeIndexer {
-        fn persist(&self, session_id: &str, ss: &StoredSession) {
+        fn persist(&self, session_id: &str, snap: &crate::types::ConversationSnapshot) {
             let mut c = self.0.lock().unwrap();
             c.persists += 1;
             c.last_session = session_id.to_string();
-            c.last_len = ss.messages.len();
+            c.last_len = snap.node_count();
         }
     }
 

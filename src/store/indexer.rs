@@ -3,8 +3,8 @@ use crate::store::StoredSession;
 
 /// 메시지 트리를 검색 인덱스에 반영하는 추상화(append 후 fire-and-forget 미러 패턴).
 pub trait MessageIndexer: Send + Sync {
-    /// 현재 전체 트리를 인덱스에 persist한다(전량 교체 의미론).
-    fn persist(&self, session_id: &str, ss: &StoredSession);
+    /// 현재 전체 트리를 인덱스에 persist한다(전량 교체 의미론). 중립 snapshot을 받아 구현이 영속 DTO로 변환.
+    fn persist(&self, session_id: &str, snap: &crate::types::ConversationSnapshot);
 }
 
 #[cfg(feature = "sqlite")]
@@ -37,18 +37,20 @@ mod sqlite_indexer {
         }
     }
     impl MessageIndexer for SqliteIndexer {
-        fn persist(&self, session_id: &str, ss: &StoredSession) {
+        fn persist(&self, session_id: &str, snap: &crate::types::ConversationSnapshot) {
+            // 중립 snapshot → 영속 DTO 변환(저수준 SQLite 매핑은 StoredSession 유지 = 오라클 불변, v2-52 ⑤).
+            let ss = StoredSession::from(snap);
             // best-effort: 색인 실패는 토론 흐름을 막지 않는다(eprintln 경고).
             let store = match self.store.lock() {
                 Ok(g) => g,
                 Err(e) => e.into_inner(),
             };
-            if let Err(e) = store.save_session(session_id, ss, |t| (self.tok)(t)) {
+            if let Err(e) = store.save_session(session_id, &ss, |t| (self.tok)(t)) {
                 eprintln!("[tunaRound] SQLite 색인 실패: {e}");
             }
             // 벡터 색인: embedder 있으면 best-effort(실패해도 토론 흐름 불중단).
             if let Some(emb) = &self.embedder
-                && let Err(e) = store.index_vectors(session_id, ss, emb.as_ref())
+                && let Err(e) = store.index_vectors(session_id, &ss, emb.as_ref())
             {
                 eprintln!("[tunaRound] 벡터 색인 실패(best-effort): {e}");
             }
@@ -79,7 +81,7 @@ mod tests {
             }],
             head: Some(1),
         };
-        idx.persist("s1", &ss);
+        idx.persist("s1", &ss.into());
         // 같은 파일 DB를 다시 열어 색인 확인.
         let reopened = SqliteStore::open(p).unwrap();
         let hits = reopened.search("검색", 10).unwrap();
