@@ -6,7 +6,7 @@
 
 브랜치 `fix/quality-gates-pre-0.5.0`에서 처리합니다. 기능 회귀가 아니라 기존 품질 게이트 정리입니다.
 
-- **clippy `--all-features --all-targets` 3 errors**: `src/runner/claude.rs:415`(항상 참 assertion 단순화) + "very complex type" 2건(`type` 별칭 factoring, 하나는 `src/repl/mod.rs:697` 부근). canonical CI가 `--all-targets`를 안 돌려(대부분 테스트 코드) 놓쳤습니다.
+- **clippy `--all-features --all-targets` 3 errors**: `src/runner/claude.rs:415`(항상 참 assertion 단순화) + "very complex type" 2건(`type` 별칭 factoring, `src/repl/mod.rs:856·909` 부근 테스트 sink 튜플). canonical CI가 `--all-targets`를 안 돌려(대부분 테스트 코드) 놓쳤습니다.
 - **exec.rs 테스트 이식성**: `src/runner/exec.rs`의 `spec()`(약 215행)가 `bin: "sh"`를 하드코딩해 sh 없는 clean Windows에서 `idle_no_output_triggers_timeout`·`output_then_exit_succeeds_no_false_timeout`·`nonzero_exit_is_spawn_error_not_timeout` 3건이 실패합니다. Git Bash sh가 있는 우리 머신·CI에서는 통과해 잠복해 있었습니다. OS 인지형 `spec()`(Unix=sh -c, Windows=cmd/powershell 등가) 또는 `#[cfg(unix)]` 게이트 + Windows 등가로 이식성을 확보합니다.
 
 > 위 즉시-처리 브랜치는 **Rust 전용**입니다(clippy + exec 이식성). 프론트 항목은 아래 §1로 이관했습니다.
@@ -53,4 +53,4 @@
 | P1 | `mcp.rs` 책임 분리 | defer |
 | P2 | task 문자열 프로토콜 → JSON | defer |
 | P2 | store DTO ↔ 도메인 모델 분리 | defer |
-| P2 | `tasks.rs` 분리 | defer |
+| P2 | `store/sqlite/tasks.rs` 분리 | defer |
