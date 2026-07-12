@@ -113,6 +113,19 @@ pub trait ValiditySink: Send + Sync {
     ) -> Result<(), String>;
 }
 
+/// 발언의 큐레이션 메타(증류 요약 abstraction·검색 앵커 anchors)를 기록하는 경계.
+/// 사람이 /annotate로 지정한다(큐레이션 레이어). ValiditySink와 직교한 관심사라 별도 trait로 둔다.
+/// 미배선(--db 없음)이면 REPL이 안내만 한다. abstraction/anchors 중 None인 필드는 store가 기존 값을 보존한다.
+pub trait AnnotationSink: Send + Sync {
+    fn set_annotation(
+        &self,
+        session_id: &str,
+        msg_id: u64,
+        abstraction: Option<&str>,
+        anchors: Option<&str>,
+    ) -> Result<(), String>;
+}
+
 /// 로스터 좌석 요약(get_roster MCP 노출용). 원격 참가자가 토론 좌석 구성을 발견한다.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RosterSeat {

@@ -5,7 +5,8 @@ pub use sqlite_retriever::SqliteRetriever;
 
 #[cfg(feature = "sqlite")]
 pub use sqlite_transcript::{
-    SqliteCoreSync, SqliteTranscriptReader, SqliteTranscriptWriter, SqliteValiditySink,
+    SqliteAnnotationSink, SqliteCoreSync, SqliteTranscriptReader, SqliteTranscriptWriter,
+    SqliteValiditySink,
 };
 
 #[cfg(feature = "sqlite")]
@@ -58,23 +59,58 @@ mod sqlite_retriever {
         Some((((y * 12 + mo) * 31 + d) * 24 + h) * 3600 + mi * 60 + se)
     }
 
+    /// raw 질의를 앵커 매치용 토큰(영숫자 경계 분리·소문자·비어있지 않음)으로 만든다.
+    /// 한글 음절은 is_alphanumeric()이 true라 "검색"은 한 토큰으로 유지된다. FTS 연산자 오염을
+    /// 피하려 morphology tok 대신 raw query에서 직접 뽑는다.
+    fn query_anchor_tokens(query: &str) -> Vec<String> {
+        query
+            .split(|c: char| !c.is_alphanumeric())
+            .map(|t| t.to_lowercase())
+            .filter(|t| !t.is_empty())
+            .collect()
+    }
+
+    /// anchors 문자열(콤마·공백 분리)의 토큰과 질의 토큰이 상호 포함(부분일치 포함)이면 매치.
+    /// anchors 비어있거나 질의 토큰 없으면 false(=미매치). 대소문자 무시(anchors도 소문자화).
+    fn anchor_matches(anchors: &str, query_tokens: &[String]) -> bool {
+        if query_tokens.is_empty() {
+            return false;
+        }
+        let anchor_toks: Vec<String> = anchors
+            .split(|c: char| c == ',' || c.is_whitespace())
+            .map(|t| t.trim().to_lowercase())
+            .filter(|t| !t.is_empty())
+            .collect();
+        if anchor_toks.is_empty() {
+            return false;
+        }
+        query_tokens.iter().any(|q| {
+            anchor_toks
+                .iter()
+                .any(|a| a == q || a.contains(q.as_str()) || q.contains(a.as_str()))
+        })
+    }
+
     /// penalty 기반 재랭크(안정 정렬로 같은 penalty 내 relevance 순서 보존).
     /// rejected 드롭 / superseded·stale +2 / 현재 세션 off-branch(버려진 분기) +1(step 5b) /
     /// 다른 세션의 낡은(후보 집합 최신 대비 임계 초과) 히트 +1(step 5c, recency 정책 A=보수).
     /// 유효성 미설정·active·unknown은 penalty 0. current_session=None이면 분기 페널티 없음.
     /// created_at NULL(마이그레이션 기존행)은 recency 판단 유보(강등 없음).
+    /// 큐레이션 앵커 부스트(v2-51)는 penalty를 침범하지 않는 **2차 정렬 키**(매치=0/미매치=1)로만
+    /// 작용해, 같은 penalty tier 안에서만 매치를 앞세운다(rejected 드롭·superseded 강등 불침해).
     fn rerank<T>(
         store: &SqliteStore,
         items: Vec<(String, u64, T)>,
         current_session: Option<&str>,
+        query_tokens: &[String],
     ) -> Vec<(String, u64, T)> {
-        // 1차: rejected 드롭 + 유효성/분기 penalty + created_at(초 근사) 수집 + 후보 최신 타임스탬프 산출.
-        let mut staged: Vec<(u32, String, u64, T, Option<i64>)> = Vec::new();
+        // 1차: rejected 드롭 + 유효성/분기 penalty + 앵커 매치 + created_at(초 근사) 수집 + 후보 최신 타임스탬프 산출.
+        let mut staged: Vec<(u32, u8, String, u64, T, Option<i64>)> = Vec::new();
         let mut max_ts: Option<i64> = None;
         for (sid, mid, v) in items {
-            let state = store.get_validity(&sid, mid).ok().flatten().map(|x| x.valid_state);
+            let meta = store.get_validity(&sid, mid).ok().flatten();
             let mut penalty = 0u32;
-            match state.as_deref() {
+            match meta.as_ref().map(|m| m.valid_state.as_str()) {
                 Some("rejected") => continue, // 드롭.
                 Some("superseded") | Some("stale") => penalty += 2,
                 _ => {} // active | unknown | None.
@@ -83,37 +119,63 @@ mod sqlite_retriever {
                 // 현재 세션의 off-branch 히트(활성경로 콘텐츠는 repl이 이미 제외) = 버려진 분기.
                 penalty += 1;
             }
+            // 앵커 매치는 penalty를 넘지 않는 2차 키(매치=0 우선, 미매치=1). 유효성 강등을 넘어서지 못한다.
+            let anchor_rank = match meta.as_ref().and_then(|m| m.anchors.as_deref()) {
+                Some(a) if anchor_matches(a, query_tokens) => 0u8,
+                _ => 1u8,
+            };
             let ts = store.get_created_at(&sid, mid).ok().flatten().and_then(|s| parse_ts_approx(&s));
             if let Some(t) = ts {
                 max_ts = Some(max_ts.map_or(t, |m| m.max(t)));
             }
-            staged.push((penalty, sid, mid, v, ts));
+            staged.push((penalty, anchor_rank, sid, mid, v, ts));
         }
         // 2차: cross-session recency 강등(정책 A=보수). 다른 세션 && ts 존재 && 최신 대비 임계 초과 → +1.
         // 현재 세션·active·최신·created_at 미상은 불변(relevance/validity 우선 보존).
-        let mut scored: Vec<(u32, String, u64, T)> = Vec::with_capacity(staged.len());
-        for (mut penalty, sid, mid, v, ts) in staged {
+        let mut scored: Vec<(u32, u8, String, u64, T)> = Vec::with_capacity(staged.len());
+        for (mut penalty, anchor_rank, sid, mid, v, ts) in staged {
             if current_session != Some(sid.as_str())
                 && let (Some(t), Some(m)) = (ts, max_ts)
                 && m - t > RECENCY_STALE_SECS
             {
                 penalty += 1;
             }
-            scored.push((penalty, sid, mid, v));
+            scored.push((penalty, anchor_rank, sid, mid, v));
         }
-        scored.sort_by_key(|(p, _, _, _)| *p); // 안정 정렬.
-        scored.into_iter().map(|(_, sid, mid, v)| (sid, mid, v)).collect()
+        // 안정 정렬: penalty 1차, 앵커 매치 2차. 같은 (penalty, anchor_rank) 내 relevance 순서 보존.
+        scored.sort_by_key(|(p, ar, _, _, _)| (*p, *ar));
+        scored.into_iter().map(|(_, _, sid, mid, v)| (sid, mid, v)).collect()
     }
 
-    /// (session_id, Utterance) 항목을 재랭크(유효성+분기) 후 세션 다양성 cap + limit으로 마무리한다.
+    /// abstraction이 있으면 주입 텍스트 앞에 증류 요약을 얹는다(원문 보존·provenance 유지, v2-51).
+    /// 미설정·공백이면 원문 불변(기존 동작 불변).
+    fn surface_curation(abstraction: Option<&str>, content: &str) -> String {
+        match abstraction {
+            Some(a) if !a.trim().is_empty() => format!("[요약] {}\n{}", a.trim(), content),
+            _ => content.to_string(),
+        }
+    }
+
+    /// (session_id, msg_id, Utterance) 항목을 재랭크(유효성+분기+앵커) 후 abstraction 표면화 +
+    /// 세션 다양성 cap + limit으로 마무리한다.
     fn finish(
         store: &SqliteStore,
         cands: Vec<(String, u64, Utterance)>,
         limit: usize,
         current_session: Option<&str>,
+        query_tokens: &[String],
     ) -> Vec<Utterance> {
-        let reranked = rerank(store, cands, current_session);
-        let items: Vec<(String, Utterance)> = reranked.into_iter().map(|(sid, _, u)| (sid, u)).collect();
+        let reranked = rerank(store, cands, current_session, query_tokens);
+        // 큐레이션 표면화: abstraction 있으면 증류 요약을 앞세운다(원문 보존). 미설정이면 불변.
+        let items: Vec<(String, Utterance)> = reranked
+            .into_iter()
+            .map(|(sid, mid, mut u)| {
+                let abstraction =
+                    store.get_validity(&sid, mid).ok().flatten().and_then(|v| v.abstraction);
+                u.content = surface_curation(abstraction.as_deref(), &u.content);
+                (sid, u)
+            })
+            .collect();
         crate::store::cap_per_session_backfill(items, MAX_PER_SESSION, limit)
     }
 
@@ -132,6 +194,8 @@ mod sqlite_retriever {
             }
 
             let q = (self.tok)(query);
+            // 앵커 부스트용 질의 토큰(raw query 기반, FTS 연산자 오염 회피). 매 finish에 전달.
+            let query_tokens = query_anchor_tokens(query);
             let store = self.store.lock().unwrap_or_else(|e| e.into_inner());
 
             // 1차 FTS 검색(세션 다양성 cap을 위해 over-fetch). 실패=진짜 DB 장애 -> 전파(빈 결과로 은폐 금지).
@@ -145,7 +209,7 @@ mod sqlite_retriever {
                     .into_iter()
                     .map(|h| (h.session_id, h.msg_id, Utterance { speaker: h.speaker, content: h.content }))
                     .collect();
-                return Ok(finish(&store, cands, limit, current_session));
+                return Ok(finish(&store, cands, limit, current_session, &query_tokens));
             };
 
             // FTS 결과 키 리스트 + content_map 구축.
@@ -168,7 +232,7 @@ mod sqlite_retriever {
                 Ok(v) => v,
                 Err(e) => {
                     eprintln!("[tunaRound] 쿼리 임베딩 실패(FTS 단독 폴백): {e}");
-                    return Ok(finish(&store, cands_from_map(content_map), limit, current_session));
+                    return Ok(finish(&store, cands_from_map(content_map), limit, current_session, &query_tokens));
                 }
             };
 
@@ -177,7 +241,7 @@ mod sqlite_retriever {
                 Ok(hits) => hits,
                 Err(e) => {
                     eprintln!("[tunaRound] 벡터 검색 실패(FTS 단독 폴백): {e}");
-                    return Ok(finish(&store, cands_from_map(content_map), limit, current_session));
+                    return Ok(finish(&store, cands_from_map(content_map), limit, current_session, &query_tokens));
                 }
             };
 
@@ -204,7 +268,7 @@ mod sqlite_retriever {
                     cands.push((key.0, key.1, u));
                 }
             }
-            Ok(finish(&store, cands, limit, current_session))
+            Ok(finish(&store, cands, limit, current_session, &query_tokens))
         }
     }
 
@@ -381,6 +445,30 @@ mod sqlite_transcript {
         ) -> Result<(), String> {
             let store = self.store.lock().unwrap_or_else(|e| e.into_inner());
             store.set_validity(session_id, msg_id, valid_state, superseded_by)
+        }
+    }
+
+    /// 큐레이션 지정 sink 구현(/annotate → message_validity의 abstraction/anchors 쓰기).
+    pub struct SqliteAnnotationSink {
+        store: std::sync::Mutex<SqliteStore>,
+    }
+
+    impl SqliteAnnotationSink {
+        pub fn new(store: SqliteStore) -> Self {
+            Self { store: std::sync::Mutex::new(store) }
+        }
+    }
+
+    impl crate::orchestrator::AnnotationSink for SqliteAnnotationSink {
+        fn set_annotation(
+            &self,
+            session_id: &str,
+            msg_id: u64,
+            abstraction: Option<&str>,
+            anchors: Option<&str>,
+        ) -> Result<(), String> {
+            let store = self.store.lock().unwrap_or_else(|e| e.into_inner());
+            store.set_annotation(session_id, msg_id, abstraction, anchors)
         }
     }
 }
@@ -614,6 +702,93 @@ mod tests {
 
         // 컨텍스트 없는 retrieve는 분기 페널티 없음(둘 다 반환).
         assert_eq!(retriever.retrieve("검색", 10).unwrap().len(), 2);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn retrieve_surfaces_abstraction_in_content() {
+        // 큐레이션(v2-51): abstraction이 설정된 발언은 주입 텍스트에 증류 요약이 앞서고 원문도 보존된다.
+        let dir = std::env::temp_dir();
+        let path = dir.join("tuna_retriever_abstraction.db");
+        let _ = std::fs::remove_file(&path);
+        let p = path.to_str().unwrap();
+        let store_w = SqliteStore::open(p).unwrap();
+        store_w
+            .save_session(
+                "s",
+                &StoredSession {
+                    messages: vec![StoredMessage { id: 1, parent_id: None, speaker: "a".into(), content: "원문 검색 구현 논의".into() }],
+                    head: Some(1),
+                },
+                |t| t.to_string(),
+            )
+            .unwrap();
+        // 사람이 남긴 증류 요약(abstraction). anchors는 None으로 두어 표면화만 검증.
+        store_w.set_annotation("s", 1, Some("핵심 결정: 하이브리드 검색 채택"), None).unwrap();
+        drop(store_w);
+
+        let store_r = SqliteStore::open(p).unwrap();
+        let retriever = SqliteRetriever::new(store_r, Box::new(|t: &str| t.to_string()), None);
+        let hits = retriever.retrieve("검색", 10).unwrap();
+        assert_eq!(hits.len(), 1, "1건 반환: {hits:?}");
+        let c = &hits[0].content;
+        assert!(c.contains("핵심 결정: 하이브리드 검색 채택"), "abstraction 표면화 없음: {c}");
+        assert!(c.contains("원문 검색 구현 논의"), "원문 보존 없음: {c}");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn retrieve_boosts_anchor_match_within_penalty_tier() {
+        // 큐레이션(v2-51): 같은 penalty tier(둘 다 active·cross-session)에서 쿼리와 매치되는 anchors를
+        // 가진 발언이 순위를 올린다. 앵커 없는 baseline은 FTS relevance 순(dense="a" 먼저).
+        let dir = std::env::temp_dir();
+        let path = dir.join("tuna_retriever_anchor_boost.db");
+        let _ = std::fs::remove_file(&path);
+        let p = path.to_str().unwrap();
+
+        // "a"=짧고 밀도 높은 매치(FTS 상위), "b"=길어 상대적으로 하위. 둘 다 유효성 미설정 → penalty 0 동률.
+        let store_w = SqliteStore::open(p).unwrap();
+        store_w
+            .save_session(
+                "a",
+                &StoredSession {
+                    messages: vec![StoredMessage { id: 1, parent_id: None, speaker: "a".into(), content: "검색".into() }],
+                    head: Some(1),
+                },
+                |t| t.to_string(),
+            )
+            .unwrap();
+        store_w
+            .save_session(
+                "b",
+                &StoredSession {
+                    messages: vec![StoredMessage { id: 1, parent_id: None, speaker: "b".into(), content: "검색 시스템 상세 설계 배경 기록".into() }],
+                    head: Some(1),
+                },
+                |t| t.to_string(),
+            )
+            .unwrap();
+        drop(store_w);
+
+        // baseline(앵커 없음): FTS relevance로 "a"(밀도 높음)가 앞선다.
+        let store_b = SqliteStore::open(p).unwrap();
+        let base = SqliteRetriever::new(store_b, Box::new(|t: &str| t.to_string()), None);
+        let base_hits = base.retrieve("검색", 10).unwrap();
+        let base_first = base_hits.first().map(|u| u.speaker.clone());
+        assert_eq!(base_first.as_deref(), Some("a"), "baseline은 dense 'a'가 먼저: {base_hits:?}");
+
+        // "b"에 쿼리("검색")와 매치되는 anchors 부여 → 같은 penalty tier에서 'b'가 앞서야 한다.
+        let store_ann = SqliteStore::open(p).unwrap();
+        store_ann.set_annotation("b", 1, None, Some("검색,아키텍처")).unwrap();
+        drop(store_ann);
+
+        let store_r = SqliteStore::open(p).unwrap();
+        let retriever = SqliteRetriever::new(store_r, Box::new(|t: &str| t.to_string()), None);
+        let hits = retriever.retrieve("검색", 10).unwrap();
+        assert_eq!(hits.len(), 2, "두 발언 모두 반환: {hits:?}");
+        assert_eq!(hits[0].speaker, "b", "앵커 매치 발언이 부스트로 먼저: {hits:?}");
 
         let _ = std::fs::remove_file(&path);
     }

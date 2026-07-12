@@ -45,9 +45,38 @@ pub enum Command {
     Supersede { id: u64, by: Option<u64> },
     /// 발언을 rejected로 표시(검색에서 제외).
     Reject(u64),
+    /// 발언에 큐레이션(증류 요약 abstraction·검색 앵커 anchors)을 남긴다(둘 중 하나만도 허용).
+    Annotate { id: u64, abstraction: Option<String>, anchors: Option<String> },
     Help,
     Quit,
     Noop,
+}
+
+/// 큰따옴표를 존중해 공백 분리 토큰을 만든다(/annotate 인자 파싱용). 따옴표 안 공백은 보존한다.
+/// 여는 따옴표는 값 경계로만 쓰고 토큰에는 포함하지 않는다. 빈 따옴표("")는 빈 토큰을 만든다.
+fn split_quoted(s: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut in_quote = false;
+    let mut has_token = false;
+    for c in s.chars() {
+        if c == '"' {
+            in_quote = !in_quote;
+            has_token = true; // "" 도 토큰으로 인정.
+        } else if c.is_whitespace() && !in_quote {
+            if has_token {
+                out.push(std::mem::take(&mut cur));
+                has_token = false;
+            }
+        } else {
+            cur.push(c);
+            has_token = true;
+        }
+    }
+    if has_token {
+        out.push(cur);
+    }
+    out
 }
 
 /// 한 줄을 명령으로 파싱한다. `/`로 시작하면 명령, 아니면 메시지, 공백이면 Noop.
@@ -93,6 +122,37 @@ pub fn parse_command(line: &str) -> Command {
                 Some(id) => Command::Reject(id),
                 None => Command::Message(line.to_string()),
             },
+            "annotate" => {
+                // /annotate <id> --abstraction "요약" --anchors "k1,k2" (둘 중 하나만도 허용).
+                let toks = split_quoted(arg.as_deref().unwrap_or(""));
+                match toks.first().and_then(|t| t.parse::<u64>().ok()) {
+                    None => Command::Message(line.to_string()),
+                    Some(id) => {
+                        let mut abstraction = None;
+                        let mut anchors = None;
+                        let mut i = 1;
+                        while i < toks.len() {
+                            match toks[i].as_str() {
+                                "--abstraction" => {
+                                    abstraction = toks.get(i + 1).filter(|s| !s.is_empty()).cloned();
+                                    i += 2;
+                                }
+                                "--anchors" => {
+                                    anchors = toks.get(i + 1).filter(|s| !s.is_empty()).cloned();
+                                    i += 2;
+                                }
+                                _ => i += 1,
+                            }
+                        }
+                        // 둘 다 비면 잘못된 사용 → 일반 메시지로 폴스루(기존 명령 패턴 답습).
+                        if abstraction.is_none() && anchors.is_none() {
+                            Command::Message(line.to_string())
+                        } else {
+                            Command::Annotate { id, abstraction, anchors }
+                        }
+                    }
+                }
+            }
             "debate" => {
                 const DEFAULT_TURNS: usize = 3;
                 const MAX_TURNS: usize = 10;
@@ -194,11 +254,13 @@ pub struct Session {
     core_sync: Option<Box<dyn crate::orchestrator::CoreSync>>,
     /// 유효성 지정 sink(/supersede·/reject, step 5). None(--db 없음)이면 안내만.
     validity_sink: Option<Box<dyn crate::orchestrator::ValiditySink>>,
+    /// 큐레이션 지정 sink(/annotate, v2-51). None(--db 없음)이면 안내만.
+    annotation_sink: Option<Box<dyn crate::orchestrator::AnnotationSink>>,
 }
 
 impl Session {
     pub fn new(participants: Vec<Participant>, registry: Box<dyn RunnerRegistry>) -> Self {
-        Self { participants, messages: Vec::new(), head: None, registry, session_id: "default".to_string(), indexer: None, retriever: None, recent_turns: None, core_sync: None, validity_sink: None, context_mode: ContextMode::Push }
+        Self { participants, messages: Vec::new(), head: None, registry, session_id: "default".to_string(), indexer: None, retriever: None, recent_turns: None, core_sync: None, validity_sink: None, annotation_sink: None, context_mode: ContextMode::Push }
     }
 
     /// indexer 배선 생성자. SQLite 색인 활성화용.
@@ -208,7 +270,7 @@ impl Session {
         session_id: String,
         indexer: Option<Box<dyn crate::store::indexer::MessageIndexer>>,
     ) -> Self {
-        Self { participants, messages: Vec::new(), head: None, registry, session_id, indexer, retriever: None, recent_turns: None, core_sync: None, validity_sink: None, context_mode: ContextMode::Push }
+        Self { participants, messages: Vec::new(), head: None, registry, session_id, indexer, retriever: None, recent_turns: None, core_sync: None, validity_sink: None, annotation_sink: None, context_mode: ContextMode::Push }
     }
 
     /// retriever를 설정하는 빌더 메서드(단일 적용, self를 소비 후 반환).
@@ -238,6 +300,12 @@ impl Session {
     /// 유효성 지정 sink를 설정하는 빌더 메서드(--db 시 배선). None이면 /supersede·/reject 안내만.
     pub fn with_validity_sink(mut self, sink: Option<Box<dyn crate::orchestrator::ValiditySink>>) -> Self {
         self.validity_sink = sink;
+        self
+    }
+
+    /// 큐레이션 지정 sink를 설정하는 빌더 메서드(--db 시 배선). None이면 /annotate 안내만.
+    pub fn with_annotation_sink(mut self, sink: Option<Box<dyn crate::orchestrator::AnnotationSink>>) -> Self {
+        self.annotation_sink = sink;
         self
     }
 
@@ -459,7 +527,7 @@ impl Session {
         path: &str,
     ) -> std::io::Result<Self> {
         let ss = crate::store::load_session(path)?;
-        Ok(Self { participants, messages: ss.messages, head: ss.head, registry, session_id: "default".to_string(), indexer: None, retriever: None, recent_turns: None, core_sync: None, validity_sink: None, context_mode: ContextMode::Push })
+        Ok(Self { participants, messages: ss.messages, head: ss.head, registry, session_id: "default".to_string(), indexer: None, retriever: None, recent_turns: None, core_sync: None, validity_sink: None, annotation_sink: None, context_mode: ContextMode::Push })
     }
 
     /// 한 입력을 처리한다. run_round 호출 등 로직만; 실제 I/O는 호출자(main).
@@ -470,7 +538,7 @@ impl Session {
             Command::Quit => StepOutcome::Exit,
             Command::Noop => StepOutcome::Noop,
             Command::Help => StepOutcome::Print(
-                "메시지를 입력하면 두 에이전트가 응답합니다. @engine 메시지로 한 자리만 지목(읽기), @engine! 메시지로 쓰기 턴(에이전트가 레포 편집), /debate [n] <주제>로 에이전트 N턴 자동 교환(기본 3, 최대 10), /conclude [engine] 종합, /save [경로] 결과 저장, /search <질의>로 인덱스 검색(--db 필요), /explain <질의>로 검색 디버그(토큰화·bm25·유효성), /branches 트리 목록, /checkout <id> 분기 전환, /supersede <id> [<대체id>] 발언을 대체됨으로 표시, /reject <id> 발언을 기각으로 표시(검색 제외), /quit 종료.".into(),
+                "메시지를 입력하면 두 에이전트가 응답합니다. @engine 메시지로 한 자리만 지목(읽기), @engine! 메시지로 쓰기 턴(에이전트가 레포 편집), /debate [n] <주제>로 에이전트 N턴 자동 교환(기본 3, 최대 10), /conclude [engine] 종합, /save [경로] 결과 저장, /search <질의>로 인덱스 검색(--db 필요), /explain <질의>로 검색 디버그(토큰화·bm25·유효성), /branches 트리 목록, /checkout <id> 분기 전환, /supersede <id> [<대체id>] 발언을 대체됨으로 표시, /reject <id> 발언을 기각으로 표시(검색 제외), /annotate <id> --abstraction \"요약\" --anchors \"키워드1,키워드2\" 발언에 큐레이션 남기기(요약 표면화·앵커 부스트, 둘 중 하나만도 허용), /quit 종료.".into(),
             ),
             Command::Save(path) => StepOutcome::Save {
                 path: path.unwrap_or_else(|| DEFAULT_SAVE_PATH.to_string()),
@@ -589,6 +657,35 @@ impl Session {
             }
             Command::Supersede { id, by } => self.mark_validity(id, "superseded", by, "대체됨"),
             Command::Reject(id) => self.mark_validity(id, "rejected", None, "기각됨"),
+            Command::Annotate { id, abstraction, anchors } => {
+                self.mark_annotation(id, abstraction.as_deref(), anchors.as_deref())
+            }
+        }
+    }
+
+    /// 큐레이션 지정 공용 처리: sink 미배선/발언 없음 안내 + 성공/실패 메시지.
+    fn mark_annotation(&self, id: u64, abstraction: Option<&str>, anchors: Option<&str>) -> StepOutcome {
+        let Some(sink) = &self.annotation_sink else {
+            return StepOutcome::Print("큐레이션 지정은 --db <경로>로 실행해야 합니다.".into());
+        };
+        if !self.messages.iter().any(|m| m.id == id) {
+            return StepOutcome::Print(format!("그런 발언이 없습니다: #{id}"));
+        }
+        match sink.set_annotation(&self.session_id, id, abstraction, anchors) {
+            Ok(()) => {
+                let mut parts = Vec::new();
+                if abstraction.is_some() {
+                    parts.push("요약");
+                }
+                if anchors.is_some() {
+                    parts.push("앵커");
+                }
+                StepOutcome::Print(format!(
+                    "#{id} 큐레이션 저장({}). 이후 검색에서 요약이 표면화되고 앵커가 순위를 부스트합니다.",
+                    parts.join("·")
+                ))
+            }
+            Err(e) => StepOutcome::Print(format!("[큐레이션 지정 실패] {e}")),
         }
     }
 
@@ -692,6 +789,39 @@ mod tests {
         assert_eq!(parse_command("/reject x"), Command::Message("/reject x".into()));
     }
 
+    #[test]
+    fn parses_annotate() {
+        // 둘 다 지정(따옴표 안 공백·콤마 보존).
+        assert_eq!(
+            parse_command("/annotate 3 --abstraction \"핵심 결정 텍스트\" --anchors \"검색,랭킹\""),
+            Command::Annotate {
+                id: 3,
+                abstraction: Some("핵심 결정 텍스트".into()),
+                anchors: Some("검색,랭킹".into()),
+            }
+        );
+        // abstraction만.
+        assert_eq!(
+            parse_command("/annotate 5 --abstraction \"요약만\""),
+            Command::Annotate { id: 5, abstraction: Some("요약만".into()), anchors: None }
+        );
+        // anchors만.
+        assert_eq!(
+            parse_command("/annotate 7 --anchors \"a,b\""),
+            Command::Annotate { id: 7, abstraction: None, anchors: Some("a,b".into()) }
+        );
+        // 따옴표 없는 단일 토큰 값도 허용.
+        assert_eq!(
+            parse_command("/annotate 9 --anchors kiwi"),
+            Command::Annotate { id: 9, abstraction: None, anchors: Some("kiwi".into()) }
+        );
+        // id 없음 / 플래그 없음 / 빈 값은 일반 메시지로 폴스루.
+        assert_eq!(parse_command("/annotate"), Command::Message("/annotate".into()));
+        assert_eq!(parse_command("/annotate 3"), Command::Message("/annotate 3".into()));
+        assert_eq!(parse_command("/annotate x --abstraction \"y\""), Command::Message("/annotate x --abstraction \"y\"".into()));
+        assert_eq!(parse_command("/annotate 3 --abstraction \"\""), Command::Message("/annotate 3 --abstraction \"\"".into()));
+    }
+
     /// set_validity 호출을 캡처하는 가짜 sink.
     struct CapturingSink {
         last: std::sync::Mutex<Option<(String, u64, String, Option<u64>)>>,
@@ -742,6 +872,58 @@ mod tests {
     impl crate::orchestrator::ValiditySink for SinkHandle {
         fn set_validity(&self, sid: &str, msg_id: u64, state: &str, by: Option<u64>) -> Result<(), String> {
             self.0.set_validity(sid, msg_id, state, by)
+        }
+    }
+
+    /// set_annotation 호출을 캡처하는 가짜 sink(session_id, msg_id, abstraction, anchors).
+    struct CapturingAnnotationSink {
+        last: std::sync::Mutex<Option<(String, u64, Option<String>, Option<String>)>>,
+    }
+    impl crate::orchestrator::AnnotationSink for CapturingAnnotationSink {
+        fn set_annotation(&self, sid: &str, msg_id: u64, abstraction: Option<&str>, anchors: Option<&str>) -> Result<(), String> {
+            *self.last.lock().unwrap() =
+                Some((sid.to_string(), msg_id, abstraction.map(str::to_string), anchors.map(str::to_string)));
+            Ok(())
+        }
+    }
+    /// Arc<CapturingAnnotationSink>를 Box<dyn AnnotationSink>로 넘기기 위한 얇은 래퍼.
+    struct AnnotationSinkHandle(std::sync::Arc<CapturingAnnotationSink>);
+    impl crate::orchestrator::AnnotationSink for AnnotationSinkHandle {
+        fn set_annotation(&self, sid: &str, msg_id: u64, abstraction: Option<&str>, anchors: Option<&str>) -> Result<(), String> {
+            self.0.set_annotation(sid, msg_id, abstraction, anchors)
+        }
+    }
+
+    #[test]
+    fn annotate_command_calls_sink_for_existing_message() {
+        let sink = std::sync::Arc::new(CapturingAnnotationSink { last: std::sync::Mutex::new(None) });
+        let mut s = session_with_two_seats()
+            .with_annotation_sink(Some(Box::new(AnnotationSinkHandle(sink.clone()))));
+        s.seed_from(StoredSession {
+            messages: vec![StoredMessage { id: 1, parent_id: None, speaker: "claude".into(), content: "x".into() }],
+            head: Some(1),
+        });
+        let out = s.step(Command::Annotate { id: 1, abstraction: Some("요약".into()), anchors: Some("검색,랭킹".into()) });
+        assert!(matches!(out, StepOutcome::Print(_)));
+        let cap = sink.last.lock().unwrap().clone();
+        assert_eq!(cap, Some(("default".into(), 1, Some("요약".into()), Some("검색,랭킹".into()))));
+    }
+
+    #[test]
+    fn annotate_missing_message_does_not_call_sink() {
+        let sink = std::sync::Arc::new(CapturingAnnotationSink { last: std::sync::Mutex::new(None) });
+        let mut s = session_with_two_seats()
+            .with_annotation_sink(Some(Box::new(AnnotationSinkHandle(sink.clone()))));
+        let _ = s.step(Command::Annotate { id: 99, abstraction: Some("요약".into()), anchors: None });
+        assert_eq!(sink.last.lock().unwrap().clone(), None, "없는 발언은 sink 미호출");
+    }
+
+    #[test]
+    fn annotate_command_without_sink_guides() {
+        let mut s = session_with_two_seats(); // sink 미배선.
+        match s.step(Command::Annotate { id: 1, abstraction: Some("요약".into()), anchors: None }) {
+            StepOutcome::Print(t) => assert!(t.contains("--db"), "안내 불일치: {t}"),
+            _ => panic!("Print 기대"),
         }
     }
 
