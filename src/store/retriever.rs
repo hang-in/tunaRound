@@ -262,8 +262,9 @@ mod sqlite_retriever {
              -> Vec<(String, u64, Utterance)> {
                 keys.iter()
                     .filter_map(|k| {
-                        m.remove(k)
-                            .map(|(sp, ct)| (k.0.clone(), k.1, Utterance::new(sp, ct)))
+                        // remove_entry로 키를 되돌려받아 session_id clone을 피한다(gemini medium).
+                        m.remove_entry(k)
+                            .map(|((sid, mid), (sp, ct))| (sid, mid, Utterance::new(sp, ct)))
                     })
                     .collect()
             };

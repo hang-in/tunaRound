@@ -610,17 +610,20 @@ impl SqliteStore {
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| format!("sqlite: {e}"))?;
 
-        // 필터로 제외된 행(다른 모델/차원) 수를 세어 모델 교체를 감지하면 안내(fail-visible).
-        let total: i64 = self
-            .conn
-            .query_row("SELECT COUNT(*) FROM message_vectors", [], |r| r.get(0))
-            .unwrap_or(0);
-        let excluded = total - matched.len() as i64;
-        if excluded > 0 {
-            eprintln!(
-                "[tunaRound] vector_search: model_id/dim 불일치로 {excluded}건 제외됨 \
-                 (임베딩 모델 교체 감지 - `tunaround reindex` 권장)"
-            );
+        // 현재 model_id/dim 벡터가 하나도 없는데 테이블엔 행이 있으면 모델 교체를 감지해 안내한다
+        // (fail-visible). 매 검색 전체 COUNT(*)를 피하려, 검색이 빈 경우에만 확인한다(gemini medium:
+        // 대규모 DB에서 매 검색 풀스캔 방지). matched가 있으면 현재 모델 벡터를 찾은 것이라 안내 불요.
+        if matched.is_empty() {
+            let total: i64 = self
+                .conn
+                .query_row("SELECT COUNT(*) FROM message_vectors", [], |r| r.get(0))
+                .unwrap_or(0);
+            if total > 0 {
+                eprintln!(
+                    "[tunaRound] vector_search: 현재 model_id/dim 벡터 0건(전체 {total}건은 다른 \
+                     모델/차원) - 임베딩 모델 교체 감지, `tunaround reindex` 권장"
+                );
+            }
         }
 
         let mut scored: Vec<(String, u64, f64)> = matched
