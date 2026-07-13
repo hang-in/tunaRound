@@ -88,8 +88,36 @@ pub struct RelayOpts {
     pub once: bool,
 }
 
-/// relay 본체: 접속(재시도) -> [자기등록 -> codex 세션 열거 -> 세션별 poll -> claim -> 주입] 주기 루프.
-/// 주입 실패는 fail_task로 전환해 dispatcher가 lease 만료를 기다리지 않게 한다.
+/// 주입 중 heartbeat·lease 연장 주기(초). AGENT_TTL_SECS(90초)·CLAIM_LEASE_SECS(30분)보다 짧아야
+/// 긴 주입(기본 30분)이 relay를 로스터에서 offline 시키거나(#8) task를 실행 중 requeue시키지(#62) 않는다.
+const RELAY_KEEPALIVE_SECS: u64 = 30;
+
+/// ws URL의 host:port로 짧은 TCP 접속을 시도해 app-server 도달성을 확인한다(#65). app-server가 없는
+/// 창(재부팅·재배포)에 codex task를 claim했다가 즉시 fail로 승격시키지 않기 위해, 도달 불가면 그 주기
+/// 주입을 건너뛰어 task를 submitted로 남긴다(app-server 복구 후 다음 주기에 배달).
+async fn ws_reachable(ws_url: &str) -> bool {
+    // ws://host:port/... 또는 wss://... 에서 host:port만 뽑는다.
+    let after = ws_url.split("://").nth(1).unwrap_or(ws_url);
+    let hostport = after.split('/').next().unwrap_or(after);
+    // 포트가 없으면 TcpStream::connect로 판정할 수 없다. 이 도달성 체크는 best-effort 최적화(#65)이므로
+    // 판정 불가면 게이트를 열어(true) 주입을 진행시키고, 실제 접속 실패는 codex_inject의 정상 실패
+    // 경로가 다룬다(파싱 불가한 URL이 주입을 영구히 막지 않게, gemini).
+    if !hostport.contains(':') {
+        return true;
+    }
+    matches!(
+        tokio::time::timeout(
+            Duration::from_secs(2),
+            tokio::net::TcpStream::connect(hostport),
+        )
+        .await,
+        Ok(Ok(_))
+    )
+}
+
+/// relay 본체: 접속(재시도) -> [자기등록 -> codex 세션 열거 -> app-server 도달성 확인 -> 세션별
+/// poll -> claim -> 주입(중 heartbeat/lease 연장)] 주기 루프. 주입 실패는 fail_task로 전환해
+/// dispatcher가 lease 만료를 기다리지 않게 한다.
 pub async fn run(opts: RelayOpts) -> Result<(), String> {
     // 브로커보다 먼저 떠도 죽지 않게 접속을 재시도한다(presence-scan과 동일 규약).
     let mut client = loop {
@@ -136,56 +164,105 @@ pub async fn run(opts: RelayOpts) -> Result<(), String> {
         // 시간창 밖 세션을 여기서도 제외한다(스캐너는 로스터에만 배선, relay는 별도 소비 경로였음).
         let sessions = gate_sessions(sessions, now, opts.codex_human_window);
 
+        // #65: app-server(ws) 도달성을 이 주기 시작에 1회 확인한다(머신당 app-server 1개). 미도달이면
+        // codex task를 claim했다가 ws 접속 실패로 즉시 fail로 승격시키지 않도록 이번 주기 주입을 통째로
+        // 건너뛴다(task는 submitted로 남아 app-server 복구 후 배달된다).
+        let ws_ok = sessions.is_empty() || ws_reachable(&opts.ws).await;
+        if !sessions.is_empty() && !ws_ok {
+            eprintln!(
+                "[codex-relay] app-server({}) 미도달 - 이번 주기 codex 주입 스킵(task는 submitted 유지)",
+                opts.ws
+            );
+        }
+
         let mut reconnect = false;
-        for s in &sessions {
-            let poll_text = match client.poll_tasks(&s.uuid).await {
-                Ok(t) => t,
-                Err(e) => {
-                    // 브로커 재시작으로 MCP 세션이 만료되면 모든 호출이 계속 실패한다(R10 교훈).
-                    eprintln!("[codex-relay] poll 실패({}): {e}", s.uuid);
-                    reconnect = true;
-                    break;
-                }
-            };
-            for t in parse_open_tasks(&poll_text) {
-                if t.state != "submitted" {
-                    continue;
-                }
-                // 대리 claim: 재주입 방지 + claimed_by=세션 uuid(트레이스는 그 세션 소유로 남는다).
-                // 실패 = 다른 소비자가 선점(세션이 직접 claim했거나 워커) - 조용히 넘어간다.
-                if let Err(e) = client.claim_task(&t.id, Some(&s.uuid), Some("codex")).await {
-                    eprintln!("[codex-relay] claim 실패(선점됨?) task {}: {e}", t.id);
-                    continue;
-                }
-                // Monitor 관측용 이벤트 한 줄(stdout).
-                println!("RELAY {} -> {}", t.id, s.uuid);
-                use std::io::Write;
-                let _ = std::io::stdout().flush();
-                // in-process 주입(--thread 직지정): resume 실패·타임아웃은 fail_task로 전환.
-                let text = build_inject_text(&t.id, &t.msg);
-                match crate::codex_inject::run(
-                    &opts.ws,
-                    "",
-                    Some(&s.uuid),
-                    &text,
-                    opts.approval,
-                    opts.sandbox,
-                    opts.inject_timeout_secs,
-                    false,
-                )
-                .await
-                {
-                    Ok(_) => eprintln!(
-                        "[codex-relay] task {} 주입 턴 종료(complete는 codex 몫)",
-                        t.id
-                    ),
+        if ws_ok {
+            for s in &sessions {
+                let poll_text = match client.poll_tasks(&s.uuid).await {
+                    Ok(t) => t,
                     Err(e) => {
-                        eprintln!("[codex-relay] task {} 주입 실패 -> fail_task: {e}", t.id);
-                        if let Err(fe) = client
-                            .fail_task(&t.id, &format!("codex-relay 주입 실패: {e}"), Some(&s.uuid))
-                            .await
-                        {
-                            eprintln!("[codex-relay] fail_task도 실패(lease 만료가 회수): {fe}");
+                        // 브로커 재시작으로 MCP 세션이 만료되면 모든 호출이 계속 실패한다(R10 교훈).
+                        eprintln!("[codex-relay] poll 실패({}): {e}", s.uuid);
+                        reconnect = true;
+                        break;
+                    }
+                };
+                for t in parse_open_tasks(&poll_text) {
+                    if t.state != "submitted" {
+                        continue;
+                    }
+                    // 대리 claim: 재주입 방지 + claimed_by=세션 uuid(트레이스는 그 세션 소유로 남는다).
+                    // 실패 = 다른 소비자가 선점(세션이 직접 claim했거나 워커) - 조용히 넘어간다.
+                    if let Err(e) = client.claim_task(&t.id, Some(&s.uuid), Some("codex")).await {
+                        eprintln!("[codex-relay] claim 실패(선점됨?) task {}: {e}", t.id);
+                        continue;
+                    }
+                    // Monitor 관측용 이벤트 한 줄(stdout).
+                    println!("RELAY {} -> {}", t.id, s.uuid);
+                    use std::io::Write;
+                    let _ = std::io::stdout().flush();
+                    // in-process 주입(--thread 직지정): resume 실패·타임아웃은 fail_task로 전환.
+                    // #8/#62: 주입은 inject_timeout(기본 30분)까지 블록한다. 그동안 relay가 로스터에서
+                    // offline(AGENT_TTL 90초)으로 빠지거나(#8) task가 lease 만료로 실행 중 requeue되지
+                    // 않도록(#62), RELAY_KEEPALIVE_SECS 주기로 heartbeat + extend_lease를 곁들인다.
+                    let text = build_inject_text(&t.id, &t.msg);
+                    let inject = crate::codex_inject::run(
+                        &opts.ws,
+                        "",
+                        Some(&s.uuid),
+                        &text,
+                        opts.approval,
+                        opts.sandbox,
+                        opts.inject_timeout_secs,
+                        false,
+                    );
+                    tokio::pin!(inject);
+                    let mut keepalive =
+                        tokio::time::interval(Duration::from_secs(RELAY_KEEPALIVE_SECS));
+                    // 절전·고부하로 tick이 밀려도 밀린 tick을 몰아치지 않게 Skip(heartbeat/lease 폭주
+                    // 방지, worker.rs lease keepalive와 동일 규약, gemini medium).
+                    keepalive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                    keepalive.tick().await; // 최초 즉시 tick 소비.
+                    let inject_result = loop {
+                        tokio::select! {
+                            r = &mut inject => break r,
+                            _ = keepalive.tick() => {
+                                if let Err(e) = client.heartbeat(&self_id).await {
+                                    eprintln!("[codex-relay] 주입 중 heartbeat 실패(무시): {e}");
+                                }
+                                if let Err(e) = client.extend_lease(&t.id, &s.uuid).await {
+                                    eprintln!("[codex-relay] task {} lease 연장 실패: {e}", t.id);
+                                }
+                            }
+                        }
+                    };
+                    match inject_result {
+                        Ok(_) => eprintln!(
+                            "[codex-relay] task {} 주입 턴 종료(complete는 codex 몫)",
+                            t.id
+                        ),
+                        Err(e) => {
+                            // #9: app-server에 턴 취소(interrupt) API가 없어, 타임아웃 시 서버측 codex 턴은
+                            // 계속 실행될 수 있다. fail 사유에 이를 명시해 dispatcher가 이중 실행 가능성을
+                            // 인지하게 한다(완전한 취소는 app-server 프로토콜 지원 전까지 불가).
+                            let note = if e.contains("타임아웃") {
+                                " (app-server 취소 API 부재로 서버측 턴이 계속 실행 중일 수 있음)"
+                            } else {
+                                ""
+                            };
+                            eprintln!("[codex-relay] task {} 주입 실패 -> fail_task: {e}", t.id);
+                            if let Err(fe) = client
+                                .fail_task(
+                                    &t.id,
+                                    &format!("codex-relay 주입 실패: {e}{note}"),
+                                    Some(&s.uuid),
+                                )
+                                .await
+                            {
+                                eprintln!(
+                                    "[codex-relay] fail_task도 실패(lease 만료가 회수): {fe}"
+                                );
+                            }
                         }
                     }
                 }
@@ -374,7 +451,7 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn run_once_skips_preclaimed_task_and_fails_task_when_injection_unreachable() {
+        async fn run_once_skips_preclaimed_task_and_skips_injection_when_appserver_unreachable() {
             let store = test_store();
             let mcp_url = spawn_broker(store.clone()).await;
             let setup_client = McpHttpClient::connect(mcp_url.clone(), None)
@@ -442,8 +519,9 @@ mod tests {
                 "선점된 task는 그대로 유지돼야 함(relay가 손대면 안 됨)"
             );
 
-            // (b) claim은 성공했으나 주입(codex_inject::run)이 도달 불가 ws로 실패 → fail_task 전환
-            // (completed로 위장하지 않는다).
+            // (b) #65: app-server(ws)가 도달 불가면 relay는 이 주기 주입을 통째로 건너뛴다. claim조차
+            // 하지 않으므로 task는 submitted로 남아 app-server 복구 후 배달된다(도달 불가를 즉시
+            // terminal failed로 승격시키지 않는다 - 재부팅·재배포 창의 일시 장애를 영구 실패로 만들지 않음).
             let opened = store
                 .lock()
                 .unwrap()
@@ -452,14 +530,8 @@ mod tests {
                 .unwrap();
             assert_eq!(
                 opened.state,
-                TaskState::Failed,
-                "주입 실패는 completed로 위장하지 않고 failed로 전이돼야 함"
-            );
-            let msg = opened.status_message.expect("실패 사유 메시지가 있어야 함");
-            let text = msg.parts[0].text.clone().unwrap_or_default();
-            assert!(
-                text.contains("codex-relay 주입 실패"),
-                "실패 사유에 relay 주입 실패가 명시돼야 함: {text}"
+                TaskState::Submitted,
+                "app-server 미도달 시 relay는 claim/주입을 건너뛰고 task를 submitted로 남겨야 함(#65)"
             );
 
             std::fs::remove_dir_all(&codex_dir).ok();
