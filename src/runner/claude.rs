@@ -205,7 +205,13 @@ impl ClaudeRunner {
 /// write_guard_prefix가 빈 문자열이라 프롬프트 그대로. argv에는 프롬프트를 넣지 않는다(위 build_claude_args
 /// 참조 - 가드 적용 위치가 argv에서 stdin으로 그대로 이동, 이중 삽입·유실 없음).
 fn build_claude_stdin(input: &RunInput) -> String {
-    format!("{}{}", super::write_guard_prefix(input.mode), input.prompt)
+    let prefix = super::write_guard_prefix(input.mode);
+    // ReadOnly 등 prefix가 빈 경우 format! 재할당 없이 프롬프트를 그대로 쓴다(gemini medium).
+    if prefix.is_empty() {
+        input.prompt.clone()
+    } else {
+        format!("{prefix}{}", input.prompt)
+    }
 }
 
 impl Runner for ClaudeRunner {

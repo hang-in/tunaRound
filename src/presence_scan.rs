@@ -40,22 +40,35 @@ pub fn project_from_cwd_normalized(cwd: Option<&str>, home: Option<&Path>) -> Op
     crate::discover::project_from_cwd(cwd)
 }
 
-/// macOS 관행 temp 경로 프리픽스. std::env::temp_dir()은 /var/folders/...만 잡고, 셸/도구가 흔히 쓰는
-/// /tmp·/private/tmp(그 심볼릭 링크 실체)·/private/var/folders 아래 cwd는 놓친다. Windows 경로(C:/...)엔
-/// 접두가 겹칠 일이 없어 무해하므로 cfg(target_os) 분기 없이 단순 추가한다.
-const MAC_TEMP_PREFIXES: [&str; 3] = ["/tmp", "/private/tmp", "/private/var/folders"];
+/// child가 base와 같거나 base 하위 경로인지(정규화된 슬래시 경로 문자열 기준, 할당 없음).
+/// "/repo2"가 "/repo" 하위로 오검출되지 않게 base 뒤에 경로 구분자(`/`)가 와야 한다.
+fn path_is_under(child: &str, base: &str) -> bool {
+    child == base
+        || child
+            .strip_prefix(base)
+            .is_some_and(|rest| rest.starts_with('/'))
+}
 
 /// cwd가 시스템 temp 아래인지(자동화 headless 세션 = 로스터 노이즈, 훅 is_temp_cwd와 같은 규약).
 pub fn is_temp_cwd(cwd: &str) -> bool {
     let t = std::env::temp_dir();
     let norm = |s: &str| s.replace('\\', "/").trim_end_matches('/').to_lowercase();
     let (c, t) = (norm(cwd), norm(&t.to_string_lossy()));
-    if c == t || c.starts_with(&format!("{t}/")) {
+    if path_is_under(&c, &t) {
         return true;
     }
-    MAC_TEMP_PREFIXES
-        .iter()
-        .any(|prefix| c == *prefix || c.starts_with(&format!("{prefix}/")))
+    // macOS 관행 temp 프리픽스는 macOS에서만 적용한다. std::env::temp_dir()은 /var/folders/...만
+    // 잡고 셸/도구가 흔히 쓰는 /tmp·/private/tmp·/private/var/folders 아래 cwd를 놓친다. 단 이들을
+    // 전 플랫폼에서 매칭하면 Linux 프로젝트가 /private/tmp 아래 있을 때 오분류되므로 cfg로 macOS에
+    // 한정한다(coderabbit).
+    #[cfg(target_os = "macos")]
+    {
+        const MAC_TEMP_PREFIXES: [&str; 3] = ["/tmp", "/private/tmp", "/private/var/folders"];
+        if MAC_TEMP_PREFIXES.iter().any(|p| path_is_under(&c, p)) {
+            return true;
+        }
+    }
+    false
 }
 
 /// codex rollout jsonl의 session_meta 줄에서 (session_id, cwd, originator)를 뽑는다. 실패는 None.
@@ -848,14 +861,18 @@ mod tests {
     #[test]
     fn is_temp_cwd_matches_macos_conventional_tmp_prefixes() {
         // std::env::temp_dir()은 /var/folders/...만 잡으므로, 이 케이스들은 그 비교로는 못 잡고
-        // MAC_TEMP_PREFIXES 폴백이 잡아야 한다.
-        assert!(is_temp_cwd("/tmp/work-xyz"));
-        assert!(is_temp_cwd("/tmp"));
-        assert!(is_temp_cwd("/private/tmp/work-xyz"));
-        assert!(is_temp_cwd("/private/var/folders/ab/xyz/T/foo"));
-        // 대소문자·구분자 정규화(기존 규약 유지).
-        assert!(is_temp_cwd("/TMP/Work-Xyz"));
-        // 접두만 겹치는 비-temp 경로는 아니다.
+        // MAC_TEMP_PREFIXES 폴백이 잡아야 한다. 그 폴백은 macOS 전용이라(coderabbit) 양성 단언도
+        // macOS에서만 성립한다(Linux/Windows에선 /tmp를 temp로 보지 않아 오분류가 없다).
+        #[cfg(target_os = "macos")]
+        {
+            assert!(is_temp_cwd("/tmp/work-xyz"));
+            assert!(is_temp_cwd("/tmp"));
+            assert!(is_temp_cwd("/private/tmp/work-xyz"));
+            assert!(is_temp_cwd("/private/var/folders/ab/xyz/T/foo"));
+            // 대소문자·구분자 정규화(기존 규약 유지).
+            assert!(is_temp_cwd("/TMP/Work-Xyz"));
+        }
+        // 접두만 겹치는 비-temp 경로는 어느 플랫폼에서도 temp가 아니다.
         assert!(!is_temp_cwd("/tmpfoo/bar"));
         assert!(!is_temp_cwd("/home/user/project"));
     }
