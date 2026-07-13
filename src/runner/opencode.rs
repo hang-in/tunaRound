@@ -50,6 +50,8 @@ pub(crate) fn parse_opencode_stream(stdout: &str) -> RunOutput {
 
 /// `opencode run` argv 조립.
 /// 메시지는 positional arg로 전달(stdin 없음).
+/// 잔여(리뷰 #18): Windows npm 셰임(.cmd) + 개행 포함 프롬프트는 spawn 실패 가능. claude와 달리
+/// stdin 지원 미검증이라 argv 유지. opencode stdin 지원 확인되면 claude와 동형으로 stdin 전환 검토.
 /// RunMode는 현재 무시 - opencode의 ReadOnly 강제 플래그 불명확(1차 모드무관).
 pub(crate) fn build_opencode_args(input: &RunInput, model: Option<&str>) -> Vec<String> {
     let mut args: Vec<String> = vec!["run".into(), "--format".into(), "json".into()];

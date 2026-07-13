@@ -4,18 +4,18 @@ use super::exec::{ExecSpec, run_with_watchdog};
 use super::{RunError, RunInput, RunMode, RunOutput, Runner};
 use std::time::Duration;
 
-/// `claude -p` argv 조립. 프롬프트는 `-p <arg>`로 전달(stdin 아님).
+/// `claude -p` argv 조립. 프롬프트는 stdin으로 전달한다(argv 아님). `-p`/`--print`는 불리언
+/// 플래그이고 claude가 stdin 파이프를 정식 지원한다(`echo prompt | claude -p`, --help 실측).
+/// Windows npm 셰임(.cmd) + 개행 포함 프롬프트가 `Command::spawn`을 거부(BatBadBut 하드닝)하고,
+/// 긴 프롬프트가 32K 커맨드라인 한계를 넘는 문제를 codex 러너와 동형으로 회피한다.
 /// 모드에 따라 도구 권한을 분리한다(쓰기 하드 분리). 실측 플래그는 Step 1 참조.
 /// Step 1 실측(2026-06-29): claude --help 확인.
 ///   Write    → --dangerously-skip-permissions (모든 권한 우회)
 ///   ReadOnly → --disallowedTools Write,Edit,Bash (쓰기 도구 차단)
 /// mcp_config가 Some(json)이면 --mcp-config <json>을 args에 추가한다.
 fn build_claude_args(input: &RunInput, mcp_config: Option<&str>) -> Vec<String> {
-    // Write 모드면 민감 path 수정금지 지시(WRITE_GUARD_DIRECTIVE)를 prepend한다(behavioral 가드레일,
-    // B2). ReadOnly면 write_guard_prefix가 빈 문자열이라 기존 동작과 동일.
     let mut args: Vec<String> = vec![
         "-p".into(),
-        format!("{}{}", super::write_guard_prefix(input.mode), input.prompt),
         "--output-format".into(),
         "stream-json".into(),
         "--verbose".into(),
@@ -89,7 +89,7 @@ pub(crate) fn parse_claude_stream(stdout: &str) -> Result<RunOutput, RunError> {
     Err(RunError::Empty("claude result 라인 없음".into()))
 }
 
-/// Claude Code 러너. `bin`은 실행 파일 경로(테스트는 가짜 스크립트). 프롬프트는 argv라 stdin 불필요.
+/// Claude Code 러너. `bin`은 실행 파일 경로(테스트는 가짜 스크립트). 프롬프트는 stdin으로 전달한다.
 pub struct ClaudeRunner {
     bin: String,
     idle_timeout: Duration,
@@ -200,6 +200,20 @@ impl ClaudeRunner {
     }
 }
 
+/// stdin으로 넘길 프롬프트 전문을 조립한다. Write 모드면 민감 path 수정금지 지시
+/// (WRITE_GUARD_DIRECTIVE)를 prepend한다(behavioral 가드레일, B2). ReadOnly면
+/// write_guard_prefix가 빈 문자열이라 프롬프트 그대로. argv에는 프롬프트를 넣지 않는다(위 build_claude_args
+/// 참조 - 가드 적용 위치가 argv에서 stdin으로 그대로 이동, 이중 삽입·유실 없음).
+fn build_claude_stdin(input: &RunInput) -> String {
+    let prefix = super::write_guard_prefix(input.mode);
+    // ReadOnly 등 prefix가 빈 경우 format! 재할당 없이 프롬프트를 그대로 쓴다(gemini medium).
+    if prefix.is_empty() {
+        input.prompt.clone()
+    } else {
+        format!("{prefix}{}", input.prompt)
+    }
+}
+
 impl Runner for ClaudeRunner {
     fn run(&self, input: &RunInput) -> Result<RunOutput, RunError> {
         // search_url이 Some이면 HTTP MCP config를 생성한다(search_db보다 우선).
@@ -209,7 +223,7 @@ impl Runner for ClaudeRunner {
             bin: self.bin.clone(),
             args: build_claude_args(input, mcp_json.as_deref()),
             cwd: input.project_path.clone(),
-            stdin: None,
+            stdin: Some(build_claude_stdin(input)),
             idle_timeout: self.idle_timeout,
             label: "claude".to_string(),
             env: Vec::new(),
@@ -270,7 +284,8 @@ mod tests {
     }
 
     #[test]
-    fn args_have_stream_json_and_prompt() {
+    fn args_have_stream_json_and_no_prompt() {
+        // 프롬프트는 argv에 없다(stdin으로 전달). -p는 불리언 플래그로만 남는다.
         let input = RunInput {
             prompt: "이 설계 어떤가요?".into(),
             mode: RunMode::ReadOnly,
@@ -278,8 +293,29 @@ mod tests {
         };
         let args = build_claude_args(&input, None);
         let joined = args.join(" ");
-        assert!(joined.contains("-p 이 설계 어떤가요?"));
+        assert!(args.iter().any(|a| a == "-p"), "-p 플래그 없음: {args:?}");
         assert!(joined.contains("--output-format stream-json"));
+        assert!(
+            !args.iter().any(|a| a.contains("이 설계 어떤가요?")),
+            "프롬프트가 argv에 남아있음(이중 삽입 위험): {args:?}"
+        );
+    }
+
+    #[test]
+    fn run_stdin_carries_prompt_matching_argv_absence() {
+        // 러너 run()이 조립하는 stdin에 프롬프트가 실려야 한다(argv엔 없음, 이중 삽입 방지).
+        let input = RunInput {
+            prompt: "긴 개행\n포함 프롬프트".into(),
+            mode: RunMode::ReadOnly,
+            ..Default::default()
+        };
+        let stdin = build_claude_stdin(&input);
+        assert_eq!(stdin, "긴 개행\n포함 프롬프트");
+        let args = build_claude_args(&input, None);
+        assert!(
+            !args.iter().any(|a| a.contains("긴 개행")),
+            "프롬프트가 argv에도 들어감(이중 삽입): {args:?}"
+        );
     }
 
     #[test]
@@ -296,33 +332,38 @@ mod tests {
     }
 
     #[test]
-    fn args_write_mode_prompt_includes_write_guard_directive() {
-        // B2: Write 모드 프롬프트에 민감 path 수정금지 지시가 prepend되어야 한다.
+    fn stdin_write_mode_prompt_includes_write_guard_directive() {
+        // B2: Write 모드 stdin 프롬프트에 민감 path 수정금지 지시가 prepend되어야 한다(가드 적용
+        // 위치가 argv에서 stdin으로 이동, 유실 없이 그대로 붙음). args에는 가드가 없어야 한다(이중 삽입 방지).
         let input = RunInput {
             prompt: "설정 파일 고쳐줘".into(),
             mode: RunMode::Write,
             ..Default::default()
         };
+        let stdin = build_claude_stdin(&input);
+        assert!(
+            stdin.contains("생성·수정·삭제"),
+            "Write 모드 stdin에 가드 지시 없음: {stdin}"
+        );
+        assert!(stdin.contains("설정 파일 고쳐줘"));
         let args = build_claude_args(&input, None);
         assert!(
-            args.iter().any(|a| a.contains("생성·수정·삭제")),
-            "Write 모드 args에 가드 지시 없음: {args:?}"
+            !args.iter().any(|a| a.contains("생성·수정·삭제")),
+            "가드 지시가 argv에도 남아있음(이중 삽입): {args:?}"
         );
     }
 
     #[test]
-    fn args_readonly_mode_prompt_excludes_write_guard_directive() {
+    fn stdin_readonly_mode_prompt_excludes_write_guard_directive() {
         // ReadOnly는 가드 지시가 없어야 한다(기존 동작 불변).
         let input = RunInput {
             prompt: "이 코드 설명해줘".into(),
             mode: RunMode::ReadOnly,
             ..Default::default()
         };
-        let args = build_claude_args(&input, None);
-        assert!(
-            !args.iter().any(|a| a.contains("생성·수정·삭제")),
-            "ReadOnly 모드 args에 가드 지시가 섞여 있음: {args:?}"
-        );
+        let stdin = build_claude_stdin(&input);
+        assert_eq!(stdin, "이 코드 설명해줘");
+        assert!(!stdin.contains("생성·수정·삭제"));
     }
 
     #[test]

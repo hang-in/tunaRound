@@ -279,11 +279,18 @@ pub fn presence_scan(rt: &tokio::runtime::Runtime, a: PresenceScanArgs) {
             // 프로세스 스냅샷 1회: 러너 카운트 게이트 + 마커 생존 판정이 공유한다.
             if let Some((proc_text, is_win)) = tunaround::presence_scan::process_list_text() {
                 // 게이트: 러너 프로세스가 확실히 0개면 그 러너 세션 전부 죽음(재부팅 즉시 반영).
+                // Windows는 tasklist 이미지명만으론 npm 셰임(node.exe로 뜨는 claude/codex)을 못 잡아
+                // 하드 매칭 실패를 windows_runner_gate_count가 "판단 불가"(None=게이트 스킵)로 강등한다.
                 for runner in ["claude", "codex"] {
-                    let count =
-                        tunaround::presence_scan::count_matching_lines(&proc_text, runner, is_win);
+                    let count = if is_win {
+                        tunaround::presence_scan::windows_runner_gate_count(&proc_text, runner)
+                    } else {
+                        Some(tunaround::presence_scan::count_matching_lines(
+                            &proc_text, runner, is_win,
+                        ))
+                    };
                     sessions =
-                        tunaround::presence_scan::apply_process_gate(sessions, runner, Some(count));
+                        tunaround::presence_scan::apply_process_gate(sessions, runner, count);
                 }
                 // 마커 생존: 훅이 기록한 owner PID가 죽었으면 유령(/clear·창닫기·크래시) → 즉시 제외.
                 if let Some(h) = &home {
