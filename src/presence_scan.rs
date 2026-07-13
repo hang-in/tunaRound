@@ -40,12 +40,22 @@ pub fn project_from_cwd_normalized(cwd: Option<&str>, home: Option<&Path>) -> Op
     crate::discover::project_from_cwd(cwd)
 }
 
+/// macOS 관행 temp 경로 프리픽스. std::env::temp_dir()은 /var/folders/...만 잡고, 셸/도구가 흔히 쓰는
+/// /tmp·/private/tmp(그 심볼릭 링크 실체)·/private/var/folders 아래 cwd는 놓친다. Windows 경로(C:/...)엔
+/// 접두가 겹칠 일이 없어 무해하므로 cfg(target_os) 분기 없이 단순 추가한다.
+const MAC_TEMP_PREFIXES: [&str; 3] = ["/tmp", "/private/tmp", "/private/var/folders"];
+
 /// cwd가 시스템 temp 아래인지(자동화 headless 세션 = 로스터 노이즈, 훅 is_temp_cwd와 같은 규약).
 pub fn is_temp_cwd(cwd: &str) -> bool {
     let t = std::env::temp_dir();
     let norm = |s: &str| s.replace('\\', "/").trim_end_matches('/').to_lowercase();
     let (c, t) = (norm(cwd), norm(&t.to_string_lossy()));
-    c == t || c.starts_with(&format!("{t}/"))
+    if c == t || c.starts_with(&format!("{t}/")) {
+        return true;
+    }
+    MAC_TEMP_PREFIXES
+        .iter()
+        .any(|prefix| c == *prefix || c.starts_with(&format!("{prefix}/")))
 }
 
 /// codex rollout jsonl의 session_meta 줄에서 (session_id, cwd, originator)를 뽑는다. 실패는 None.
@@ -702,6 +712,25 @@ pub fn enumerate_idle_marker_sessions(
     out
 }
 
+/// Windows 전용 러너 카운트 판별(순수부). tasklist CSV 이미지명만으로는 npm 설치 러너(node.exe로 뜸,
+/// 이미지명이 claude.exe/codex.exe가 아님)를 못 잡아, 하드 매칭 실패를 "확정 0"으로 오판하면
+/// apply_process_gate가 그 머신의 살아있는 세션을 매 주기 전부 드롭한다. unix는 argv 토큰 basename
+/// 매칭(count_matching_lines)으로 이미 node 래퍼를 커버하지만, tasklist엔 argv 컬럼이 없어 이식 불가.
+/// 이미지명 매칭이 1개 이상이면 그 값을 그대로 확정 신호로 쓴다(Some). 매칭이 0인데 node.exe 프로세스가
+/// 있으면 "그 node가 claude/codex 래퍼인지" 판단 불가이므로 None(=게이트 스킵, 산 세션 보존, 보수적).
+/// node.exe도 없으면 확정으로 0개다(Some(0), 기존 동작 유지).
+pub fn windows_runner_gate_count(text: &str, name: &str) -> Option<usize> {
+    let image_count = count_matching_lines(text, name, true);
+    if image_count > 0 {
+        return Some(image_count);
+    }
+    if count_matching_lines(text, "node", true) > 0 {
+        None // node 래퍼 러너 가능성 → 판단 불가, 게이트 미적용.
+    } else {
+        Some(0) // node도 없음 → 확정 0.
+    }
+}
+
 /// 프로세스 게이트: 해당 러너 프로세스가 확실히 0개면(count=Some(0)) 그 러너 세션을 전부 제외한다.
 /// None(조회 실패)이나 1개 이상이면 그대로 둔다(파일 신선도 창이 상한).
 pub fn apply_process_gate(
@@ -817,6 +846,21 @@ mod tests {
     }
 
     #[test]
+    fn is_temp_cwd_matches_macos_conventional_tmp_prefixes() {
+        // std::env::temp_dir()은 /var/folders/...만 잡으므로, 이 케이스들은 그 비교로는 못 잡고
+        // MAC_TEMP_PREFIXES 폴백이 잡아야 한다.
+        assert!(is_temp_cwd("/tmp/work-xyz"));
+        assert!(is_temp_cwd("/tmp"));
+        assert!(is_temp_cwd("/private/tmp/work-xyz"));
+        assert!(is_temp_cwd("/private/var/folders/ab/xyz/T/foo"));
+        // 대소문자·구분자 정규화(기존 규약 유지).
+        assert!(is_temp_cwd("/TMP/Work-Xyz"));
+        // 접두만 겹치는 비-temp 경로는 아니다.
+        assert!(!is_temp_cwd("/tmpfoo/bar"));
+        assert!(!is_temp_cwd("/home/user/project"));
+    }
+
+    #[test]
     fn count_matching_lines_covers_paths_wrappers_and_csv() {
         // unix(`ps -o pid=,args=`): pid 토큰 뒤 argv에서 단독 실행 / 전체 경로 / node 인터프리터
         // 래퍼를 잡고, 뒤쪽 인자 매칭(3토큰 밖)은 제외.
@@ -892,6 +936,27 @@ mod tests {
         // 조회 실패(None)·1개 이상 → 그대로.
         assert_eq!(apply_process_gate(all.clone(), "codex", None).len(), 2);
         assert_eq!(apply_process_gate(all, "codex", Some(3)).len(), 2);
+    }
+
+    #[test]
+    fn windows_gate_count_prefers_confirmed_image_match() {
+        // 이미지명 매칭>0 → Some(그 카운트)(node 존재 여부 무관, 확정 신호).
+        let text = "\"claude.exe\",\"123\",\"Console\"\n\"node.exe\",\"456\",\"Console\"\n";
+        assert_eq!(windows_runner_gate_count(text, "claude"), Some(1));
+    }
+
+    #[test]
+    fn windows_gate_count_none_when_only_node_wrapper_present() {
+        // 이미지 매칭 0 && node.exe 있음 → 판단 불가(None, 게이트 스킵 = 산 세션 보존).
+        let text = "\"node.exe\",\"456\",\"Console\"\n\"notepad.exe\",\"9\",\"Console\"\n";
+        assert_eq!(windows_runner_gate_count(text, "claude"), None);
+    }
+
+    #[test]
+    fn windows_gate_count_zero_when_no_image_and_no_node() {
+        // 이미지 매칭 0 && node.exe도 없음 → 확정 0(기존 동작 유지).
+        let text = "\"notepad.exe\",\"9\",\"Console\"\n";
+        assert_eq!(windows_runner_gate_count(text, "claude"), Some(0));
     }
 
     fn codex_session(uuid: &str, hi: Option<&str>, ca: Option<&str>) -> LiveSession {

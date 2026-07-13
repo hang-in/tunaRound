@@ -224,9 +224,26 @@ pub fn write_lane_disrupts_node(
             // (Windows verbatim `\\?\` 접두 불일치를 피하려 cwd도 canonical 대신 어휘 정규화).
             let p_lex = normalize_lexically(p, node_cwd);
             let cwd_lex = normalize_lexically(node_cwd, node_cwd);
-            paths_overlap(&p_lex, &cwd_lex)
+            // Windows는 경로 대소문자를 구분하지 않으므로(d:\... vs D:\...), 어휘 정규화 폴백에서만
+            // 소문자로 맞춰 비교한다(canonicalize 성공 경로는 OS가 이미 실제 대소문자로 정규화해 주므로
+            // 이 폴백과 무관). 그러지 않으면 대소문자만 다른 겹침 경로를 가드가 못 잡는다.
+            #[cfg(windows)]
+            {
+                paths_overlap(&lowercase_path(&p_lex), &lowercase_path(&cwd_lex))
+            }
+            #[cfg(not(windows))]
+            {
+                paths_overlap(&p_lex, &cwd_lex)
+            }
         }
     }
+}
+
+/// Windows 대소문자 무구분 경로 비교용 소문자 정규화(cfg(windows) 전용, write_lane_disrupts_node의
+/// 어휘 정규화 폴백에서만 쓰인다).
+#[cfg(windows)]
+fn lowercase_path(p: &std::path::Path) -> std::path::PathBuf {
+    std::path::PathBuf::from(p.to_string_lossy().to_lowercase())
 }
 
 /// `--context-map` 문자열("k=v,k=v")을 context_id->project-path 맵으로 파싱한다(순수 함수).
@@ -1035,6 +1052,19 @@ mod tests {
         if !normalize_lexically(&sibling, &cwd).starts_with(normalize_lexically(&cwd, &cwd)) {
             assert!(!write_lane_disrupts_node(Some(&sibling), &cwd));
         }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn write_lane_disrupts_node_windows_case_insensitive_overlap() {
+        // Windows는 대소문자를 구분하지 않으므로, 어휘 정규화 폴백(경로가 존재하지 않아 canonicalize
+        // 실패)에서도 대소문자만 다른 겹침(d:\... vs D:\...)을 잡아야 한다.
+        let cwd = std::path::PathBuf::from("D:\\repo_없는_zzz\\node");
+        let project = std::path::PathBuf::from("d:\\repo_없는_zzz\\node\\sub");
+        assert!(
+            write_lane_disrupts_node(Some(&project), &cwd),
+            "대소문자만 다른 겹침 경로를 못 잡음"
+        );
     }
 
     #[test]
