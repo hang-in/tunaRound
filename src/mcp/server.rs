@@ -2,6 +2,43 @@
 
 use super::*;
 
+/// 비-loopback 바인드에 토큰이 없으면 경고 메시지를 만든다(순수 함수, 단위테스트 대상). soft
+/// enforcement 방침: 하드 거부가 아니라 기동 시 눈에 띄게 경고만 한다(프론티어 모델 지시준수 신뢰와
+/// 최소놀람 원칙). loopback이거나 토큰이 있으면 None을 반환하고, 주소 파싱이 애매해 호스트를 확정
+/// 못하면 오탐 방지를 위해 경고를 생략한다.
+#[cfg(feature = "serve")]
+fn warn_if_insecure_bind(addr: &str, has_token: bool) -> Option<String> {
+    if has_token {
+        return None;
+    }
+    // 와일드카드 표기는 파싱 없이 바로 비-loopback으로 취급한다(0.0.0.0/::/[::] 프리픽스).
+    let is_non_loopback = if addr.starts_with("0.0.0.0")
+        || addr.starts_with("::")
+        || addr.starts_with("[::]")
+    {
+        true
+    } else {
+        // "host:port" 또는 "[ipv6]:port"에서 host만 뽑아 IpAddr로 파싱한다.
+        let host = if let Some(rest) = addr.strip_prefix('[') {
+            rest.split(']').next().unwrap_or("")
+        } else {
+            addr.rsplit_once(':').map(|(h, _)| h).unwrap_or(addr)
+        };
+        match host.parse::<std::net::IpAddr>() {
+            Ok(ip) => !ip.is_loopback(),
+            // 파싱 불가(포트 없는 호스트명 등)는 애매하니 경고 생략(오탐 방지).
+            Err(_) => false,
+        }
+    };
+    if is_non_loopback {
+        Some(format!(
+            "[serve] 경고: 비-loopback({addr})에 토큰 없이 바인드 - /mcp·/a2a·대시보드 쓰기가 무인증으로 원격 노출됩니다. TUNA_BROKER_TOKEN 또는 --token 설정을 권장합니다."
+        ))
+    } else {
+        None
+    }
+}
+
 /// HTTP MCP 서버를 기동한다. serve 피처 전용.
 #[cfg(feature = "serve")]
 pub async fn start_http_mcp_server(
@@ -47,6 +84,11 @@ pub async fn serve_http_mcp_on_listener(
 
     // A2A Agent Card는 bind 주소에서 파생되는 정적 값이라 router 조립 전에 먼저 만든다.
     let bound_addr = listener.local_addr()?;
+    // 비-loopback 바인드 + 무토큰 = 무인증 원격 노출 가능성을 기동 시 가시화한다(soft enforcement,
+    // 하드 거부 아님 - 보안 하드닝 확정 방침).
+    if let Some(warning) = warn_if_insecure_bind(&bound_addr.to_string(), token.is_some()) {
+        eprintln!("{warning}");
+    }
     let a2a_url = core_a2a_url(&bound_addr.to_string());
     let agent_card = crate::a2a_server::build_agent_card(&a2a_url);
     // MCP inbox 툴(poll_tasks/claim_task/complete_task)도 같은 a2a_store Arc를 공유한다(새 커넥션을
@@ -140,7 +182,7 @@ pub async fn serve_http_mcp_on_listener(
                     .and_then(|v| v.to_str().ok())
                     .unwrap_or("");
                 let expected = format!("Bearer {tok}");
-                if auth == expected {
+                if constant_time_eq(auth.as_bytes(), expected.as_bytes()) {
                     next.run(request).await
                 } else {
                     StatusCode::UNAUTHORIZED.into_response()
@@ -862,6 +904,20 @@ fn is_cross_site(headers: &axum::http::HeaderMap) -> bool {
     )
 }
 
+/// bearer 토큰을 상수시간으로 비교한다(타이밍 사이드채널 방지). 길이 노출은 허용(토큰 길이는
+/// 비밀 아님) - 길이가 다르면 즉시 false, 길이가 같으면 전체를 XOR 누적해 조기반환 없이 비교한다.
+#[cfg(feature = "serve")]
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
 /// 대시보드 쓰기 게이트(human-ping·deregister): loopback은 기존대로 무조건 신뢰,
 /// 원격은 Bearer 토큰 일치 시 허용(크로스머신 총감독 = 맥 세션 핑도 유효, v2-43 비범위 해제).
 /// 훅(session-ping·disarm)은 이미 Authorization 헤더를 보내므로 클라이언트 변경 없음.
@@ -882,7 +938,7 @@ fn dashboard_write_allowed(
         Some(tok) => headers
             .get(axum::http::header::AUTHORIZATION)
             .and_then(|v| v.to_str().ok())
-            .is_some_and(|a| a == format!("Bearer {tok}")),
+            .is_some_and(|a| constant_time_eq(a.as_bytes(), format!("Bearer {tok}").as_bytes())),
     }
 }
 
@@ -1180,6 +1236,64 @@ mod tests {
             // 무토큰 코어는 /mcp 전체가 무인증(동일 계약)이라 대시보드 쓰기도 게이트하지 않는다.
             let ip: std::net::IpAddr = "192.168.0.9".parse().unwrap();
             assert!(dashboard_write_allowed(ip, &headers_with_auth(None), &None));
+        }
+    }
+
+    // 비-loopback+무토큰 경고(soft enforcement) 순수 함수 테스트.
+    #[cfg(feature = "serve")]
+    mod insecure_bind_warning {
+        use super::super::*;
+
+        #[test]
+        fn wildcard_without_token_warns() {
+            assert!(warn_if_insecure_bind("0.0.0.0:8770", false).is_some());
+        }
+
+        #[test]
+        fn loopback_without_token_is_silent() {
+            assert!(warn_if_insecure_bind("127.0.0.1:8770", false).is_none());
+        }
+
+        #[test]
+        fn wildcard_with_token_is_silent() {
+            assert!(warn_if_insecure_bind("0.0.0.0:8770", true).is_none());
+        }
+
+        #[test]
+        fn ipv6_wildcard_without_token_warns() {
+            assert!(warn_if_insecure_bind("[::]:8770", false).is_some());
+        }
+
+        #[test]
+        fn ipv6_loopback_without_token_is_silent() {
+            assert!(warn_if_insecure_bind("[::1]:8770", false).is_none());
+        }
+
+        #[test]
+        fn unparseable_host_is_silent_by_conservative_design() {
+            // 포트 없는/애매한 문자열은 오탐 방지를 위해 경고를 생략한다.
+            assert!(warn_if_insecure_bind("localhost", false).is_none());
+        }
+    }
+
+    // bearer 토큰 상수시간 비교 순수 함수 테스트(타이밍 사이드채널 방지).
+    #[cfg(feature = "serve")]
+    mod constant_time_compare {
+        use super::super::*;
+
+        #[test]
+        fn equal_bytes_match() {
+            assert!(constant_time_eq(b"Bearer abc123", b"Bearer abc123"));
+        }
+
+        #[test]
+        fn different_bytes_do_not_match() {
+            assert!(!constant_time_eq(b"Bearer abc123", b"Bearer xyz999"));
+        }
+
+        #[test]
+        fn different_length_does_not_match() {
+            assert!(!constant_time_eq(b"Bearer abc", b"Bearer abc123"));
         }
     }
 

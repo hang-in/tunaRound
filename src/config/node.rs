@@ -68,6 +68,10 @@ pub struct Lane {
     /// runner="http" 전용 base URL.
     #[serde(default)]
     pub http_base_url: Option<String>,
+    /// runner="http" 전용 API 키(OpenAI 호환 엔드포인트 인증). 브로커 토큰(core/token)과 분리되어
+    /// 있어, 이 값이 없으면 외부 LLM 엔드포인트로 브로커 토큰이 새지 않고 무헤더로 보낸다.
+    #[serde(default)]
+    pub http_api_key: Option<String>,
     /// runner="a2a" 전용 카드 URL.
     #[serde(default)]
     pub a2a_card: Option<String>,
@@ -88,10 +92,23 @@ impl Lane {
 }
 
 /// 토큰 문자열을 해석한다. "@env:NAME"이면 그 환경변수를, 아니면 평문을 그대로 쓴다. None이면 None.
+/// "@env:NAME"인데 그 환경변수가 없거나 비어있으면, 설정하려던 토큰이 해석 안 됐다는 뜻이라
+/// 조용히 None으로 강등되지 않게 eprintln으로 경고한다(호출부가 이 None을 넘기면 브로커가
+/// 무토큰으로 뜰 수 있음 - 비-loopback 바인드 경고와 함께 가시화, 하드 거부는 하지 않는다).
 pub fn resolve_node_token(token: Option<&str>) -> Option<String> {
     let raw = token?;
     match raw.strip_prefix("@env:") {
-        Some(var) => std::env::var(var).ok(),
+        Some(var) => {
+            let resolved = std::env::var(var).ok().filter(|v| !v.is_empty());
+            if resolved.is_none() {
+                eprintln!(
+                    "[node] 경고: token = \"@env:{var}\"이지만 환경변수 {var}가 비어있거나 설정되지 않았습니다. \
+                     브로커가 토큰 없이 기동될 수 있습니다(비-loopback 바인드면 무인증 원격 노출 위험). \
+                     {var}를 설정하세요."
+                );
+            }
+            resolved
+        }
         None => Some(raw.to_string()),
     }
 }
@@ -251,5 +268,45 @@ kind = "supervised"
         unsafe {
             std::env::remove_var("TUNAROUND_TEST_NODE_TOK_XYZ");
         }
+    }
+
+    #[test]
+    fn resolve_node_token_empty_env_warns_and_returns_none() {
+        // "@env:NAME"인데 env가 빈 문자열이면(설정은 됐으나 값 없음) None으로 강등되고
+        // (경고 stderr 출력, assert는 반환값만 검증) 예전처럼 Some("")을 반환하지 않는다.
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        unsafe {
+            std::env::set_var("TUNAROUND_TEST_NODE_TOK_EMPTY", "");
+        }
+        assert_eq!(
+            resolve_node_token(Some("@env:TUNAROUND_TEST_NODE_TOK_EMPTY")),
+            None
+        );
+        unsafe {
+            std::env::remove_var("TUNAROUND_TEST_NODE_TOK_EMPTY");
+        }
+    }
+
+    #[test]
+    fn parse_node_config_lane_http_api_key() {
+        // http_api_key는 브로커 토큰(core token)과 분리된 필드: 미지정=None, 지정 시 그대로 파싱.
+        let toml_text = r#"
+[[lane]]
+agent = "http-lane"
+runner = "http"
+http_base_url = "http://localhost:11434"
+http_api_key = "sk-local-only"
+
+[[lane]]
+agent = "no-key-lane"
+runner = "http"
+http_base_url = "http://localhost:11434"
+"#;
+        let cfg = parse_node_config(toml_text).expect("파싱 성공");
+        assert_eq!(cfg.lane[0].http_api_key.as_deref(), Some("sk-local-only"));
+        assert_eq!(
+            cfg.lane[1].http_api_key, None,
+            "http_api_key 미지정 = None(브로커 토큰 재사용 금지)"
+        );
     }
 }

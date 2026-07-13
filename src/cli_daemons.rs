@@ -42,10 +42,17 @@ pub fn work(rt: &tokio::runtime::Runtime, a: WorkArgs) {
                     std::process::exit(1);
                 }
             };
+            // http 러너 전용 API 키: 브로커 토큰(a.token)을 재사용하지 않는다(외부 LLM 엔드포인트로
+            // 브로커 인증이 새는 것 방지). --http-api-key 우선, 없으면 TUNA_HTTP_API_KEY env 폴백,
+            // 둘 다 없으면 무헤더로 보낸다.
+            let http_api_key = a
+                .http_api_key
+                .clone()
+                .or_else(|| std::env::var(ENV_HTTP_API_KEY).ok());
             std::sync::Arc::new(tunaround::runner::http::OpenAiChatRunner::new(
                 &base_url,
                 a.model.as_deref().unwrap_or(""),
-                a.token.clone(),
+                http_api_key,
             ))
         }
         #[cfg(not(feature = "engines"))]
