@@ -292,7 +292,13 @@ pub fn load_codex_input_cache_from_disk(path: &Path) -> CodexInputCache {
     parsed
         .0
         .into_iter()
-        .map(|(k, (secs, hi))| (k, (SystemTime::UNIX_EPOCH + Duration::from_secs(secs), hi)))
+        // 손상·조작된 캐시의 비정상적으로 큰 secs는 UNIX_EPOCH + Duration이 오버플로 패닉을 낼 수
+        // 있으므로 checked_add로 안전하게 처리하고, 넘치는 항목은 건너뛴다(gemini HIGH: 데몬 크래시 방지).
+        .filter_map(|(k, (secs, hi))| {
+            SystemTime::UNIX_EPOCH
+                .checked_add(Duration::from_secs(secs))
+                .map(|t| (k, (t, hi)))
+        })
         .collect()
 }
 
