@@ -46,13 +46,15 @@ pub fn parse_chat_response(v: &serde_json::Value) -> Result<RunOutput, RunError>
 /// 기본값(600초)과 정합을 맞춘다.
 const DEFAULT_TIMEOUT_SECS: u64 = 600;
 
-/// 지정 타임아웃(초)으로 blocking Client를 만든다. 빌더 실패(사실상 발생 안 함) 시 기존 기본(30초)
-/// Client로 폴백해 러너 생성 자체가 죽지 않게 한다.
+/// 지정 타임아웃(초)으로 blocking Client를 만든다. 빌더 실패(TLS 초기화 실패 등, 사실상 발생 안 함)는
+/// expect로 즉시 드러낸다. Client::new()로 폴백하지 않는다: Client::new()도 내부에서 같은 build를
+/// unwrap하므로 이 실패 상황에선 동일하게 패닉하고, 폴백은 설정한 timeout_secs를 조용히 30초로
+/// 되돌려 "긴 요청이 예상보다 빨리 끊기는" 어긋남만 만든다(coderabbit Major).
 fn build_client(timeout_secs: u64) -> reqwest::blocking::Client {
     reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(timeout_secs))
         .build()
-        .unwrap_or_else(|_| reqwest::blocking::Client::new())
+        .expect("reqwest blocking Client 빌드 실패(TLS 초기화 등)")
 }
 
 /// OpenAI 호환 /v1/chat/completions HTTP 러너.
