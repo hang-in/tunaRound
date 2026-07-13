@@ -41,11 +41,15 @@ impl TunaSearchServer {
         })
         .await
         .unwrap_or_else(|e| Err(format!("작업 실패: {e}")));
-        let text = match outcome {
-            Ok(t) => t,
-            Err(e) => format!("조회 실패: {e}"),
-        };
-        Ok(CallToolResult::success(vec![Content::text(text)]))
+        // R1: 내부 실패(DB 장애 등)를 success로 위장하지 않는다(claim_task와 동일 사유). 형제 write
+        // 툴과 달리 이 조회 툴만 success 본문 텍스트로 감춰서, 워커(McpHttpClient::parse_jsonrpc_sse는
+        // isError=true만 Err로 매핑)가 DB 장애를 "빈 큐"로 오인해 무로그로 조용히 재폴링하던 결함 수정.
+        match outcome {
+            Ok(t) => Ok(CallToolResult::success(vec![Content::text(t)])),
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
+                "poll_tasks 실패: {e}"
+            ))])),
+        }
     }
 
     #[tool(description = "task에 착수했음을 표시한다(submitted/input_required -> working).")]

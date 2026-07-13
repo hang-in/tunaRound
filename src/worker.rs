@@ -347,11 +347,32 @@ pub async fn run_worker_loop(
 /// poll 텍스트에서 새로 알릴 submitted task만 뽑고, `seen`을 현재 활성(submitted) 집합으로 정리한다.
 /// run_poll_loop의 테스트 가능한 핵심: 디듑(같은 task 재출력 금지) + 장수명 데몬 메모리 상한
 /// (claim/완료로 사라진 id를 seen에서 제거 -> 그 id가 다시 submitted로 나타나면 재알림). I/O는 호출자.
+/// 구 브로커 하위호환 방어: poll_tasks 내부 조회 실패도 success 본문 "조회 실패: {e}" 텍스트로 반환하는
+/// 구 브로커가 있다(신 브로커는 R1 계약으로 isError=true를 낸다, 워커는 그 경로에선 Err로 받아 이 함수를
+/// 아예 호출하지 않는다). 그런 소프트에러 텍스트는 파싱 결과가 빈 Vec이면서도 진짜 빈 큐 안내
+/// ("... 앞 열린 task 없음")를 포함하지 않는다 - 이 경우 seen을 비우면(디듑 상태 소실) 다음 정상 폴에서
+/// 이미 알린 task가 재알림된다. 그래서 진짜 빈 큐(마커 있음)만 seen을 정리하고, 마커 없는 빈 결과는
+/// seen을 유지한 채 경고만 남긴다.
 fn collect_new_submitted(
     poll_text: &str,
     seen: &mut std::collections::HashSet<String>,
 ) -> Vec<ParsedTask> {
     let tasks = parse_open_tasks(poll_text);
+    // 구조화 응답(TASKS_JSON 프리픽스)은 빈 배열이라도 정상 응답이라 소프트에러가 아니다(gemini medium:
+    // 향후 브로커가 `TASKS_JSON []`을 보내도 오판 방지). 진짜 빈 큐 안내도 아니고 TASKS_JSON도 없는
+    // 빈 결과만 소프트에러로 의심한다.
+    if tasks.is_empty()
+        && !poll_text.contains("앞 열린 task 없음")
+        && !poll_text.contains("TASKS_JSON")
+    {
+        // poll_text 원문은 task id·msg(사용자 입력·비밀 포함 가능)라 로그에 남기지 않는다(coderabbit
+        // Major, 보안). 길이만 기록해 소프트에러를 진단 가능하게 한다.
+        eprintln!(
+            "[poll] poll 응답이 빈 목록도 빈-큐 안내도 아님(소프트에러 의심, seen 유지, {}바이트)",
+            poll_text.len()
+        );
+        return Vec::new();
+    }
     let active: std::collections::HashSet<&str> = tasks
         .iter()
         .filter(|t| t.state == "submitted")
@@ -921,6 +942,29 @@ mod tests {
         let mut seen = std::collections::HashSet::new();
         assert!(collect_new_submitted(&text, &mut seen).is_empty());
         assert!(seen.is_empty());
+    }
+
+    #[test]
+    fn collect_new_submitted_preserves_seen_on_soft_error_text() {
+        // 구 브로커가 poll_tasks 내부 조회 실패를 success 본문 "조회 실패: ..." 텍스트로 반환해도
+        // (헤더도 빈-큐 마커도 없음) seen이 비워지면 안 된다(비워지면 다음 정상 폴에서 재알림 발생).
+        let id = "d".repeat(32);
+        let present = format!("[{id}] from=disp state=submitted msg=작업");
+        let soft_error = "조회 실패: database is locked".to_string();
+        let mut seen = std::collections::HashSet::new();
+        assert_eq!(collect_new_submitted(&present, &mut seen).len(), 1);
+        assert!(
+            collect_new_submitted(&soft_error, &mut seen).is_empty(),
+            "소프트에러 텍스트는 새 task 없음"
+        );
+        assert!(
+            seen.contains(&id),
+            "소프트에러로 seen이 비워지면 안 됨(재알림 방지): {seen:?}"
+        );
+        // 이어서 진짜 빈 큐 마커가 오면 정상적으로 seen이 정리된다.
+        let empty = "disp 앞 열린 task 없음".to_string();
+        assert!(collect_new_submitted(&empty, &mut seen).is_empty());
+        assert!(seen.is_empty(), "진짜 빈 큐는 seen을 정리해야 함");
     }
 
     #[test]
