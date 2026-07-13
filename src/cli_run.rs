@@ -60,6 +60,20 @@ pub(crate) fn build_embedder() -> Option<Box<dyn tunaround::store::embedding::Em
     }
 }
 
+/// --core seed 시 DB 권위 보존 판별(결함 #1). DB가 seed보다 노드 수가 많거나(외부 post_turn 등으로
+/// 앞서 있음), 노드 수가 같은데 head가 다르면(분기 발산) DB에 더 새로운 발언이 있다고 보고
+/// true(=seed 덮어쓰기를 건너뛰어야 함)를 반환한다. DB가 seed보다 적으면(신규 DB이거나 파일이 더
+/// 앞선 정상 재개) 또는 완전히 동일하면 false(=기존대로 seed 진행)를 반환한다.
+#[cfg(feature = "serve")]
+pub(crate) fn db_has_newer_content(
+    seed: &tunaround::store::StoredSession,
+    db: Option<&tunaround::store::StoredSession>,
+) -> bool {
+    let Some(db) = db else { return false };
+    db.messages.len() > seed.messages.len()
+        || (db.messages.len() == seed.messages.len() && db.head != seed.head)
+}
+
 /// build_http_mcp_backends 반환 묶음: (retriever, 전사 리더, writer, A2A store).
 #[cfg(feature = "serve")]
 pub(crate) type HttpMcpBackends = (
@@ -675,5 +689,98 @@ pub(crate) fn build_annotation_sink(
             }
         },
         None => None,
+    }
+}
+
+#[cfg(all(test, feature = "serve"))]
+mod core_seed_tests {
+    use super::*;
+    use tunaround::store::{StoredMessage, StoredSession};
+
+    fn msgs(n: u64) -> Vec<StoredMessage> {
+        (1..=n)
+            .map(|i| StoredMessage {
+                id: i,
+                parent_id: if i == 1 { None } else { Some(i - 1) },
+                speaker: "s".into(),
+                content: format!("c{i}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn db_none_means_proceed() {
+        let seed = StoredSession {
+            messages: msgs(2),
+            head: Some(2),
+        };
+        assert!(
+            !db_has_newer_content(&seed, None),
+            "DB에 세션 없으면 seed 진행"
+        );
+    }
+
+    #[test]
+    fn db_smaller_means_proceed() {
+        let seed = StoredSession {
+            messages: msgs(3),
+            head: Some(3),
+        };
+        let db = StoredSession {
+            messages: msgs(1),
+            head: Some(1),
+        };
+        assert!(
+            !db_has_newer_content(&seed, Some(&db)),
+            "DB가 seed보다 적으면 진행(정상 재개)"
+        );
+    }
+
+    #[test]
+    fn db_same_and_matching_head_means_proceed() {
+        let seed = StoredSession {
+            messages: msgs(2),
+            head: Some(2),
+        };
+        let db = StoredSession {
+            messages: msgs(2),
+            head: Some(2),
+        };
+        assert!(
+            !db_has_newer_content(&seed, Some(&db)),
+            "완전히 동일하면 진행"
+        );
+    }
+
+    #[test]
+    fn db_larger_means_skip() {
+        let seed = StoredSession {
+            messages: msgs(2),
+            head: Some(2),
+        };
+        let db = StoredSession {
+            messages: msgs(3),
+            head: Some(3),
+        };
+        assert!(
+            db_has_newer_content(&seed, Some(&db)),
+            "DB가 더 앞서 있으면(외부 post_turn 등) 건너뜀"
+        );
+    }
+
+    #[test]
+    fn db_same_count_diverged_head_means_skip() {
+        let seed = StoredSession {
+            messages: msgs(2),
+            head: Some(2),
+        };
+        let db = StoredSession {
+            messages: msgs(2),
+            head: Some(1),
+        };
+        assert!(
+            db_has_newer_content(&seed, Some(&db)),
+            "노드 수는 같지만 head가 발산했으면 건너뜀"
+        );
     }
 }

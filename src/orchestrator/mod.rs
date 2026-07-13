@@ -183,22 +183,35 @@ pub struct RoundInput<'a> {
     pub transcript_len: usize,
 }
 
+/// pull(전사 당기기) 프롬프트 사용 여부를 판별한다(결함 #4). 기본은 ctx_mode=Pull이고 좌석이 MCP
+/// 도구를 가졌을 때(is_mcp_capable)지만, codex의 Write 턴은 예외다: headless exec가 workspace-write
+/// 샌드박스에서는 MCP 도구 승인이 통과되지 않아(openai/codex#24135) pull 포인터도 전사 인라인(push)도
+/// 못 쓰는 상태가 될 수 있다. 그래서 codex+Write는 push로 폴백해 최소한 프롬프트 인라인 맥락을 준다.
+/// claude는 Write에서도 --dangerously-skip-permissions로 도구를 쓸 수 있어 pull을 유지한다.
+pub fn should_use_pull(ctx_mode: ContextMode, engine: &str, mode: RunMode) -> bool {
+    if ctx_mode != ContextMode::Pull || !is_mcp_capable(engine) {
+        return false;
+    }
+    !(engine == "codex" && mode == RunMode::Write)
+}
+
 /// 한 라운드를 구동한다. 사람 주도이므로 topic = 사용자 메시지.
 /// 각 자리를 순서대로 호출하되, 뒤 자리는 같은 라운드 앞 응답을 본다(순차-인지).
 /// mode는 호출자가 지정(말하기=ReadOnly, 사람이 지목한 쓰기 턴=Write).
-/// 반환값은 이번 라운드 발언 목록. 트리 append는 호출자(Session::append_round)가 담당.
+/// 반환값은 (이번 라운드에서 완료된 발언 목록, 좌석 실패 시 에러)다(결함 #6). 좌석 하나가 실패해도
+/// 이미 완료된 앞 좌석 발언은 폐기하지 않고 그대로 돌려주어, 호출자(Session::append_round)가
+/// 완료분을 append하고 실패를 표면화할 수 있게 한다. 트리 append 자체는 여전히 호출자가 담당한다.
 pub fn run_round(
     participants: &[Participant],
     topic: &str,
     registry: &dyn RunnerRegistry,
     mode: RunMode,
     input: RoundInput<'_>,
-) -> Result<Vec<Utterance>, RunError> {
+) -> (Vec<Utterance>, Option<RunError>) {
     let mut same_round: Vec<Utterance> = Vec::new();
 
     for part in participants {
-        // Pull 모드이고 MCP 도구 보유 좌석이면 포인터 프롬프트, 아니면 Push(기존 동일).
-        let pull = input.ctx_mode == ContextMode::Pull && is_mcp_capable(&part.engine);
+        let pull = should_use_pull(input.ctx_mode, &part.engine, mode);
         let prompt = build_round_prompt(
             part,
             topic,
@@ -217,9 +230,13 @@ pub fn run_round(
             if pull { "pull" } else { "push" },
             prompt.chars().count()
         );
-        let runner = registry
-            .get(&part.engine)
-            .ok_or_else(|| RunError::Spawn(format!("엔진 러너 없음: {}", part.engine)))?;
+        let runner = match registry.get(&part.engine) {
+            Some(r) => r,
+            None => {
+                let e = RunError::Spawn(format!("엔진 러너 없음: {}", part.engine));
+                return (same_round, Some(e));
+            }
+        };
         let run_input = RunInput {
             prompt,
             model: None,
@@ -227,16 +244,19 @@ pub fn run_round(
             mode,
             pull,
         };
-        let out = runner.run(&run_input)?;
-        same_round.push(Utterance::new(part.label(), out.content));
+        match runner.run(&run_input) {
+            Ok(out) => same_round.push(Utterance::new(part.label(), out.content)),
+            Err(e) => return (same_round, Some(e)),
+        }
     }
 
-    Ok(same_round)
+    (same_round, None)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::is_mcp_capable;
+    use super::*;
+    use crate::runner::{RunError, RunInput, RunMode, RunOutput, Runner};
 
     #[test]
     fn pull_capable_is_claude_and_codex() {
@@ -245,5 +265,101 @@ mod tests {
         assert!(is_mcp_capable("codex"));
         assert!(!is_mcp_capable("ollama"));
         assert!(!is_mcp_capable("opencode"));
+    }
+
+    // --- should_use_pull(결함 #4) ---
+
+    #[test]
+    fn should_use_pull_codex_write_falls_back_to_push() {
+        // codex Write 턴은 MCP 도구 승인 갭(#24135)으로 pull이 아니라 push로 폴백.
+        assert!(!should_use_pull(ContextMode::Pull, "codex", RunMode::Write));
+    }
+
+    #[test]
+    fn should_use_pull_claude_write_stays_pull() {
+        // claude는 --dangerously-skip-permissions라 Write에서도 pull 유지.
+        assert!(should_use_pull(ContextMode::Pull, "claude", RunMode::Write));
+    }
+
+    #[test]
+    fn should_use_pull_codex_readonly_stays_pull() {
+        assert!(should_use_pull(
+            ContextMode::Pull,
+            "codex",
+            RunMode::ReadOnly
+        ));
+    }
+
+    #[test]
+    fn should_use_pull_push_ctx_mode_is_never_pull() {
+        assert!(!should_use_pull(
+            ContextMode::Push,
+            "claude",
+            RunMode::ReadOnly
+        ));
+    }
+
+    #[test]
+    fn should_use_pull_non_mcp_engine_is_never_pull() {
+        assert!(!should_use_pull(
+            ContextMode::Pull,
+            "ollama",
+            RunMode::ReadOnly
+        ));
+    }
+
+    // --- run_round 부분 성공 보존(결함 #6) ---
+
+    struct SeatRunner {
+        fail: bool,
+    }
+    impl Runner for SeatRunner {
+        fn run(&self, _i: &RunInput) -> Result<RunOutput, RunError> {
+            if self.fail {
+                Err(RunError::Spawn("seat2 의도된 실패".into()))
+            } else {
+                Ok(RunOutput {
+                    content: "seat1 응답".into(),
+                    input_tokens: 0,
+                    output_tokens: 0,
+                })
+            }
+        }
+    }
+
+    #[test]
+    fn run_round_preserves_completed_utterances_when_later_seat_fails() {
+        let mut reg = MapRegistry::new();
+        reg.insert("seat1", Box::new(SeatRunner { fail: false }));
+        reg.insert("seat2", Box::new(SeatRunner { fail: true }));
+        let participants = vec![
+            Participant {
+                engine: "seat1".into(),
+                role: None,
+                instruction: String::new(),
+            },
+            Participant {
+                engine: "seat2".into(),
+                role: None,
+                instruction: String::new(),
+            },
+        ];
+        let prior: Vec<Utterance> = Vec::new();
+        let retrieved: Vec<Utterance> = Vec::new();
+        let input = RoundInput {
+            prior: &prior,
+            retrieved: &retrieved,
+            carried: "",
+            ctx_mode: ContextMode::Push,
+            transcript_len: 0,
+        };
+        let (round, err) = run_round(&participants, "주제", &reg, RunMode::ReadOnly, input);
+        assert_eq!(
+            round.len(),
+            1,
+            "먼저 완료된 좌석 발언이 보존돼야 함: {round:?}"
+        );
+        assert_eq!(round[0].content, "seat1 응답");
+        assert!(err.is_some(), "2번 좌석 실패가 반환돼야 함");
     }
 }
