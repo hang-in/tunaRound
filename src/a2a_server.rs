@@ -459,7 +459,10 @@ fn sse_frame_json(req_id: &serde_json::Value, frame: &StreamResponse) -> String 
 /// - 한 번의 rx.recv()가 여러 프레임(예: Completed = artifact들 + 최종 statusUpdate)을 낼 수 있으므로
 ///   pending 큐에 순서대로 쌓아두고 하나씩 내보낸다.
 /// - statusUpdate.final == true인 프레임을 내보낸 뒤 스트림을 종료한다.
-/// - rx.recv()가 Err(Closed 또는 Lagged)이면 그 자리에서 스트림을 종료한다.
+/// - rx.recv()가 Err(Lagged)이면 스킵하고 계속 대기한다: 이 버스는 전역(용량 256, 모든 task 공유)인데
+///   이 스트림은 task_id 하나만 필터하므로, 무관한 다른 task 이벤트 폭주로 lag되었다고 관심 task의
+///   final 프레임을 못 받을 이유가 없다(dashboard_event_json_stream과 동일 규약). Err(Closed)일 때만
+///   스트림을 종료한다.
 fn task_frame_json_stream(
     rx: tokio::sync::broadcast::Receiver<TaskEvent>,
     task_id: String,
@@ -510,8 +513,12 @@ fn task_frame_json_stream(
                     }
                     st.pending.extend(task_event_to_frames(&ev));
                 }
-                Err(_) => {
-                    // Closed 또는 Lagged 모두 스트림 종료(§T3 3번 지시).
+                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                    // 전역 버스라 무관 task 이벤트 폭주로 lag될 수 있다 - 스킵하고 계속 기다린다
+                    // (여기서 종료하면 관심 task의 final statusUpdate 전에 스트림이 끊긴다).
+                    continue;
+                }
+                Err(tokio::sync::broadcast::error::RecvError::Closed) => {
                     return None;
                 }
             }
@@ -1254,6 +1261,59 @@ mod tests {
         assert!(
             stream.next().await.is_none(),
             "final 프레임 이후 스트림이 종료되어야 함"
+        );
+    }
+
+    /// #1 회귀 방지: 전역 버스가 무관 task 이벤트 폭주로 lag되어도(용량 초과) 관심 task의 final
+    /// 프레임에 도달해야 한다(Lagged=continue, Closed만 종료 - 위 doc·본문 확정 방침).
+    #[tokio::test]
+    async fn task_frame_json_stream_skips_lagged_and_reaches_final_frame() {
+        use futures_util::StreamExt;
+
+        // 용량 2인 채널: 스트림을 poll하기 전에 무관 "other" task 이벤트를 용량 이상 보내면
+        // 다음 recv()가 Err(Lagged)를 받는다.
+        let (tx, rx) = tokio::sync::broadcast::channel::<TaskEvent>(2);
+        let req_id = serde_json::json!(1);
+        let stream = task_frame_json_stream(rx, "t1".to_string(), req_id);
+        futures_util::pin_mut!(stream);
+
+        for i in 0..5 {
+            let other = Task::new(
+                "other",
+                None,
+                "win-claude",
+                "mac-claude",
+                format!("2026-07-03 10:0{i}:00"),
+            );
+            tx.send(TaskEvent::Status(other)).unwrap();
+        }
+
+        let mut completed = Task::new(
+            "t1",
+            None,
+            "win-claude",
+            "mac-claude",
+            "2026-07-03 10:05:00",
+        );
+        completed.state = TaskState::Completed;
+        completed.artifacts = vec![Artifact {
+            artifact_id: "a1".into(),
+            name: None,
+            parts: vec![],
+        }];
+        tx.send(TaskEvent::Completed(completed.clone())).unwrap();
+
+        let mut saw_final = false;
+        while let Some(frame) = stream.next().await {
+            let v: serde_json::Value = serde_json::from_str(&frame).unwrap();
+            if v["result"]["statusUpdate"]["final"] == true {
+                saw_final = true;
+                break;
+            }
+        }
+        assert!(
+            saw_final,
+            "Lagged를 건너뛰고도 final 프레임에 도달해야 함(스트림 조기 종료 금지)"
         );
     }
 

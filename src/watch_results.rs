@@ -38,9 +38,23 @@ impl SeenSet {
     }
 }
 
+/// dispatcher 원문 문자열의 짧은 해시(8자리 hex, std `DefaultHasher`만 사용 - 신규 의존 없음, #3).
+/// sanitize(비영숫자 `_` 치환)만으론 서로 다른 dispatcher가 같은 안전 문자열로 붕괴할 수 있다
+/// (예: "win.codex"와 "win_codex" 둘 다 "win_codex", 2글자 비ASCII는 전부 "__"). 원문 해시를
+/// 파일명에 병기해 이 충돌을 없앤다.
+fn dispatcher_hash8(dispatcher: &str) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    dispatcher.hash(&mut hasher);
+    format!("{:08x}", hasher.finish() as u32)
+}
+
 /// 워터마크 상태 파일명(dispatcher별). 정제는 codex_inject의 thread 파일 정제 답습: 정상 id
 /// (영숫자+`-`+`_`)는 불변, `/`·`..` 같은 경로 문자는 `_` 치환(네임스페이스 밖 탈출 방지).
-/// 빈 dispatcher(전체 관측)는 "all".
+/// 빈 dispatcher(전체 관측)는 "all". sanitize 결과가 다른 dispatcher끼리 충돌할 수 있어(#3) 원문의
+/// 짧은 해시(`dispatcher_hash8`)를 병기한다 - 같은 머신 두 인박스가 워터마크 파일을 공유하면 한쪽의
+/// 새 워터마크가 다른 쪽 재생 시작점을 미래로 밀어 미통지 구간을 건너뛰는 사고를 막는다.
 fn watermark_file_name(dispatcher: &str) -> String {
     let safe: String = dispatcher
         .chars()
@@ -57,7 +71,8 @@ fn watermark_file_name(dispatcher: &str) -> String {
     } else {
         safe
     };
-    format!("watch-results-{safe}.since")
+    let hash8 = dispatcher_hash8(dispatcher);
+    format!("watch-results-{safe}-{hash8}.since")
 }
 
 /// 워터마크 상태 디렉터리. 설계 §4 P3 명시 경로 = `%LOCALAPPDATA%/tunaround`(win 브로커 db·bin과
@@ -240,6 +255,21 @@ struct ResultLine {
     updated_at: Option<String>,
 }
 
+/// SSE data 한 줄이 서버측 lagged 신호 프레임(mcp/server.rs `lagged_signal_json`,
+/// `{"event":"lagged","skipped":N}`)인지 판별한다(순수 함수, #2). 일반 envelope
+/// (`{"event":..,"task":{..}}`)과 달리 "task" 필드가 없는 게 구분점이다. 서버 `/dashboard/events` 버스는
+/// 전역(용량 256, 모든 task 공유)이라 이 인박스가 정체되면 서버측 수신자가 lag되어 오래된 terminal
+/// 이벤트가 드롭될 수 있는데(at-least-once 위반 소지), 그 사실을 명시 신호로 받아야만 워터마크가 갭을
+/// 조용히 건너뛰지 않는다(#2 확정 방침: 이 신호를 보면 워터마크 전진을 보류하고 재접속한다 -
+/// run_once 호출부 참조).
+fn is_lagged_signal(data: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(data.trim())
+        .ok()
+        .and_then(|v| v.get("event").and_then(|e| e.as_str()).map(str::to_string))
+        .as_deref()
+        == Some("lagged")
+}
+
 /// SSE data 한 줄(`{"event":..,"task":{..}}`)을 파싱해, dispatcher가 던진 terminal(completed/failed) task면
 /// [`ResultLine`]을 만든다. 이미 본 task(seen)·비-terminal·다른 dispatcher는 None.
 /// dispatcher가 빈 문자열이면 fromAgent 필터를 끈다(전체 완료 관측).
@@ -271,6 +301,15 @@ fn parse_result_line(data: &str, dispatcher: &str, seen: &mut SeenSet) -> Option
             .and_then(|x| x.as_str())
             .map(str::to_string),
     })
+}
+
+/// --since 오버라이드가 현재 시각보다 미래인지 판정한다(순수 함수, #4). 둘 다 DB datetime 포맷
+/// ("YYYY-MM-DD HH:MM:SS" UTC)이라 사전순 비교로 충분하다(is_db_datetime과 동일 전제).
+/// KST 등 로컬 시각(+9h)이나 연도 오타로 미래값이 들어오면, 인메모리 워터마크가 미래로 고정되고
+/// 첫 persist에서 단조 floor 때문에 이후 진짜 워터마크가 기록 안 돼 실시간이 그 시각을 지날 때까지
+/// 모든 재접속 replay가 무효화되는 사고(#4)를 막기 위한 게이트.
+fn is_future_since(since: &str, now: &str) -> bool {
+    since > now
 }
 
 /// 재접속을 포기하기 전까지 허용하는 연속 실패 횟수. 초과 시 run()이 Err를 반환해 호출부가
@@ -390,6 +429,16 @@ async fn run_once(
                     let Some(data) = line.trim_end().strip_prefix("data: ") else {
                         continue;
                     };
+                    if is_lagged_signal(data) {
+                        // 서버가 브로드캐스트 지연(Lagged)을 신호했다 = 이 접속의 갭 구간에 completed/
+                        // failed가 드롭됐을 수 있다(#2). 지금까지의 워터마크(이 신호 이전까지 정상
+                        // 처리분)는 전진시키지 않고 즉시 재접속한다 - 재접속의 ?since= 재생이 드롭
+                        // 구간을 다시 실어온다(at-least-once, 조용한 유실보다 재접속 비용을 택함).
+                        eprintln!(
+                            "[watch-results] 서버 브로드캐스트 지연(lagged) 신호 수신 - 워터마크 보류, 재접속"
+                        );
+                        return "서버 lagged 신호 수신(워터마크 보류·재접속)".to_string();
+                    }
                     let Some(result) = parse_result_line(data, dispatcher, &mut state.seen) else {
                         continue;
                     };
@@ -456,7 +505,17 @@ pub async fn run(
             // 오버라이드는 인메모리 재생 시작점으로만 쓴다. 디스크 워터마크를 읽어 영속 floor
             // (last_written)만 채워, 단조 persist가 더 새 저장값을 오버라이드로 되감지 않게 한다.
             let _ = file.load();
-            Some(norm)
+            // #4: 미래 --since는 조용히 채택하지 않는다(경고 후 None으로 강등 = 콜드스타트와 동일하게
+            // 라이브부터 시작). 채택했다면 실시간이 그 시각을 지날 때까지 재생이 영구 무효화된다.
+            match crate::presence_scan::system_time_to_db_datetime(std::time::SystemTime::now()) {
+                Some(now) if is_future_since(&norm, &now) => {
+                    eprintln!(
+                        "[watch-results] 경고: --since 값이 미래({norm} > 현재 UTC {now}) - KST 등 로컬시각 오입력 의심, 채택하지 않고 라이브부터 시작"
+                    );
+                    None
+                }
+                _ => Some(norm),
+            }
         }
         None => file.load(),
     };
@@ -667,20 +726,74 @@ mod tests {
         assert!(pending.is_empty());
     }
 
+    // --- #2: 서버 lagged 신호 인지 ---
+
+    #[test]
+    fn is_lagged_signal_detects_only_server_signal_frame() {
+        assert!(is_lagged_signal(r#"{"event":"lagged","skipped":5}"#));
+        assert!(
+            !is_lagged_signal(&ev("completed", "dashboard", "x", "1", Some("정상 프레임"))),
+            "정상 envelope(task 필드 있음)은 lagged 신호 아님"
+        );
+        assert!(!is_lagged_signal("not json"), "파싱 불가는 신호 아님");
+        assert!(!is_lagged_signal(""), "빈 문자열은 신호 아님");
+    }
+
+    // --- #4: --since 미래값 게이트 ---
+
+    #[test]
+    fn is_future_since_compares_lexicographically() {
+        assert!(is_future_since(
+            "2026-07-13 10:00:00",
+            "2026-07-13 09:00:00"
+        ));
+        assert!(
+            !is_future_since("2026-07-13 09:00:00", "2026-07-13 09:00:00"),
+            "같은 시각은 미래 아님"
+        );
+        assert!(
+            !is_future_since("2026-07-13 08:00:00", "2026-07-13 09:00:00"),
+            "과거 시각은 미래 아님"
+        );
+    }
+
     // --- v2-45 P3: 워터마크·재생 구독 순수부 ---
 
     #[test]
     fn watermark_file_name_sanitizes_and_defaults() {
-        // 정상 id는 불변.
+        // 정상 id는 safe 파트 불변 + 해시8 접미사(#3: 파일명 형식이 safe-hash8로 바뀜).
         assert_eq!(
             watermark_file_name("win-opus-boss"),
-            "watch-results-win-opus-boss.since"
+            format!(
+                "watch-results-win-opus-boss-{}.since",
+                dispatcher_hash8("win-opus-boss")
+            )
         );
-        // 빈 dispatcher(전체 관측)는 "all"(파일명 성립).
-        assert_eq!(watermark_file_name(""), "watch-results-all.since");
-        // 경로 문자·비ASCII는 '_' 치환(네임스페이스 탈출 방지).
-        assert_eq!(watermark_file_name("../a/b"), "watch-results-___a_b.since");
-        assert_eq!(watermark_file_name("총괄"), "watch-results-__.since");
+        // 빈 dispatcher(전체 관측)는 "all"(파일명 성립) + 해시8.
+        assert_eq!(
+            watermark_file_name(""),
+            format!("watch-results-all-{}.since", dispatcher_hash8(""))
+        );
+        // 경로 문자·비ASCII는 '_' 치환(네임스페이스 탈출 방지), 해시가 실제 충돌을 없앤다.
+        assert_eq!(
+            watermark_file_name("../a/b"),
+            format!("watch-results-___a_b-{}.since", dispatcher_hash8("../a/b"))
+        );
+        assert_eq!(
+            watermark_file_name("총괄"),
+            format!("watch-results-__-{}.since", dispatcher_hash8("총괄"))
+        );
+    }
+
+    #[test]
+    fn watermark_file_name_disambiguates_colliding_sanitized_names() {
+        // sanitize만으론 "win.codex"·"win_codex"가 같은 safe 문자열("win_codex")로 붕괴한다.
+        // 해시8 병기로 실제 파일명은 달라야 한다(#3: 같은 파일 공유 시 재생 시작점이 어긋난다).
+        assert_ne!(
+            watermark_file_name("win.codex"),
+            watermark_file_name("win_codex"),
+            "서로 다른 dispatcher는 다른 파일명을 얻어야 함"
+        );
     }
 
     #[test]

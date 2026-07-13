@@ -339,27 +339,41 @@ fn dashboard_envelope_json(task: &crate::store::a2a::Task) -> String {
     serde_json::to_string(&envelope).unwrap_or_else(|_| "{}".to_string())
 }
 
+/// broadcast Lagged 발생 시 흘리는 특수 신호 프레임(#2, at-least-once 취약성 완화). 정상 envelope
+/// (`{"event":"status"|"completed","task":{...}}`)과 달리 "task" 필드가 없어, 이를 모르는 기존 소비자
+/// (dashboard_envelope_json 파서·watch-results parse_result_line)는 조용히 무시한다(하위호환). 인지하는
+/// 소비자(watch-results)만 이 프레임을 보고 워터마크 전진을 보류·재접속한다.
+#[cfg(feature = "serve")]
+fn lagged_signal_json(skipped: u64) -> String {
+    serde_json::json!({ "event": "lagged", "skipped": skipped }).to_string()
+}
+
 /// 전역 task 이벤트를 JSON data 문자열로 흘리는 순수 스트림(단위테스트 대상). task_id 필터 없이 모든
-/// TaskEvent를 내보낸다. Lagged는 스킵하고 계속, Closed면 종료한다.
+/// TaskEvent를 내보낸다. Lagged는 조용히 스킵하지 않고 `lagged_signal_json` 프레임으로 알린 뒤 계속,
+/// Closed면 종료한다(#2: 조용히 skip하면 워터마크 소비자가 갭을 인지 못해 completed/failed가 재생에서
+/// 영구 누락될 수 있다 - 서버측 최소 개선안).
 #[cfg(feature = "serve")]
 fn dashboard_event_json_stream(
     rx: tokio::sync::broadcast::Receiver<crate::store::a2a::TaskEvent>,
 ) -> impl futures_util::Stream<Item = String> {
     use crate::store::a2a::TaskEvent;
     futures_util::stream::unfold(rx, |mut rx| async move {
-        loop {
-            match rx.recv().await {
-                Ok(ev) => {
-                    // Status/Completed 모두 변이 후 Task 전체 스냅샷을 담으므로 envelope 매핑은
-                    // state 기준 공용 헬퍼로 수렴한다(§5-2, dashboard_envelope_json 주석 참조).
-                    let task = match &ev {
-                        TaskEvent::Status(t) | TaskEvent::Completed(t) => t,
-                    };
-                    return Some((dashboard_envelope_json(task), rx));
-                }
-                Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
-                Err(tokio::sync::broadcast::error::RecvError::Closed) => return None,
+        // unfold가 항목마다 이 클로저를 재호출하므로 여기선 한 번만 recv한다(Lagged도 신호 프레임을
+        // yield하고 다음 호출에서 계속). 모든 분기가 즉시 항목/종료를 내므로 loop는 불필요하다.
+        match rx.recv().await {
+            Ok(ev) => {
+                // Status/Completed 모두 변이 후 Task 전체 스냅샷을 담으므로 envelope 매핑은
+                // state 기준 공용 헬퍼로 수렴한다(§5-2, dashboard_envelope_json 주석 참조).
+                let task = match &ev {
+                    TaskEvent::Status(t) | TaskEvent::Completed(t) => t,
+                };
+                Some((dashboard_envelope_json(task), rx))
             }
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
+                eprintln!("[dashboard/events] 브로드캐스트 지연(Lagged) 감지: {n}건 건너뜀");
+                Some((lagged_signal_json(n), rx))
+            }
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => None,
         }
     })
 }
@@ -485,7 +499,13 @@ async fn dashboard_events_handler(
     // 라이브가 같은 전이를 중복 운반할 수 있는데, 소비자(피드 updatedAt 가드·watch-results seen)가
     // dedup한다.
     let rx = sender.subscribe();
-    let (snapshot, truncated): (Vec<String>, bool) = if query.since.is_some() || query.replay > 0 {
+    // #8: 재생 질의 실패를 빈 스냅샷(200)으로 위장하지 않는다(health 핸들러가 확립한 fail-visible
+    // 패턴, PR #68). 조용히 빈 스냅샷으로 진행하면 클라이언트(watch-results)가 "재생 실패"와 "재생할
+    // 것 없음"을 구분 못 해, 이어지는 라이브 이벤트가 워터마크를 전진시키면 실패한 재생 창의
+    // completed/failed가 영구 유실된다. Err는 spawn_blocking 클로저 안에서 `?`로 모아 반환한다.
+    let snapshot_result: Result<(Vec<String>, bool), String> = if query.since.is_some()
+        || query.replay > 0
+    {
         // lock은 spawn_blocking 안에서 짧게 잡는다(roster 핸들러 패턴). SSE 스트림 안에서 lock 보유 금지.
         tokio::task::spawn_blocking(move || {
             use crate::store::sqlite::ReplayLimit;
@@ -496,39 +516,41 @@ async fn dashboard_events_handler(
                 // 이어받아야 클라이언트 워터마크가 앞에서부터 전진한다. 상한+1로 조회해 잘림을
                 // 모호하지 않게 판정한다(정확히 상한 개수인 스냅샷을 잘림으로 오판해 불필요한
                 // 재접속 연쇄를 만들지 않기 위해).
-                let mut tasks = store
-                    .list_tasks_replay(
-                        dispatcher,
-                        Some(since),
-                        &["completed", "failed"],
-                        ReplayLimit::Oldest(DASHBOARD_REPLAY_MAX + 1),
-                    )
-                    .unwrap_or_else(|e| {
-                        eprintln!("[dashboard] 재생 스냅샷 질의 실패(라이브만 제공): {e}");
-                        Vec::new()
-                    });
+                let mut tasks = store.list_tasks_replay(
+                    dispatcher,
+                    Some(since),
+                    &["completed", "failed"],
+                    ReplayLimit::Oldest(DASHBOARD_REPLAY_MAX + 1),
+                )?;
                 let truncated = tasks.len() > DASHBOARD_REPLAY_MAX;
                 tasks.truncate(DASHBOARD_REPLAY_MAX);
-                (
+                Ok((
                     tasks.iter().map(dashboard_envelope_json).collect(),
                     truncated,
-                )
+                ))
             } else {
                 // replay = 전 상태 스냅샷(canceled·열린 task 포함 - 피드는 전 상태 뷰).
                 // replay 값은 파서에서 이미 상한으로 클램프됨 = 잘림 판정 불요(창 뷰 의미론).
-                let tasks = store
-                    .list_tasks_replay(None, None, &[], ReplayLimit::Newest(query.replay))
-                    .unwrap_or_else(|e| {
-                        eprintln!("[dashboard] 재생 스냅샷 질의 실패(라이브만 제공): {e}");
-                        Vec::new()
-                    });
-                (tasks.iter().map(dashboard_envelope_json).collect(), false)
+                let tasks =
+                    store.list_tasks_replay(None, None, &[], ReplayLimit::Newest(query.replay))?;
+                Ok((tasks.iter().map(dashboard_envelope_json).collect(), false))
             }
         })
         .await
-        .unwrap_or_default()
+        .unwrap_or_else(|e| Err(format!("spawn_blocking 실패: {e}")))
     } else {
-        (Vec::new(), false)
+        Ok((Vec::new(), false))
+    };
+    let (snapshot, truncated) = match snapshot_result {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("[dashboard/events] 재생 스냅샷 질의 실패: {e}");
+            return (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                "재생 스냅샷 조회 실패",
+            )
+                .into_response();
+        }
     };
     if truncated {
         // 잘림 = 라이브를 chain하지 않고 스냅샷만 보낸 뒤 스트림을 정상 종료한다(P2 리뷰 이월).
@@ -2251,6 +2273,69 @@ mod tests {
             serde_json::from_str(&stream.next().await.expect("frame2 있어야 함")).unwrap();
         assert_eq!(f2["event"], "completed");
         assert_eq!(f2["task"]["id"], "task-b");
+    }
+
+    // #2 회귀 방지: Lagged를 조용히 skip하지 않고 신호 프레임으로 흘려보낸 뒤(스트림 종료 없이)
+    // 계속 라이브 이벤트를 이어받는지 검증한다.
+    #[cfg(feature = "serve")]
+    #[tokio::test]
+    async fn dashboard_event_json_stream_signals_lagged_then_continues() {
+        use crate::store::a2a::{Task, TaskEvent};
+        use futures_util::StreamExt;
+
+        // 용량 2: 스트림을 poll하기 전에 용량을 넘겨 보내 다음 recv()가 Err(Lagged)를 받게 한다.
+        let (tx, rx) = tokio::sync::broadcast::channel::<TaskEvent>(2);
+        let stream = dashboard_event_json_stream(rx);
+        futures_util::pin_mut!(stream);
+
+        for i in 0..5 {
+            let t = Task::new(
+                "flood",
+                None,
+                "win-claude",
+                "mac-claude",
+                format!("2026-07-06 10:0{i}:00"),
+            );
+            tx.send(TaskEvent::Status(t)).unwrap();
+        }
+
+        let f1: serde_json::Value =
+            serde_json::from_str(&stream.next().await.expect("lagged 프레임 있어야 함")).unwrap();
+        assert_eq!(
+            f1["event"], "lagged",
+            "Lagged는 조용히 skip 대신 신호 프레임으로 알려야 함"
+        );
+        assert!(
+            f1.get("task").is_none(),
+            "lagged 프레임은 task 필드가 없어야 기존 파서가 무해히 무시"
+        );
+
+        // 신호 이후에도 스트림은 종료되지 않고 라이브 이벤트를 계속 이어받는다. 용량 2 채널이라
+        // 아직 소비 안 된 flood 버퍼(및 그 추가 eviction으로 인한 후속 Lagged)가 task-b보다 먼저
+        // 올 수 있으므로, task-b의 status 프레임이 나올 때까지 드레인하며 스트림이 살아있음을 확인한다.
+        let task_b = Task::new(
+            "task-b",
+            None,
+            "win-claude",
+            "mac-claude",
+            "2026-07-06 10:10:00",
+        );
+        tx.send(TaskEvent::Status(task_b)).unwrap();
+        let mut saw_task_b = false;
+        for _ in 0..8 {
+            let f: serde_json::Value =
+                serde_json::from_str(&stream.next().await.expect("lagged 이후 프레임 있어야 함"))
+                    .unwrap();
+            if f["event"] == "status" && f["task"]["id"] == "task-b" {
+                saw_task_b = true;
+                break;
+            }
+            // 그 외(버퍼된 flood status·추가 lagged 신호)는 스트림이 계속 살아있다는 증거라 넘어간다.
+        }
+        assert!(
+            saw_task_b,
+            "lagged 신호 이후에도 라이브 task-b 이벤트를 이어받아야 함"
+        );
     }
 
     // --- v2-45 P2: envelope 공용 헬퍼 + 쿼리 파싱 단위테스트 ---
