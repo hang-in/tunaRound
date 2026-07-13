@@ -37,7 +37,7 @@
 - 전제: v2-45 P6a가 task 결과를 messages/FTS로 색인(`a2a:*` 네임스페이스).
 - 해법: `/dashboard/search?q=` read-only 엔드포인트(retriever 재사용) + 검색 탭. "지난주 mac에 맡긴 진단이 뭐였지"를 웹에서.
 - 가치: mesh 기억화의 가치가 사용자에게 보이는 지점 = P6a의 완성.
-- **구현(PR #69)**: `GET /dashboard/search?q=`(별도 retriever-state 서브라우터를 merge - 기존 store-state 핸들러 무영향). MCP search_context와 **같은 retriever**(형태소+FTS) 재사용. 배포 바이너리는 semantic 미포함이라 **embedder(원격 Ollama) 네트워크 비의존**. 프론트 `SearchPanel`(디바운스 400ms, speaker=`a2a/<agent>` 표시). 실패는 500으로 표면화(결과 없음 위장 안 함). 탭 네비게이션 대신 자체 완결 섹션.
+- **구현(PR #69)**: `GET /dashboard/search?q=`(별도 retriever-state 서브라우터를 merge - 기존 store-state 핸들러 무영향). MCP search_context와 **같은 retriever**(형태소+FTS) 재사용. (정정 2026-07-13: 배포 바이너리는 dist features에 semantic이 포함돼 매 질의마다 embedder POST를 시도하고 실패 시 FTS 단독으로 degrade한다. "semantic 미포함=네트워크 비의존"은 사실이 아니며, embed 실패가 FTS 폴백으로 안전한 것이지 embedder 호출 자체가 없는 것은 아니다.) 프론트 `SearchPanel`(디바운스 400ms, speaker=`a2a/<agent>` 표시). 실패는 500으로 표면화(결과 없음 위장 안 함). 탭 네비게이션 대신 자체 완결 섹션.
 
 ## 낮은 우선순위
 
