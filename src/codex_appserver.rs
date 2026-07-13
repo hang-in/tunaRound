@@ -174,6 +174,15 @@ pub fn parse_thread_id(thread_start_response: &Value) -> Option<String> {
         .map(String::from)
 }
 
+/// `turn/start` 응답의 result에서 우리 turn id를 뽑는다(설계 §4/§5.2 확장, 이슈 #88 관련 실비판:
+/// turn/completed 매칭이 threadId만 봐서 사람이 같은 thread에 동시 프롬프트를 치면 그 턴 완료를
+/// 우리 턴으로 오인할 수 있다). 경로는 `turn.id`로 추정한다(turn/completed 알림의 `params.turn.id`와
+/// 같은 중첩 형태, thread/start의 `result.thread.id` 규약과 대칭). 라이브로 실측된 스키마가 아니라
+/// 필드가 없으면 None(호출자가 threadId-only 매칭으로 폴백해 회귀를 막는다).
+pub fn parse_turn_id_from_start_result(result: &Value) -> Option<String> {
+    result.get("turn")?.get("id")?.as_str().map(String::from)
+}
+
 /// `turn/completed` 알림에서 뽑은 (threadId, turnId).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TurnCompleted {
@@ -466,6 +475,23 @@ mod tests {
             panic!("Notification 기대");
         };
         assert_eq!(extract_final_agent_message(&method, &params), None);
+    }
+
+    // -- turn/start 응답 turn id -----------------------------------------------
+
+    #[test]
+    fn parse_turn_id_from_start_result_reads_nested_turn_id() {
+        assert_eq!(
+            parse_turn_id_from_start_result(&json!({"turn": {"id": "turn-42"}})).as_deref(),
+            Some("turn-42")
+        );
+    }
+
+    #[test]
+    fn parse_turn_id_from_start_result_none_when_field_missing() {
+        // 필드 부재(스키마 미확정 등) 시 None -> 호출자가 threadId-only 매칭으로 폴백.
+        assert_eq!(parse_turn_id_from_start_result(&json!({})), None);
+        assert_eq!(parse_turn_id_from_start_result(&json!({"turn": {}})), None);
     }
 
     // -- turn/completed 알림 ------------------------------------------------
