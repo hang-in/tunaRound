@@ -12,24 +12,22 @@ fn warn_if_insecure_bind(addr: &str, has_token: bool) -> Option<String> {
         return None;
     }
     // 와일드카드 표기는 파싱 없이 바로 비-loopback으로 취급한다(0.0.0.0/::/[::] 프리픽스).
-    let is_non_loopback = if addr.starts_with("0.0.0.0")
-        || addr.starts_with("::")
-        || addr.starts_with("[::]")
-    {
-        true
-    } else {
-        // "host:port" 또는 "[ipv6]:port"에서 host만 뽑아 IpAddr로 파싱한다.
-        let host = if let Some(rest) = addr.strip_prefix('[') {
-            rest.split(']').next().unwrap_or("")
+    let is_non_loopback =
+        if addr.starts_with("0.0.0.0") || addr.starts_with("::") || addr.starts_with("[::]") {
+            true
         } else {
-            addr.rsplit_once(':').map(|(h, _)| h).unwrap_or(addr)
+            // "host:port" 또는 "[ipv6]:port"에서 host만 뽑아 IpAddr로 파싱한다.
+            let host = if let Some(rest) = addr.strip_prefix('[') {
+                rest.split(']').next().unwrap_or("")
+            } else {
+                addr.rsplit_once(':').map(|(h, _)| h).unwrap_or(addr)
+            };
+            match host.parse::<std::net::IpAddr>() {
+                Ok(ip) => !ip.is_loopback(),
+                // 파싱 불가(포트 없는 호스트명 등)는 애매하니 경고 생략(오탐 방지).
+                Err(_) => false,
+            }
         };
-        match host.parse::<std::net::IpAddr>() {
-            Ok(ip) => !ip.is_loopback(),
-            // 파싱 불가(포트 없는 호스트명 등)는 애매하니 경고 생략(오탐 방지).
-            Err(_) => false,
-        }
-    };
     if is_non_loopback {
         Some(format!(
             "[serve] 경고: 비-loopback({addr})에 토큰 없이 바인드 - /mcp·/a2a·대시보드 쓰기가 무인증으로 원격 노출됩니다. TUNA_BROKER_TOKEN 또는 --token 설정을 권장합니다."

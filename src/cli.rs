@@ -785,13 +785,8 @@ mod cli_tests {
     #[cfg(feature = "worker")]
     #[test]
     fn work_http_api_key_is_optional() {
-        let cli = Cli::try_parse_from([
-            "tunaround",
-            "work",
-            "--core",
-            "http://127.0.0.1:8770/mcp",
-        ])
-        .expect("파싱 성공");
+        let cli = Cli::try_parse_from(["tunaround", "work", "--core", "http://127.0.0.1:8770/mcp"])
+            .expect("파싱 성공");
         match cli.command {
             Some(Commands::Work(a)) => assert_eq!(a.http_api_key, None),
             other => panic!("Work 서브커맨드 기대, 실제: {other:?}"),
