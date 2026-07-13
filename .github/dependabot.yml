@@ -1,0 +1,24 @@
+# Dependabot: SHA 핀한 GitHub Actions와 npm·cargo 의존성을 주간으로 갱신 PR을 연다(리뷰 #94/#99).
+# 액션을 SHA로 핀하면 수동 갱신이 밀리므로, Dependabot이 새 SHA로 올리는 PR을 자동 생성해 CI로 검증한다.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: 'ci'
+
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: 'chore(frontend)'
+
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: 'chore(deps)'
