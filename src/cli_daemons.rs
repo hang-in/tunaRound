@@ -11,9 +11,26 @@ pub fn work(rt: &tokio::runtime::Runtime, a: WorkArgs) {
     } else {
         tunaround::runner::RunMode::ReadOnly
     };
+
+    // --context-map "k=v,k=v" -> HashMap. 오타·빈 항목·중복은 조용히 버리지 않고 진입 시 거부한다
+    // (worker::parse_context_map). 오폴백으로 엉뚱한 레포를 --write하는 사고를 막는다. self-disruption
+    // 가드(아래)가 이 매핑 값도 검사해야 하므로 여기로 끌어올린다.
+    let context_map = match a.context_map.as_deref() {
+        Some(spec) => match tunaround::worker::parse_context_map(spec) {
+            Ok(m) => m,
+            Err(e) => {
+                eprintln!("[work] --context-map 파싱 실패: {e}");
+                std::process::exit(1);
+            }
+        },
+        None => std::collections::HashMap::new(),
+    };
+
     // 워커 격리 가드레일(거버넌스 #5): write 워커의 작업 디렉터리가 이 프로세스 실행 디렉터리(클론)와
     // 겹치면 reset --hard 같은 write가 발밑을 갈아엎어 워커가 자살한다(2026-07-03 뱃지 task). 거부하고
-    // 별도 클론/워크트리를 --project-path로 지정하도록 안내한다.
+    // 별도 클론/워크트리를 --project-path로 지정하도록 안내한다. task의 context_id가 --context-map에
+    // 매핑돼 있으면 그 경로로 실행되므로(run_one_pass::resolve_project_path), 기본 project-path뿐 아니라
+    // context_map의 모든 value도 함께 검사한다(그러지 않으면 매핑 경로로 이 가드를 우회할 수 있었다).
     if a.write {
         let cwd = std::env::current_dir().unwrap_or_default();
         let project = a.project_path.as_deref().map(std::path::Path::new);
@@ -23,6 +40,16 @@ pub fn work(rt: &tokio::runtime::Runtime, a: WorkArgs) {
                  자기 클론을 갈아엎어 워커가 자살할 수 있습니다. 별도 클론/워크트리를 --project-path로 지정하세요.",
                 a.project_path.as_deref().unwrap_or("<미지정=cwd>"),
                 cwd.display()
+            );
+            std::process::exit(1);
+        }
+        let bad = tunaround::worker::context_map_disrupting_paths(&context_map, &cwd);
+        if !bad.is_empty() {
+            eprintln!(
+                "[work] 거부: --context-map 항목이 실행 디렉터리({})와 겹칩니다: {}. \
+                 별도 클론/워크트리 경로로 매핑하세요.",
+                cwd.display(),
+                bad.join(", ")
             );
             std::process::exit(1);
         }
@@ -82,19 +109,6 @@ pub fn work(rt: &tokio::runtime::Runtime, a: WorkArgs) {
             eprintln!("[work] --runner a2a 는 a2a-out 피처가 필요합니다");
             std::process::exit(1);
         }
-    };
-
-    // --context-map "k=v,k=v" -> HashMap. 오타·빈 항목·중복은 조용히 버리지 않고 진입 시 거부한다
-    // (worker::parse_context_map). 오폴백으로 엉뚱한 레포를 --write하는 사고를 막는다.
-    let context_map = match a.context_map.as_deref() {
-        Some(spec) => match tunaround::worker::parse_context_map(spec) {
-            Ok(m) => m,
-            Err(e) => {
-                eprintln!("[work] --context-map 파싱 실패: {e}");
-                std::process::exit(1);
-            }
-        },
-        None => std::collections::HashMap::new(),
     };
 
     let agent_id = a

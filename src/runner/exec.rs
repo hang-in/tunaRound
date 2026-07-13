@@ -143,17 +143,35 @@ pub(crate) fn run_with_watchdog(spec: &ExecSpec) -> Result<String, RunError> {
 
     // stdout 라인 단위 읽기, 매 라인마다 활동 타이머 리셋.
     let mut collected = String::new();
+    let mut stdout_err: Option<RunError> = None;
     if let Some(pipe) = child.stdout.take() {
         let reader = BufReader::new(pipe);
         for line in reader.lines() {
-            let line =
-                line.map_err(|e| RunError::Io(format!("{} stdout 읽기 실패: {e}", spec.label)))?;
-            if let Ok(mut g) = last_activity.lock() {
-                *g = Instant::now();
+            match line {
+                Ok(l) => {
+                    if let Ok(mut g) = last_activity.lock() {
+                        *g = Instant::now();
+                    }
+                    collected.push_str(&l);
+                    collected.push('\n');
+                }
+                Err(e) => {
+                    stdout_err = Some(RunError::Io(format!(
+                        "{} stdout 읽기 실패: {e}",
+                        spec.label
+                    )));
+                    break;
+                }
             }
-            collected.push_str(&line);
-            collected.push('\n');
         }
+    }
+    // 라인 읽기 에러(비-UTF-8 등)로 조기 이탈하는 경로: 기존엔 여기서 `?`로 즉시 반환해 자식이
+    // kill/wait 없이 방치됐다(WatchdogGuard가 done=true로 무장해제되어 watchdog도 더 이상 안 죽임).
+    // 타임아웃 경로와 동일하게 트리를 정리한 뒤 에러를 반환한다.
+    if let Some(err) = stdout_err {
+        kill_pid(pid);
+        let _ = child.wait();
+        return Err(err);
     }
 
     let stderr = stderr_handle
@@ -189,7 +207,9 @@ fn poll_interval(idle_timeout: Duration) -> Duration {
 }
 
 /// 자식 PID를 루트로 하는 프로세스 트리를 best-effort로 강제 종료한다.
-fn kill_pid(pid: u32) {
+/// worker.rs::run_on_task의 타임아웃 kill도 이 함수를 재사용한다(직계 자식만 죽이면 손자 프로세스가
+/// 고아로 남는 문제를 여기서 이미 해결했으므로).
+pub(crate) fn kill_pid(pid: u32) {
     #[cfg(unix)]
     {
         // run_with_watchdog가 process_group(0)으로 자식 PID를 PGID로 만들었으므로,

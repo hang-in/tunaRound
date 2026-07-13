@@ -14,6 +14,11 @@ const ID_LEN: usize = 32;
 /// CLAIM_LEASE_SECS(30분)보다도 훨씬 짧다(6배 여유). v2-49 #6.
 const LEASE_KEEPALIVE_SECS: u64 = 5 * 60;
 
+/// roster heartbeat 주기(초). AGENT_TTL_SECS(90초, store/agents.rs)보다 촘촘해야 러너 실행이 길어도
+/// 워커가 로스터에서 offline(stale)으로 빠지지 않는다. lease 연장(5분)과 별개로 이 주기로 heartbeat만
+/// 보낸다(리뷰 #6: 5분 lease 틱만으론 90초 TTL을 못 지켜 90초~5분 task가 offline 처리되던 결함).
+const HEARTBEAT_KEEPALIVE_SECS: u64 = 60;
+
 /// lease 연장 상한(회). 진행 신호 없이 무한 대기하는 고착 러너가 lease로 영원히 살아남지 못하게,
 /// 관대한 상한(36*5분=3시간) 뒤에는 연장을 멈춰 lease가 만료되도록 둔다(expire_stale_claims의
 /// requeue→fail 안전망 복원). 상한 아래의 정당한 장기 task는 영향받지 않는다. v2-49 #6 하드닝(적대 리뷰).
@@ -78,26 +83,42 @@ fn find_header_starts(text: &str) -> Vec<usize> {
 }
 
 /// poll_tasks(agent) 응답 텍스트를 파싱해 각 task 블록을 구조체로 반환한다.
-/// v2-52 ④: 신 브로커가 얹는 `TASKS_JSON <json>` 프리픽스가 있으면 그 구조화 JSON을 우선 파싱한다(견고).
-/// 없으면(구 브로커) 기존 문자열 블록 파싱으로 폴백해 하위호환을 유지한다.
-/// 빈 목록 안내 문구(`"... 앞 열린 task 없음"`)를 포함하면 빈 Vec을 반환한다.
+/// v2-52 ④: 신 브로커가 얹는 `TASKS_JSON <json>` 프리픽스가 있으면 그 구조화 JSON을 우선 파싱한다(견고,
+/// id는 is_hex32 검증을 통과한 것만 채택). 없으면(구 브로커) 기존 문자열 블록 파싱으로 폴백해
+/// 하위호환을 유지한다. 헤더가 하나도 없고 빈 목록 안내 문구(`"... 앞 열린 task 없음"`)면 빈 Vec을
+/// 반환한다(그 문구가 어떤 task의 msg 본문에 우연히 포함돼 있어도 헤더가 있으면 정상 파싱한다).
 pub fn parse_open_tasks(poll_text: &str) -> Vec<ParsedTask> {
     if let Some(dtos) = crate::a2a_wire::decode_poll_json(poll_text) {
+        // 문자열 경로(find_header_starts)는 is_hex32로 id를 강제하는데, JSON 경로는 이 검증이
+        // 없었다. run_on_task가 {id}를 셸 명령 문자열에 직접 치환하므로(msg는 env로만 전달) hex32
+        // 전제가 깨지면 세공된 id가 셸 인젝션이 된다. 여기서도 같은 검증을 걸어 불통과 항목은 버린다.
         return dtos
             .into_iter()
-            .map(|d| ParsedTask {
-                id: d.id,
-                state: d.state,
-                context_id: d.context_id,
-                msg: d.msg,
+            .filter_map(|d| {
+                if !is_hex32(&d.id) {
+                    eprintln!(
+                        "[worker] TASKS_JSON id가 hex32 형식이 아니라 건너뜀: {:?}",
+                        d.id
+                    );
+                    return None;
+                }
+                Some(ParsedTask {
+                    id: d.id,
+                    state: d.state,
+                    context_id: d.context_id,
+                    msg: d.msg,
+                })
             })
             .collect();
     }
-    if poll_text.contains("앞 열린 task 없음") {
+
+    // 헤더 스캔을 먼저 한다. task msg 본문에 "앞 열린 task 없음" 문구가 우연히 포함돼 있어도
+    // 실제 헤더가 있으면(starts 비어있지 않으면) 그 문구로 조기 반환하지 않는다(과거 버그: msg에
+    // 이 문구가 있으면 그 task까지 통째로 은닉됨). 진짜 빈 응답(헤더 없음)만 빈 Vec으로 취급한다.
+    let starts = find_header_starts(poll_text);
+    if starts.is_empty() && poll_text.contains("앞 열린 task 없음") {
         return Vec::new();
     }
-
-    let starts = find_header_starts(poll_text);
     let mut tasks = Vec::with_capacity(starts.len());
 
     for (idx, &start) in starts.iter().enumerate() {
@@ -244,6 +265,23 @@ pub fn write_lane_disrupts_node(
 #[cfg(windows)]
 fn lowercase_path(p: &std::path::Path) -> std::path::PathBuf {
     std::path::PathBuf::from(p.to_string_lossy().to_lowercase())
+}
+
+/// write 모드 워커가 `--context-map`으로 매핑된 경로들 중 node_cwd와 겹치는(self-disruption) 것을
+/// 찾는다(순수 함수). 기본 --project-path만 검사하던 write_lane_disrupts_node 가드는 context_id가
+/// --context-map에 매핑돼 있을 때(resolve_project_path가 그 경로로 실행을 돌림) 우회됐다. 반환값은
+/// "key=value" 표시용 문자열 목록(정렬, 빈 목록=안전).
+pub fn context_map_disrupting_paths(
+    context_map: &std::collections::HashMap<String, String>,
+    node_cwd: &std::path::Path,
+) -> Vec<String> {
+    let mut bad: Vec<String> = context_map
+        .iter()
+        .filter(|(_, v)| write_lane_disrupts_node(Some(std::path::Path::new(v.as_str())), node_cwd))
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect();
+    bad.sort();
+    bad
 }
 
 /// `--context-map` 문자열("k=v,k=v")을 context_id->project-path 맵으로 파싱한다(순수 함수).
@@ -432,8 +470,13 @@ fn run_on_task(cmd: &str, id: &str, msg: &str) {
     };
     #[cfg(not(windows))]
     let mut command = {
+        use std::os::unix::process::CommandExt;
         let mut c = std::process::Command::new("sh");
         c.arg("-c").arg(&expanded);
+        // src/runner/exec.rs와 동일하게 별도 process group으로 묶는다. 타임아웃 시
+        // crate::runner::exec::kill_pid가 이 pid를 pgid로 보고 그룹 전체(codex-inject 등
+        // 손자 프로세스 포함)에 SIGKILL을 보낼 수 있으려면 여기서 그룹 리더가 돼야 한다.
+        c.process_group(0);
         c
     };
     command
@@ -462,7 +505,10 @@ fn run_on_task(cmd: &str, id: &str, msg: &str) {
             }
             Ok(None) => {
                 if start.elapsed() >= timeout {
-                    let _ = child.kill();
+                    // child.kill()은 직계 자식(cmd/sh)만 죽여 손자(codex-inject 등 실제 작업)가
+                    // 고아로 남는다. exec.rs가 이미 해결한 트리 kill(Windows taskkill /T,
+                    // Unix process-group SIGKILL)을 재사용한다.
+                    crate::runner::exec::kill_pid(child.id());
                     let _ = child.wait();
                     eprintln!(
                         "[poll] on-task 타임아웃({ON_TASK_TIMEOUT_SECS}s) 강제 종료: task {id}"
@@ -561,10 +607,25 @@ pub async fn run_poll_loop(
                     let _ = std::io::stdout().flush();
                     // on-task 글루: 블로킹 명령(codex exec resume 등)이라 spawn_blocking으로 await한다
                     // (reactor는 안 막으면서 순차 처리 - 책임자는 한 번에 하나씩 다룬다).
+                    // 이 명령은 ON_TASK_TIMEOUT_SECS(최대 30분)까지 블로킹할 수 있어, 그동안도
+                    // run_one_pass의 lease keepalive와 동일한 이유(AGENT_TTL_SECS=90초)로 roster
+                    // heartbeat가 끊기면 워커가 offline 처리된다. register 모드(수신 전용이 아닐 때)에서만
+                    // TTL보다 촘촘한 주기(HEARTBEAT_KEEPALIVE_SECS=60초)로 heartbeat를 곁들인다.
                     if let Some(cmd) = on_task {
                         let (cmd, id, msg) = (cmd.to_string(), t.id.clone(), t.msg.clone());
-                        let _ =
-                            tokio::task::spawn_blocking(move || run_on_task(&cmd, &id, &msg)).await;
+                        let handle =
+                            tokio::task::spawn_blocking(move || run_on_task(&cmd, &id, &msg));
+                        tokio::pin!(handle);
+                        loop {
+                            tokio::select! {
+                                r = &mut handle => { let _ = r; break; }
+                                _ = tokio::time::sleep(Duration::from_secs(HEARTBEAT_KEEPALIVE_SECS)), if register => {
+                                    if let Err(e) = client.heartbeat(agent).await {
+                                        eprintln!("[poll] on-task 실행 중 heartbeat 실패(무시): {e}");
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -641,20 +702,34 @@ async fn run_one_pass(
         // expire_stale_claims에 실행 중 requeue되는 것을 막는다. rx 완료와 interval을 select!로 경합해
         // 러너가 끝나면 즉시 연장을 멈춘다(client를 borrow만 하므로 clone 불요).
         let run_result = {
-            let mut ticker = tokio::time::interval(Duration::from_secs(LEASE_KEEPALIVE_SECS));
+            // heartbeat는 AGENT_TTL_SECS(90초)보다 촘촘히(HEARTBEAT_KEEPALIVE_SECS=60초) 보내 로스터
+            // online을 유지하고, lease 연장은 그보다 성기게(LEASE_KEEPALIVE_SECS=5분 = heartbeat
+            // ticks_per_lease틱마다) 한다. 하나의 60초 틱으로 둘을 구동한다.
+            let mut ticker = tokio::time::interval(Duration::from_secs(HEARTBEAT_KEEPALIVE_SECS));
             // 노트북 절전·고부하로 tick이 밀려도 기본 Burst처럼 몰아치지 않게 Skip(밀린 tick을 버리고
             // 다음 정상 tick만) - 깨어날 때 연장 상한을 몰아서 소진하는 것 방지(gemini 리뷰).
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             ticker.tick().await; // 최초 즉시 tick 소비(방금 claim해 lease가 신선함)
+            let ticks_per_lease = (LEASE_KEEPALIVE_SECS / HEARTBEAT_KEEPALIVE_SECS).max(1);
+            let mut ticks: u64 = 0;
             let mut extensions: u32 = 0;
             tokio::pin!(rx);
             loop {
                 tokio::select! {
                     r = &mut rx => break r,
                     _ = ticker.tick() => {
-                        // 상한 도달 후에는 연장을 멈춰, 진행 신호 없이 무한 대기하는 고착 러너가 lease로
-                        // 영원히 살아남지 못하게 한다(이후 lease 만료 → expire_stale_claims가 requeue/fail).
-                        if extensions < MAX_LEASE_EXTENSIONS {
+                        ticks += 1;
+                        // roster heartbeat: 러너 실행 전체(수 분~수 시간)가 이 한 패스에 포함되는데
+                        // AGENT_TTL_SECS(90초, store/agents.rs)를 넘기면 워커가 로스터에서 offline
+                        // 처리돼 셀렉터 라우팅 대상에서 사라진다. 매 60초 틱마다 heartbeat로 online 유지
+                        // (실패는 치명적이지 않아 로그만).
+                        if let Err(e) = client.heartbeat(agent).await {
+                            eprintln!("[work] task {} 러너 실행 중 heartbeat 실패(무시): {e}", t.id);
+                        }
+                        // lease 연장은 LEASE_KEEPALIVE_SECS마다(=heartbeat ticks_per_lease틱마다). 상한
+                        // 도달 후에는 연장을 멈춰, 진행 신호 없이 무한 대기하는 고착 러너가 lease로 영원히
+                        // 살아남지 못하게 한다(이후 lease 만료 → expire_stale_claims가 requeue/fail).
+                        if ticks.is_multiple_of(ticks_per_lease) && extensions < MAX_LEASE_EXTENSIONS {
                             extensions += 1;
                             // 연장 실패(이미 requeue/재claim/종료) = 이 워커의 소유권 상실. 로그만 남기고
                             // 계속 진행한다(러너 결과는 complete 시 first-completer-wins 가드가 거른다).
@@ -879,6 +954,49 @@ mod tests {
         assert_eq!(tasks[0].id, id);
         assert_eq!(tasks[0].context_id.as_deref(), Some("projB"));
         assert_eq!(tasks[0].msg, "구포맷");
+    }
+
+    #[test]
+    fn parse_open_tasks_json_path_rejects_non_hex32_id() {
+        // TASKS_JSON 경로도 문자열 경로(find_header_starts)와 동일하게 id를 hex32로 강제해야 한다.
+        // run_on_task가 {id}를 셸 명령에 직접 치환하므로, 검증 없이 통과하면 셸 인젝션 벡터가 된다.
+        use crate::a2a_wire::{PollTaskDto, encode_poll_json};
+        let good_id = "a".repeat(32);
+        let dtos = vec![
+            PollTaskDto {
+                id: good_id.clone(),
+                state: "submitted".into(),
+                context_id: None,
+                msg: "정상".into(),
+            },
+            PollTaskDto {
+                id: "; rm -rf / #".into(), // hex32 아님(길이·문자 모두 불일치).
+                state: "submitted".into(),
+                context_id: None,
+                msg: "위험".into(),
+            },
+        ];
+        let text = encode_poll_json(&dtos).unwrap();
+        let tasks = parse_open_tasks(&text);
+        assert_eq!(tasks.len(), 1, "hex32 아닌 id는 걸러져야 함: {tasks:?}");
+        assert_eq!(tasks[0].id, good_id);
+    }
+
+    #[test]
+    fn parse_open_tasks_msg_containing_empty_phrase_does_not_hide_task() {
+        // 회귀 방지: msg 본문에 "...앞 열린 task 없음..."이 포함돼도, 실제 헤더가 있으면(문자열
+        // 폴백 경로) 그 task는 정상 파싱돼야 한다(과거엔 contains 검사가 헤더 스캔보다 앞서
+        // 전체를 빈 Vec으로 조기 반환했다).
+        let id = "d".repeat(32);
+        let text = format!(
+            "[{id}] from=disp state=submitted msg=참고: mac-claude 앞 열린 task 없음 이라고 뜨면 재시도하세요"
+        );
+        let tasks = parse_open_tasks(&text);
+        assert_eq!(tasks.len(), 1, "헤더가 있으면 은닉되면 안 됨: {tasks:?}");
+        assert_eq!(tasks[0].id, id);
+
+        // 대조: 진짜 빈 응답(헤더 없음)은 여전히 빈 Vec.
+        assert!(parse_open_tasks("mac-claude 앞 열린 task 없음").is_empty());
     }
 
     #[test]
@@ -1109,6 +1227,35 @@ mod tests {
             write_lane_disrupts_node(Some(&project), &cwd),
             "대소문자만 다른 겹침 경로를 못 잡음"
         );
+    }
+
+    #[test]
+    fn context_map_disrupting_paths_flags_only_overlapping_values() {
+        let cwd = std::env::current_dir().unwrap();
+        let tmp = std::env::temp_dir();
+        let mut map = std::collections::HashMap::new();
+        // 안전(cwd와 분리): temp_dir. 위험(cwd 자체): node cwd 그대로.
+        map.insert("safe".to_string(), tmp.to_string_lossy().to_string());
+        map.insert("danger".to_string(), cwd.to_string_lossy().to_string());
+        // 방어: 극히 드문 환경에서 temp가 cwd와 겹치면 이 단정은 건너뛴다(오탐 방지, 기존 테스트와 동일 패턴).
+        if !paths_overlap(
+            &std::fs::canonicalize(&tmp).unwrap_or_else(|_| tmp.clone()),
+            &std::fs::canonicalize(&cwd).unwrap_or_else(|_| cwd.clone()),
+        ) {
+            let bad = context_map_disrupting_paths(&map, &cwd);
+            assert_eq!(bad.len(), 1, "겹치는 value 하나만 걸려야 함: {bad:?}");
+            assert!(
+                bad[0].starts_with("danger="),
+                "겹치는 key가 danger여야 함: {bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn context_map_disrupting_paths_empty_map_is_safe() {
+        let cwd = std::env::current_dir().unwrap();
+        let map = std::collections::HashMap::new();
+        assert!(context_map_disrupting_paths(&map, &cwd).is_empty());
     }
 
     #[test]
