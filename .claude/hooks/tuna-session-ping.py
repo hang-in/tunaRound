@@ -4,11 +4,15 @@
 v2-44에서 무장(ensure_armed) 책임이 제거됐다: 등록은 머신 스캐너가 하고 이 훅은 핑만 보낸다.
 opt-in(TUNA_AUTOARM=1) 전제. 실패는 조용히 통과(세션을 절대 막지 않음). 출력 없음(컨텍스트 비오염).
 """
+import ipaddress
 import json
 import os
+import socket
 import sys
+import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 try:
@@ -17,6 +21,36 @@ try:
     import tuna_arm
 except Exception:
     sys.exit(0)  # 모듈 없으면 조용히 통과.
+
+
+def _host_resolves_quickly(host: str, timeout: float = 0.75) -> bool:
+    """host가 이미 IP 리터럴이면 즉시 True(DNS 불필요). 아니면 getaddrinfo를 별도 스레드로 시도해
+    timeout 안에 끝나면 그 성패를, 못 끝나면 False(=핑 스킵)를 반환한다.
+
+    urlopen(timeout=...)의 timeout은 소켓 connect/read만 덮고 getaddrinfo(DNS/mDNS)는 포함하지
+    않는다. 이 훅은 매 프롬프트 동기 실행이라, 코어가 호스트네임(.local 등)이고 대상이 오프라인이면
+    리졸버 타임아웃(수 초~수십 초)만큼 매 프롬프트가 지연될 수 있다. 이 헬퍼로 그 지연을 훅의 기존
+    타임아웃 예산(0.75초) 안에 가둔다 - 훅은 세션을 절대 막으면 안 되는 규약(조용히 통과)이라, 제
+    시간에 안 끝나면 실패로 보고 이번 프롬프트의 핑은 건너뛴다(다음 프롬프트가 재시도).
+    """
+    try:
+        ipaddress.ip_address(host)
+        return True
+    except (ValueError, TypeError):
+        pass
+    result = {"ok": False}
+
+    def _resolve():
+        try:
+            socket.getaddrinfo(host, None)
+            result["ok"] = True
+        except Exception:
+            result["ok"] = False
+
+    t = threading.Thread(target=_resolve, daemon=True)
+    t.start()
+    t.join(timeout)
+    return result["ok"]
 
 
 def main() -> int:
@@ -97,6 +131,12 @@ def main() -> int:
     base = c[:-4] if c.endswith("/mcp") else c
     if not base.startswith(("http://", "https://")):
         return 0  # loopback HTTP 전용(file: 등 비정상 스킴 차단)
+    # 호스트가 IP가 아니면(TUNA_BROKER_CORE에 호스트네임 설정) DNS/mDNS 해석이 느리거나 실패할 때
+    # urlopen의 timeout이 못 덮는 지연이 매 프롬프트에 생긴다(#7) - 짧은 데드라인으로 먼저 확인한다.
+    host = urllib.parse.urlparse(base).hostname or ""
+    if host and not _host_resolves_quickly(host):
+        return 0
+
     url = base + "/dashboard/human-ping"
     token = tuna_arm.cfg("TUNA_BROKER_TOKEN", "")
     body = json.dumps({"agent": session_id}).encode()

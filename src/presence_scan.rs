@@ -145,19 +145,43 @@ fn is_db_datetime_19(s: &str) -> bool {
 }
 
 /// ISO8601 타임스탬프("2026-07-11T09:00:00.894Z")를 DB datetime 포맷("2026-07-11 09:00:00")으로
-/// 정규화한다('T'→공백, 소수초·'Z'·offset 절단). §5-3 계약: 'T' > ' ' 사전순 왜곡을 없애 로스터·영속
-/// 워터마크와 비교 가능하게 한다. 결과가 19자 DB 포맷이 아니면 None(오염 방어).
+/// 정규화한다('T'→공백, 소수초 절단 + Z/영(0) offset은 UTC와 같으므로 그대로 절단). §5-3 계약: 'T' > ' '
+/// 사전순 왜곡을 없애 로스터·영속 워터마크와 비교 가능하게 한다. 결과가 19자 DB 포맷이 아니면 None(오염 방어).
+/// **비영 offset은 UTC로 가감 변환하지 않고 None을 반환한다**(발견: 과거엔 offset을 변환 없이 그냥
+/// 잘라 UTC로 오인했다 - 예를 들어 "+09:00"의 9시간이 유령처럼 잔존하거나 음수 offset이 라이브 세션을
+/// 조기 드롭시킬 수 있었다. codex rollout이 실측상 전부 Z(UTC)라 지금까지 드러나지 않았을 뿐이다).
+/// 비영 offset 관측은 eprintln으로 남겨 로컬 offset 포맷 유입이 조용히 넘어가지 않게 한다(폴백 경로로
+/// 흡수되되 관측 가능하게).
 pub fn normalize_iso_to_db_datetime(ts: &str) -> Option<String> {
-    // 날짜의 '-'와 타임존 offset '-'(-05:00)를 혼동하지 않게 먼저 날짜/시간을 분리한 뒤(공백 또는 'T'),
-    // 시간 부분만 소수초·'Z'·offset('+'/'-')에서 절단한다(gemini 리뷰: 음수 offset도 안전 처리).
+    // 날짜의 '-'와 타임존 offset '-'(-05:00)를 혼동하지 않게 먼저 날짜/시간을 분리한다(공백 또는 'T').
     let replaced = ts.trim().replacen('T', " ", 1);
     let mut parts = replaced.split_whitespace();
     let date = parts.next()?;
     let time = parts.next()?;
-    let core_time = time
-        .split(['.', 'Z', '+', '-'])
+    // offset은 ISO8601 고정 순서(HH:MM:SS[.ffffff][Z|±HH:MM])상 항상 소수초 뒤·문자열 끝에 온다.
+    // 소수초 안에 '+'/'-'가 섞일 일이 없으므로, 소수초 절단보다 offset 탐지를 먼저 해야 안전하다
+    // (소수초부터 잘라내면 그 뒤에 붙은 offset이 통째로 사라져 비영 offset을 놓친다).
+    let (before_offset, offset) = match time.find(['+', '-']) {
+        Some(idx) => (&time[..idx], Some(&time[idx..])),
+        None => match time.strip_suffix('Z') {
+            Some(t) => (t, None),
+            None => (time, None),
+        },
+    };
+    if let Some(off) = offset {
+        // 영(0) offset("+00:00"/"-00:00")만 UTC와 같아 안전하게 절단한다. 비영 offset을 변환 없이
+        // 버리면 그 시간만큼 조용히 왜곡되므로 거부한다(기존 Z·오프셋없음 케이스는 이 분기를 안 탄다).
+        if off != "+00:00" && off != "-00:00" {
+            eprintln!(
+                "[presence] normalize_iso_to_db_datetime: 비영 offset({off}) 관측, 변환 없이 거부: {ts}"
+            );
+            return None;
+        }
+    }
+    let core_time = before_offset
+        .split('.')
         .next()
-        .unwrap_or(time)
+        .unwrap_or(before_offset)
         .trim();
     let core = format!("{date} {core_time}");
     if is_db_datetime_19(&core) {
@@ -244,6 +268,50 @@ pub fn parse_codex_last_user_input(path: &Path, max_tail: usize) -> Option<Strin
 /// codex rollout tail 스캔 캐시(uuid → (마지막 관측 mtime, human_input_at)). mtime 무변경이면 재스캔을
 /// 건너뛴다(전 주기 결과 재사용). presence 스캐너 데몬이 주기 간 소유한다.
 pub type CodexInputCache = std::collections::HashMap<String, (SystemTime, Option<String>)>;
+
+/// CodexInputCache 디스크 영속화 포맷(취약성 완화, 이슈 #88 minor2 후속). SystemTime은 직접
+/// 직렬화되지 않아 UNIX epoch 초로 담는다.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct PersistedCodexInputCache(std::collections::HashMap<String, (u64, Option<String>)>);
+
+/// 디스크에서 CodexInputCache를 로드한다(스캐너 기동 첫 주기 seed 전용). 파일 부재·손상·파싱 실패는
+/// 전부 빈 캐시로 폴백한다(fail-open - 이 캐시는 애초에 "없어도 되는" 최선의 힌트일 뿐이다).
+///
+/// **잔여 취약성**: 이 파일은 스캐너 루프가 매 주기 갱신 저장하므로(아래 save), 데몬이 재시작되는
+/// 순간까지의 값은 복구되지만 "재시작 직전 마지막 저장~재시작 사이"의 변화는 여전히 유실된다. 완전한
+/// 해결(브로커의 영속 agent_human_input을 조회해 seed)은 별도 MCP 조회 배선이 필요해 더 큰 변경이라
+/// 후속으로 남긴다 - 이 디스크 캐시만으로도 "매 배포마다 완전히 빈 캐시로 재시작"이라는 취약성의
+/// 폭을 크게 좁힌다(정상 종료·재기동 사이 값은 보존).
+pub fn load_codex_input_cache_from_disk(path: &Path) -> CodexInputCache {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return CodexInputCache::new();
+    };
+    let Ok(parsed) = serde_json::from_str::<PersistedCodexInputCache>(&text) else {
+        return CodexInputCache::new();
+    };
+    parsed
+        .0
+        .into_iter()
+        .map(|(k, (secs, hi))| (k, (SystemTime::UNIX_EPOCH + Duration::from_secs(secs), hi)))
+        .collect()
+}
+
+/// CodexInputCache를 디스크에 저장한다(매 스캔 주기 후 best-effort, 실패는 조용히 무시 - 캐시는
+/// 힌트일 뿐이라 저장 실패가 스캐너를 막으면 안 된다).
+pub fn save_codex_input_cache_to_disk(path: &Path, cache: &CodexInputCache) {
+    let serializable: std::collections::HashMap<String, (u64, Option<String>)> = cache
+        .iter()
+        .filter_map(|(k, (mtime, hi))| {
+            mtime
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .ok()
+                .map(|d| (k.clone(), (d.as_secs(), hi.clone())))
+        })
+        .collect();
+    if let Ok(json) = serde_json::to_string(&PersistedCodexInputCache(serializable)) {
+        let _ = std::fs::write(path, json);
+    }
+}
 
 /// `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`을 재귀 스캔해 stale 이내 mtime의 라이브 TUI 세션을
 /// 낸다. originator가 codex-tui가 아닌 것(exec 등 헤드리스)은 제외(로스터=열린 TUI 세션 계약).
@@ -1113,6 +1181,46 @@ mod tests {
     }
 
     #[test]
+    fn codex_input_cache_round_trips_through_disk() {
+        let path =
+            std::env::temp_dir().join(format!("tuna-codex-cache-{}.json", std::process::id()));
+        let mtime = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        let mut cache: CodexInputCache = CodexInputCache::new();
+        cache.insert(
+            "abc".to_string(),
+            (mtime, Some("2026-07-11 09:00:00".to_string())),
+        );
+        cache.insert("no-input".to_string(), (mtime, None));
+        save_codex_input_cache_to_disk(&path, &cache);
+        let loaded = load_codex_input_cache_from_disk(&path);
+        std::fs::remove_file(&path).ok();
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(
+            loaded.get("abc").map(|(t, hi)| (*t, hi.clone())),
+            Some((mtime, Some("2026-07-11 09:00:00".to_string())))
+        );
+        assert_eq!(loaded.get("no-input"), Some(&(mtime, None)));
+    }
+
+    #[test]
+    fn codex_input_cache_load_missing_or_corrupt_falls_back_empty() {
+        let missing = std::env::temp_dir().join(format!(
+            "tuna-codex-cache-missing-{}.json",
+            std::process::id()
+        ));
+        std::fs::remove_file(&missing).ok();
+        assert!(load_codex_input_cache_from_disk(&missing).is_empty());
+
+        let corrupt = std::env::temp_dir().join(format!(
+            "tuna-codex-cache-corrupt-{}.json",
+            std::process::id()
+        ));
+        std::fs::write(&corrupt, "not json").unwrap();
+        assert!(load_codex_input_cache_from_disk(&corrupt).is_empty());
+        std::fs::remove_file(&corrupt).ok();
+    }
+
+    #[test]
     fn codex_enumerate_scans_tree_and_filters_non_tui() {
         let dir = std::env::temp_dir().join(format!("tuna-prescan-{}", std::process::id()));
         let day = dir.join("2026").join("07").join("11");
@@ -1174,14 +1282,29 @@ mod tests {
             normalize_iso_to_db_datetime("2026-07-11T09:00:00Z").as_deref(),
             Some("2026-07-11 09:00:00")
         );
+        // 비영 offset은 변환 없이 절단하면 그 시간만큼 조용히 왜곡되므로 None(거부, 발견 이후 정정).
         assert_eq!(
-            normalize_iso_to_db_datetime("2026-07-11T09:00:00+09:00").as_deref(),
+            normalize_iso_to_db_datetime("2026-07-11T09:00:00+09:00"),
+            None
+        );
+        // 음수 offset도 날짜의 '-'와 혼동 없이 판정해 거부한다(gemini 리뷰 케이스는 유지, 기대값만 갱신).
+        assert_eq!(
+            normalize_iso_to_db_datetime("2026-07-11T09:00:00-05:00"),
+            None
+        );
+        // 영(0) offset은 UTC와 같아 안전 절단(+00:00·-00:00 둘 다).
+        assert_eq!(
+            normalize_iso_to_db_datetime("2026-07-11T09:00:00+00:00").as_deref(),
             Some("2026-07-11 09:00:00")
         );
-        // 음수 offset도 날짜의 '-'와 혼동 없이 처리(gemini 리뷰).
         assert_eq!(
-            normalize_iso_to_db_datetime("2026-07-11T09:00:00-05:00").as_deref(),
+            normalize_iso_to_db_datetime("2026-07-11T09:00:00-00:00").as_deref(),
             Some("2026-07-11 09:00:00")
+        );
+        // 소수초 뒤에 붙은 비영 offset도 놓치지 않고 거부(소수초 절단이 offset 탐지를 가리면 안 된다).
+        assert_eq!(
+            normalize_iso_to_db_datetime("2026-07-11T09:00:00.894+09:00"),
+            None
         );
         // 이미 DB 포맷이면 그대로.
         assert_eq!(

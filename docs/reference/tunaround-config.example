@@ -17,7 +17,9 @@ TUNA_AUTOARM=1
 # tunaround 바이너리 경로. Windows 예시(절대경로). mac/linux는 PATH에 있으면 `tunaround`만도 됨.
 TUNA_BIN=D:\privateProject\tunaRound\target\debug\tunaround.exe
 
-# 브로커 MCP 코어 URL. 로컬 브로커 기본값.
+# 브로커 MCP 코어 URL. 로컬 브로커 기본값. 호스트는 IP 권장(#7): urlopen의 timeout은 소켓
+# connect/read만 덮고 DNS/mDNS 해석(getaddrinfo)은 안 덮는다 - 호스트네임(.local 등)이고 대상이
+# 오프라인이면 UserPromptSubmit 훅(매 프롬프트 동기 실행)이 리졸버 타임아웃만큼 지연될 수 있다.
 TUNA_BROKER_CORE=http://127.0.0.1:8770/mcp
 
 # 이 머신 태그(로스터 machine 뱃지·정렬용). win / mac / unix.
@@ -27,8 +29,5 @@ TUNA_MACHINE=win
 # 파일 권한을 본인만 R/W로 제한 권장: Windows=icacls <file> /inheritance:r /grant:r "%USERNAME%:(R,W)" / mac·linux=chmod 600
 TUNA_BROKER_TOKEN=여기에-실제-토큰-넣기
 
-# (선택) 표시 이름·역할·프로젝트·간격 재정의. 비우면 자동 도출({machine}-claude-{project}, role=session, 15초).
-# TUNA_AUTOARM_AGENT=win-opus-boss
-# TUNA_AUTOARM_ROLE=session
-# TUNA_AUTOARM_PROJECT=tunaRound
-# TUNA_AUTOARM_INTERVAL=15
+# TUNA_AUTOARM_AGENT/ROLE/PROJECT/INTERVAL은 v2-44 이후 훅 어디서도 읽지 않는 죽은 키라 삭제됨(#5,
+# 표시이름·role·project는 스캐너가 자동 도출, interval은 presence-scan 데몬 자체 주기를 씀).

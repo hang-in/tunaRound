@@ -42,8 +42,12 @@ def main() -> int:
     if not session_id:
         return 0
     cwd = payload.get("cwd") or os.getcwd()
-    if is_temp_cwd(cwd) and not cfg("TUNA_AUTOARM_PROJECT"):
-        return 0  # 자동화 headless 세션엔 안내도 생략(컨텍스트 비오염).
+    # temp cwd(자동화 headless 세션)는 안내를 항상 생략한다(컨텍스트 비오염). 과거엔 TUNA_AUTOARM_PROJECT가
+    # 설정돼 있으면 이 억제를 우회했는데, 그 키는 원래 "표시 이름·역할 재정의" 용도로 문서화됐던 것이라
+    # 실제 동작(temp-cwd 억제 우회)과 의미가 어긋났다(#5). 우회 자체를 제거한다 - %TEMP% 자동화 세션이
+    # 로스터에 노이즈로 뜨는 것을 막는 원래 의도가 더 중요하고, 특별 사유로 안내가 필요한 case는 없었다.
+    if is_temp_cwd(cwd):
+        return 0
 
     safe_id = sanitize_session_id(session_id)
     if not safe_id:
