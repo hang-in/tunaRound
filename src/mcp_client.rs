@@ -13,6 +13,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 const PROTOCOL_VERSION: &str = "2025-03-26";
 const ACCEPT_HEADER: &str = "application/json, text/event-stream";
 
+/// 일시적 오류(네트워크·5xx) 재시도 백오프 스케줄(ms, #6): 1차 재시도 전 200ms, 2차 재시도 전 500ms.
+const RETRY_BACKOFF_MS: [u64; 2] = [200, 500];
+
 /// 원격 코어 `/mcp` 엔드포인트에 세션을 맺고 tools/call을 반복 호출하는 클라이언트.
 pub struct McpHttpClient {
     http: reqwest::Client,
@@ -116,6 +119,14 @@ impl McpHttpClient {
         matches!(status, reqwest::StatusCode::NOT_FOUND)
     }
 
+    /// 일시적 오류라 재시도할 가치가 있는지 판단한다(순수 함수, #6). 네트워크 오류(try_call_once가
+    /// BAD_GATEWAY로 매핑)·서버 5xx는 LAN 블립·브로커 순간 과부하처럼 곧 풀릴 수 있어 재시도 대상이다.
+    /// 404(세션 만료)는 재핸드셰이크 경로(is_session_expired)가 따로 처리하므로 여기 포함하지 않고,
+    /// 그 외 4xx(401 등 클라이언트 오류)는 재시도해도 소용없는 영구 오류라 제외한다.
+    fn is_transient_error(status: reqwest::StatusCode) -> bool {
+        status.is_server_error()
+    }
+
     /// tools/call 한 번의 시도를 수행한다(재시도 로직 없이 순수 단발 호출). 현재 session_id 스냅샷을
     /// 읽어 헤더에 싣고, 실패 시 상태코드를 함께 반환해 호출부가 재연결 여부를 판단하게 한다.
     async fn try_call_once(
@@ -163,32 +174,50 @@ impl McpHttpClient {
             .text()
             .await
             .map_err(|e| (status, format!("tools/call({name}) 응답 읽기 실패: {e}")))?;
-        parse_jsonrpc_sse(&text, name).map_err(|e| (status, e))
+        parse_jsonrpc_sse(&text, name, id).map_err(|e| (status, e))
     }
 
     /// tools/call로 원격 MCP 툴 하나를 호출하고 결과 텍스트를 반환한다. 첫 시도가 세션 만료류(404)로
     /// 실패하면 핸드셰이크를 다시 수행해 session_id를 갱신한 뒤 같은 요청을 딱 한 번만 재시도한다.
-    /// 재귀 호출이 아니라 순차 코드 흐름(시도 -> 실패 판단 -> 재연결 -> 재시도)이라 자연히 최대
-    /// 2회(원 시도 1 + 재시도 1)로 끝나고 무한 루프가 될 수 없다.
+    /// 첫 시도가 일시적 오류(네트워크 오류·서버 5xx)로 실패하면 짧은 백오프(`RETRY_BACKOFF_MS`)로
+    /// 최대 그 개수만큼 추가 재시도한다(#6: 순간 LAN 블립·브로커 과부하 한 번에 수십 분짜리 러너
+    /// 결과가 유실 -> lease 만료 후 처음부터 재실행되는 사고를 막는다. complete_task는
+    /// first-completer-wins 가드가 있어 이중 완료가 무해하므로 재시도해도 안전하다). 그 외(4xx 등)는
+    /// 즉시 실패로 반환한다. 재귀 호출이 아니라 순차 코드 흐름이라 무한 루프가 될 수 없다.
     pub async fn call_tool(&self, name: &str, args: Value) -> Result<String, String> {
         match self.try_call_once(name, &args).await {
             Ok(text) => Ok(text),
             Err((status, first_err)) => {
-                if !Self::is_session_expired(status) {
+                if Self::is_session_expired(status) {
+                    // 세션 만료로 판단 -> 핸드셰이크 재수행 -> 성공 시 session_id 갱신 후 1회 재시도.
+                    return match Self::handshake(&self.http, &self.mcp_url, &self.token).await {
+                        Ok(new_session_id) => {
+                            *self.session_id.lock().unwrap() = new_session_id;
+                            self.try_call_once(name, &args).await.map_err(|(_, e)| e)
+                        }
+                        Err(reconnect_err) => {
+                            Err(format!("{first_err} (재연결 시도도 실패: {reconnect_err})"))
+                        }
+                    };
+                }
+
+                if !Self::is_transient_error(status) {
                     return Err(first_err);
                 }
 
-                // 세션 만료로 판단 -> 핸드셰이크 재수행 -> 성공 시 session_id 갱신 후 1회 재시도.
-                match Self::handshake(&self.http, &self.mcp_url, &self.token).await {
-                    Ok(new_session_id) => {
-                        *self.session_id.lock().unwrap() = new_session_id;
-                    }
-                    Err(reconnect_err) => {
-                        return Err(format!("{first_err} (재연결 시도도 실패: {reconnect_err})"));
+                // 일시적 오류(네트워크 블립·5xx) - 짧은 백오프로 재시도(#6). 재시도 도중 세션이
+                // 마침 만료(404)되는 것처럼 두 드문 실패가 겹치는 경계 케이스는 여기서 별도
+                // 재핸드셰이크 없이 그 오류를 그대로 반환한다(다음 call_tool 호출이 정상적으로
+                // 재핸드셰이크하므로 단순성 우선).
+                let mut last_err = first_err;
+                for backoff_ms in RETRY_BACKOFF_MS {
+                    tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
+                    match self.try_call_once(name, &args).await {
+                        Ok(text) => return Ok(text),
+                        Err((_, retry_err)) => last_err = retry_err,
                     }
                 }
-
-                self.try_call_once(name, &args).await.map_err(|(_, e)| e)
+                Err(last_err)
             }
         }
     }
@@ -309,16 +338,33 @@ impl McpHttpClient {
 /// SSE 프레이밍(`data: ...` 라인들) 안에서 JSON-RPC 응답 페이로드를 찾아 파싱한다. 서버(rmcp
 /// StreamableHttpService)는 빈 하트비트 `data: \n` 라인과 실제 페이로드 `data: {json}\n` 라인을 함께
 /// 내려보낼 수 있다(관찰된 원문 예: `data: \nid: 0/0\nretry: 3000\n\ndata: {"jsonrpc":"2.0","id":2,
-/// "result":{...}}\nid: 1/0\n\n`). `data: ` 접두를 뗀 뒤 비어있지 않고 JSON으로 파싱되는 첫 줄을 쓴다.
-fn parse_jsonrpc_sse(text: &str, tool_name: &str) -> Result<String, String> {
-    let payload: Value = text
+/// "result":{...}}\nid: 1/0\n\n`). 서버가 결과 앞에 알림(예: notifications/message, id 없음)을 흘릴
+/// 수 있으므로, 파싱되는 첫 줄이 아니라 **요청 id(`expected_id`)와 일치하는** data 줄을 고른다(#5).
+/// `data: ` 라인이 하나도 없으면(예: 스트리밍이 아닌 plain JSON 바디 응답) 바디 전체를 JSON으로
+/// 파싱하는 폴백을 쓴다(#5b).
+fn parse_jsonrpc_sse(text: &str, tool_name: &str, expected_id: u64) -> Result<String, String> {
+    let data_lines: Vec<&str> = text
         .lines()
         .filter_map(|line| line.strip_prefix("data: "))
         .filter(|data| !data.is_empty())
-        .find_map(|data| serde_json::from_str::<Value>(data).ok())
-        .ok_or_else(|| {
+        .collect();
+
+    let payload: Value = if data_lines.is_empty() {
+        // 'data: ' 프레이밍 자체가 없는 순수 JSON 바디 폴백.
+        serde_json::from_str::<Value>(text.trim()).map_err(|_| {
             format!("tools/call({tool_name}) 응답에서 JSON-RPC 페이로드를 못 찾음: {text}")
-        })?;
+        })?
+    } else {
+        data_lines
+            .into_iter()
+            .filter_map(|data| serde_json::from_str::<Value>(data).ok())
+            .find(|v| v.get("id") == Some(&json!(expected_id)))
+            .ok_or_else(|| {
+                format!(
+                    "tools/call({tool_name}) 응답에서 id={expected_id} 페이로드를 못 찾음(알림만 있거나 응답 누락): {text}"
+                )
+            })?
+    };
 
     if let Some(err) = payload.get("error") {
         return Err(format!("tools/call({tool_name}) JSON-RPC 에러: {err}"));
@@ -538,5 +584,62 @@ mod tests {
             get_text.contains("state=submitted"),
             "get_task는 아직 완료 아니어야 함: {get_text}"
         );
+    }
+
+    // --- #6: 재시도 대상 판별(순수 함수, 서버 불요) ---
+
+    #[test]
+    fn is_transient_error_covers_5xx_but_not_4xx() {
+        assert!(McpHttpClient::is_transient_error(
+            reqwest::StatusCode::BAD_GATEWAY
+        ));
+        assert!(McpHttpClient::is_transient_error(
+            reqwest::StatusCode::INTERNAL_SERVER_ERROR
+        ));
+        assert!(McpHttpClient::is_transient_error(
+            reqwest::StatusCode::SERVICE_UNAVAILABLE
+        ));
+        assert!(
+            !McpHttpClient::is_transient_error(reqwest::StatusCode::NOT_FOUND),
+            "404는 세션만료 재핸드셰이크 경로가 처리(여기서 재시도 대상 아님)"
+        );
+        assert!(!McpHttpClient::is_transient_error(
+            reqwest::StatusCode::UNAUTHORIZED
+        ));
+        assert!(!McpHttpClient::is_transient_error(
+            reqwest::StatusCode::BAD_REQUEST
+        ));
+    }
+
+    // --- #5: parse_jsonrpc_sse id 대조 + plain JSON 폴백(순수 함수, 서버 불요) ---
+
+    #[test]
+    fn parse_jsonrpc_sse_selects_response_matching_expected_id_skipping_notifications() {
+        // 결과 앞에 id 없는 알림(notifications/message)이 흘러도, 요청 id(7)와 일치하는 data 줄만
+        // 골라야 한다(#5a: 첫 파싱 라인 채택이었던 이전 버그의 회귀 가드).
+        let text = "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/message\",\"params\":{}}\n\n\
+                     data: {\"jsonrpc\":\"2.0\",\"id\":7,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"ok\"}]}}\n\n";
+        let out = parse_jsonrpc_sse(text, "poll_tasks", 7).expect("id 7 응답을 찾아야 함");
+        assert_eq!(out, "ok");
+    }
+
+    #[test]
+    fn parse_jsonrpc_sse_rejects_when_only_mismatched_id_present() {
+        let text = "data: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"stale\"}]}}\n\n";
+        let err = parse_jsonrpc_sse(text, "poll_tasks", 7).unwrap_err();
+        assert!(
+            err.contains("id=7"),
+            "에러 메시지에 기대 id가 드러나야 함: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_jsonrpc_sse_falls_back_to_plain_json_body_without_data_framing() {
+        // 'data: ' 프레이밍이 없는 순수 JSON 바디도 파싱되어야 한다(#5b).
+        let text =
+            r#"{"jsonrpc":"2.0","id":3,"result":{"content":[{"type":"text","text":"plain"}]}}"#;
+        let out =
+            parse_jsonrpc_sse(text, "poll_tasks", 3).expect("plain JSON 바디 폴백이 성공해야 함");
+        assert_eq!(out, "plain");
     }
 }

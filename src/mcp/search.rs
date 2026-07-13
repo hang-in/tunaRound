@@ -62,9 +62,17 @@ impl TunaSearchServer {
                 "전사 리더 미연결".to_string(),
             )]));
         };
+        // read_transcript는 SQLite 락 + 트랜잭션이라 blocking이다(형제 툴 search_context와 동일 관례,
+        // #7). async executor 스레드를 막지 않도록 spawn_blocking으로 넘긴다.
+        let reader = Arc::clone(reader);
         let sid = p.session_id.unwrap_or_else(|| self.default_session.clone());
+        let max_turns = p.max_turns;
+        let outcome: Result<Vec<Utterance>, String> =
+            tokio::task::spawn_blocking(move || reader.read_transcript(&sid, max_turns))
+                .await
+                .unwrap_or_else(|e| Err(format!("전사 읽기 태스크 실패: {e}")));
         // read_transcript Err(세션 로드 DB 장애, R7) = "전사 없음"으로 위장하지 않고 R1 계약으로 반환.
-        let utts = match reader.read_transcript(&sid, p.max_turns) {
+        let utts = match outcome {
             Ok(u) => u,
             Err(e) => {
                 return Ok(CallToolResult::error(vec![Content::text(format!(
@@ -94,11 +102,22 @@ impl TunaSearchServer {
             )]));
         };
         let sid = p.session_id.unwrap_or_else(|| self.default_session.clone());
+        // append_turn은 SQLite 락 + 트랜잭션(+Kiwi FTS 색인)이라 blocking이다(형제 툴 search_context와
+        // 동일 관례, #7). async executor 스레드를 막지 않도록 spawn_blocking으로 넘긴다.
+        let writer = Arc::clone(writer);
+        let sid_for_task = sid.clone();
+        let speaker = p.speaker;
+        let content = p.content;
+        let outcome: Result<u64, String> = tokio::task::spawn_blocking(move || {
+            writer.append_turn(&sid_for_task, &speaker, &content)
+        })
+        .await
+        .unwrap_or_else(|e| Err(format!("전사 쓰기 태스크 실패: {e}")));
         // append_turn Err(전사 쓰기 DB 장애) = success로 위장하지 않는다. R1 계약(isError=true)으로 반환해
         // 클라(mcp_client.rs의 isError 검사)가 "추가됨"과 "추가 실패"를 구분하게 한다(형제 write/mutation 툴
         // claim/complete/fail·registry와 동일 계약. 조회족 poll/send/get/tasks는 별개로 success-with-error-text
         // 유지). "writer 미연결"(위 None)은 미배선이라 실패 아님 → success 유지.
-        match writer.append_turn(&sid, &p.speaker, &p.content) {
+        match outcome {
             Ok(id) => Ok(CallToolResult::success(vec![Content::text(format!(
                 "추가됨: session={sid} msg_id={id}"
             ))])),
