@@ -256,6 +256,17 @@ impl SqliteStore {
             )
             .unwrap_or(0);
 
+        // 전진 전용 불변식 보호: 신버전 바이너리가 마이그레이션한 DB를 구버전 바이너리가 여는
+        // 롤백 시나리오를 감지해 기동을 거부한다(무가드로 열면 구버전이 모르는 컬럼/테이블을
+        // 다루다 데이터 손상 위험). migrate()는 항상 open() 안에서 호출되므로 여기서 Err를 반환하면
+        // open 자체가 실패해 기동이 막힌다.
+        if version > CURRENT_SCHEMA_VERSION {
+            return Err(format!(
+                "DB 스키마 버전 {version}이 이 바이너리(schema {CURRENT_SCHEMA_VERSION})보다 \
+                 최신입니다 - 구버전 바이너리로 열 수 없습니다. 바이너리를 업데이트하세요."
+            ));
+        }
+
         if version < CURRENT_SCHEMA_VERSION {
             // v0 -> v2: 전체 스키마 생성. IF NOT EXISTS라 기존 테이블 재실행 무해.
             self.conn
@@ -723,6 +734,35 @@ mod tests {
             )
             .unwrap();
         assert_eq!(ver, "11", "schema_version가 최신(11)으로 갱신");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn migrate_rejects_future_schema_version() {
+        // #5: 신버전 바이너리가 마이그레이션한 DB(user_version=CURRENT+1)를 구버전 바이너리가 열면
+        // 조용히 진행하지 말고 기동을 거부해야 한다(전진 전용 불변식 보호).
+        let dir = std::env::temp_dir();
+        let path = dir.join("tuna_mig_future_version.db");
+        let _ = std::fs::remove_file(&path);
+        let p = path.to_str().unwrap();
+        {
+            let conn = rusqlite::Connection::open(p).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE config(key TEXT PRIMARY KEY, value TEXT);
+                 INSERT INTO config(key,value) VALUES('schema_version', '999');",
+            )
+            .unwrap();
+        }
+        // SqliteStore는 Debug를 구현하지 않아 unwrap_err()를 쓸 수 없다(Result<T,E>::unwrap_err는
+        // T: Debug를 요구) -> match로 직접 꺼낸다.
+        let err = match SqliteStore::open(p) {
+            Ok(_) => panic!("미래 스키마 버전은 open이 Err여야 함"),
+            Err(e) => e,
+        };
+        assert!(
+            err.contains("999"),
+            "미래 버전 감지 에러 메시지에 DB 버전 번호 포함: {err}"
+        );
         let _ = std::fs::remove_file(&path);
     }
 }

@@ -146,7 +146,11 @@ impl SqliteStore {
 
     /// state와 동반 상태 메시지를 원자적으로 갱신한다(A2A TaskStatus 단위). status_message=None이면
     /// 이번 전이에 메시지가 없다는 뜻으로 message_json을 비운다(이전 값 보존 아님).
-    pub fn update_task_state(
+    /// **상태 가드 없음(무조건 UPDATE) - 테스트 전용.** WHERE에 현재 상태 조건이 없어 terminal 보호·
+    /// first-completer-wins를 우회한다. 프로덕션 경로는 try_claim/try_complete/try_fail/try_cancel을
+    /// 쓸 것(#6, pub(crate)+cfg(test)로 강등해 크레이트 밖·비테스트 빌드 오용을 차단).
+    #[cfg(test)]
+    pub(crate) fn update_task_state(
         &self,
         task_id: &str,
         state: TaskState,
@@ -170,7 +174,15 @@ impl SqliteStore {
     }
 
     /// task를 completed로 마감하고 산출물을 세팅한다.
-    pub fn complete_task(&self, task_id: &str, artifacts: &[Artifact]) -> Result<(), String> {
+    /// **상태 가드 없음(무조건 UPDATE) - 테스트 전용.** WHERE에 현재 상태 조건이 없어 terminal 보호·
+    /// first-completer-wins를 우회한다. 프로덕션 경로는 try_complete를 쓸 것(#6, pub(crate)+cfg(test)로
+    /// 강등해 크레이트 밖·비테스트 빌드 오용을 차단).
+    #[cfg(test)]
+    pub(crate) fn complete_task(
+        &self,
+        task_id: &str,
+        artifacts: &[Artifact],
+    ) -> Result<(), String> {
         let artifacts_json = serde_json::to_string(artifacts).map_err(|e| format!("json: {e}"))?;
         self.conn
             .execute(
@@ -240,13 +252,20 @@ impl SqliteStore {
         };
         // try_complete와 대칭인 first-completer-wins 가드: lease 만료로 requeue된 뒤 되살아난 stale
         // 워커가 이미 다른 워커가 재claim한 task를 failed로 덮어쓰지 못하게 한다(failer 불일치 거부).
-        // failer=None이면 무력화(하위호환, agent 인자 없는 호출).
+        // failer=None이면 무력화(하위호환, agent 인자 없는 호출 = 브로커/dispatcher 직접 경로).
+        // 추가 가드: failer가 Some인데 state='submitted'면 거부한다. expire_stale_claims의 requeue는
+        // claimed_by를 NULL로 클리어하고 state를 submitted로 되돌리므로, claimed_by 일치 검사만으로는
+        // "직전 소유자 아닌 stale 워커"의 늦은 fail 보고가 통과해버린다(예약된 재시도를 무단 종결).
+        // try_complete가 state='working'으로만 제한하는 것과 비대칭이던 부분을 좁힌다. working·
+        // input_required는 그대로 두어(claimed_by 가드로 충분) dispatcher의 정당한 직접 fail(failer=None)
+        // 경로는 영향받지 않는다.
         let affected = self
             .conn
             .execute(
                 "UPDATE tasks SET state=?2, message_json=?3, updated_at=datetime('now') \
                  WHERE task_id=?1 AND state IN ('submitted','working','input_required') \
-                 AND (?4 IS NULL OR claimed_by IS NULL OR claimed_by = ?4)",
+                 AND (?4 IS NULL OR claimed_by IS NULL OR claimed_by = ?4) \
+                 AND (?4 IS NULL OR state != 'submitted')",
                 rusqlite::params![task_id, TaskState::Failed.as_str(), message_json, failer],
             )
             .map_err(|e| format!("sqlite: {e}"))?;

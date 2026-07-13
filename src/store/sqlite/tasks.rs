@@ -1131,6 +1131,48 @@ mod tests {
         }
 
         #[test]
+        fn try_fail_rejects_stale_worker_on_requeued_submitted_task() {
+            // #4 회귀: expire_stale_claims의 requeue(state=submitted, claimed_by=NULL)된 뒤, 되살아난
+            // stale 워커(failer=이전 claimed_by)의 try_fail이 예약된 재시도를 무단 종결시키면 안 된다.
+            let db = SqliteStore::open_memory().unwrap();
+            let task = Task::new("t1", None, "win", "mac", "2026-07-02 09:00:00");
+            db.create_task(&task).unwrap();
+            db.try_claim("t1", Some("worker-a"), None).unwrap();
+            db.test_force_lease_expired("t1");
+            let n = db.expire_stale_claims().unwrap();
+            assert_eq!(n, 1, "만료된 claim이 회수(requeue)되어야 함");
+            assert_eq!(
+                db.get_task("t1").unwrap().unwrap().state,
+                TaskState::Submitted,
+                "requeue 후 submitted"
+            );
+
+            // 되살아난 stale worker-a(직전 소유자였던 uuid)의 fail은 거부 -> 다음 워커의 재시도 기회 보존.
+            let err = db.try_fail("t1", None, Some("worker-a")).unwrap_err();
+            assert!(err.contains("t1"));
+            assert_eq!(
+                db.get_task("t1").unwrap().unwrap().state,
+                TaskState::Submitted,
+                "거부 후 상태 불변(재시도 예약 보존)"
+            );
+
+            // 하위호환: failer=None(브로커/dispatcher 직접 경로)이면 submitted도 fail 가능(불변 유지).
+            db.try_fail("t1", None, None).unwrap();
+            assert_eq!(db.get_task("t1").unwrap().unwrap().state, TaskState::Failed);
+        }
+
+        #[test]
+        fn try_fail_succeeds_on_working_task_with_matching_failer() {
+            // 정상 경로(working 상태에서 claim한 워커 본인의 fail)는 새 가드로 영향받지 않는다.
+            let db = SqliteStore::open_memory().unwrap();
+            let task = Task::new("t2", None, "win", "mac", "2026-07-02 09:00:00");
+            db.create_task(&task).unwrap();
+            db.try_claim("t2", Some("worker-a"), None).unwrap();
+            db.try_fail("t2", None, Some("worker-a")).unwrap();
+            assert_eq!(db.get_task("t2").unwrap().unwrap().state, TaskState::Failed);
+        }
+
+        #[test]
         fn try_complete_completer_none_bypasses_guard_backward_compat() {
             // 하위호환: completer=None이면 claimed_by 불일치와 무관하게(가드 무력화) 기존 동작대로 성공.
             let db = SqliteStore::open_memory().unwrap();
