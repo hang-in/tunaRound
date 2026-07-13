@@ -131,10 +131,19 @@ export default function GoalForm({ open, onClose, agents, remoteViewer, selected
   // relay 오프라인이라 online 후보에서 빠진 codex 세션(로스터 "이 세션에 목표"로 골랐을 때만 발생 -
   // 드롭다운/프리셋은 애초에 online 에서만 고르므로 이 경로로는 안 생김). 조용한 no-op 대신 사유를 보여준다.
   const pickedIds = new Set(picked.map((a) => a.uuid))
+  // relay 오프라인 판정은 "세션 자체는 online(a.online)인 codex인데 그 머신에 codex-inject relay가
+  // 없어" online 후보에서 빠진 경우로 좁힌다. 세션이 그냥 offline이거나 machine 정보가 없어 빠진 것을
+  // "relay 오프라인"으로 오분류하지 않게 한다(coderabbit).
   const relayBlocked = Object.keys(selected)
     .filter((uuid) => selected[uuid] && !pickedIds.has(uuid))
     .map((uuid) => agents.find((a) => a.uuid === uuid))
-    .filter((a): a is Agent => !!a && a.tags?.runner === 'codex')
+    .filter(
+      (a): a is Agent =>
+        !!a &&
+        a.online &&
+        a.tags?.runner === 'codex' &&
+        !(a.tags?.machine && relayMachines.has(a.tags.machine)),
+    )
 
   // 프리셋: online 중 조건에 맞는 대상으로 선택을 통째로 교체한다.
   const applyPreset = (pred: (a: Agent) => boolean) => {
@@ -166,7 +175,11 @@ export default function GoalForm({ open, onClose, agents, remoteViewer, selected
             failMsgs.length > 0 ? `제출 실패: ${failMsgs.join(' / ')}` : '제출 실패: 생성된 task가 없습니다.',
           )
         } else {
-          setGoal('')
+          // 부분 실패(성공 있으나 일부 실패)면 입력을 지우지 않는다: 실패 대상에 같은 목표를 재제출할
+          // 때 텍스트를 다시 입력하지 않게(gemini). 전부 성공일 때만 비운다.
+          if (failMsgs.length === 0) {
+            setGoal('')
+          }
           setStatus(
             failMsgs.length > 0
               ? `${successCount}개 task 생성됨. 실패 ${failMsgs.length}건: ${failMsgs.join(' / ')}`

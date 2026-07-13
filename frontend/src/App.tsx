@@ -257,6 +257,9 @@ export default function App() {
       }
     }
     const seen = seenStateRef.current
+    // 재삽입: Map.set은 기존 키의 삽입 순서를 유지하므로, delete 후 set으로 갱신 항목을 맨 뒤(최신)로
+    // 옮긴다. 그래야 keys().next()(가장 오래된)가 최근 갱신을 반영한 LRU가 된다(gemini/coderabbit).
+    seen.delete(id)
     seen.set(id, state)
     // 삽입 순서 Map 이므로 keys().next() = 가장 오래된 항목. 상한 초과분만 정리(매회 최대 1건 유입).
     while (seen.size > SEEN_STATE_CAP) {
