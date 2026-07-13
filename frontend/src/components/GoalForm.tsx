@@ -22,6 +22,16 @@ function agentTitle(a: Agent): string {
   return a.tags?.project ?? a.display_name ?? a.uuid.slice(0, 8)
 }
 
+// 서버 에러 문자열("uuid: 사유")의 uuid 부분을 가능하면 사람이 읽는 이름으로 바꾼다(로스터에 없으면 원문 그대로).
+function describeError(raw: string, agents: Agent[]): string {
+  const idx = raw.indexOf(': ')
+  if (idx === -1) return raw
+  const uuid = raw.slice(0, idx)
+  const agent = agents.find((a) => a.uuid === uuid)
+  if (!agent) return raw
+  return agentTitle(agent) + raw.slice(idx)
+}
+
 export default function GoalForm({ open, onClose, agents, remoteViewer, selected, onChangeSelected }: Props) {
   const [goal, setGoal] = useState('')
   const [submitting, setSubmitting] = useState(false)
@@ -118,6 +128,14 @@ export default function GoalForm({ open, onClose, agents, remoteViewer, selected
   const picked = online.filter((a) => selected[a.uuid])
   const canSubmit = goal.trim().length > 0 && picked.length > 0
 
+  // relay 오프라인이라 online 후보에서 빠진 codex 세션(로스터 "이 세션에 목표"로 골랐을 때만 발생 -
+  // 드롭다운/프리셋은 애초에 online 에서만 고르므로 이 경로로는 안 생김). 조용한 no-op 대신 사유를 보여준다.
+  const pickedIds = new Set(picked.map((a) => a.uuid))
+  const relayBlocked = Object.keys(selected)
+    .filter((uuid) => selected[uuid] && !pickedIds.has(uuid))
+    .map((uuid) => agents.find((a) => a.uuid === uuid))
+    .filter((a): a is Agent => !!a && a.tags?.runner === 'codex')
+
   // 프리셋: online 중 조건에 맞는 대상으로 선택을 통째로 교체한다.
   const applyPreset = (pred: (a: Agent) => boolean) => {
     const next: Record<string, boolean> = {}
@@ -140,8 +158,21 @@ export default function GoalForm({ open, onClose, agents, remoteViewer, selected
     try {
       const outcome = await sendGoal(text, targets)
       if (outcome.kind === 'ok') {
-        setGoal('')
-        setStatus(`${outcome.created.length}개 task 생성됨.`)
+        const successCount = outcome.created.length
+        const failMsgs = outcome.errors.map((e) => describeError(e, agents))
+        if (successCount === 0) {
+          // 전체 실패: 재제출 편의를 위해 입력한 목표 텍스트는 지우지 않는다.
+          setStatus(
+            failMsgs.length > 0 ? `제출 실패: ${failMsgs.join(' / ')}` : '제출 실패: 생성된 task가 없습니다.',
+          )
+        } else {
+          setGoal('')
+          setStatus(
+            failMsgs.length > 0
+              ? `${successCount}개 task 생성됨. 실패 ${failMsgs.length}건: ${failMsgs.join(' / ')}`
+              : `${successCount}개 task 생성됨.`,
+          )
+        }
       } else if (outcome.kind === 'forbidden') {
         setStatus('원격 세션에서는 목표를 제출할 수 없습니다(403).')
       } else {
@@ -168,7 +199,7 @@ export default function GoalForm({ open, onClose, agents, remoteViewer, selected
           <div>
             <div className="label lbl">대상</div>
             <div className="chips">
-              {picked.length === 0 ? (
+              {picked.length === 0 && relayBlocked.length === 0 ? (
                 <span className="chip empty">대상 없음 - 프리셋이나 + 대상 추가로 선택하세요</span>
               ) : null}
               {picked.map((a) => (
@@ -185,6 +216,11 @@ export default function GoalForm({ open, onClose, agents, remoteViewer, selected
                 + 대상 추가
               </button>
             </div>
+            {relayBlocked.length > 0 ? (
+              <div className="goal-warning">
+                {relayBlocked.map((a) => agentTitle(a)).join(', ')}: 이 머신의 codex 주입 relay가 오프라인이라 이 세션엔 목표를 보낼 수 없습니다.
+              </div>
+            ) : null}
           </div>
 
           <div className="gf-presets">
