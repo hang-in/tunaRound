@@ -41,6 +41,20 @@ pub fn parse_chat_response(v: &serde_json::Value) -> Result<RunOutput, RunError>
     })
 }
 
+/// HTTP 러너 기본 요청 타임아웃(초). reqwest::blocking::Client::new()의 기본 30초는 stream:false라
+/// 응답시간=전체 생성시간인데 로컬LLM 긴 생성이 30초를 흔히 넘겨 실패했다. 다른 러너의 idle_timeout
+/// 기본값(600초)과 정합을 맞춘다.
+const DEFAULT_TIMEOUT_SECS: u64 = 600;
+
+/// 지정 타임아웃(초)으로 blocking Client를 만든다. 빌더 실패(사실상 발생 안 함) 시 기존 기본(30초)
+/// Client로 폴백해 러너 생성 자체가 죽지 않게 한다.
+fn build_client(timeout_secs: u64) -> reqwest::blocking::Client {
+    reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(timeout_secs))
+        .build()
+        .unwrap_or_else(|_| reqwest::blocking::Client::new())
+}
+
 /// OpenAI 호환 /v1/chat/completions HTTP 러너.
 /// HTTP LLM은 레포를 직접 읽지 않음(프롬프트 맥락만). RunMode 무시.
 pub struct OpenAiChatRunner {
@@ -48,6 +62,7 @@ pub struct OpenAiChatRunner {
     model: String,
     api_key: Option<String>,
     client: reqwest::blocking::Client,
+    timeout_secs: u64,
 }
 
 impl OpenAiChatRunner {
@@ -56,8 +71,16 @@ impl OpenAiChatRunner {
             base_url: base_url.to_string(),
             model: model.to_string(),
             api_key,
-            client: reqwest::blocking::Client::new(),
+            client: build_client(DEFAULT_TIMEOUT_SECS),
+            timeout_secs: DEFAULT_TIMEOUT_SECS,
         }
+    }
+
+    /// 요청 타임아웃(초)을 기본값(600) 대신 다른 값으로 재설정한다.
+    pub fn with_timeout(mut self, timeout_secs: u64) -> Self {
+        self.timeout_secs = timeout_secs;
+        self.client = build_client(timeout_secs);
+        self
     }
 }
 
@@ -113,5 +136,15 @@ mod tests {
     fn parse_empty_choices_errs() {
         let json = serde_json::json!({"choices":[]});
         assert!(parse_chat_response(&json).is_err());
+    }
+
+    #[test]
+    fn default_timeout_is_600_and_with_timeout_overrides() {
+        // reqwest::blocking::Client 내부 타임아웃은 직접 조회할 수 없으니, 우리가 보관하는
+        // timeout_secs 필드로 기본값(600, 다른 러너 idle_timeout과 정합)과 세터 동작을 검증한다.
+        let r = OpenAiChatRunner::new("http://localhost:1234", "m", None);
+        assert_eq!(r.timeout_secs, 600);
+        let r2 = r.with_timeout(30);
+        assert_eq!(r2.timeout_secs, 30);
     }
 }

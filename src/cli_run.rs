@@ -436,9 +436,14 @@ pub(crate) fn run_node(rt: &tokio::runtime::Runtime, a: crate::cli::NodeArgs) {
                         tunaround::runner::RunMode::ReadOnly
                     };
                     let project = l.project.as_deref().map(tunaround::config::expand_home);
+                    let context_map = match l.context_map.as_deref() {
+                        Some(spec) => tunaround::worker::parse_context_map(spec)?,
+                        None => std::collections::HashMap::new(),
+                    };
                     // 워커 격리 가드레일(거버넌스 #5): write 레인의 작업 디렉터리가 node 실행 클론과
                     // 겹치면 자기 클론을 갈아엎어 워커가 자살한다(2026-07-03 뱃지 task). 그 레인만
-                    // 거부하고(다른 레인은 계속) 별도 클론/워크트리 지정을 안내한다.
+                    // 거부하고(다른 레인은 계속) 별도 클론/워크트리 지정을 안내한다. context_map에 매핑된
+                    // 경로도 같은 이유로 검사한다(그러지 않으면 매핑 경로로 이 가드를 우회할 수 있었다).
                     if l.is_write() {
                         let cwd = std::env::current_dir().unwrap_or_default();
                         let pp = project.as_deref().map(std::path::Path::new);
@@ -451,11 +456,17 @@ pub(crate) fn run_node(rt: &tokio::runtime::Runtime, a: crate::cli::NodeArgs) {
                                 cwd.display()
                             ));
                         }
+                        let bad = tunaround::worker::context_map_disrupting_paths(&context_map, &cwd);
+                        if !bad.is_empty() {
+                            return Err(format!(
+                                "write 레인 '{}'의 --context-map 항목이 node 실행 디렉터리({})와 \
+                                 겹칩니다: {}. 별도 클론/워크트리 경로로 매핑하세요.",
+                                l.agent,
+                                cwd.display(),
+                                bad.join(", ")
+                            ));
+                        }
                     }
-                    let context_map = match l.context_map.as_deref() {
-                        Some(spec) => tunaround::worker::parse_context_map(spec)?,
-                        None => std::collections::HashMap::new(),
-                    };
                     // 로스터 태그 형식 검증(k=v,k=v). 잘못된 형식이면 register 전에 이 레인만 거부한다
                     // (parse_context_map fail-fast와 동일 패턴, register_agent가 쓰는 parse_tags 재사용).
                     if let Some(t) = &l.tags {
