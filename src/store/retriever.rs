@@ -222,12 +222,16 @@ mod sqlite_retriever {
             let q = (self.tok)(query);
             // 앵커 부스트용 질의 토큰(raw query 기반, FTS 연산자 오염 회피). 매 finish에 전달.
             let query_tokens = query_anchor_tokens(query);
-            let store = self.store.lock().unwrap_or_else(|e| e.into_inner());
 
-            // 1차 FTS 검색(세션 다양성 cap을 위해 over-fetch). 실패=진짜 DB 장애 -> 전파(빈 결과로 은폐 금지).
-            let lex_hits = store
-                .search(&q, limit * OVERFETCH)
-                .map_err(|e| format!("FTS 검색 실패: {e}"))?;
+            // 1차 FTS 검색(세션 다양성 cap을 위해 over-fetch). store 락은 이 구간에서만 보유하고
+            // 곧바로 해제한다(#4: 뒤이은 임베딩 HTTP 호출이 락을 쥔 채 동시 검색을 직렬화하지 않도록).
+            // 실패=진짜 DB 장애 -> 전파(빈 결과로 은폐 금지).
+            let lex_hits = {
+                let store = self.store.lock().unwrap_or_else(|e| e.into_inner());
+                store
+                    .search(&q, limit * OVERFETCH)
+                    .map_err(|e| format!("FTS 검색 실패: {e}"))?
+            };
 
             // embedder 없으면 FTS 단독. 유효성 재랭크 + 세션 다양성 cap(단일 세션은 동작 불변).
             let Some(emb) = &self.embedder else {
@@ -235,10 +239,11 @@ mod sqlite_retriever {
                     .into_iter()
                     .map(|h| (h.session_id, h.msg_id, Utterance::new(h.speaker, h.content)))
                     .collect();
+                let store = self.store.lock().unwrap_or_else(|e| e.into_inner());
                 return Ok(finish(&store, cands, limit, current_session, &query_tokens));
             };
 
-            // FTS 결과 키 리스트 + content_map 구축.
+            // FTS 결과 키 리스트(bm25 정렬 순서를 lex_keys에 보존, #1) + content_map(lookup 전용).
             let lex_keys: Vec<(String, u64)> = lex_hits
                 .iter()
                 .map(|h| (h.session_id.clone(), h.msg_id))
@@ -248,43 +253,46 @@ mod sqlite_retriever {
                 .map(|h| ((h.session_id, h.msg_id), (h.speaker, h.content)))
                 .collect();
 
-            // content_map에서 (sid, msg_id, Utterance) 후보를 만드는 폴백용 클로저.
-            let cands_from_map =
-                |m: HashMap<(String, u64), (String, String)>| -> Vec<(String, u64, Utterance)> {
-                    m.into_iter()
-                        .map(|((sid, mid), (sp, ct))| (sid, mid, Utterance::new(sp, ct)))
-                        .collect()
-                };
+            // lex_keys의 원래(bm25) 순서를 따라 content_map에서 후보를 복원하는 폴백용 클로저.
+            // HashMap::into_iter()(RandomState)로 순회하면 bm25 relevance 순서가 소실돼 결과가
+            // 비결정적이 되므로(#1), 반드시 순서가 있는 lex_keys를 순회하고 content_map은
+            // lookup(remove)에만 쓴다. embedder=None 경로(위 lex_hits.into_iter())와 순서 보존이 대칭된다.
+            let cands_from_lex_order = |keys: &[(String, u64)],
+                                        m: &mut HashMap<(String, u64), (String, String)>|
+             -> Vec<(String, u64, Utterance)> {
+                keys.iter()
+                    .filter_map(|k| {
+                        m.remove(k)
+                            .map(|(sp, ct)| (k.0.clone(), k.1, Utterance::new(sp, ct)))
+                    })
+                    .collect()
+            };
 
-            // 쿼리 임베딩 시도(실패 시 FTS 단독 폴백 = 정당한 degrade, Err로 승격 안 함).
+            // 쿼리 임베딩 시도(store 락 밖에서 실행, #4). 실패 시 FTS 단독 폴백(정당한 degrade, Err로 승격 안 함).
             let qvec = match emb.embed(query) {
                 Ok(v) => v,
                 Err(e) => {
                     eprintln!("[tunaRound] 쿼리 임베딩 실패(FTS 단독 폴백): {e}");
-                    return Ok(finish(
-                        &store,
-                        cands_from_map(content_map),
-                        limit,
-                        current_session,
-                        &query_tokens,
-                    ));
+                    let cands = cands_from_lex_order(&lex_keys, &mut content_map);
+                    let store = self.store.lock().unwrap_or_else(|e| e.into_inner());
+                    return Ok(finish(&store, cands, limit, current_session, &query_tokens));
                 }
             };
 
-            // 벡터 검색(세션 다양성 cap을 위해 over-fetch). 실패=FTS 단독 폴백(Err로 승격 안 함).
-            let vec_hits = match store.vector_search(&qvec, limit * OVERFETCH) {
-                Ok(hits) => hits,
-                Err(e) => {
-                    eprintln!("[tunaRound] 벡터 검색 실패(FTS 단독 폴백): {e}");
-                    return Ok(finish(
-                        &store,
-                        cands_from_map(content_map),
-                        limit,
-                        current_session,
-                        &query_tokens,
-                    ));
-                }
-            };
+            // 벡터 검색 직전 store 락 재획득(#4: 임베딩은 이미 끝났으니 여기서부터 다시 락을 쥔다).
+            let store = self.store.lock().unwrap_or_else(|e| e.into_inner());
+
+            // 벡터 검색(세션 다양성 cap을 위해 over-fetch, model_id·dim 필터로 크로스모델 오염 방지 #2).
+            // 실패=FTS 단독 폴백(Err로 승격 안 함, #1과 동일하게 bm25 순서 보존).
+            let vec_hits =
+                match store.vector_search(&qvec, limit * OVERFETCH, &emb.model_id(), qvec.len()) {
+                    Ok(hits) => hits,
+                    Err(e) => {
+                        eprintln!("[tunaRound] 벡터 검색 실패(FTS 단독 폴백): {e}");
+                        let cands = cands_from_lex_order(&lex_keys, &mut content_map);
+                        return Ok(finish(&store, cands, limit, current_session, &query_tokens));
+                    }
+                };
 
             let vec_keys: Vec<(String, u64)> = vec_hits
                 .iter()
@@ -1115,6 +1123,151 @@ mod tests {
             "하이브리드 검색이 결과를 반환해야 함: {:?}",
             hits
         );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// 항상 실패하는 Embedder(쿼리 임베딩 실패 폴백 경로 유도용). #1 회귀 테스트 전용.
+    struct FailingEmbedder;
+    impl crate::store::embedding::Embedder for FailingEmbedder {
+        fn embed(&self, _text: &str) -> Result<Vec<f32>, String> {
+            Err("simulated embed failure".to_string())
+        }
+        fn dim(&self) -> usize {
+            8
+        }
+        fn model_id(&self) -> String {
+            "failing".to_string()
+        }
+    }
+
+    #[test]
+    fn retrieve_falls_back_to_fts_order_on_embed_failure() {
+        // #1 회귀: 쿼리 임베딩 실패 폴백에서 (과거 결함처럼) HashMap 임의 순서로 후보를 복원하면
+        // bm25 순서가 소실돼 비결정적이 된다. 지금은 lex_keys 순서로 복원해야 하므로, 밀도 높은
+        // "a"(bm25 상위)가 항상 먼저 나와야 한다(여러 번 반복해 비결정성이 없음을 확인).
+        let dir = std::env::temp_dir();
+        let path = dir.join("tuna_retriever_embed_fail.db");
+        let _ = std::fs::remove_file(&path);
+        let p = path.to_str().unwrap();
+
+        let store_w = SqliteStore::open(p).unwrap();
+        store_w
+            .save_session(
+                "a",
+                &StoredSession {
+                    messages: vec![StoredMessage {
+                        id: 1,
+                        parent_id: None,
+                        speaker: "a".into(),
+                        content: "검색".into(),
+                    }],
+                    head: Some(1),
+                },
+                |t| t.to_string(),
+            )
+            .unwrap();
+        store_w
+            .save_session(
+                "b",
+                &StoredSession {
+                    messages: vec![StoredMessage {
+                        id: 1,
+                        parent_id: None,
+                        speaker: "b".into(),
+                        content: "검색 시스템 상세 설계 배경 기록".into(),
+                    }],
+                    head: Some(1),
+                },
+                |t| t.to_string(),
+            )
+            .unwrap();
+        drop(store_w);
+
+        let store_r = SqliteStore::open(p).unwrap();
+        let retriever = SqliteRetriever::new(
+            store_r,
+            Box::new(|t: &str| t.to_string()),
+            Some(Box::new(FailingEmbedder)),
+        );
+
+        for _ in 0..5 {
+            let hits = retriever.retrieve("검색", 10).unwrap();
+            assert_eq!(hits.len(), 2, "두 발언 모두 반환: {hits:?}");
+            assert_eq!(
+                hits[0].speaker, "a",
+                "임베딩 실패 폴백은 bm25 순서(밀도 높은 'a' 먼저) 보존: {hits:?}"
+            );
+        }
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn retrieve_falls_back_to_fts_order_on_vector_search_failure() {
+        // #1 회귀: 벡터 검색 실패(DB 오류) 폴백에서도 HashMap 임의 순서가 아니라 bm25 순서를
+        // 보존해야 한다. message_vectors 테이블을 드롭해 vector_search를 강제로 Err시킨다.
+        use crate::store::embedding::MockEmbedder;
+
+        let dir = std::env::temp_dir();
+        let path = dir.join("tuna_retriever_vecsearch_fail.db");
+        let _ = std::fs::remove_file(&path);
+        let p = path.to_str().unwrap();
+
+        let store_w = SqliteStore::open(p).unwrap();
+        store_w
+            .save_session(
+                "a",
+                &StoredSession {
+                    messages: vec![StoredMessage {
+                        id: 1,
+                        parent_id: None,
+                        speaker: "a".into(),
+                        content: "검색".into(),
+                    }],
+                    head: Some(1),
+                },
+                |t| t.to_string(),
+            )
+            .unwrap();
+        store_w
+            .save_session(
+                "b",
+                &StoredSession {
+                    messages: vec![StoredMessage {
+                        id: 1,
+                        parent_id: None,
+                        speaker: "b".into(),
+                        content: "검색 시스템 상세 설계 배경 기록".into(),
+                    }],
+                    head: Some(1),
+                },
+                |t| t.to_string(),
+            )
+            .unwrap();
+        drop(store_w);
+
+        let store_r = SqliteStore::open(p).unwrap();
+        let retriever = SqliteRetriever::new(
+            store_r,
+            Box::new(|t: &str| t.to_string()),
+            Some(Box::new(MockEmbedder::new(8))),
+        );
+
+        // 별도 raw 연결로 message_vectors 테이블을 드롭 -> vector_search의 prepare가 실패.
+        let raw = rusqlite::Connection::open(p).unwrap();
+        raw.execute_batch("PRAGMA foreign_keys=OFF; DROP TABLE message_vectors;")
+            .unwrap();
+        drop(raw);
+
+        for _ in 0..5 {
+            let hits = retriever.retrieve("검색", 10).unwrap();
+            assert_eq!(hits.len(), 2, "두 발언 모두 반환: {hits:?}");
+            assert_eq!(
+                hits[0].speaker, "a",
+                "벡터 검색 실패 폴백은 bm25 순서(밀도 높은 'a' 먼저) 보존: {hits:?}"
+            );
+        }
 
         let _ = std::fs::remove_file(&path);
     }

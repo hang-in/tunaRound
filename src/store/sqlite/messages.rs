@@ -463,6 +463,12 @@ impl SqliteStore {
     }
 
     /// 세션 메시지를 벡터 색인한다. content_hash가 동일하면 skip(증분). sqlite 피처 전용.
+    /// 2단계로 분리: (1) 트랜잭션 밖에서 변경분만 판별해 embedder.embed()(네트워크, 최대 수십 초)를
+    /// 호출하고, (2) 성공분만 짧은 단일 트랜잭션(BEGIN IMMEDIATE)으로 upsert한다. 네트워크 호출을
+    /// 트랜잭션 안에 두면 첫 INSERT부터 WAL 쓰기 락을 쥔 채 후속 embed를 기다려 같은 DB의 다른
+    /// 커넥션이 busy_timeout으로 실패하고, 마지막 하나의 embed 실패로 전체 ROLLBACK되어 이미 성공한
+    /// 임베딩까지 소실되던 결함을 고친다. 개별 메시지 임베딩 실패는 그 메시지만 스킵(경고 로그)하고
+    /// 나머지 성공분은 upsert가 멱등이라 그대로 커밋해 진전을 보존한다.
     #[cfg(feature = "sqlite")]
     pub fn index_vectors(
         &self,
@@ -470,44 +476,75 @@ impl SqliteStore {
         ss: &StoredSession,
         embedder: &dyn crate::store::embedding::Embedder,
     ) -> Result<(), String> {
-        self.conn
-            .execute_batch("BEGIN;")
-            .map_err(|e| format!("sqlite: {e}"))?;
-
         let model_id = embedder.model_id();
-        let result = (|| -> Result<(), String> {
-            for msg in &ss.messages {
-                // content_hash 계산(FNV-1a 64bit, 버전 무관 결정적).
-                let content_hash = content_hash(&msg.content);
 
-                let msg_id = msg.id as i64;
+        // 1단계(트랜잭션 밖): 변경분 판별 + 임베딩 수집. 네트워크 호출이 여기서 일어난다.
+        struct Pending {
+            msg_id: i64,
+            content_hash: String,
+            dim: i64,
+            blob: Vec<u8>,
+        }
+        let mut pending: Vec<Pending> = Vec::new();
+        for msg in &ss.messages {
+            // content_hash 계산(FNV-1a 64bit, 버전 무관 결정적).
+            let content_hash = content_hash(&msg.content);
 
-                // 기존 행 조회: content_hash와 model_id가 모두 같을 때만 skip(증분).
-                // 모델이 바뀌면(model_id 불일치) 같은 내용이라도 재임베딩한다(stale 벡터 방지).
-                let existing: Option<(String, Option<String>)> = self
-                    .conn
-                    .query_row(
-                        "SELECT content_hash, model_id FROM message_vectors WHERE session_id=?1 AND msg_id=?2",
-                        rusqlite::params![session_id, msg_id],
-                        |row| Ok((row.get(0)?, row.get(1)?)),
-                    )
-                    .ok();
+            let msg_id = msg.id as i64;
 
-                if let Some((h, m)) = &existing
-                    && h == &content_hash
-                    && m.as_deref() == Some(model_id.as_str())
-                {
+            // 기존 행 조회: content_hash와 model_id가 모두 같을 때만 skip(증분).
+            // 모델이 바뀌면(model_id 불일치) 같은 내용이라도 재임베딩한다(stale 벡터 방지).
+            let existing: Option<(String, Option<String>)> = self
+                .conn
+                .query_row(
+                    "SELECT content_hash, model_id FROM message_vectors WHERE session_id=?1 AND msg_id=?2",
+                    rusqlite::params![session_id, msg_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .ok();
+
+            if let Some((h, m)) = &existing
+                && h == &content_hash
+                && m.as_deref() == Some(model_id.as_str())
+            {
+                continue;
+            }
+
+            // 임베딩 생성(네트워크, 트랜잭션 밖). 실패한 메시지는 스킵하고 나머지는 계속 진행한다.
+            let vec = match embedder.embed(&msg.content) {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!(
+                        "[tunaRound] 벡터 임베딩 실패(스킵): session_id={session_id} msg_id={msg_id} err={e}"
+                    );
                     continue;
                 }
+            };
+            let dim = vec.len() as i64;
+            // f32 LE BLOB 직렬화.
+            let blob: Vec<u8> = vec.iter().flat_map(|f| f.to_le_bytes()).collect();
 
-                // 임베딩 생성.
-                let vec = embedder.embed(&msg.content)?;
-                let dim = vec.len() as i64;
+            pending.push(Pending {
+                msg_id,
+                content_hash,
+                dim,
+                blob,
+            });
+        }
 
-                // f32 LE BLOB 직렬화.
-                let blob: Vec<u8> = vec.iter().flat_map(|f| f.to_le_bytes()).collect();
+        if pending.is_empty() {
+            return Ok(());
+        }
 
-                // upsert.
+        // 2단계: 짧은 단일 트랜잭션으로 upsert만(WAL 락 보유 시간 최소화). BEGIN IMMEDIATE로 쓰기
+        // 락을 곧장 선취해 busy_timeout 안에서 명확히 대기·실패하게 한다(락 순서: 이 함수는 다른
+        // 트랜잭션을 열어둔 채 호출되지 않으므로 데드락 없음).
+        self.conn
+            .execute_batch("BEGIN IMMEDIATE;")
+            .map_err(|e| format!("sqlite: {e}"))?;
+
+        let result = (|| -> Result<(), String> {
+            for p in &pending {
                 self.conn
                     .execute(
                         "INSERT INTO message_vectors(session_id, msg_id, dim, content_hash, model_id, embedding) \
@@ -517,7 +554,7 @@ impl SqliteStore {
                              content_hash=excluded.content_hash, \
                              model_id=excluded.model_id, \
                              embedding=excluded.embedding",
-                        rusqlite::params![session_id, msg_id, dim, content_hash, model_id, blob],
+                        rusqlite::params![session_id, p.msg_id, p.dim, p.content_hash, model_id, p.blob],
                     )
                     .map_err(|e| format!("sqlite: {e}"))?;
             }
@@ -536,36 +573,61 @@ impl SqliteStore {
     }
 
     /// message_vectors 전체를 brute-force cosine으로 검색해 top-K를 반환한다. sqlite 피처 전용.
+    /// model_id·dim으로 필터링해 크로스모델 벡터 오염을 막는다: 임베딩 모델 교체 후 재색인 전까지
+    /// message_vectors에 남아있는 옛 모델 벡터가 서로 다른 임베딩 공간과의 cosine을 랭킹에 섞는 것을
+    /// 방지한다(dim이 다르면 cosine_similarity가 0.0을 반환할 뿐 제거되지 않던 결함 수정).
+    /// 필터로 제외된 행이 있으면 모델 교체가 감지된 것이므로 eprintln으로 재색인을 안내한다(fail-visible).
     #[cfg(feature = "sqlite")]
     pub fn vector_search(
         &self,
         query_vec: &[f32],
         limit: usize,
+        model_id: &str,
+        dim: usize,
     ) -> Result<Vec<(String, u64, f64)>, String> {
         if query_vec.is_empty() {
             return Ok(vec![]);
         }
 
+        let dim_i64 = dim as i64;
         let mut stmt = self
             .conn
-            .prepare("SELECT session_id, msg_id, dim, embedding FROM message_vectors")
+            .prepare(
+                "SELECT session_id, msg_id, dim, embedding FROM message_vectors \
+                 WHERE model_id=?1 AND dim=?2",
+            )
             .map_err(|e| format!("sqlite: {e}"))?;
 
-        let mut scored: Vec<(String, u64, f64)> = stmt
-            .query_map([], |row| {
+        let matched: Vec<(String, u64, usize, Vec<u8>)> = stmt
+            .query_map(rusqlite::params![model_id, dim_i64], |row| {
                 let session_id: String = row.get(0)?;
                 let msg_id: i64 = row.get(1)?;
-                let dim: i64 = row.get(2)?;
+                let row_dim: i64 = row.get(2)?;
                 let blob: Vec<u8> = row.get(3)?;
-                Ok((session_id, msg_id as u64, dim as usize, blob))
+                Ok((session_id, msg_id as u64, row_dim as usize, blob))
             })
             .map_err(|e| format!("sqlite: {e}"))?
             .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| format!("sqlite: {e}"))?
+            .map_err(|e| format!("sqlite: {e}"))?;
+
+        // 필터로 제외된 행(다른 모델/차원) 수를 세어 모델 교체를 감지하면 안내(fail-visible).
+        let total: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM message_vectors", [], |r| r.get(0))
+            .unwrap_or(0);
+        let excluded = total - matched.len() as i64;
+        if excluded > 0 {
+            eprintln!(
+                "[tunaRound] vector_search: model_id/dim 불일치로 {excluded}건 제외됨 \
+                 (임베딩 모델 교체 감지 - `tunaround reindex` 권장)"
+            );
+        }
+
+        let mut scored: Vec<(String, u64, f64)> = matched
             .into_iter()
-            .filter_map(|(sid, mid, dim, blob)| {
+            .filter_map(|(sid, mid, row_dim, blob)| {
                 // BLOB -> Vec<f32>(LE 역직렬화).
-                if blob.len() != dim * 4 {
+                if blob.len() != row_dim * 4 {
                     return None;
                 }
                 let vec: Vec<f32> = blob
@@ -836,6 +898,79 @@ mod tests {
         // 다시 model-B 재색인: 이제 일치 → skip.
         db.index_vectors("s1", &ss(), &emb_b).unwrap();
         assert_eq!(emb_b.calls.load(SeqCst), 2, "교체 후 같은 모델은 다시 skip");
+    }
+
+    /// 일부 메시지만 실패하는 임베더(msg_id로 실패 유도). #3 회귀 테스트용.
+    struct PartiallyFailingEmbedder {
+        dim: usize,
+        fail_content: &'static str,
+    }
+    impl crate::store::embedding::Embedder for PartiallyFailingEmbedder {
+        fn embed(&self, text: &str) -> Result<Vec<f32>, String> {
+            if text == self.fail_content {
+                return Err("simulated embed failure".to_string());
+            }
+            Ok(vec![0.2_f32; self.dim])
+        }
+        fn dim(&self) -> usize {
+            self.dim
+        }
+        fn model_id(&self) -> String {
+            "partial-fail-model".to_string()
+        }
+    }
+
+    #[test]
+    fn index_vectors_partial_failure_preserves_successful_progress() {
+        // #3 회귀: 과거엔 임베딩 호출이 열린 트랜잭션 안에 있어 마지막 하나의 embed 실패로
+        // 전체 ROLLBACK되어 이미 성공한 임베딩까지 소실됐다. 지금은 트랜잭션 밖에서 임베딩을
+        // 모으고 성공분만 커밋하므로, 실패한 메시지는 스킵되고 성공한 메시지는 보존돼야 한다.
+        let db = SqliteStore::open_memory().unwrap();
+        let session = StoredSession {
+            messages: vec![
+                StoredMessage {
+                    id: 1,
+                    parent_id: None,
+                    speaker: "a".into(),
+                    content: "성공 메시지".into(),
+                },
+                StoredMessage {
+                    id: 2,
+                    parent_id: Some(1),
+                    speaker: "b".into(),
+                    content: "실패 메시지".into(),
+                },
+            ],
+            head: Some(2),
+        };
+        db.save_session("pf1", &session, |t| t.to_string()).unwrap();
+
+        let emb = PartiallyFailingEmbedder {
+            dim: 8,
+            fail_content: "실패 메시지",
+        };
+        // 일부 임베딩이 실패해도 함수 자체는 Err로 승격하지 않는다(성공분 커밋 우선).
+        db.index_vectors("pf1", &session, &emb).unwrap();
+
+        let count: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM message_vectors WHERE session_id='pf1'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 1, "성공한 메시지 1건만 커밋(실패분은 스킵)");
+
+        let has_msg1: i64 = db
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM message_vectors WHERE session_id='pf1' AND msg_id=1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(has_msg1, 1, "성공분(msg_id=1)은 진전 보존(전량 롤백 안 됨)");
     }
 
     #[test]
@@ -1155,7 +1290,9 @@ mod tests {
 
             // 같은 텍스트로 쿼리 벡터 생성(MockEmbedder는 결정적이므로 cosine=1).
             let query_vec = mock.embed("목표 텍스트").unwrap();
-            let results = db.vector_search(&query_vec, 10).unwrap();
+            let results = db
+                .vector_search(&query_vec, 10, &mock.model_id(), query_vec.len())
+                .unwrap();
 
             assert!(!results.is_empty(), "벡터 검색 결과가 있어야 함");
             let top = &results[0];
@@ -1163,6 +1300,83 @@ mod tests {
             assert_eq!(top.1, 1, "같은 텍스트를 가진 msg_id=1이 top이어야 함");
             // cosine 유사도는 1.0에 근사해야 함.
             assert!(top.2 > 0.99, "cosine 유사도가 1.0에 근사해야 함: {}", top.2);
+        }
+
+        #[test]
+        fn vector_search_filters_by_model_id_and_dim() {
+            // #2 회귀: 임베딩 모델 교체 후 재색인 도중처럼 서로 다른 model_id의 벡터가
+            // message_vectors에 섞여 있어도, query와 model_id가 일치하는 행만 검색돼야 한다
+            // (크로스모델 벡터 오염 방지). 두 벡터를 같은 방향(query와 cosine=1)으로 둬서,
+            // 필터가 없으면 옛 모델 행도 top에 새는지가 드러나게 구성한다.
+            struct FixedEmbedder {
+                model: String,
+                vec: Vec<f32>,
+            }
+            impl Embedder for FixedEmbedder {
+                fn embed(&self, _text: &str) -> Result<Vec<f32>, String> {
+                    Ok(self.vec.clone())
+                }
+                fn dim(&self) -> usize {
+                    self.vec.len()
+                }
+                fn model_id(&self) -> String {
+                    self.model.clone()
+                }
+            }
+
+            let db = SqliteStore::open_memory().unwrap();
+            let session = StoredSession {
+                messages: vec![
+                    StoredMessage {
+                        id: 1,
+                        parent_id: None,
+                        speaker: "a".into(),
+                        content: "옛 모델 메시지".into(),
+                    },
+                    StoredMessage {
+                        id: 2,
+                        parent_id: Some(1),
+                        speaker: "b".into(),
+                        content: "새 모델 메시지".into(),
+                    },
+                ],
+                head: Some(2),
+            };
+            db.save_session("mf1", &session, |t| t.to_string()).unwrap();
+
+            // msg_id=1은 옛 모델(model-old), msg_id=2는 새 모델(model-new)로 각각 색인해
+            // 두 모델의 벡터가 message_vectors에 동시에 섞이게 한다.
+            let ss_msg1 = StoredSession {
+                messages: vec![session.messages[0].clone()],
+                head: Some(1),
+            };
+            let old_emb = FixedEmbedder {
+                model: "model-old".into(),
+                vec: vec![1.0, 0.0, 0.0, 0.0],
+            };
+            db.index_vectors("mf1", &ss_msg1, &old_emb).unwrap();
+
+            let ss_msg2 = StoredSession {
+                messages: vec![session.messages[1].clone()],
+                head: Some(2),
+            };
+            let new_emb = FixedEmbedder {
+                model: "model-new".into(),
+                vec: vec![1.0, 0.0, 0.0, 0.0],
+            };
+            db.index_vectors("mf1", &ss_msg2, &new_emb).unwrap();
+
+            // 쿼리는 model-new로 검색: model-old 행(msg_id=1)은 제외되고 msg_id=2만 나와야 한다.
+            let query_vec = vec![1.0_f32, 0.0, 0.0, 0.0];
+            let results = db
+                .vector_search(&query_vec, 10, "model-new", query_vec.len())
+                .unwrap();
+            assert_eq!(results.len(), 1, "model_id 일치 행만 검색: {results:?}");
+            assert_eq!(
+                results[0].1, 2,
+                "model-new로 색인된 msg_id=2만 반환: {results:?}"
+            );
+            assert!(results[0].2 > 0.99, "cosine 1.0에 근사: {}", results[0].2);
         }
 
         #[test]

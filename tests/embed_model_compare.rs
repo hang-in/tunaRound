@@ -181,7 +181,7 @@ fn embed_model_compare() {
         for (q, gold) in QUERIES {
             let qv = embedder.embed(q).expect("embed query");
             let vec_ids: Vec<u64> = store_r
-                .vector_search(&qv, K)
+                .vector_search(&qv, K, &embedder.model_id(), qv.len())
                 .unwrap_or_default()
                 .iter()
                 .map(|(_, mid, _)| *mid)

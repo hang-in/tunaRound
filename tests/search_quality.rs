@@ -113,7 +113,9 @@ fn measure_search_quality() {
         );
 
         let qv = embedder.embed(q).unwrap();
-        let vec = store_r.vector_search(&qv, 3).unwrap();
+        let vec = store_r
+            .vector_search(&qv, 3, &embedder.model_id(), qv.len())
+            .unwrap();
         let vec_str: Vec<String> = vec
             .iter()
             .map(|(_, mid, sc)| {
