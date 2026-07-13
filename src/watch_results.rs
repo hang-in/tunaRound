@@ -382,9 +382,11 @@ fn drain_complete_lines(buf: &mut Vec<u8>, chunk: &[u8]) -> Vec<String> {
     buf.extend_from_slice(chunk);
     let mut lines = Vec::new();
     while let Some(pos) = buf.iter().position(|&b| b == b'\n') {
-        let line_bytes: Vec<u8> = buf.drain(..=pos).collect();
-        // 라인은 \n에서 끝나므로 완결된 UTF-8(문자 중간에서 안 잘림) → lossy여도 손실 없음.
-        lines.push(String::from_utf8_lossy(&line_bytes).to_string());
+        // 라인은 \n에서 끝나므로 완결된 UTF-8(문자 중간에서 안 잘림) → lossy여도 손실 없음. drain 결과를
+        // Vec으로 모으지 않고 슬라이스로 문자열화한 뒤 소비 바이트만 버린다(라인당 임시 Vec 할당 제거,
+        // gemini medium).
+        lines.push(String::from_utf8_lossy(&buf[..=pos]).into_owned());
+        buf.drain(..=pos);
     }
     lines
 }
