@@ -584,12 +584,16 @@ impl Session {
     /// run_round 결과(부분 성공 발언 + 선택적 에러)를 append하고 사용자 출력 문자열로 합친다(결함 #6).
     /// 좌석 실패 시에도 이미 완료된 발언을 폐기하지 않고 append + 표면화하며, append_round 자체가
     /// 실패(결함 #3)해도 그 경고를 같은 출력에 병합한다.
-    fn finish_round(&mut self, round: Vec<Utterance>, err: Option<RunError>) -> String {
+    /// 반환값 = (사용자 출력, append_failed). append_failed는 core-sync append가 실패해 발언이
+    /// 권위 전사에 저장되지 못했음을 뜻한다(Debate 등 다회 루프가 DB 저장 실패에도 계속 도는 것을
+    /// 막도록 노출한다 - gemini HIGH).
+    fn finish_round(&mut self, round: Vec<Utterance>, err: Option<RunError>) -> (String, bool) {
         let append_warn = if round.is_empty() {
             None
         } else {
             self.append_round(&round)
         };
+        let append_failed = append_warn.is_some();
         let mut out = render(&round);
         if let Some(w) = append_warn {
             if !out.is_empty() {
@@ -605,7 +609,7 @@ impl Session {
                 "[에러] 일부 좌석 응답 실패(완료된 발언은 보존됨): {e:?}"
             ));
         }
-        out
+        (out, append_failed)
     }
 
     /// 활성 경로의 발언 수를 반환한다(선형 사용 시 기존 transcript.len()과 동일).
@@ -685,7 +689,7 @@ impl Session {
                 let retrieved = self.retrieve_for_from_path(&text, &ctx.full_path);
                 let input = RoundInput { prior: &ctx.prior, retrieved: &retrieved, carried: &ctx.carried, ctx_mode: self.context_mode, transcript_len: ctx.transcript_len };
                 let (round, err) = run_round(&self.participants, &text, self.registry.as_ref(), RunMode::ReadOnly, input);
-                StepOutcome::Print(self.finish_round(round, err))
+                StepOutcome::Print(self.finish_round(round, err).0)
             }
             Command::Only { engine, text } => {
                 let seats: Vec<Participant> =
@@ -697,7 +701,7 @@ impl Session {
                 let retrieved = self.retrieve_for_from_path(&text, &ctx.full_path);
                 let input = RoundInput { prior: &ctx.prior, retrieved: &retrieved, carried: &ctx.carried, ctx_mode: self.context_mode, transcript_len: ctx.transcript_len };
                 let (round, err) = run_round(&seats, &text, self.registry.as_ref(), RunMode::ReadOnly, input);
-                StepOutcome::Print(self.finish_round(round, err))
+                StepOutcome::Print(self.finish_round(round, err).0)
             }
             Command::Write { engine, text } => {
                 let seats: Vec<Participant> =
@@ -709,7 +713,7 @@ impl Session {
                 let retrieved = self.retrieve_for_from_path(&text, &ctx.full_path);
                 let input = RoundInput { prior: &ctx.prior, retrieved: &retrieved, carried: &ctx.carried, ctx_mode: self.context_mode, transcript_len: ctx.transcript_len };
                 let (round, err) = run_round(&seats, &text, self.registry.as_ref(), RunMode::Write, input);
-                StepOutcome::Print(self.finish_round(round, err))
+                StepOutcome::Print(self.finish_round(round, err).0)
             }
             Command::Conclude(engine) => {
                 let eng = engine.or_else(|| self.participants.first().map(|p| p.engine.clone()));
@@ -725,7 +729,7 @@ impl Session {
                 let retrieved = self.retrieve_for_from_path("지금까지의 토론을 종합해 결론을 정리해줘.", &ctx.full_path);
                 let input = RoundInput { prior: &ctx.prior, retrieved: &retrieved, carried: &ctx.carried, ctx_mode: self.context_mode, transcript_len: ctx.transcript_len };
                 let (round, err) = run_round(&synth, "지금까지의 토론을 종합해 결론을 정리해줘.", self.registry.as_ref(), RunMode::ReadOnly, input);
-                StepOutcome::Print(self.finish_round(round, err))
+                StepOutcome::Print(self.finish_round(round, err).0)
             }
             Command::Debate { turns, topic } => {
                 let mut out = String::new();
@@ -742,9 +746,12 @@ impl Session {
                     let retrieved = self.retrieve_for_from_path(&topic, &ctx.full_path);
                     let input = RoundInput { prior: &ctx.prior, retrieved: &retrieved, carried: &ctx.carried, ctx_mode: self.context_mode, transcript_len: ctx.transcript_len };
                     let (round, err) = run_round(&self.participants, &round_topic, self.registry.as_ref(), RunMode::ReadOnly, input);
-                    let had_error = err.is_some();
-                    out.push_str(&format!("### 라운드 {}\n{}\n\n", k + 1, self.finish_round(round, err)));
-                    if had_error {
+                    let runner_error = err.is_some();
+                    let (text, append_failed) = self.finish_round(round, err);
+                    out.push_str(&format!("### 라운드 {}\n{text}\n\n", k + 1));
+                    // 러너 실패뿐 아니라 core-sync 저장 실패에도 중단한다(권위 전사가 깨진 채 계속
+                    // 토론하면 후속 라운드가 옛 head를 부모로 삼아 체인이 어긋난다, gemini HIGH).
+                    if runner_error || append_failed {
                         break;
                     }
                 }
