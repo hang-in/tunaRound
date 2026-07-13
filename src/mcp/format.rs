@@ -361,6 +361,19 @@ pub(crate) fn format_task_status(task: &crate::store::a2a::Task, now: &str) -> S
             out.push_str("\n\n[요청]\n");
             out.push_str(&texts.join("\n"));
         }
+    } else if matches!(task.state, TaskState::Failed | TaskState::Canceled) {
+        // fail_task_text가 사유를 status_message에 저장한다(params.rs:78 계약: dispatcher가 읽는다).
+        // canceled는 현재 try_cancel이 message_json=NULL로 지워 보통 비어 있지만, 상태 무관 공용
+        // 분기로 둬 향후 취소 사유 저장 시에도 같은 라벨로 렌더되게 한다.
+        let texts: Vec<&str> = task
+            .status_message
+            .as_ref()
+            .map(|m| m.parts.iter().filter_map(|p| p.text.as_deref()).collect())
+            .unwrap_or_default();
+        if !texts.is_empty() {
+            out.push_str("\n\n[실패 사유] ");
+            out.push_str(&texts.join("\n"));
+        }
     }
     out
 }
@@ -522,6 +535,31 @@ mod tests {
         assert!(
             !text.contains("[요청]"),
             "completed에 본문이 붙으면 안 됨: {text}"
+        );
+    }
+
+    #[test]
+    fn format_task_status_failed_includes_reason_from_status_message() {
+        // fail_task_text가 status_message에 저장한 사유가 get_task 렌더에도 나타나야 dispatcher가
+        // DB 직독 없이 실패 원인을 알 수 있다(params.rs:78 계약).
+        let mut task =
+            crate::store::a2a::Task::new("t10", None, "boss", "worker", "2026-07-13 09:00:00");
+        task.state = TaskState::Failed;
+        task.status_message = Some(crate::store::a2a::Message {
+            message_id: "m1".into(),
+            role: "agent".into(),
+            parts: vec![Part {
+                text: Some("러너 타임아웃".into()),
+                ..Default::default()
+            }],
+            task_id: Some("t10".into()),
+            context_id: None,
+        });
+        let text = format_task_status(&task, "2026-07-13 09:00:01");
+        assert!(text.contains("state=failed"), "state 누락: {text}");
+        assert!(
+            text.contains("[실패 사유]") && text.contains("러너 타임아웃"),
+            "실패 사유 렌더 누락: {text}"
         );
     }
 

@@ -533,7 +533,9 @@ async fn dashboard_roster_handler(
         /// 위에 "동작 중" 스피너를 얹는 소프트 신호(v2-54). 조회 실패 시 false(스피너만 안 뜸).
         busy: bool,
     }
-    let agents: Vec<DashAgent> = tokio::task::spawn_blocking(move || {
+    // health 핸들러와 동일 패턴(fail-visible): spawn_blocking JoinError(내부 패닉/취소)를 빈 배열
+    // 200으로 위장하지 않고 500으로 표면화한다.
+    let result: Result<Vec<DashAgent>, String> = tokio::task::spawn_blocking(move || {
         let store = store.lock().unwrap_or_else(|e| e.into_inner());
         let now = store.now().unwrap_or_default();
         // "동작 중" 세션 = 열린 task 중 state=working인 것의 to_agent 집합. relay 대리 claim도 to_agent가
@@ -546,7 +548,7 @@ async fn dashboard_roster_handler(
             .map(|t| t.to_agent)
             .collect();
         // TTL=i64::MAX로 오프라인 포함 전체 조회 후, online은 실제 TTL(AGENT_TTL_SECS)로 per-agent 계산.
-        store
+        Ok(store
             .list_agents(&BTreeMap::new(), &now, i64::MAX)
             .into_iter()
             .map(|a| {
@@ -563,17 +565,29 @@ async fn dashboard_roster_handler(
                     busy,
                 }
             })
-            .collect()
+            .collect())
     })
     .await
-    .unwrap_or_default();
-    let body = serde_json::to_vec(&agents).unwrap_or_else(|_| b"[]".to_vec());
-    (
-        axum::http::StatusCode::OK,
-        [(axum::http::header::CONTENT_TYPE, "application/json")],
-        body,
-    )
-        .into_response()
+    .unwrap_or_else(|e| Err(format!("spawn_blocking 실패: {e}")));
+    match result {
+        Ok(agents) => {
+            let body = serde_json::to_vec(&agents).unwrap_or_else(|_| b"[]".to_vec());
+            (
+                axum::http::StatusCode::OK,
+                [(axum::http::header::CONTENT_TYPE, "application/json")],
+                body,
+            )
+                .into_response()
+        }
+        Err(e) => {
+            eprintln!("[dashboard/roster] 조회 실패: {e}");
+            (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                "roster 조회 실패",
+            )
+                .into_response()
+        }
+    }
 }
 
 /// GET /dashboard/health: mesh 건강 한눈 요약(read-only). 열린 task 수, 미배달(no-consumer)·고착(stuck)

@@ -122,7 +122,18 @@ mod sqlite_retriever {
         let mut staged: Vec<RankStaged<T>> = Vec::new();
         let mut max_ts: Option<i64> = None;
         for (sid, mid, v) in items {
-            let meta = store.get_validity(&sid, mid).ok().flatten(); // 항목당 유일 조회.
+            // 항목당 유일 조회(핫패스 DB 왕복 절감). Err는 무신호로 삼키지 않고 표면화한 뒤 active로
+            // 폴백한다(1차 FTS 경로의 R7과 같은 원칙: DB 장애가 /reject로 기각된 발언을 조용히
+            // 재부상시키는 것을 방지). 여기는 penalty만 매기는 순수 함수라 Err 전파는 하지 않는다.
+            let meta = match store.get_validity(&sid, mid) {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!(
+                        "[tunaRound] get_validity 실패(active로 폴백): sid={sid} mid={mid} err={e}"
+                    );
+                    None
+                }
+            };
             let mut penalty = 0u32;
             match meta.as_ref().map(|m| m.valid_state.as_str()) {
                 Some("rejected") => continue, // 드롭.
@@ -475,11 +486,19 @@ mod sqlite_transcript {
     impl crate::orchestrator::CoreSync for SqliteCoreSync {
         fn load_session(&self, session_id: &str) -> Option<crate::types::ConversationSnapshot> {
             let store = self.store.lock().unwrap_or_else(|e| e.into_inner());
-            store
-                .load_session(session_id)
-                .ok()
-                .flatten()
-                .map(Into::into)
+            // 세션 없음(Ok(None))=정상 스킵. DB 에러(Err)는 TranscriptReader::read_transcript(R7)와
+            // 같은 원칙으로 무신호로 삼키지 않고 eprintln으로 표면화한 뒤 None을 반환한다(시그니처는
+            // Option 고정이라 전파 불가 - adopt_from_core가 None을 "세션 없음"과 동일하게 스킵하므로,
+            // 그러지 않으면 DB 장애가 무신호로 stale 트리를 쓰게 된다).
+            match store.load_session(session_id) {
+                Ok(ss) => ss.map(Into::into),
+                Err(e) => {
+                    eprintln!(
+                        "[tunaRound] load_session 실패(스킵, adopt 건너뜀): session_id={session_id} err={e}"
+                    );
+                    None
+                }
+            }
         }
         fn append_turn(
             &self,
