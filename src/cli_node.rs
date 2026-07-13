@@ -28,7 +28,8 @@ pub fn build_lane_runner(
             Arc::new(tunaround::runner::http::OpenAiChatRunner::new(
                 base,
                 lane.model.as_deref().unwrap_or(""),
-                lane.http_api_key.clone(),
+                // 빈/공백 http_api_key는 무헤더(None)로 강등(coderabbit/gemini).
+                lane.http_api_key.clone().filter(|k| !k.trim().is_empty()),
             ))
         }
         #[cfg(not(feature = "engines"))]

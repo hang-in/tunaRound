@@ -48,7 +48,10 @@ pub fn work(rt: &tokio::runtime::Runtime, a: WorkArgs) {
             let http_api_key = a
                 .http_api_key
                 .clone()
-                .or_else(|| std::env::var(ENV_HTTP_API_KEY).ok());
+                .or_else(|| std::env::var(ENV_HTTP_API_KEY).ok())
+                // 빈/공백 키는 무헤더(None)로 강등한다: env가 ""로 설정된 경우 빈 Bearer가 나가는 것
+                // 방지(coderabbit/gemini, resolve_node_token의 빈값 처리와 일관).
+                .filter(|k| !k.trim().is_empty());
             std::sync::Arc::new(tunaround::runner::http::OpenAiChatRunner::new(
                 &base_url,
                 a.model.as_deref().unwrap_or(""),

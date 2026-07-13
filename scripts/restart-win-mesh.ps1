@@ -31,8 +31,11 @@ $BaseUrl = $Core -replace '/mcp/?$', ''
 # 브로커 토큰 가드: 이 스크립트는 브로커를 `serve 0.0.0.0:8770`(비-loopback)으로 띄우므로 토큰이
 # 없거나 init 스캐폴드의 placeholder 그대로면 /mcp·/a2a·대시보드 쓰기가 LAN에 무인증으로 열린다.
 # 데몬들도 같은 env를 상속해 mesh가 정상 동작하는 탓에 어떤 실패 신호도 없다(fail-visible). 여기서 막는다.
-if (-not $env:TUNA_BROKER_TOKEN -or $env:TUNA_BROKER_TOKEN -eq '여기에-실제-토큰-넣기') {
-    throw "config에 TUNA_BROKER_TOKEN이 없거나 placeholder입니다: $ConfigPath (무토큰/placeholder면 0.0.0.0 브로커가 무인증으로 뜬다. init 안내대로 실제 토큰을 채우세요)"
+# 공백만 있는 토큰(" ")이나 앞뒤 공백이 붙은 placeholder(" 여기에-...-넣기 ")도 무효로 본다(coderabbit
+# Major): trim 후 빈 문자열·placeholder면 거부.
+$BrokerTokenTrimmed = if ($env:TUNA_BROKER_TOKEN) { $env:TUNA_BROKER_TOKEN.Trim() } else { '' }
+if (-not $BrokerTokenTrimmed -or $BrokerTokenTrimmed -eq '여기에-실제-토큰-넣기') {
+    throw "config에 TUNA_BROKER_TOKEN이 없거나 공백/placeholder입니다: $ConfigPath (무토큰/placeholder면 0.0.0.0 브로커가 무인증으로 뜬다. init 안내대로 실제 토큰을 채우세요)"
 }
 
 # 2. 기존 mesh 데몬 종료: 이전 실행이 기록한 mesh.pids의 PID만(tunaround 이름 검증 후) 죽인다.
