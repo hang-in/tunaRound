@@ -456,7 +456,8 @@ pub(crate) fn run_node(rt: &tokio::runtime::Runtime, a: crate::cli::NodeArgs) {
                                 cwd.display()
                             ));
                         }
-                        let bad = tunaround::worker::context_map_disrupting_paths(&context_map, &cwd);
+                        let bad =
+                            tunaround::worker::context_map_disrupting_paths(&context_map, &cwd);
                         if !bad.is_empty() {
                             return Err(format!(
                                 "write 레인 '{}'의 --context-map 항목이 node 실행 디렉터리({})와 \

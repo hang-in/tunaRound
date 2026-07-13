@@ -96,7 +96,10 @@ pub fn parse_open_tasks(poll_text: &str) -> Vec<ParsedTask> {
             .into_iter()
             .filter_map(|d| {
                 if !is_hex32(&d.id) {
-                    eprintln!("[worker] TASKS_JSON id가 hex32 형식이 아니라 건너뜀: {:?}", d.id);
+                    eprintln!(
+                        "[worker] TASKS_JSON id가 hex32 형식이 아니라 건너뜀: {:?}",
+                        d.id
+                    );
                     return None;
                 }
                 Some(ParsedTask {
@@ -274,9 +277,7 @@ pub fn context_map_disrupting_paths(
 ) -> Vec<String> {
     let mut bad: Vec<String> = context_map
         .iter()
-        .filter(|(_, v)| {
-            write_lane_disrupts_node(Some(std::path::Path::new(v.as_str())), node_cwd)
-        })
+        .filter(|(_, v)| write_lane_disrupts_node(Some(std::path::Path::new(v.as_str())), node_cwd))
         .map(|(k, v)| format!("{k}={v}"))
         .collect();
     bad.sort();
@@ -1243,7 +1244,10 @@ mod tests {
         ) {
             let bad = context_map_disrupting_paths(&map, &cwd);
             assert_eq!(bad.len(), 1, "겹치는 value 하나만 걸려야 함: {bad:?}");
-            assert!(bad[0].starts_with("danger="), "겹치는 key가 danger여야 함: {bad:?}");
+            assert!(
+                bad[0].starts_with("danger="),
+                "겹치는 key가 danger여야 함: {bad:?}"
+            );
         }
     }
 

@@ -156,8 +156,10 @@ pub(crate) fn run_with_watchdog(spec: &ExecSpec) -> Result<String, RunError> {
                     collected.push('\n');
                 }
                 Err(e) => {
-                    stdout_err =
-                        Some(RunError::Io(format!("{} stdout 읽기 실패: {e}", spec.label)));
+                    stdout_err = Some(RunError::Io(format!(
+                        "{} stdout 읽기 실패: {e}",
+                        spec.label
+                    )));
                     break;
                 }
             }
