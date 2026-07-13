@@ -14,9 +14,10 @@ impl SqliteStore {
         // head는 Option<u64> -> NULL(None) 또는 정수.
         let head_val: Option<i64> = ss.head.map(|h| h as i64);
 
-        // 트랜잭션 시작.
+        // 트랜잭션 시작. IMMEDIATE로 쓰기 락을 곧장 선취해 busy_timeout 안에서 직렬화한다(전량
+        // 교체는 쓰기 위주라 DEFERRED로 시작해 나중에 락 승격을 노리는 이득이 없다).
         self.conn
-            .execute_batch("BEGIN;")
+            .execute_batch("BEGIN IMMEDIATE;")
             .map_err(|e| format!("sqlite: {e}"))?;
 
         let result = (|| -> Result<(), String> {
@@ -30,23 +31,30 @@ impl SqliteStore {
                 .map_err(|e| format!("sqlite: {e}"))?;
 
             // (2a) 전량 교체 전에 기존 created_at을 보존한다(save_session은 DELETE+INSERT라
-            // now로 덮으면 매 스냅샷마다 타임스탬프가 리셋돼 recency 신호가 무의미해짐).
-            let mut prev_created: std::collections::HashMap<i64, String> =
+            // now로 덮으면 매 스냅샷마다 타임스탬프가 리셋돼 recency 신호가 무의미해짐). content도 함께
+            // 기억해 msg_id뿐 아니라 내용까지 일치할 때만 보존한다: 같은 --db·같은 session_id로 완전히
+            // 새 대화(REPL 기본 sid='default')를 시작하면 msg_id만으로는 옛 대화의 타임스탬프를
+            // 상속해버려 recency 랭킹이 왜곡된다.
+            let mut prev_created: std::collections::HashMap<i64, (String, String)> =
                 std::collections::HashMap::new();
             {
                 let mut stmt = self
                     .conn
-                    .prepare("SELECT msg_id, created_at FROM messages WHERE session_id=?1")
+                    .prepare("SELECT msg_id, created_at, content FROM messages WHERE session_id=?1")
                     .map_err(|e| format!("sqlite: {e}"))?;
                 let rows = stmt
                     .query_map([session_id], |r| {
-                        Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?))
+                        Ok((
+                            r.get::<_, i64>(0)?,
+                            r.get::<_, Option<String>>(1)?,
+                            r.get::<_, String>(2)?,
+                        ))
                     })
                     .map_err(|e| format!("sqlite: {e}"))?;
                 for row in rows {
-                    let (mid, ca) = row.map_err(|e| format!("sqlite: {e}"))?;
+                    let (mid, ca, content) = row.map_err(|e| format!("sqlite: {e}"))?;
                     if let Some(ca) = ca {
-                        prev_created.insert(mid, ca);
+                        prev_created.insert(mid, (ca, content));
                     }
                 }
             }
@@ -63,7 +71,12 @@ impl SqliteStore {
             for msg in &ss.messages {
                 let msg_id = msg.id as i64;
                 let parent_id: Option<i64> = msg.parent_id.map(|p| p as i64);
-                let created: Option<String> = prev_created.get(&msg_id).cloned();
+                // 보존 조건 강화: msg_id와 content가 모두 일치할 때만 옛 created_at을 쓴다. 내용이
+                // 다르면(같은 msg_id에 새 대화가 덮어씀) None -> INSERT의 COALESCE가 now로 새로 스탬프.
+                let created: Option<String> = prev_created
+                    .get(&msg_id)
+                    .filter(|(_, prev_content)| prev_content == &msg.content)
+                    .map(|(ca, _)| ca.clone());
 
                 self.conn
                     .execute(
@@ -103,15 +116,19 @@ impl SqliteStore {
             Ok(())
         })();
 
-        if result.is_ok() {
-            self.conn
-                .execute_batch("COMMIT;")
-                .map_err(|e| format!("sqlite: {e}"))?;
-        } else {
-            let _ = self.conn.execute_batch("ROLLBACK;");
+        match result {
+            Ok(()) => self.conn.execute_batch("COMMIT;").map_err(|e| {
+                // COMMIT 자체가 실패하면(SQLITE_FULL/IOERR 등) SQLite가 자동 롤백을 보장하지 않아
+                // 커넥션이 열린 쓰기 트랜잭션에 갇힌다. 명시적으로 ROLLBACK을 시도해 이후 BEGIN이
+                // 막히지 않게 한다(실패해도 원 에러를 그대로 반환).
+                let _ = self.conn.execute_batch("ROLLBACK;");
+                format!("sqlite: {e}")
+            }),
+            Err(e) => {
+                let _ = self.conn.execute_batch("ROLLBACK;");
+                Err(e)
+            }
         }
-
-        result
     }
 
     /// 세션의 모든 색인 행(messages/FTS/vectors/sessions)을 지운다(v2-45 P6a 멱등 재색인용).
@@ -135,20 +152,24 @@ impl SqliteStore {
             }
             Ok(())
         })();
-        if result.is_ok() {
-            self.conn
-                .execute_batch("COMMIT;")
-                .map_err(|e| format!("sqlite: {e}"))?;
-        } else {
-            let _ = self.conn.execute_batch("ROLLBACK;");
+        match result {
+            Ok(()) => self.conn.execute_batch("COMMIT;").map_err(|e| {
+                let _ = self.conn.execute_batch("ROLLBACK;");
+                format!("sqlite: {e}")
+            }),
+            Err(e) => {
+                let _ = self.conn.execute_batch("ROLLBACK;");
+                Err(e)
+            }
         }
-        result
     }
 
     /// 단일 발언을 세션 전사 끝(현재 head의 자식)에 증분 추가하고 새 msg_id를 반환한다.
     /// save_session(전량 교체)과 달리 INSERT만 하므로, 외부 writer(post_turn)와 REPL이
     /// 같은 DB id 권위(max msg_id+1)를 공유해 충돌·클로버가 구조적으로 없다(Plan 27 옵션 B).
-    /// 단일 트랜잭션이라 SQLite 쓰기 직렬화로 동시 append 안전.
+    /// BEGIN IMMEDIATE로 쓰기 락을 곧장 선취해, --core 모드에서 REPL core-sync와 HTTP post_turn이
+    /// 같은 세션에 동시 append해도 busy_timeout 안에서 직렬화된다(DEFERRED면 두 트랜잭션이 같은
+    /// MAX(msg_id)를 읽어 UNIQUE 위반·SQLITE_BUSY_SNAPSHOT이 날 수 있었음).
     pub fn append_turn<F: Fn(&str) -> String>(
         &self,
         session_id: &str,
@@ -157,7 +178,7 @@ impl SqliteStore {
         fts_tok: F,
     ) -> Result<u64, String> {
         self.conn
-            .execute_batch("BEGIN;")
+            .execute_batch("BEGIN IMMEDIATE;")
             .map_err(|e| format!("sqlite: {e}"))?;
 
         let result = (|| -> Result<u64, String> {
@@ -211,15 +232,19 @@ impl SqliteStore {
             Ok(new_id as u64)
         })();
 
-        if result.is_ok() {
-            self.conn
-                .execute_batch("COMMIT;")
-                .map_err(|e| format!("sqlite: {e}"))?;
-        } else {
-            let _ = self.conn.execute_batch("ROLLBACK;");
+        match result {
+            Ok(id) => match self.conn.execute_batch("COMMIT;") {
+                Ok(()) => Ok(id),
+                Err(e) => {
+                    let _ = self.conn.execute_batch("ROLLBACK;");
+                    Err(format!("sqlite: {e}"))
+                }
+            },
+            Err(e) => {
+                let _ = self.conn.execute_batch("ROLLBACK;");
+                Err(e)
+            }
         }
-
-        result
     }
 
     /// 세션을 로드한다. 없으면 Ok(None)을 반환한다.
@@ -561,15 +586,16 @@ impl SqliteStore {
             Ok(())
         })();
 
-        if result.is_ok() {
-            self.conn
-                .execute_batch("COMMIT;")
-                .map_err(|e| format!("sqlite: {e}"))?;
-        } else {
-            let _ = self.conn.execute_batch("ROLLBACK;");
+        match result {
+            Ok(()) => self.conn.execute_batch("COMMIT;").map_err(|e| {
+                let _ = self.conn.execute_batch("ROLLBACK;");
+                format!("sqlite: {e}")
+            }),
+            Err(e) => {
+                let _ = self.conn.execute_batch("ROLLBACK;");
+                Err(e)
+            }
         }
-
-        result
     }
 
     /// message_vectors 전체를 brute-force cosine으로 검색해 top-K를 반환한다. sqlite 피처 전용.
@@ -995,6 +1021,35 @@ mod tests {
             db.get_created_at("s", 2).unwrap().is_some(),
             "보존값 없는 메시지는 now로 채움"
         );
+    }
+
+    #[test]
+    fn save_session_resets_created_at_when_content_differs_for_same_msg_id() {
+        // #3 회귀: 같은 --db·같은 session_id로 완전히 새 대화를 시작하면(msg_id 재사용, 내용은 다름)
+        // 옛 created_at을 상속하면 안 된다(recency 왜곡). content가 다르면 now로 새로 스탬프해야 한다.
+        let db = SqliteStore::open_memory().unwrap();
+        db.save_session("s", &ss(), |t| t.to_string()).unwrap();
+        db.set_created_at("s", 1, "2020-01-01 00:00:00").unwrap();
+
+        // 같은 msg_id=1이지만 content가 다른 새 대화로 덮어쓴다.
+        let new_conv = StoredSession {
+            messages: vec![StoredMessage {
+                id: 1,
+                parent_id: None,
+                speaker: "claude/proposer".into(),
+                content: "완전히 다른 새 대화".into(),
+            }],
+            head: Some(1),
+        };
+        db.save_session("s", &new_conv, |t| t.to_string()).unwrap();
+
+        let ca = db.get_created_at("s", 1).unwrap();
+        assert_ne!(
+            ca.as_deref(),
+            Some("2020-01-01 00:00:00"),
+            "content가 다르면 옛 created_at을 상속하지 않음(now로 재스탬프)"
+        );
+        assert!(ca.is_some(), "재스탬프된 created_at은 존재해야 함");
     }
 
     #[test]

@@ -6,7 +6,9 @@ use rusqlite::OptionalExtension;
 
 use super::*;
 
-/// human_input_at 영속 행 보존기간(일). deregister/stale를 안 탄 고아 행을 이 기간 뒤 GC한다.
+/// human_input_at 영속 행 보존기간(일). deregister(명시적 종료 신호)를 안 탄 고아 행(#8: stale
+/// 제거된 세션도 여기 포함 - 진짜 종료인지 스캔 누락인지 즉시 구분할 수 없어 이 기간까지 유예한다)을
+/// 이 기간 뒤 GC한다.
 const HUMAN_INPUT_RETAIN_DAYS: u32 = 7;
 
 /// presence 이벤트 이력 보존기간(일, v2-50). 이력이라 human_input 최신값(7일)보다 길게 잡는다.
@@ -38,15 +40,20 @@ impl SqliteStore {
         );
     }
 
-    /// 영속 human_input_at 행을 제거(세션 소멸 GC = deregister·sync_presence stale). best-effort.
+    /// 영속 human_input_at 행을 제거한다. best-effort. **진짜 종료 신호(deregister_agent)에서만
+    /// 즉시 호출한다(#8).** sync_presence의 stale 제거(스캐너가 한 주기 세션을 놓친 것 - 진짜 종료와
+    /// 구분 불가)는 더 이상 이 함수를 호출하지 않는다: 즉시 삭제하면 스캐너가 살아있는 세션을 한
+    /// 주기(15초) 빠뜨리기만 해도 카드는 다음 주기에 부활하지만 ★는 이미 지워져 복원 불가였다. stale로
+    /// 사라진 세션의 ★는 gc_human_input의 보존기간(7일)에 맡긴다.
     fn delete_human_input(&self, uuid: &str) {
         let _ = self
             .conn
             .execute("DELETE FROM agent_human_input WHERE uuid = ?1", [uuid]);
     }
 
-    /// 보존기간(기본 7일) 초과 human_input_at 행을 GC한다. deregister/stale를 안 타고 남은 고아 행
-    /// (스캐너가 다시 보고하지 않는 uuid)을 정리한다. sync_presence가 매 스캔 주기에 호출 = 자연 주기 훅.
+    /// 보존기간(기본 7일) 초과 human_input_at 행을 GC한다. deregister를 안 타고 남은 고아 행(#8:
+    /// stale 제거된 세션 포함 - 스캐너가 다시 보고하지 않는 uuid)을 정리한다. sync_presence가 매 스캔
+    /// 주기에 호출 = 자연 주기 훅.
     fn gc_human_input(&self) {
         let _ = self.conn.execute(
             "DELETE FROM agent_human_input WHERE at < datetime('now', ?1)",
@@ -187,8 +194,12 @@ impl SqliteStore {
 
     /// presence 스캐너 일괄 동기화(설계 v2-44 §6): 보고된 세션은 upsert(human_input_at 보존),
     /// 같은 machine의 스캐너 소유(`src=scan`) 항목 중 보고에 없는 것은 제거한다(유령 원천 차단).
-    /// 소유 태그로 격리하므로 수동 register(워커·infra·수신 poll) 항목은 건드리지 않는다.
-    /// 반환=(upsert 수, 제거 수).
+    /// 소유 태그로 격리하므로 수동 register(워커·infra·수신 poll) 항목은 건드리지 않는다: stale
+    /// 제거뿐 아니라 upsert도 대상 uuid가 이미 로스터에 있고 소유 태그(`src`)가 `scan`이 아니면
+    /// 건너뛴다(#7 - 라이브 세션이 자기 uuid로 커스텀 태그를 register한 뒤 다음 스캔에 스캐너 기본
+    /// 태그로 덮여 to_selector 라우팅이 플랩하는 것 방지).
+    /// 반환=(upsert 수, 제거 수). uuid가 수동 소유라 스킵된 건도 upsert 시도 수에는 포함한다(호출자
+    /// 로그는 "몇 건을 보고받았나"이지 "몇 건을 실제로 갱신했나"가 아니므로 반환값 계약은 불변).
     pub fn sync_presence(
         &self,
         machine: &str,
@@ -219,10 +230,23 @@ impl SqliteStore {
                 Some("stale"),
                 now,
             );
-            // 세션 소멸의 대부분은 deregister를 안 타므로(조사 확정) stale 제거 시 영속 행도 GC한다.
-            self.delete_human_input(&e.uuid);
+            // #8: stale 제거는 즉시 delete_human_input을 호출하지 않는다. 스캐너가 살아있는 세션을
+            // 한 주기(15초) 빠뜨리기만 해도 로스터 카드는 다음 주기에 부활하지만, 영속 ★(진짜 종료
+            // 신호가 아닌데) 이 자리에서 지워버리면 그 사이 복원 불가로 증발한다. 진짜 종료 신호는
+            // deregister_agent(명시적 disarm)뿐이라 그 경로만 즉시 삭제하고, stale은 gc_human_input의
+            // 7일 보존기간에 맡긴다(진짜로 사라진 세션은 그 안에 자연 GC됨, 재등장 세션은 ★ 보존).
         }
         for s in sessions {
+            // #7 소유권 가드: 이 uuid가 이미 로스터에 있고 소유 태그(src)가 scan이 아니면(수동
+            // register 소유 - 예: 워커가 role=worker로 자기 uuid를 등록) 스캐너 upsert가 건드리지
+            // 않는다. 지금까지 격리는 stale 제거(위 for e in &stale)에만 있었고 upsert엔 없어, 같은
+            // uuid를 스캐너가 재보고하면 태그가 스캐너 기본값(role=session 등)으로 조용히 교체돼
+            // to_selector 라우팅이 플랩했다.
+            if let Some(existing) = roster.get(&s.uuid)
+                && existing.tags.get("src").map(String::as_str) != Some("scan")
+            {
+                continue;
+            }
             // §5-8 최종형: human_input_at = max(인메모리, 스캐너 보고값, 영속 테이블).
             // base = 인메모리(있으면 직전 write-through로 테이블과 동기) 또는 재기동 복원(테이블 SELECT).
             // 보고값(codex 입력 신호)이 base보다 새로우면(merged != base) 승자를 테이블에 단조
@@ -569,6 +593,37 @@ mod tests {
     }
 
     #[test]
+    fn sync_presence_upsert_preserves_manually_owned_tags() {
+        // #7: 워커가 role=worker로 자기 uuid를 수동 register한 뒤, 같은 uuid를 스캐너가 일반 세션으로
+        // 재보고해도(예: 프로세스 열거가 워커 세션도 잡음) upsert가 스캐너 기본 태그(role=session,
+        // src=scan)로 덮으면 안 된다(to_selector 라우팅 플랩 방지).
+        let db = SqliteStore::open_memory().unwrap();
+        db.register_agent(
+            "w1",
+            tags(&[("machine", "win"), ("role", "worker"), ("src", "manual")]),
+            Some("win-worker".into()),
+            "2026-07-13 10:00:00",
+        );
+        db.sync_presence(
+            "win",
+            &[presence("w1", "claude", None)],
+            "2026-07-13 10:00:15",
+        );
+        let e = &db.list_agents(&BTreeMap::new(), "2026-07-13 10:00:20", 90)[0];
+        assert_eq!(e.uuid, "w1");
+        assert_eq!(
+            e.tags.get("role").map(String::as_str),
+            Some("worker"),
+            "수동 소유 태그가 스캐너 upsert에 덮이지 않아야 함"
+        );
+        assert_eq!(
+            e.tags.get("src").map(String::as_str),
+            Some("manual"),
+            "src 태그도 스캐너 기본값(scan)으로 교체되지 않아야 함"
+        );
+    }
+
+    #[test]
     fn sync_presence_preserves_human_input_at() {
         let db = SqliteStore::open_memory().unwrap();
         let t0 = "2026-07-11 10:00:00";
@@ -713,7 +768,9 @@ mod tests {
     }
 
     #[test]
-    fn sync_presence_stale_deletes_persisted_human_input() {
+    fn sync_presence_stale_does_not_delete_persisted_human_input() {
+        // #8: stale 제거(스캐너가 한 주기 세션을 놓침)는 영속 ★ 행을 즉시 삭제하지 않는다. 진짜 종료가
+        // 아니라면 다음 주기에 로스터 카드는 부활하는데, ★를 그 자리에서 지우면 복원 불가로 증발한다.
         let db = SqliteStore::open_memory().unwrap();
         db.sync_presence(
             "win",
@@ -721,12 +778,24 @@ mod tests {
             "2026-07-11 10:00:00",
         );
         db.mark_human_input("s1", "2026-07-11 10:00:05");
-        // s1이 다음 스캔 보고에서 사라짐(exit) → stale 제거 + 영속 행 GC.
+        // s1이 다음 스캔 보고에서 빠짐(한 주기 누락) → 로스터에서는 제거되지만 영속 ★는 남아야 한다.
         db.sync_presence("win", &[], "2026-07-11 10:00:20");
         assert_eq!(
-            db.load_human_input("s1"),
-            None,
-            "stale 제거가 영속 ★ 행도 GC"
+            db.load_human_input("s1").as_deref(),
+            Some("2026-07-11 10:00:05"),
+            "stale 제거는 영속 ★ 행을 지우지 않음(진짜 종료 신호=deregister만 즉시 삭제)"
+        );
+        // 다음 주기에 재등장하면 ★가 그대로 복원된다(증발하지 않았다는 방증).
+        db.sync_presence(
+            "win",
+            &[presence("s1", "claude", None)],
+            "2026-07-11 10:00:35",
+        );
+        let e = &db.list_agents(&BTreeMap::new(), "2026-07-11 10:00:40", 90)[0];
+        assert_eq!(
+            e.human_input_at.as_deref(),
+            Some("2026-07-11 10:00:05"),
+            "재등장 시 ★ 복원(누락 한 주기로 증발하지 않음)"
         );
     }
 
