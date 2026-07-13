@@ -2,10 +2,14 @@
 # 액션을 SHA로 핀하면 수동 갱신이 밀리므로, Dependabot이 새 SHA로 올리는 PR을 자동 생성해 CI로 검증한다.
 version: 2
 updates:
+  # groups로 생태계별 업데이트를 한 PR로 묶는다(주간 개별 PR 폭주로 리뷰 피로 방지, gemini medium).
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
+    groups:
+      actions:
+        patterns: ['*']
     commit-message:
       prefix: 'ci'
 
@@ -13,6 +17,9 @@ updates:
     directory: /frontend
     schedule:
       interval: weekly
+    groups:
+      frontend:
+        patterns: ['*']
     commit-message:
       prefix: 'chore(frontend)'
 
@@ -20,5 +27,8 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    groups:
+      cargo:
+        patterns: ['*']
     commit-message:
       prefix: 'chore(deps)'
