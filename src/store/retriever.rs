@@ -122,16 +122,18 @@ mod sqlite_retriever {
         let mut staged: Vec<RankStaged<T>> = Vec::new();
         let mut max_ts: Option<i64> = None;
         for (sid, mid, v) in items {
-            // 항목당 유일 조회(핫패스 DB 왕복 절감). Err는 무신호로 삼키지 않고 표면화한 뒤 active로
-            // 폴백한다(1차 FTS 경로의 R7과 같은 원칙: DB 장애가 /reject로 기각된 발언을 조용히
-            // 재부상시키는 것을 방지). 여기는 penalty만 매기는 순수 함수라 Err 전파는 하지 않는다.
+            // 항목당 유일 조회(핫패스 DB 왕복 절감). Err는 무신호로 삼키지 않고 표면화한 뒤 이 후보를
+            // 보수적으로 드롭한다(active로 폴백하면 DB 장애 순간 /reject로 기각된 발언이 재부상하므로,
+            // coderabbit Major). 한 행의 일시 조회 실패로 그 행을 결과에서 빼는 편이 rejected 노출보다
+            // 안전하고, 전체 검색은 나머지 후보로 계속된다. 여기는 penalty만 매기는 순수 함수라 Err
+            // 전파는 하지 않는다.
             let meta = match store.get_validity(&sid, mid) {
                 Ok(v) => v,
                 Err(e) => {
                     eprintln!(
-                        "[tunaRound] get_validity 실패(active로 폴백): sid={sid} mid={mid} err={e}"
+                        "[tunaRound] get_validity 실패(후보 드롭): sid={sid} mid={mid} err={e}"
                     );
-                    None
+                    continue;
                 }
             };
             let mut penalty = 0u32;

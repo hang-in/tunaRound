@@ -358,10 +358,18 @@ fn collect_new_submitted(
     seen: &mut std::collections::HashSet<String>,
 ) -> Vec<ParsedTask> {
     let tasks = parse_open_tasks(poll_text);
-    if tasks.is_empty() && !poll_text.contains("앞 열린 task 없음") {
+    // 구조화 응답(TASKS_JSON 프리픽스)은 빈 배열이라도 정상 응답이라 소프트에러가 아니다(gemini medium:
+    // 향후 브로커가 `TASKS_JSON []`을 보내도 오판 방지). 진짜 빈 큐 안내도 아니고 TASKS_JSON도 없는
+    // 빈 결과만 소프트에러로 의심한다.
+    if tasks.is_empty()
+        && !poll_text.contains("앞 열린 task 없음")
+        && !poll_text.contains("TASKS_JSON")
+    {
+        // poll_text 원문은 task id·msg(사용자 입력·비밀 포함 가능)라 로그에 남기지 않는다(coderabbit
+        // Major, 보안). 길이만 기록해 소프트에러를 진단 가능하게 한다.
         eprintln!(
-            "[poll] poll 응답이 빈 목록도 빈-큐 안내도 아님(소프트에러 의심, seen 유지): {:.120}",
-            poll_text
+            "[poll] poll 응답이 빈 목록도 빈-큐 안내도 아님(소프트에러 의심, seen 유지, {}바이트)",
+            poll_text.len()
         );
         return Vec::new();
     }

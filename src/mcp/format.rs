@@ -364,14 +364,20 @@ pub(crate) fn format_task_status(task: &crate::store::a2a::Task, now: &str) -> S
     } else if matches!(task.state, TaskState::Failed | TaskState::Canceled) {
         // fail_task_text가 사유를 status_message에 저장한다(params.rs:78 계약: dispatcher가 읽는다).
         // canceled는 현재 try_cancel이 message_json=NULL로 지워 보통 비어 있지만, 상태 무관 공용
-        // 분기로 둬 향후 취소 사유 저장 시에도 같은 라벨로 렌더되게 한다.
+        // 분기로 둬 향후 취소 사유 저장 시에도 렌더되게 한다. 취소는 실패와 다르므로 라벨을 구분한다
+        // (gemini medium: "[실패 사유]"가 취소를 오인시킴).
         let texts: Vec<&str> = task
             .status_message
             .as_ref()
             .map(|m| m.parts.iter().filter_map(|p| p.text.as_deref()).collect())
             .unwrap_or_default();
         if !texts.is_empty() {
-            out.push_str("\n\n[실패 사유] ");
+            let label = if matches!(task.state, TaskState::Canceled) {
+                "\n\n[취소 사유] "
+            } else {
+                "\n\n[실패 사유] "
+            };
+            out.push_str(label);
             out.push_str(&texts.join("\n"));
         }
     }
