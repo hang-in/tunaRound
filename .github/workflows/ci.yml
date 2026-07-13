@@ -1,8 +1,11 @@
 # PR CI: refactor/reviews 도그푸딩에서 도입. build + test + clippy를 linux·macOS·windows 매트릭스로 검증한다.
 # 매트릭스 근거: cargo-dist가 mac/win/linux를 배포하고 플랫폼별 코드(watchdog kill 등 #[cfg(unix)]/#[cfg(windows)])가 있어,
 # R3(kill -9 -PID 이식성 버그)처럼 한 OS에서만 터지는 결함을 게이트로 막는다.
-# 커버 피처 = "morphology mcp serve worker"(브랜치 검증 표준). semantic(Ollama 필요)·a2a-out(외부 크레이트)은 비커버.
+# 커버 피처 = "morphology mcp serve worker"(브랜치 검증 표준). semantic 컴파일·릴리스 실조합(engines·a2a-out)은
+# 아래 release-features 잡이 별도로 컴파일 검증한다(semantic 런타임 Ollama는 CI에서 불요).
 # 비용: macOS runner는 분 10배라 PR/push-to-main에만 트리거. 분이 빠듯하면 macOS를 조건부로 분리.
+#
+# 서드파티 액션은 커밋 SHA로 핀한다(태그 재지정 공급망 공격 차단, 리뷰 #99). 갱신은 .github/dependabot.yml이 관리.
 name: CI
 
 on:
@@ -13,6 +16,11 @@ on:
   push:
     branches: [main]
     paths-ignore: ['**.md', 'docs/**', 'LICENSE']
+
+# 최소 권한: 기본 토큰을 읽기 전용으로 강등한다(리뷰 #94, npm ci의 서드파티 postinstall이 쓰기 토큰을
+# 탈취하는 벡터 차단). 쓰기가 필요한 잡이 생기면 그 잡에만 permissions를 올린다.
+permissions:
+  contents: read
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -32,15 +40,17 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
 
       - name: Install Rust (stable, edition 2024)
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
           components: clippy
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
 
       - name: Build
         run: cargo build --features "morphology mcp serve worker" --verbose
@@ -59,24 +69,26 @@ jobs:
     name: dashboard SPA (frontend build + embed)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
 
       - name: Install Rust (stable, edition 2024)
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
           components: clippy
 
       - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22'
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
-      - name: Build frontend (Vite + React + DaleUI)
+      - name: Build frontend (Vite + React)
         working-directory: frontend
         run: |
           npm ci
@@ -88,16 +100,102 @@ jobs:
       - name: Clippy (dashboard, deny warnings, all targets)
         run: cargo clippy --features "morphology mcp serve worker dashboard" --all-targets -- -D warnings
 
+  # 릴리스 실조합 컴파일 게이트(리뷰 #26): cargo-dist가 빌드하는 feature 세트(default + semantic mcp
+  # serve worker engines a2a-out)를 CI가 미리 컴파일해, 태그 push 시점에야 처음 드러나던 릴리스 빌드
+  # 실패를 막는다. semantic·engines·a2a-out은 컴파일만 하면 되고 네트워크(Ollama)는 런타임에만 필요하다.
+  # ubuntu 1잡(컴파일 검증이라 3-OS 불요, cfg(unix) 경로는 build-test-clippy가 이미 커버).
+  release-features:
+    name: release feature combo (check + clippy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Install Rust (stable, edition 2024)
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+        with:
+          components: clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+
+      - name: Check (no-default-features)
+        run: cargo check --no-default-features --verbose
+
+      - name: Clippy (release feature combo, deny warnings)
+        run: cargo clippy --features "semantic morphology mcp serve worker engines a2a-out" --all-targets -- -D warnings
+
+  # mesh 운영 파일 구문 검증(리뷰 #95): cargo/npm만 돌던 CI가 놓치던 SessionStart 훅(.py)·재기동
+  # 스크립트(.ps1/.sh)의 구문 오류를 잡는다. 이들은 mesh 운영(자동무장·재부팅 복구)의 실배포 코드다.
+  scripts:
+    name: hooks + scripts syntax
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Python hooks compile
+        run: python3 -m py_compile .claude/hooks/*.py
+
+      - name: Shell scripts syntax
+        run: |
+          for f in scripts/*.sh; do
+            echo "bash -n $f"
+            bash -n "$f"
+          done
+
+      - name: PowerShell scripts parse
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Get-ChildItem scripts/*.ps1 | ForEach-Object {
+            $t = $null; $e = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$t, [ref]$e) > $null
+            if ($e.Count) { Write-Host $_.FullName; $e | ForEach-Object { $_.Message }; exit 1 }
+            Write-Host "OK $($_.Name)"
+          }
+
+  # 의존성 취약점 감사(리뷰 #97): 새 RustSec/npm advisory를 가시화한다. 알려진
+  # RUSTSEC-2021-0153(lindera 전이 encoding, 업스트림 몫 = 리뷰 #96)은 무시해 평소엔 green이고
+  # 새 취약점이 공개되면 red로 알린다. npm audit은 정보성(dev 제외, 실패해도 잡을 막지 않음).
+  audit:
+    name: dependency audit (cargo + npm)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Cargo audit
+        run: cargo audit --ignore RUSTSEC-2021-0153
+
+      - name: npm audit (frontend, prod deps, informational)
+        working-directory: frontend
+        run: npm audit --omit=dev || true
+
   # 포맷 게이트: cargo fmt --all --check로 rustfmt 드리프트를 막는다(v2-52 전역 fmt 후 재발 방지).
   # rustfmt는 소스만 읽어 빌드가 불요하므로 ubuntu 1잡으로 충분(OS 독립).
   fmt:
     name: fmt (rustfmt --check)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
 
       - name: Install Rust (stable, rustfmt)
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
         with:
           components: rustfmt
 
