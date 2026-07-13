@@ -1494,4 +1494,135 @@ mod tests {
         );
         assert!(found.is_empty());
     }
+
+    /// cli_daemons.rs presence_scan 루프의 게이트 합성 순서(tombstone → codex 사람활동 게이트 →
+    /// 죽은 owner-pid 마커 제외 → idle 캐시 병합)를 그대로 재현하는 시나리오 테스트. 개별 게이트는
+    /// 각자 단위테스트가 있지만, 순서대로 합성했을 때의 누적 효과(이 단계에서 뭐가 왜 빠지는지)는
+    /// 무테스트였다(회귀 위험: 순서를 바꾸면 tombstone된 codex 유령이 codex 게이트를 먼저 통과해버리는
+    /// 식의 은닉 버그가 생길 수 있다).
+    #[test]
+    fn presence_pipeline_composes_gates_in_cli_daemons_order() {
+        use std::collections::HashSet;
+        let marker_dir =
+            std::env::temp_dir().join(format!("tuna-pipeline-{}-{}", std::process::id(), line!()));
+        std::fs::create_dir_all(&marker_dir).unwrap();
+        // SessionEnd 훅이 깨끗한 종료를 기록한 세션(tombstone) → filter_tombstoned 대상.
+        std::fs::write(marker_dir.join("claude-tomb.ctx"), "dead").unwrap();
+        // owner pid가 기록됐으나 이번 스냅샷엔 없는(죽은) 세션 → filter_dead_sessions 대상.
+        std::fs::write(marker_dir.join("claude-deadpid.ctx"), "9999").unwrap();
+        // owner pid가 스냅샷에 살아있는 세션 → 끝까지 생존.
+        std::fs::write(marker_dir.join("claude-live.ctx"), "100").unwrap();
+
+        let threshold = "2026-07-11 09:00:00";
+        let sessions = vec![
+            LiveSession {
+                uuid: "claude-tomb".into(),
+                runner: "claude".into(),
+                project: None,
+                human_input_at: None,
+                created_at: None,
+            },
+            LiveSession {
+                uuid: "claude-deadpid".into(),
+                runner: "claude".into(),
+                project: None,
+                human_input_at: None,
+                created_at: None,
+            },
+            LiveSession {
+                uuid: "claude-live".into(),
+                runner: "claude".into(),
+                project: None,
+                human_input_at: None,
+                created_at: None,
+            },
+            // 유령: 사람입력·생성 둘 다 threshold 이전(codex 게이트에서 드롭돼야 함).
+            codex_session(
+                "codex-ghost",
+                Some("2026-07-11 08:00:00"),
+                Some("2026-07-11 07:00:00"),
+            ),
+            // 활성: 최근 사람입력(codex 게이트 통과, 마커가 없어 filter_dead_sessions은 보수적 유지).
+            codex_session("codex-fresh", Some("2026-07-11 09:30:00"), None),
+        ];
+
+        // 1) tombstone 제거는 스냅샷과 무관하게 항상 먼저 적용된다(cli_daemons.rs 주석과 동일 순서).
+        let sessions = filter_tombstoned(sessions, &marker_dir);
+        let after_tomb: HashSet<&str> = sessions.iter().map(|s| s.uuid.as_str()).collect();
+        assert!(
+            !after_tomb.contains("claude-tomb"),
+            "tombstone 세션은 1단계에서 제거돼야 함: {after_tomb:?}"
+        );
+        assert_eq!(
+            sessions.len(),
+            4,
+            "tombstone 하나만 빠져야 함: {after_tomb:?}"
+        );
+
+        // 2) codex 사람활동 신선도 게이트(#88) - 유령 codex만 드롭, claude는 무관.
+        let sessions = apply_codex_human_input_gate(sessions, threshold);
+        let after_codex: HashSet<&str> = sessions.iter().map(|s| s.uuid.as_str()).collect();
+        assert!(
+            !after_codex.contains("codex-ghost"),
+            "유령 codex는 2단계에서 드롭돼야 함: {after_codex:?}"
+        );
+        assert!(after_codex.contains("codex-fresh"));
+        assert_eq!(sessions.len(), 3);
+
+        // 3) 죽은 owner-pid 마커 제외(claude-deadpid는 alive 집합에 없음).
+        let alive: HashSet<u32> = [100u32].into_iter().collect();
+        let sessions = filter_dead_sessions(sessions, &marker_dir, &alive);
+        let after_dead: HashSet<&str> = sessions.iter().map(|s| s.uuid.as_str()).collect();
+        assert!(
+            !after_dead.contains("claude-deadpid"),
+            "죽은 owner pid 세션은 3단계에서 제외돼야 함: {after_dead:?}"
+        );
+        assert!(after_dead.contains("claude-live"));
+        assert!(
+            after_dead.contains("codex-fresh"),
+            "마커 없는 codex는 filter_dead_sessions에서 보수적으로 유지돼야 함"
+        );
+        assert_eq!(
+            sessions.len(),
+            2,
+            "claude-live + codex-fresh만 남아야 함: {after_dead:?}"
+        );
+
+        // 4) idle 캐시 병합(cli_daemons.rs 마지막 단계): 이번 주기에 이미 있는 uuid는 idle 사본으로
+        // 덮이지 않고, 새 uuid만 추가된다.
+        let mut sessions = sessions;
+        let last_idle = vec![
+            LiveSession {
+                uuid: "idle-revived".into(),
+                runner: "claude".into(),
+                project: None,
+                human_input_at: None,
+                created_at: None,
+            },
+            // 이미 존재하는 uuid의 스테일 idle 사본 - 병합 시 무시돼야 한다(existing 우선).
+            LiveSession {
+                uuid: "claude-live".into(),
+                runner: "claude".into(),
+                project: Some("stale-idle-copy".into()),
+                human_input_at: None,
+                created_at: None,
+            },
+        ];
+        let present: HashSet<String> = sessions.iter().map(|s| s.uuid.clone()).collect();
+        sessions.extend(last_idle.into_iter().filter(|s| !present.contains(&s.uuid)));
+
+        let mut final_uuids: Vec<&str> = sessions.iter().map(|s| s.uuid.as_str()).collect();
+        final_uuids.sort_unstable();
+        assert_eq!(
+            final_uuids,
+            vec!["claude-live", "codex-fresh", "idle-revived"]
+        );
+        let claude_live = sessions.iter().find(|s| s.uuid == "claude-live").unwrap();
+        assert_eq!(
+            claude_live.project, None,
+            "이미 존재하는 세션이 idle 사본으로 덮이면 안 됨(existing 우선)"
+        );
+
+        std::fs::remove_dir_all(&marker_dir).ok();
+    }
 }

@@ -1307,4 +1307,260 @@ mod tests {
         ));
         assert!(!needs_reregister("heartbeat 갱신: x"));
     }
+
+    // run_one_pass(run_worker_loop once=true 경유)의 claim->실행->complete/fail 계약 검증.
+    // in-process MCP 서버(serve_http_mcp_on_listener) + in-memory SqliteStore + 호출 기록 러너로
+    // fail-visible 불변식(러너 성공=complete, 러너 실패=fail_task, completed 위장 금지)을 확인한다.
+    #[cfg(feature = "serve")]
+    mod run_one_pass_integration {
+        use super::*;
+        use crate::store::a2a::{Message, Part, TaskState};
+        use crate::store::sqlite::SqliteStore;
+        use std::sync::Mutex;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        /// 테스트 전용 빈 retriever(mcp_client.rs 테스트의 NullRetriever와 동등).
+        struct NullRetriever;
+        impl crate::orchestrator::ContextRetriever for NullRetriever {
+            fn retrieve(
+                &self,
+                _q: &str,
+                _limit: usize,
+            ) -> Result<Vec<crate::orchestrator::Utterance>, String> {
+                Ok(vec![])
+            }
+        }
+
+        fn test_store() -> Arc<Mutex<SqliteStore>> {
+            Arc::new(Mutex::new(
+                SqliteStore::open_memory().expect("in-memory sqlite"),
+            ))
+        }
+
+        /// ephemeral 포트로 HTTP MCP 서버를 띄우고 그 base URL을 반환한다(mcp_client.rs 테스트와 동일 관례).
+        async fn spawn_test_server(store: Arc<Mutex<SqliteStore>>) -> String {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind");
+            let port = listener.local_addr().unwrap().port();
+            let retriever =
+                Arc::new(NullRetriever) as Arc<dyn crate::orchestrator::ContextRetriever>;
+            tokio::spawn(async move {
+                let _ = crate::mcp::serve_http_mcp_on_listener(
+                    listener, retriever, None, None, None, None, store,
+                )
+                .await;
+            });
+            tokio::time::sleep(Duration::from_millis(120)).await;
+            format!("http://127.0.0.1:{port}/mcp")
+        }
+
+        /// 러너 실행 여부/횟수를 기록하며 고정 결과(Ok/Err)를 내는 가짜 러너.
+        enum FakeResult {
+            Ok(String),
+            Err(String),
+        }
+        struct RecordingRunner {
+            calls: Arc<AtomicUsize>,
+            result: FakeResult,
+        }
+        impl Runner for RecordingRunner {
+            fn run(
+                &self,
+                _input: &RunInput,
+            ) -> Result<crate::runner::RunOutput, crate::runner::RunError> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                match &self.result {
+                    FakeResult::Ok(s) => Ok(crate::runner::RunOutput {
+                        content: s.clone(),
+                        input_tokens: 0,
+                        output_tokens: 0,
+                    }),
+                    FakeResult::Err(e) => Err(crate::runner::RunError::Agent(e.clone())),
+                }
+            }
+        }
+
+        /// store에 to_agent 앞 submitted task를 하나 만들고 task_id를 반환한다.
+        fn make_submitted_task(
+            store: &Arc<Mutex<SqliteStore>>,
+            from: &str,
+            to: &str,
+            text: &str,
+        ) -> String {
+            let guard = store.lock().unwrap();
+            let msg = Message {
+                message_id: guard.new_task_id().unwrap(),
+                role: "user".to_string(),
+                parts: vec![Part {
+                    text: Some(text.to_string()),
+                    ..Default::default()
+                }],
+                task_id: None,
+                context_id: None,
+            };
+            let task = guard.create_task_from_message(from, to, msg).unwrap();
+            task.id
+        }
+
+        #[tokio::test]
+        async fn runner_ok_marks_task_completed_with_artifact() {
+            let store = test_store();
+            let task_id = make_submitted_task(&store, "dispatcher", "worker-a", "테스트 지시");
+            let url = spawn_test_server(store.clone()).await;
+            let client = McpHttpClient::connect(url, None).await.expect("connect");
+
+            let calls = Arc::new(AtomicUsize::new(0));
+            let runner: Arc<dyn Runner + Send + Sync> = Arc::new(RecordingRunner {
+                calls: calls.clone(),
+                result: FakeResult::Ok("완료 결과".to_string()),
+            });
+
+            run_worker_loop(
+                &client,
+                runner,
+                "worker-a",
+                "fake-runner",
+                None,
+                None,
+                None,
+                std::collections::HashMap::new(),
+                crate::runner::RunMode::ReadOnly,
+                1,
+                true,
+            )
+            .await
+            .expect("once 패스는 정상 반환");
+
+            assert_eq!(
+                calls.load(Ordering::SeqCst),
+                1,
+                "러너가 정확히 1회 실행돼야 함"
+            );
+
+            let task = store
+                .lock()
+                .unwrap()
+                .get_task(&task_id)
+                .unwrap()
+                .expect("task 존재해야 함");
+            assert_eq!(
+                task.state,
+                TaskState::Completed,
+                "러너 성공은 completed로 전이"
+            );
+            assert_eq!(task.artifacts.len(), 1, "완료 산출물이 있어야 함");
+            assert_eq!(
+                task.artifacts[0].parts[0].text.as_deref(),
+                Some("완료 결과")
+            );
+        }
+
+        #[tokio::test]
+        async fn runner_err_marks_task_failed_with_reason_not_completed() {
+            let store = test_store();
+            let task_id = make_submitted_task(&store, "dispatcher", "worker-b", "실패할 지시");
+            let url = spawn_test_server(store.clone()).await;
+            let client = McpHttpClient::connect(url, None).await.expect("connect");
+
+            let calls = Arc::new(AtomicUsize::new(0));
+            let runner: Arc<dyn Runner + Send + Sync> = Arc::new(RecordingRunner {
+                calls: calls.clone(),
+                result: FakeResult::Err("모의 실패".to_string()),
+            });
+
+            run_worker_loop(
+                &client,
+                runner,
+                "worker-b",
+                "fake-runner",
+                None,
+                None,
+                None,
+                std::collections::HashMap::new(),
+                crate::runner::RunMode::ReadOnly,
+                1,
+                true,
+            )
+            .await
+            .expect("once 패스는 러너 실패에도 정상 반환(에러는 fail_task로 처리)");
+
+            assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+            let task = store
+                .lock()
+                .unwrap()
+                .get_task(&task_id)
+                .unwrap()
+                .expect("task 존재해야 함");
+            assert_eq!(
+                task.state,
+                TaskState::Failed,
+                "러너 실패는 failed로 전이해야 함(completed 위장 금지)"
+            );
+            assert!(task.artifacts.is_empty(), "실패 시 산출물이 생기면 안 됨");
+            let msg = task.status_message.expect("실패 사유 메시지가 있어야 함");
+            let text = msg.parts[0].text.clone().unwrap_or_default();
+            assert!(
+                text.contains("모의 실패"),
+                "실패 사유에 러너 에러 내용이 포함돼야 함: {text}"
+            );
+        }
+
+        #[tokio::test]
+        async fn already_claimed_by_other_worker_skips_runner_execution() {
+            // 다른 워커가 먼저 claim(state -> working, claimed_by=other-worker)한 task는 이 워커의
+            // poll에서 state=working으로 보이므로 submitted 필터에 걸려 claim/실행 자체를 시도하지
+            // 않는다(claim 경합에서 진 워커가 러너를 돌리면 안 되는 계약의 결정적 대체 시나리오).
+            let store = test_store();
+            let task_id = make_submitted_task(&store, "dispatcher", "worker-c", "선점된 지시");
+            let url = spawn_test_server(store.clone()).await;
+            let client = McpHttpClient::connect(url, None).await.expect("connect");
+
+            client
+                .claim_task(&task_id, Some("other-worker"), Some("other-runner"))
+                .await
+                .expect("다른 워커의 선점 claim은 성공해야 함");
+
+            let calls = Arc::new(AtomicUsize::new(0));
+            let runner: Arc<dyn Runner + Send + Sync> = Arc::new(RecordingRunner {
+                calls: calls.clone(),
+                result: FakeResult::Ok("실행되면 안 됨".to_string()),
+            });
+
+            run_worker_loop(
+                &client,
+                runner,
+                "worker-c",
+                "fake-runner",
+                None,
+                None,
+                None,
+                std::collections::HashMap::new(),
+                crate::runner::RunMode::ReadOnly,
+                1,
+                true,
+            )
+            .await
+            .expect("once 패스는 정상 반환");
+
+            assert_eq!(
+                calls.load(Ordering::SeqCst),
+                0,
+                "선점된 task에 대해 러너가 실행되면 안 됨"
+            );
+
+            let task = store
+                .lock()
+                .unwrap()
+                .get_task(&task_id)
+                .unwrap()
+                .expect("task 존재해야 함");
+            assert_eq!(
+                task.state,
+                TaskState::Working,
+                "다른 워커 소유 상태가 그대로 유지돼야 함(이 워커가 건드리면 안 됨)"
+            );
+        }
+    }
 }

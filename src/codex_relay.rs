@@ -282,4 +282,187 @@ mod tests {
             "prefix 계약 위반: {text}"
         );
     }
+
+    // run()의 루프 본체(대리 claim → 실패 스킵, 주입 실패 → fail_task 전환)를 실제 in-process
+    // MCP 브로커로 검증한다. codex app-server ws는 가짜로 흉내내지 않고, "방금 닫은 포트"에 접속을
+    // 시도하게 해 codex_inject::run이 접속 실패로 빠르게 Err를 내도록 유도한다(fail_task 전환 경로
+    // 검증에는 충분 - 프로토콜 성공 경로는 실 app-server가 필요해 범위 밖).
+    #[cfg(feature = "serve")]
+    mod run_integration {
+        use super::*;
+        use crate::store::a2a::{Message, Part, TaskState};
+        use crate::store::sqlite::SqliteStore;
+        use std::sync::{Arc, Mutex};
+
+        struct NullRetriever;
+        impl crate::orchestrator::ContextRetriever for NullRetriever {
+            fn retrieve(
+                &self,
+                _q: &str,
+                _limit: usize,
+            ) -> Result<Vec<crate::orchestrator::Utterance>, String> {
+                Ok(vec![])
+            }
+        }
+
+        fn test_store() -> Arc<Mutex<SqliteStore>> {
+            Arc::new(Mutex::new(
+                SqliteStore::open_memory().expect("in-memory sqlite"),
+            ))
+        }
+
+        async fn spawn_broker(store: Arc<Mutex<SqliteStore>>) -> String {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind");
+            let port = listener.local_addr().unwrap().port();
+            let retriever =
+                Arc::new(NullRetriever) as Arc<dyn crate::orchestrator::ContextRetriever>;
+            tokio::spawn(async move {
+                let _ = crate::mcp::serve_http_mcp_on_listener(
+                    listener, retriever, None, None, None, None, store,
+                )
+                .await;
+            });
+            tokio::time::sleep(Duration::from_millis(120)).await;
+            format!("http://127.0.0.1:{port}/mcp")
+        }
+
+        /// 아무도 리슨하지 않는(방금 bind 후 즉시 drop한) 포트의 ws URL. codex_inject::run이 접속을
+        /// 즉시 거부받아 빠르게 실패하게 만든다(가짜 app-server 없이도 "주입 실패" 경로를 결정론적으로 유도).
+        fn unreachable_ws_url() -> String {
+            let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind");
+            let port = l.local_addr().unwrap().port();
+            drop(l);
+            format!("ws://127.0.0.1:{port}/ws")
+        }
+
+        /// enumerate_codex_sessions가 인식하는 형식의 codex TUI rollout 파일을 하나 만든다
+        /// (presence_scan.rs 테스트 픽스처와 동일 관례). timestamp를 지금 시각으로 채워 이슈 #88
+        /// 사람활동 게이트(gate_sessions)의 grace 조건(created_at 신선)을 통과하게 한다.
+        fn write_codex_session(dir: &std::path::Path, uuid: &str) {
+            let day = dir.join("2026").join("07").join("13");
+            std::fs::create_dir_all(&day).unwrap();
+            let now_db = presence_scan::system_time_to_db_datetime(SystemTime::now()).unwrap();
+            let iso = format!("{}Z", now_db.replacen(' ', "T", 1));
+            let body = format!(
+                r#"{{"type":"session_meta","payload":{{"session_id":"{uuid}","cwd":"/u/x/projA","originator":"codex-tui","timestamp":"{iso}"}}}}"#
+            );
+            std::fs::write(
+                day.join(format!("rollout-2026-07-13T00-{uuid}.jsonl")),
+                body,
+            )
+            .unwrap();
+        }
+
+        fn submitted_task(store: &Arc<Mutex<SqliteStore>>, to: &str, text: &str) -> String {
+            let guard = store.lock().unwrap();
+            let msg = Message {
+                message_id: guard.new_task_id().unwrap(),
+                role: "user".to_string(),
+                parts: vec![Part {
+                    text: Some(text.to_string()),
+                    ..Default::default()
+                }],
+                task_id: None,
+                context_id: None,
+            };
+            guard
+                .create_task_from_message("dispatcher", to, msg)
+                .unwrap()
+                .id
+        }
+
+        #[tokio::test]
+        async fn run_once_skips_preclaimed_task_and_fails_task_when_injection_unreachable() {
+            let store = test_store();
+            let mcp_url = spawn_broker(store.clone()).await;
+            let setup_client = McpHttpClient::connect(mcp_url.clone(), None)
+                .await
+                .expect("connect");
+
+            let codex_dir = std::env::temp_dir().join(format!(
+                "tuna-relay-{}-{}",
+                std::process::id(),
+                SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            write_codex_session(&codex_dir, "codex-open");
+            write_codex_session(&codex_dir, "codex-preclaimed");
+
+            let open_task_id = submitted_task(&store, "codex-open", "1+1은?");
+            let preclaimed_task_id = submitted_task(&store, "codex-preclaimed", "선점된 지시");
+            // 다른 소비자가 먼저 claim(state -> working) - relay는 이 task를 건드리면 안 된다.
+            setup_client
+                .claim_task(
+                    &preclaimed_task_id,
+                    Some("other-worker"),
+                    Some("other-runner"),
+                )
+                .await
+                .expect("사전 선점 claim 성공");
+
+            let opts = RelayOpts {
+                core: mcp_url,
+                token: None,
+                ws: unreachable_ws_url(),
+                machine: "test-machine".to_string(),
+                codex_dir: Some(codex_dir.clone()),
+                home: None,
+                stale: Duration::from_secs(3600),
+                codex_human_window: Duration::from_secs(3600),
+                interval_secs: 1,
+                inject_timeout_secs: 5,
+                approval: ApprovalPolicy::Never,
+                sandbox: SandboxMode::WorkspaceWrite,
+                once: true,
+            };
+
+            let result = run(opts).await;
+            // poll 자체는 실패하지 않으므로(claim/주입 실패와는 별개 경로) --once는 Ok를 반환해야
+            // 한다(poll 실패만 Err로 이어짐 - "성공 위장 금지"는 poll 경로 계약, 주입 실패는 fail_task로
+            // 흡수되고 --once 자체는 정상 종료).
+            assert!(
+                result.is_ok(),
+                "poll은 정상이라 once 패스는 Ok여야 함: {result:?}"
+            );
+
+            // (a) 대리 claim 실패(이미 선점) → 건드리지 않고 스킵.
+            let preclaimed = store
+                .lock()
+                .unwrap()
+                .get_task(&preclaimed_task_id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                preclaimed.state,
+                TaskState::Working,
+                "선점된 task는 그대로 유지돼야 함(relay가 손대면 안 됨)"
+            );
+
+            // (b) claim은 성공했으나 주입(codex_inject::run)이 도달 불가 ws로 실패 → fail_task 전환
+            // (completed로 위장하지 않는다).
+            let opened = store
+                .lock()
+                .unwrap()
+                .get_task(&open_task_id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                opened.state,
+                TaskState::Failed,
+                "주입 실패는 completed로 위장하지 않고 failed로 전이돼야 함"
+            );
+            let msg = opened.status_message.expect("실패 사유 메시지가 있어야 함");
+            let text = msg.parts[0].text.clone().unwrap_or_default();
+            assert!(
+                text.contains("codex-relay 주입 실패"),
+                "실패 사유에 relay 주입 실패가 명시돼야 함: {text}"
+            );
+
+            std::fs::remove_dir_all(&codex_dir).ok();
+        }
+    }
 }

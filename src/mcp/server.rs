@@ -1107,8 +1107,10 @@ async fn dashboard_goal_handler(
     body: axum::body::Bytes,
 ) -> axum::response::Response {
     use axum::response::IntoResponse;
-    // loopback만 목표 제출 허용. 원격은 관전 전용.
-    if !peer.ip().is_loopback() {
+    // loopback만 목표 제출 허용. 원격은 관전 전용. to_canonical로 IPv4-mapped IPv6
+    // (::ffff:127.0.0.1, dual-stack 소켓의 로컬 접속)도 loopback으로 인정한다
+    // (dashboard_write_allowed와 동일 교정, 리뷰 #29).
+    if !peer.ip().to_canonical().is_loopback() {
         return (
             axum::http::StatusCode::FORBIDDEN,
             "원격 관전 모드: 목표 제출은 로컬(loopback)에서만 가능합니다.",
@@ -1270,6 +1272,291 @@ mod tests {
             // 무토큰 코어는 /mcp 전체가 무인증(동일 계약)이라 대시보드 쓰기도 게이트하지 않는다.
             let ip: std::net::IpAddr = "192.168.0.9".parse().unwrap();
             assert!(dashboard_write_allowed(ip, &headers_with_auth(None), &None));
+        }
+    }
+
+    // /dashboard/goal 핸들러의 loopback 게이트(불변식 1: 원격=read-only, 제어=loopback만) 직접 호출 검증.
+    // ConnectInfo(SocketAddr)를 조작해 핸들러 함수를 라우터 없이 직접 구동한다.
+    #[cfg(feature = "serve")]
+    mod dashboard_goal_gate {
+        use super::super::*;
+
+        fn test_store() -> Arc<Mutex<crate::store::sqlite::SqliteStore>> {
+            Arc::new(Mutex::new(
+                crate::store::sqlite::SqliteStore::open_memory().expect("in-memory sqlite"),
+            ))
+        }
+
+        fn valid_body() -> axum::body::Bytes {
+            axum::body::Bytes::from(
+                serde_json::json!({"text": "테스트 목표", "targets": ["target-uuid"]}).to_string(),
+            )
+        }
+
+        async fn read_body(resp: axum::response::Response) -> (axum::http::StatusCode, String) {
+            let status = resp.status();
+            let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .expect("본문 읽기");
+            (status, String::from_utf8_lossy(&bytes).to_string())
+        }
+
+        #[tokio::test]
+        async fn loopback_peer_is_allowed_and_creates_task() {
+            let addr: std::net::SocketAddr = "127.0.0.1:9".parse().unwrap();
+            let store = test_store();
+            let resp = dashboard_goal_handler(
+                axum::extract::ConnectInfo(addr),
+                axum::extract::State(store),
+                axum::http::HeaderMap::new(),
+                valid_body(),
+            )
+            .await;
+            let (status, body) = read_body(resp).await;
+            assert_eq!(
+                status,
+                axum::http::StatusCode::OK,
+                "loopback은 허용돼야 함: {body}"
+            );
+            assert!(
+                body.contains("\"taskId\"") && body.contains("target-uuid"),
+                "task가 생성돼야 함: {body}"
+            );
+        }
+
+        #[tokio::test]
+        async fn non_loopback_peer_is_forbidden() {
+            let addr: std::net::SocketAddr = "203.0.113.5:9".parse().unwrap();
+            let store = test_store();
+            let resp = dashboard_goal_handler(
+                axum::extract::ConnectInfo(addr),
+                axum::extract::State(store),
+                axum::http::HeaderMap::new(),
+                valid_body(),
+            )
+            .await;
+            let (status, _body) = read_body(resp).await;
+            assert_eq!(
+                status,
+                axum::http::StatusCode::FORBIDDEN,
+                "원격 peer는 목표 제출이 거부돼야 함"
+            );
+        }
+
+        #[tokio::test]
+        async fn ipv4_mapped_ipv6_loopback_is_accepted_as_local() {
+            // dashboard_write_allowed(human-ping/deregister)와 동일하게 goal 핸들러도 to_canonical()로
+            // ::ffff:127.0.0.1(dual-stack 소켓의 로컬 접속)을 loopback으로 인정해야 한다(리뷰 #29 수정).
+            // to_canonical 없이는 loopback으로 안 잡히는 것을 대조군으로 확인한 뒤, 핸들러가 이를 로컬로
+            // 받아 403이 아님을(제출 진행) 검증한다.
+            let addr: std::net::SocketAddr = "[::ffff:127.0.0.1]:9".parse().unwrap();
+            assert!(
+                addr.ip().to_canonical().is_loopback() && !addr.ip().is_loopback(),
+                "IPv4-mapped IPv6는 to_canonical로만 loopback으로 잡힌다(전제)"
+            );
+            let store = test_store();
+            let resp = dashboard_goal_handler(
+                axum::extract::ConnectInfo(addr),
+                axum::extract::State(store),
+                axum::http::HeaderMap::new(),
+                valid_body(),
+            )
+            .await;
+            let (status, _body) = read_body(resp).await;
+            assert_ne!(
+                status,
+                axum::http::StatusCode::FORBIDDEN,
+                "IPv4-mapped IPv6 loopback은 로컬로 인정돼 403이 아니어야 함(리뷰 #29)"
+            );
+        }
+
+        #[tokio::test]
+        async fn cross_site_header_is_forbidden_even_from_loopback() {
+            let addr: std::net::SocketAddr = "127.0.0.1:9".parse().unwrap();
+            let store = test_store();
+            let mut headers = axum::http::HeaderMap::new();
+            headers.insert("sec-fetch-site", "cross-site".parse().unwrap());
+            let resp = dashboard_goal_handler(
+                axum::extract::ConnectInfo(addr),
+                axum::extract::State(store),
+                headers,
+                valid_body(),
+            )
+            .await;
+            let (status, _body) = read_body(resp).await;
+            assert_eq!(
+                status,
+                axum::http::StatusCode::FORBIDDEN,
+                "cross-site 요청은 loopback이어도 CSRF 방어로 거부돼야 함"
+            );
+        }
+
+        #[tokio::test]
+        async fn malformed_json_body_is_bad_request() {
+            let addr: std::net::SocketAddr = "127.0.0.1:9".parse().unwrap();
+            let store = test_store();
+            let resp = dashboard_goal_handler(
+                axum::extract::ConnectInfo(addr),
+                axum::extract::State(store),
+                axum::http::HeaderMap::new(),
+                axum::body::Bytes::from("이건 JSON이 아님"),
+            )
+            .await;
+            let (status, _body) = read_body(resp).await;
+            assert_eq!(status, axum::http::StatusCode::BAD_REQUEST);
+        }
+
+        #[tokio::test]
+        async fn empty_text_or_targets_is_bad_request() {
+            let addr: std::net::SocketAddr = "127.0.0.1:9".parse().unwrap();
+            let store = test_store();
+            let empty_text = axum::body::Bytes::from(
+                serde_json::json!({"text": "   ", "targets": ["x"]}).to_string(),
+            );
+            let resp = dashboard_goal_handler(
+                axum::extract::ConnectInfo(addr),
+                axum::extract::State(store.clone()),
+                axum::http::HeaderMap::new(),
+                empty_text,
+            )
+            .await;
+            let (status, _) = read_body(resp).await;
+            assert_eq!(
+                status,
+                axum::http::StatusCode::BAD_REQUEST,
+                "공백 text는 거부"
+            );
+
+            let empty_targets = axum::body::Bytes::from(
+                serde_json::json!({"text": "목표", "targets": []}).to_string(),
+            );
+            let resp2 = dashboard_goal_handler(
+                axum::extract::ConnectInfo(addr),
+                axum::extract::State(store),
+                axum::http::HeaderMap::new(),
+                empty_targets,
+            )
+            .await;
+            let (status2, _) = read_body(resp2).await;
+            assert_eq!(
+                status2,
+                axum::http::StatusCode::BAD_REQUEST,
+                "빈 targets는 거부"
+            );
+        }
+    }
+
+    // /dashboard/search의 a2a/ 화자 스코프 필터(비-a2a 세션버스 전사가 무인증 대시보드로 새지 않게)와
+    // take(20) 상한·retrieve Err의 500 표면화를 실제 HTTP 왕복으로 검증한다.
+    #[cfg(feature = "serve")]
+    mod dashboard_search_scope {
+        use super::super::*;
+
+        /// 고정 결과(또는 에러)를 내는 가짜 retriever. query는 무시한다(필터·상한 검증에만 집중).
+        enum FakeRetriever {
+            Fixed(Vec<crate::orchestrator::Utterance>),
+            Err(String),
+        }
+        impl crate::orchestrator::ContextRetriever for FakeRetriever {
+            fn retrieve(
+                &self,
+                _q: &str,
+                _limit: usize,
+            ) -> Result<Vec<crate::orchestrator::Utterance>, String> {
+                match self {
+                    FakeRetriever::Fixed(v) => Ok(v.clone()),
+                    FakeRetriever::Err(e) => Err(e.clone()),
+                }
+            }
+        }
+
+        fn utter(speaker: &str, content: &str) -> crate::orchestrator::Utterance {
+            crate::orchestrator::Utterance {
+                speaker: speaker.to_string(),
+                content: content.to_string(),
+                abstraction: None,
+            }
+        }
+
+        fn test_a2a_store() -> Arc<Mutex<crate::store::sqlite::SqliteStore>> {
+            Arc::new(Mutex::new(
+                crate::store::sqlite::SqliteStore::open_memory().expect("in-memory sqlite"),
+            ))
+        }
+
+        async fn spawn_search_server(retriever: FakeRetriever) -> String {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind");
+            let port = listener.local_addr().unwrap().port();
+            let retriever = Arc::new(retriever) as Arc<dyn crate::orchestrator::ContextRetriever>;
+            tokio::spawn(async move {
+                let _ = serve_http_mcp_on_listener(
+                    listener,
+                    retriever,
+                    None,
+                    None,
+                    None,
+                    None,
+                    test_a2a_store(),
+                )
+                .await;
+            });
+            tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+            format!("http://127.0.0.1:{port}")
+        }
+
+        #[tokio::test]
+        async fn only_a2a_prefixed_speakers_survive_the_scope_filter() {
+            let retriever = FakeRetriever::Fixed(vec![
+                utter("a2a/win-claude", "위임 내용 하나"),
+                utter("claude/proposer", "비-a2a 세션버스 발언(새면 안 됨)"),
+                utter("a2a/mac-claude", "위임 내용 둘"),
+                utter("codex/reviewer", "비-a2a 발언 둘(새면 안 됨)"),
+            ]);
+            let base = spawn_search_server(retriever).await;
+            let resp = reqwest::get(format!("{base}/dashboard/search?q=위임"))
+                .await
+                .expect("search get");
+            assert_eq!(resp.status(), 200);
+            let body: serde_json::Value = resp.json().await.expect("json");
+            let results = body["results"].as_array().expect("results 배열");
+            assert_eq!(results.len(), 2, "a2a/ 화자 둘만 남아야 함: {results:?}");
+            for r in results {
+                let speaker = r["speaker"].as_str().unwrap_or("");
+                assert!(
+                    speaker.starts_with("a2a/"),
+                    "비-a2a 화자가 새면 안 됨: {speaker}"
+                );
+            }
+        }
+
+        #[tokio::test]
+        async fn results_are_capped_at_twenty() {
+            let items: Vec<_> = (0..25)
+                .map(|i| utter("a2a/win-claude", &format!("항목{i}")))
+                .collect();
+            let base = spawn_search_server(FakeRetriever::Fixed(items)).await;
+            let resp = reqwest::get(format!("{base}/dashboard/search?q=항목"))
+                .await
+                .expect("search get");
+            assert_eq!(resp.status(), 200);
+            let body: serde_json::Value = resp.json().await.expect("json");
+            let results = body["results"].as_array().expect("results 배열");
+            assert_eq!(results.len(), 20, "25건 중 20건으로 잘려야 함");
+        }
+
+        #[tokio::test]
+        async fn retrieve_error_surfaces_as_500() {
+            let base = spawn_search_server(FakeRetriever::Err("db 장애".to_string())).await;
+            let resp = reqwest::get(format!("{base}/dashboard/search?q=아무거나"))
+                .await
+                .expect("search get");
+            assert_eq!(
+                resp.status(),
+                500,
+                "검색 실패는 빈 결과로 위장하지 않고 500이어야 함"
+            );
         }
     }
 
@@ -2431,5 +2718,191 @@ mod tests {
         assert_eq!(percent_decode("%zz"), "%zz");
         // UTF-8 멀티바이트(한글) 복원.
         assert_eq!(percent_decode("%ED%94%BC%EB%93%9C"), "피드");
+    }
+
+    // 대시보드 health/human-ping/deregister 핸들러 계약 + 토큰 설정 시 /dashboard/* 읽기가 bearer
+    // 게이트 밖(무인증)이라는 라우터 합성 계약(v2-45 관제탑 원칙: 읽기는 항상 무인증 관전 가능).
+    #[cfg(feature = "serve")]
+    mod dashboard_health_and_write_handlers {
+        use super::super::*;
+
+        /// initialize 요청 본문(mcp_client.rs 테스트·http_serve 테스트와 동일한 MCP 2025-03-26 프로토콜).
+        const INIT_BODY: &str = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}"#;
+
+        struct NullRetriever;
+        impl crate::orchestrator::ContextRetriever for NullRetriever {
+            fn retrieve(
+                &self,
+                _q: &str,
+                _limit: usize,
+            ) -> Result<Vec<crate::orchestrator::Utterance>, String> {
+                Ok(vec![])
+            }
+        }
+
+        fn test_store() -> Arc<Mutex<crate::store::sqlite::SqliteStore>> {
+            Arc::new(Mutex::new(
+                crate::store::sqlite::SqliteStore::open_memory()
+                    .expect("in-memory sqlite")
+                    .with_task_events(),
+            ))
+        }
+
+        /// 토큰이 설정된 코어라도 /dashboard/roster·/dashboard/events(읽기)는 인증 없이 200이어야
+        /// 한다(관제탑 원칙: 원격 관전은 무인증, /mcp·/a2a만 bearer로 게이트). 라우터 조립에서
+        /// dashboard 서브라우터가 bearer 미들웨어 바깥(authed와 별도 merge)에 있다는 계약을 실제
+        /// HTTP 왕복으로 고정한다.
+        #[tokio::test]
+        async fn dashboard_reads_bypass_bearer_gate_even_with_token_configured() {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                .await
+                .expect("bind");
+            let port = listener.local_addr().unwrap().port();
+            let retriever =
+                Arc::new(NullRetriever) as Arc<dyn crate::orchestrator::ContextRetriever>;
+            tokio::spawn(async move {
+                let _ = serve_http_mcp_on_listener(
+                    listener,
+                    retriever,
+                    None,
+                    None,
+                    None,
+                    Some("secret-tok".to_string()),
+                    test_store(),
+                )
+                .await;
+            });
+            tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+
+            // 헤더(Authorization) 없이 GET -> 200이어야 함(무인증 읽기).
+            let roster = reqwest::get(format!("http://127.0.0.1:{port}/dashboard/roster"))
+                .await
+                .expect("roster get");
+            assert_eq!(roster.status(), 200, "roster는 토큰 없이도 읽혀야 함");
+
+            let events = reqwest::get(format!("http://127.0.0.1:{port}/dashboard/events"))
+                .await
+                .expect("events get");
+            assert_eq!(events.status(), 200, "events도 토큰 없이 접속 가능해야 함");
+
+            // 대조: /mcp는 같은 코어에서 토큰 없이 401(bearer 게이트 안쪽).
+            let mcp_resp = reqwest::Client::new()
+                .post(format!("http://127.0.0.1:{port}/mcp"))
+                .header("Content-Type", "application/json")
+                .header("Accept", "application/json, text/event-stream")
+                .body(INIT_BODY)
+                .send()
+                .await
+                .expect("mcp post");
+            assert_eq!(
+                mcp_resp.status(),
+                401,
+                "/mcp는 같은 코어에서 토큰 없이 401이어야 함(대시보드와 게이트 분리 대조군)"
+            );
+        }
+
+        /// health: 조회 실패(broker_started_at 형식 손상)를 정상 0으로 위장하지 않고 500으로
+        /// 표면화한다(fail-visible, 관제 오판 방지 원칙).
+        #[tokio::test]
+        async fn health_surfaces_500_on_corrupted_config_instead_of_faking_zero() {
+            let store = test_store();
+            {
+                let s = store.lock().unwrap();
+                // age_secs가 파싱 못 하는 값 -> uptime_secs 계산에서 Err("형식 손상")로 이어져야 한다.
+                s.set_config("broker_started_at", "이건-datetime이-아님")
+                    .unwrap();
+            }
+            let resp = dashboard_health_handler(axum::extract::State(store)).await;
+            assert_eq!(
+                resp.status(),
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                "손상된 broker_started_at은 500으로 표면화돼야 함(0 위장 금지)"
+            );
+        }
+
+        /// health: 정상 상태에서는 200 + task_counts 등 필드가 채워진 JSON을 반환한다(대조군).
+        #[tokio::test]
+        async fn health_returns_200_with_task_counts_on_healthy_store() {
+            let store = test_store();
+            let resp = dashboard_health_handler(axum::extract::State(store)).await;
+            assert_eq!(resp.status(), axum::http::StatusCode::OK);
+            let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .expect("본문 읽기");
+            let body: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+            assert!(
+                body.get("task_counts").is_some(),
+                "task_counts 필드 필요: {body}"
+            );
+            assert_eq!(body["open_tasks"], 0);
+        }
+
+        /// human-ping: 미등록(무장 전) uuid도 영속 테이블에 선기록되고 200을 반환한다(v2-45 P4,
+        /// 404 유실 창 제거). 이후 register_agent가 그 uuid를 로스터에 올리면 영속된 human_input_at이
+        /// 복원되는지까지 확인해(register_agent의 load_human_input 폴백 경로) 실제 영속을 검증한다.
+        #[tokio::test]
+        async fn human_ping_for_unregistered_uuid_returns_200_and_persists() {
+            let store = test_store();
+            let loopback: std::net::SocketAddr = "127.0.0.1:9".parse().unwrap();
+            let body =
+                axum::body::Bytes::from(serde_json::json!({"agent": "ghost-uuid"}).to_string());
+            let resp = dashboard_human_ping_handler(
+                axum::extract::ConnectInfo(loopback),
+                axum::extract::State(store.clone()),
+                axum::Extension(Arc::new(None::<String>)),
+                axum::http::HeaderMap::new(),
+                body,
+            )
+            .await;
+            assert_eq!(
+                resp.status(),
+                axum::http::StatusCode::OK,
+                "미등록 uuid 핑도 200이어야 함(선기록)"
+            );
+
+            // register_agent가 영속된 human_input_at을 복원하는지로 persist_human_input 영속을 검증한다
+            // (load_human_input은 registry.rs 내부 private라 직접 호출 불가, 공개 경로로 우회 검증).
+            let now = {
+                let s = store.lock().unwrap();
+                let now = s.now().unwrap();
+                s.register_agent("ghost-uuid", BTreeMap::new(), None, &now);
+                now
+            };
+            let agents = store
+                .lock()
+                .unwrap()
+                .list_agents(&BTreeMap::new(), &now, i64::MAX);
+            let ghost = agents
+                .iter()
+                .find(|a| a.uuid == "ghost-uuid")
+                .expect("register 후 로스터에 있어야 함");
+            assert!(
+                ghost.human_input_at.is_some(),
+                "핑으로 영속된 human_input_at이 register 시 복원돼야 함: {ghost:?}"
+            );
+        }
+
+        /// deregister: 미등록 uuid는 404(멱등 - 이미 없거나 애초에 없던 세션도 훅은 실패 취급 안 함).
+        #[tokio::test]
+        async fn deregister_unregistered_uuid_is_404_idempotent() {
+            let store = test_store();
+            let loopback: std::net::SocketAddr = "127.0.0.1:9".parse().unwrap();
+            let body = axum::body::Bytes::from(
+                serde_json::json!({"agent": "never-registered"}).to_string(),
+            );
+            let resp = dashboard_deregister_handler(
+                axum::extract::ConnectInfo(loopback),
+                axum::extract::State(store),
+                axum::Extension(Arc::new(None::<String>)),
+                axum::http::HeaderMap::new(),
+                body,
+            )
+            .await;
+            assert_eq!(
+                resp.status(),
+                axum::http::StatusCode::NOT_FOUND,
+                "미등록 uuid deregister는 404여야 함"
+            );
+        }
     }
 }

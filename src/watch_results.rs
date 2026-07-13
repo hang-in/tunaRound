@@ -374,6 +374,21 @@ fn flush_pending(pending: &mut Vec<String>) {
     let _ = std::io::stdout().flush();
 }
 
+/// SSE 바이트 버퍼(`buf`)에 새 청크를 이어붙이고, 완결된(개행 `\n` 포함) 라인들을 문자열로 뽑아
+/// 반환한다(순수 함수, run_once의 청크 재조립 로직 추출). 청크마다 즉시 UTF-8 변환하면 멀티바이트
+/// 문자(한글 등)가 청크 경계에서 잘려 손상되므로(U+FFFD), 개행에서 끊긴 완결 라인만 변환한다 -
+/// 미완결 라인(마지막 개행 이후 잔여 바이트)은 buf에 남아 다음 청크와 이어붙는다.
+fn drain_complete_lines(buf: &mut Vec<u8>, chunk: &[u8]) -> Vec<String> {
+    buf.extend_from_slice(chunk);
+    let mut lines = Vec::new();
+    while let Some(pos) = buf.iter().position(|&b| b == b'\n') {
+        let line_bytes: Vec<u8> = buf.drain(..=pos).collect();
+        // 라인은 \n에서 끝나므로 완결된 UTF-8(문자 중간에서 안 잘림) → lossy여도 손실 없음.
+        lines.push(String::from_utf8_lossy(&line_bytes).to_string());
+    }
+    lines
+}
+
 /// SSE 접속 1회분: 접속해 끊길 때까지 이벤트를 처리하고, 단절 사유를 돌려준다. 서버가 잘린
 /// 재생 스냅샷 후 스트림을 정상 종료하는 catch-up 경로(P3 서버 계약)도 "스트림 종료" 단절로
 /// 돌아와 호출부 재접속 루프가 전진한 워터마크로 이어받는다.
@@ -421,11 +436,7 @@ async fn run_once(
                     Ok(c) => c,
                     Err(e) => return format!("스트림 오류: {e}"),
                 };
-                buf.extend_from_slice(&chunk);
-                while let Some(pos) = buf.iter().position(|&b| b == b'\n') {
-                    let line_bytes: Vec<u8> = buf.drain(..=pos).collect();
-                    // 라인은 \n에서 끝나므로 완결된 UTF-8(문자 중간에서 안 잘림) → lossy여도 손실 없음.
-                    let line = String::from_utf8_lossy(&line_bytes);
+                for line in drain_complete_lines(&mut buf, &chunk) {
                     let Some(data) = line.trim_end().strip_prefix("data: ") else {
                         continue;
                     };
@@ -936,6 +947,171 @@ mod tests {
         );
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    // --- run_once의 SSE 청크 재조립(drain_complete_lines) ---
+
+    #[test]
+    fn drain_complete_lines_yields_complete_lines_and_buffers_partial() {
+        let mut buf: Vec<u8> = Vec::new();
+        // 개행이 하나도 없으면 미완결 라인 전체가 buf에 남고 아무것도 반환되지 않는다.
+        let lines = drain_complete_lines(&mut buf, b"data: partial-no-newline-yet");
+        assert!(lines.is_empty(), "개행 없는 청크는 라인을 내면 안 됨");
+        assert!(!buf.is_empty(), "미완결 바이트는 buf에 남아야 함");
+
+        // 다음 청크가 개행을 포함해 라인을 완성하면 그제서야 반환된다.
+        let lines = drain_complete_lines(&mut buf, b" now-complete\ndata: second\n");
+        assert_eq!(
+            lines,
+            vec![
+                "data: partial-no-newline-yet now-complete\n".to_string(),
+                "data: second\n".to_string(),
+            ]
+        );
+        assert!(buf.is_empty(), "완결된 라인은 모두 buf에서 소진돼야 함");
+    }
+
+    #[test]
+    fn drain_complete_lines_handles_multiple_lines_in_one_chunk() {
+        let mut buf: Vec<u8> = Vec::new();
+        let lines = drain_complete_lines(&mut buf, b"a\nb\nc\n");
+        assert_eq!(
+            lines,
+            vec!["a\n".to_string(), "b\n".to_string(), "c\n".to_string()]
+        );
+        assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn drain_complete_lines_reassembles_multibyte_utf8_split_across_chunk_boundary() {
+        // 회귀 방지: 청크마다 즉시 UTF-8 변환하면 멀티바이트 문자(한글)가 청크 경계에서 잘려
+        // U+FFFD로 손상된다. drain_complete_lines는 개행 완결 전엔 변환하지 않아야 무손실이다.
+        let full = "data: 안녕하세요 테스트\n".to_string();
+        let bytes = full.as_bytes();
+        // 문자 경계가 아닌 바이트 위치를 찾아 그 지점에서 쪼갠다(멀티바이트 문자 중간 절단 재현).
+        let mut split_at = 1;
+        while split_at < bytes.len() && full.is_char_boundary(split_at) {
+            split_at += 1;
+        }
+        assert!(
+            split_at < bytes.len() && !full.is_char_boundary(split_at),
+            "테스트 전제: 문자 경계가 아닌 분할점을 찾아야 함"
+        );
+        let (chunk1, chunk2) = bytes.split_at(split_at);
+
+        let mut buf: Vec<u8> = Vec::new();
+        let first = drain_complete_lines(&mut buf, chunk1);
+        assert!(
+            first.is_empty(),
+            "개행 전까지는 (멀티바이트 중간이라도) 라인을 내면 안 됨"
+        );
+        let second = drain_complete_lines(&mut buf, chunk2);
+        assert_eq!(second.len(), 1);
+        assert_eq!(second[0], full, "청크 경계에서 잘려도 무손실 재조립돼야 함");
+        assert!(
+            !second[0].contains('\u{FFFD}'),
+            "손실 문자(U+FFFD)가 섞이면 안 됨: {:?}",
+            second[0]
+        );
+        assert!(buf.is_empty());
+    }
+
+    // --- run_once 실제 네트워크 왕복(라인 재조립 + 파싱 + 워터마크 전진 + 재접속 URL 반영) ---
+
+    /// 요청을 한 번 받고 고정 바디를 Content-Length로 응답한 뒤 연결을 닫는 최소 raw HTTP 서버.
+    /// axum 없이(watch_results.rs는 worker 피처만 요구) 순수 tokio TCP로 SSE 유사 스트림을 흉내낸다.
+    async fn spawn_raw_http_server(body: Vec<u8>) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            if let Ok((mut socket, _)) = listener.accept().await {
+                let mut req_buf = [0u8; 1024];
+                let _ = socket.read(&mut req_buf).await; // 요청은 읽기만 하고 내용은 무시.
+                let header = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = socket.write_all(header.as_bytes()).await;
+                let _ = socket.write_all(&body).await;
+                let _ = socket.shutdown().await;
+            }
+        });
+        format!("http://127.0.0.1:{port}/dashboard/events")
+    }
+
+    #[tokio::test]
+    async fn run_once_processes_event_advances_watermark_and_reconnect_url_reflects_it() {
+        let event = serde_json::json!({
+            "event": "completed",
+            "task": {
+                "id": "abc123", "state": "completed", "fromAgent": "dashboard",
+                "toAgent": "worker-x", "artifacts": [{"parts":[{"text":"결과본문"}]}],
+                "updatedAt": "2026-07-11 09:30:00"
+            }
+        })
+        .to_string();
+        // SSE 프레임 표준(data: 라인 + 빈 줄) 그대로 재현.
+        let body = format!("data: {event}\n\n").into_bytes();
+        let url = spawn_raw_http_server(body).await;
+
+        let client = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(5))
+            .build()
+            .expect("client");
+        let mut state = InboxState {
+            seen: SeenSet::new(),
+            pending: Vec::new(),
+            flush_at: None,
+            watermark: None,
+            file: WatermarkFile::at(None),
+        };
+        let mut connected_at: Option<tokio::time::Instant> = None;
+        let mut progressed = false;
+        let reason = run_once(
+            &client,
+            &url,
+            "dashboard",
+            60, // digest_secs>0: completed는 stdout 대신 pending에 쌓여 테스트로 검사 가능.
+            &mut state,
+            &mut connected_at,
+            &mut progressed,
+        )
+        .await;
+
+        assert_eq!(
+            reason, "SSE 스트림이 종료됨",
+            "서버가 body를 다 보내고 연결을 닫으면 스트림 종료로 단절돼야 함"
+        );
+        assert!(
+            connected_at.is_some(),
+            "2xx 응답은 접속 수립으로 기록돼야 함"
+        );
+        assert!(progressed, "completed 이벤트 1건을 실어 날랐어야 함");
+        assert_eq!(
+            state.watermark.as_deref(),
+            Some("2026-07-11 09:30:00"),
+            "서버 updatedAt이 워터마크로 전진해야 함"
+        );
+        assert_eq!(
+            state.pending.len(),
+            1,
+            "digest_secs>0이라 pending에 쌓여야 함"
+        );
+        assert!(state.pending[0].contains("결과본문"));
+
+        // 재접속 시 이 워터마크가 URL의 since로 반영돼야 한다(v2-45 P3 재생 구독 계약).
+        let reconnect_url = build_events_url(
+            "http://127.0.0.1:0",
+            "dashboard",
+            state.watermark.as_deref(),
+        );
+        assert!(
+            reconnect_url.contains("since=2026-07-11%2009%3A30%3A00"),
+            "재접속 URL이 전진한 워터마크를 반영해야 함: {reconnect_url}"
+        );
     }
 
     #[test]
