@@ -153,7 +153,8 @@ main { flex: 1 1 auto; min-width: 0; padding: 16px 20px calc(var(--ftr-h) + 24px
 .filter .search { flex: 1 1 auto; min-width: 120px; display: flex; align-items: center; gap: 6px;
   padding: 5px 10px; background: var(--panel); border: 1px solid var(--border); border-radius: 7px; color: var(--muted); }
 .filter .search input { border: 0; background: transparent; color: var(--text); font: inherit; flex: 1; outline: none; min-width: 0; }
-.ddbtn { position: relative; display: inline-flex; align-items: center; gap: 5px; font: inherit; font-size: 12px; padding: 6px 9px;
+.dd-wrap { position: relative; display: inline-flex; }
+.ddbtn { display: inline-flex; align-items: center; gap: 5px; font: inherit; font-size: 12px; padding: 6px 9px;
   border-radius: 7px; cursor: pointer; border: 1px solid var(--border); background: var(--panel); color: var(--muted); white-space: nowrap; }
 .ddbtn.active { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 50%, var(--border)); }
 .ddbtn .cnt { color: var(--accent); font-weight: 600; }

@@ -153,13 +153,15 @@ export async function fetchPresenceTimeline(
 }
 
 
-// POST /dashboard/goal 성공 응답: 대상별로 생성된 task 를 알려준다.
+// POST /dashboard/goal 성공 응답: 대상별로 생성된 task 를 알려준다. errors 는 "uuid: 사유" 형태의
+// 대상별 실패 문자열(서버는 HTTP 200 + created/errors 로 부분·전체 실패를 함께 내려준다).
 export type GoalCreated = { taskId: string; toAgent: string }
-type GoalResponse = { created: GoalCreated[]; errors?: unknown[] }
+type GoalResponse = { created: GoalCreated[]; errors?: string[] }
 
-// goal 제출 결과를 호출부에 알리는 판별 유니온.
+// goal 제출 결과를 호출부에 알리는 판별 유니온. 'ok' 는 created 가 0건이어도(전체 실패) 쓰인다 -
+// 호출부가 created.length 와 errors 로 부분/전체 실패를 판정한다.
 export type SendGoalOutcome =
-  | { kind: 'ok'; created: GoalCreated[] }
+  | { kind: 'ok'; created: GoalCreated[]; errors: string[] }
   | { kind: 'forbidden' }
   | { kind: 'error'; message: string }
 
@@ -183,5 +185,5 @@ export async function sendGoal(text: string, targets: string[]): Promise<SendGoa
     return { kind: 'error', message: 'goal 제출 실패: ' + res.status }
   }
   const data = (await res.json()) as GoalResponse
-  return { kind: 'ok', created: data.created }
+  return { kind: 'ok', created: data.created ?? [], errors: data.errors ?? [] }
 }

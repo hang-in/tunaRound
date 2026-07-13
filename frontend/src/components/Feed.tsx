@@ -94,11 +94,21 @@ function FilterDropdown({
   // 후보가 없으면(동종 피드) 버튼 자체를 숨긴다.
   if (options.length === 0 && selected.size === 0) return null
   const active = selected.size > 0
+  // 메뉴(체크박스 목록)는 버튼의 형제로 둔다 - <button> 안에 <input> 을 중첩하면 불법 HTML이라
+  // 스크린리더·키보드 조작이 불안정해진다(a11y). 래퍼에 position:relative 를 둬 메뉴 위치는 그대로 유지.
   return (
-    <button type="button" className={'ddbtn' + (active ? ' active' : '')} onClick={onOpen}>
-      {label}
-      {active ? <span className="cnt">{selected.size}</span> : null}
-      <ChevronDown size={13} />
+    <div className="dd-wrap">
+      <button
+        type="button"
+        className={'ddbtn' + (active ? ' active' : '')}
+        onClick={onOpen}
+        aria-haspopup="true"
+        aria-expanded={open}
+      >
+        {label}
+        {active ? <span className="cnt">{selected.size}</span> : null}
+        <ChevronDown size={13} />
+      </button>
       {open ? (
         <div className="ddmenu" onClick={(e) => e.stopPropagation()}>
           <label>
@@ -113,7 +123,7 @@ function FilterDropdown({
           ))}
         </div>
       ) : null}
-    </button>
+    </div>
   )
 }
 

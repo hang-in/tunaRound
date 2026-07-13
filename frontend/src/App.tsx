@@ -18,6 +18,9 @@ const remoteViewer = !LOOPBACK_HOSTS.includes(location.hostname)
 
 const PULSE_MS = 750
 const HEALTH_POLL_MS = 5000
+// seenStateRef 상한(최근 이만큼의 task 만 dedup 판정에 씀). 대시보드를 수일~수주 열어두면
+// 무상한 Map 은 계속 자라므로, 넘으면 가장 오래 전에 넣은 항목부터 비운다.
+const SEEN_STATE_CAP = 500
 
 // 브라우저 알림 옵트인 여부를 세션 간 기억(권한이 유지될 때만 유효).
 const NOTIFY_PREF_KEY = 'tuna-notify'
@@ -126,12 +129,17 @@ export default function App() {
   // roster 를 5초 주기로 폴링해 로스터 패널/goal 폼/통계 타일이 공유한다.
   useEffect(() => {
     let cancelled = false
-    const controller = new AbortController()
+    // in-flight 폴 추적: 매 폴마다 직전 요청 abort → 브로커가 느려 응답이 뒤섞이면 늦게 온 옛
+    // 스냅샷이 최신을 덮는 레이스 방지(PresenceTimeline.tsx와 동일 패턴).
+    let inflight: AbortController | null = null
 
     const load = () => {
+      inflight?.abort()
+      const controller = new AbortController()
+      inflight = controller
       fetchRoster(controller.signal)
         .then((list) => {
-          if (cancelled) return
+          if (cancelled || controller.signal.aborted) return
           setAgents(list)
           setBrokerOk(true)
 
@@ -163,6 +171,8 @@ export default function App() {
                   delete next[uuid]
                   return next
                 })
+                // 발화한 타이머 자신의 id 를 목록에서 제거(무한 누적 방지 - 대시보드는 수일~수주 열어둔다).
+                pulseTimersRef.current = pulseTimersRef.current.filter((t) => t !== timer)
               }, PULSE_MS)
               pulseTimersRef.current.push(timer)
             })
@@ -170,6 +180,7 @@ export default function App() {
         })
         .catch((err) => {
           if (err instanceof DOMException && err.name === 'AbortError') return
+          if (cancelled) return
           setBrokerOk(false)
           console.error('[roster] 조회 실패.', err)
         })
@@ -179,7 +190,7 @@ export default function App() {
     const timer = window.setInterval(load, 5000)
     return () => {
       cancelled = true
-      controller.abort()
+      inflight?.abort()
       window.clearInterval(timer)
       pulseTimersRef.current.forEach(window.clearTimeout)
       pulseTimersRef.current = []
@@ -189,11 +200,15 @@ export default function App() {
   // health 를 5초 주기로 폴링한다(HealthPanel 에서 이관). fail-visible: 최신 폴 실패는 healthOk=false 로 표면화.
   useEffect(() => {
     let cancelled = false
-    const controller = new AbortController()
+    // in-flight 폴 추적: roster 폴과 동일 패턴(PresenceTimeline.tsx 참고).
+    let inflight: AbortController | null = null
     const load = () => {
+      inflight?.abort()
+      const controller = new AbortController()
+      inflight = controller
       fetchHealth(controller.signal)
         .then((h) => {
-          if (cancelled) return
+          if (cancelled || controller.signal.aborted) return
           setHealth(h)
           setHealthOk(true)
         })
@@ -208,7 +223,7 @@ export default function App() {
     const timer = window.setInterval(load, HEALTH_POLL_MS)
     return () => {
       cancelled = true
-      controller.abort()
+      inflight?.abort()
       window.clearInterval(timer)
     }
   }, [])
@@ -241,7 +256,17 @@ export default function App() {
         console.error('[notify] 알림 생성 실패.', err)
       }
     }
-    seenStateRef.current.set(id, state)
+    const seen = seenStateRef.current
+    // 재삽입: Map.set은 기존 키의 삽입 순서를 유지하므로, delete 후 set으로 갱신 항목을 맨 뒤(최신)로
+    // 옮긴다. 그래야 keys().next()(가장 오래된)가 최근 갱신을 반영한 LRU가 된다(gemini/coderabbit).
+    seen.delete(id)
+    seen.set(id, state)
+    // 삽입 순서 Map 이므로 keys().next() = 가장 오래된 항목. 상한 초과분만 정리(매회 최대 1건 유입).
+    while (seen.size > SEEN_STATE_CAP) {
+      const oldest = seen.keys().next().value
+      if (oldest === undefined) break
+      seen.delete(oldest)
+    }
   }, [])
 
   // 로스터 = online(heartbeat) 세션 전부. 총감독 = human_input_at 최신(설계 v2-43).
