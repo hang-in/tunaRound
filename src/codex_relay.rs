@@ -95,11 +95,16 @@ const RELAY_KEEPALIVE_SECS: u64 = 30;
 /// ws URL의 host:port로 짧은 TCP 접속을 시도해 app-server 도달성을 확인한다(#65). app-server가 없는
 /// 창(재부팅·재배포)에 codex task를 claim했다가 즉시 fail로 승격시키지 않기 위해, 도달 불가면 그 주기
 /// 주입을 건너뛰어 task를 submitted로 남긴다(app-server 복구 후 다음 주기에 배달).
-#[cfg(feature = "worker")]
 async fn ws_reachable(ws_url: &str) -> bool {
     // ws://host:port/... 또는 wss://... 에서 host:port만 뽑는다.
     let after = ws_url.split("://").nth(1).unwrap_or(ws_url);
     let hostport = after.split('/').next().unwrap_or(after);
+    // 포트가 없으면 TcpStream::connect로 판정할 수 없다. 이 도달성 체크는 best-effort 최적화(#65)이므로
+    // 판정 불가면 게이트를 열어(true) 주입을 진행시키고, 실제 접속 실패는 codex_inject의 정상 실패
+    // 경로가 다룬다(파싱 불가한 URL이 주입을 영구히 막지 않게, gemini).
+    if !hostport.contains(':') {
+        return true;
+    }
     matches!(
         tokio::time::timeout(
             Duration::from_secs(2),
@@ -214,6 +219,9 @@ pub async fn run(opts: RelayOpts) -> Result<(), String> {
                     tokio::pin!(inject);
                     let mut keepalive =
                         tokio::time::interval(Duration::from_secs(RELAY_KEEPALIVE_SECS));
+                    // 절전·고부하로 tick이 밀려도 밀린 tick을 몰아치지 않게 Skip(heartbeat/lease 폭주
+                    // 방지, worker.rs lease keepalive와 동일 규약, gemini medium).
+                    keepalive.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                     keepalive.tick().await; // 최초 즉시 tick 소비.
                     let inject_result = loop {
                         tokio::select! {
