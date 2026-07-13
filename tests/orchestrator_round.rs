@@ -56,15 +56,15 @@ fn run_round_drives_seats_and_returns_utterances() {
         ctx_mode: ContextMode::Push,
         transcript_len: 0,
     };
-    let round = run_round(
+    let (round, err) = run_round(
         &participants,
         "이 설계 어떤가요?",
         &reg,
         RunMode::ReadOnly,
         input,
-    )
-    .expect("ok");
+    );
 
+    assert!(err.is_none(), "정상 완료라 에러 없어야 함: {err:?}");
     assert_eq!(round.len(), 2);
     assert_eq!(round[0].content, "아키텍트 의견");
     assert_eq!(round[1].content, "리뷰어 의견");

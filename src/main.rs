@@ -562,14 +562,27 @@ fn main() {
         let db_str = db_path.clone().expect("--core는 위에서 --db를 검증함");
         // seed(파일/redis 재개)가 있으면 코어 DB에 먼저 전량 반영해 DB를 단일 권위로 만든다
         // (이후 core-sync adopt가 DB를 채택하므로 seed 유실/이드 충돌 방지).
+        // 단, DB가 이미 seed보다 앞서 있으면(외부 post_turn 등) save_session의 전량 교체가 그
+        // 발언들을 영구 삭제하므로, DB 권위를 보존하기 위해 덮어쓰기를 건너뛴다(결함 #1, 보수적).
         if session.message_count() > 0 {
             match tunaround::store::sqlite::SqliteStore::open(&db_str) {
                 Ok(store) => {
                     let tok = cli_run::build_index_tokenizer("core");
                     // 중립 snapshot → 영속 DTO(SqliteStore::save_session은 StoredSession 유지).
                     let ss = tunaround::store::StoredSession::from(session.snapshot());
-                    if let Err(e) = store.save_session(&sid, &ss, |t| tok(t)) {
-                        eprintln!("[core] seed 코어 DB 반영 실패: {e}");
+                    match store.load_session(&sid) {
+                        Ok(db_ss) => {
+                            if cli_run::db_has_newer_content(&ss, db_ss.as_ref()) {
+                                eprintln!(
+                                    "[core] DB에 더 새로운 발언이 있어 seed 덮어쓰기를 건너뜁니다"
+                                );
+                            } else if let Err(e) = store.save_session(&sid, &ss, |t| tok(t)) {
+                                eprintln!("[core] seed 코어 DB 반영 실패: {e}");
+                            }
+                        }
+                        Err(e) => eprintln!(
+                            "[core] seed 비교용 DB 조회 실패, 안전을 위해 seed 덮어쓰기를 건너뜁니다: {e}"
+                        ),
                     }
                 }
                 Err(e) => eprintln!("[core] seed 반영용 DB 열기 실패: {e}"),
@@ -580,6 +593,9 @@ fn main() {
             cli_run::build_http_mcp_backends("core", &db_str);
         let serve_tok = serve_token.clone();
         let addr_owned = addr.clone();
+        // bind 성공/실패를 REPL 시작 전에 동기 확인하기 위한 oneshot 채널(결함 #8). 서버 스레드가
+        // bind 직후(서빙 진입 전) 결과를 1회 보내고, 이후 서빙 중 종료는 기존처럼 stderr로만 알린다.
+        let (bind_tx, bind_rx) = tokio::sync::oneshot::channel::<Result<(), String>>();
         // 메인 스레드는 동기 블로킹 REPL(std stdin)이라 공유 rt에 spawn하면 서버 accept 루프가
         // 유휴 중 간헐적으로만 구동된다(신뢰 불가). 전용 OS 스레드의 자체 런타임 block_on이 서버를
         // 계속 구동해 원격 클라이언트(curl·에이전트)에 안정적으로 응답한다.
@@ -588,12 +604,23 @@ fn main() {
                 Ok(r) => r,
                 Err(e) => {
                     eprintln!("[core] 서버 런타임 생성 실패: {e}");
+                    let _ = bind_tx.send(Err(format!("서버 런타임 생성 실패: {e}")));
                     return;
                 }
             };
             srt.block_on(async move {
-                if let Err(e) = tunaround::mcp::start_http_mcp_server(
-                    &addr_owned,
+                // bind를 서빙 진입과 분리해, 실패를 REPL 시작 전에 채널로 알릴 수 있게 한다.
+                let listener = match tokio::net::TcpListener::bind(&addr_owned).await {
+                    Ok(l) => l,
+                    Err(e) => {
+                        eprintln!("[core] bind 실패({addr_owned}): {e}");
+                        let _ = bind_tx.send(Err(format!("bind 실패({addr_owned}): {e}")));
+                        return;
+                    }
+                };
+                let _ = bind_tx.send(Ok(()));
+                if let Err(e) = tunaround::mcp::serve_http_mcp_on_listener(
+                    listener,
                     retriever_arc,
                     reader_arc,
                     Some(writer_arc),
@@ -607,16 +634,35 @@ fn main() {
                 }
             });
         });
-        // REPL core-sync: 코어 DB(--db)를 권위로 삼아 매 라운드 adopt + append_turn 쓰기.
-        match tunaround::store::sqlite::SqliteStore::open(&db_str) {
-            Ok(store) => {
-                let core_sync = tunaround::store::retriever::SqliteCoreSync::new(
-                    store,
-                    cli_run::build_index_tokenizer("core"),
+        // REPL 시작 전 bind 결과를 동기 대기한다. 실패면 core-sync를 배선하지 않고 로컬 전용으로
+        // 명시 degrade한다(결함 #8: bind 실패가 조용히 묻혀 REPL이 core-sync 상태로 진행되는 것 방지).
+        let bind_ok = match bind_rx.blocking_recv() {
+            Ok(Ok(())) => true,
+            Ok(Err(e)) => {
+                eprintln!(
+                    "[core] 코어 서버 기동 실패: {e}. core-sync 없이 로컬 전용으로 계속합니다."
                 );
-                session = session.with_core_sync(Some(Box::new(core_sync)));
+                false
             }
-            Err(e) => eprintln!("[core] core-sync DB 열기 실패(병합 비활성): {e}"),
+            Err(_) => {
+                eprintln!(
+                    "[core] 코어 서버 기동 확인 실패(채널 종료). core-sync 없이 로컬 전용으로 계속합니다."
+                );
+                false
+            }
+        };
+        // REPL core-sync: 코어 DB(--db)를 권위로 삼아 매 라운드 adopt + append_turn 쓰기.
+        if bind_ok {
+            match tunaround::store::sqlite::SqliteStore::open(&db_str) {
+                Ok(store) => {
+                    let core_sync = tunaround::store::retriever::SqliteCoreSync::new(
+                        store,
+                        cli_run::build_index_tokenizer("core"),
+                    );
+                    session = session.with_core_sync(Some(Box::new(core_sync)));
+                }
+                Err(e) => eprintln!("[core] core-sync DB 열기 실패(병합 비활성): {e}"),
+            }
         }
     }
 

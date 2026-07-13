@@ -2,7 +2,7 @@
 use crate::orchestrator::{
     ContextMode, Participant, RoundInput, RunnerRegistry, Utterance, run_round,
 };
-use crate::runner::RunMode;
+use crate::runner::{RunError, RunMode};
 
 /// 이월 요약 최대 바이트 수. 초과 시 최근 드롭 턴 우선 유지 + 생략 표기.
 const MAX_CARRY: usize = 1500;
@@ -546,18 +546,30 @@ impl Session {
     }
 
     /// round 발언들을 head에서 시작하는 체인으로 트리에 append하고 head를 옮긴다.
-    fn append_round(&mut self, round: &[Utterance]) {
+    /// core-sync 모드에서 발언별 append 실패 시 그 지점에서 후속 append를 중단해(체인 무결성),
+    /// 실패 사실과 저장되지 않은 발언을 사용자에게 보이는 경고 문자열로 반환한다(결함 #3).
+    /// 성공(또는 non-core 모드)이면 None.
+    fn append_round(&mut self, round: &[Utterance]) -> Option<String> {
         // core-sync 모드: DB가 id 권위. append_turn으로 쓰고 DB 트리를 adopt(외부 post_turn 흡수).
         // 전량 persist(indexer)를 생략해 외부 쓰기 클로버를 구조적으로 차단한다(Plan 27 옵션 B).
         if let Some(cs) = &self.core_sync {
-            for u in round {
+            let mut warning: Option<String> = None;
+            for (i, u) in round.iter().enumerate() {
                 if let Err(e) = cs.append_turn(&self.session_id, &u.speaker, &u.content) {
                     eprintln!("[core-sync] append 실패: {e}");
+                    let unsaved: Vec<&str> =
+                        round[i..].iter().map(|u| u.speaker.as_str()).collect();
+                    warning = Some(format!(
+                        "[core-sync 경고] 발언 저장 실패({}): {e}. 저장되지 않은 발언: {}",
+                        u.speaker,
+                        unsaved.join(", ")
+                    ));
+                    break; // 체인 무결성: 실패 지점 이후 후속 append를 중단한다.
                 }
             }
-            // 쓰기 후 DB 권위 트리를 채택(이번 라운드 + 사이에 들어온 외부 post 포함).
+            // 쓰기 후 DB 권위 트리를 채택(이번 라운드 성공분 + 사이에 들어온 외부 post 포함).
             self.adopt_from_core();
-            return;
+            return warning;
         }
 
         for u in round {
@@ -566,6 +578,38 @@ impl Session {
         if let Some(idx) = &self.indexer {
             idx.persist(&self.session_id, &self.snapshot);
         }
+        None
+    }
+
+    /// run_round 결과(부분 성공 발언 + 선택적 에러)를 append하고 사용자 출력 문자열로 합친다(결함 #6).
+    /// 좌석 실패 시에도 이미 완료된 발언을 폐기하지 않고 append + 표면화하며, append_round 자체가
+    /// 실패(결함 #3)해도 그 경고를 같은 출력에 병합한다.
+    /// 반환값 = (사용자 출력, append_failed). append_failed는 core-sync append가 실패해 발언이
+    /// 권위 전사에 저장되지 못했음을 뜻한다(Debate 등 다회 루프가 DB 저장 실패에도 계속 도는 것을
+    /// 막도록 노출한다 - gemini HIGH).
+    fn finish_round(&mut self, round: Vec<Utterance>, err: Option<RunError>) -> (String, bool) {
+        let append_warn = if round.is_empty() {
+            None
+        } else {
+            self.append_round(&round)
+        };
+        let append_failed = append_warn.is_some();
+        let mut out = render(&round);
+        if let Some(w) = append_warn {
+            if !out.is_empty() {
+                out.push_str("\n\n");
+            }
+            out.push_str(&w);
+        }
+        if let Some(e) = err {
+            if !out.is_empty() {
+                out.push_str("\n\n");
+            }
+            out.push_str(&format!(
+                "[에러] 일부 좌석 응답 실패(완료된 발언은 보존됨): {e:?}"
+            ));
+        }
+        (out, append_failed)
     }
 
     /// 활성 경로의 발언 수를 반환한다(선형 사용 시 기존 transcript.len()과 동일).
@@ -644,10 +688,8 @@ impl Session {
                 let ctx = self.round_context();
                 let retrieved = self.retrieve_for_from_path(&text, &ctx.full_path);
                 let input = RoundInput { prior: &ctx.prior, retrieved: &retrieved, carried: &ctx.carried, ctx_mode: self.context_mode, transcript_len: ctx.transcript_len };
-                match run_round(&self.participants, &text, self.registry.as_ref(), RunMode::ReadOnly, input) {
-                    Ok(round) => { self.append_round(&round); StepOutcome::Print(render(&round)) }
-                    Err(e) => StepOutcome::Print(format!("[에러] {e:?}")),
-                }
+                let (round, err) = run_round(&self.participants, &text, self.registry.as_ref(), RunMode::ReadOnly, input);
+                StepOutcome::Print(self.finish_round(round, err).0)
             }
             Command::Only { engine, text } => {
                 let seats: Vec<Participant> =
@@ -658,10 +700,8 @@ impl Session {
                 let ctx = self.round_context();
                 let retrieved = self.retrieve_for_from_path(&text, &ctx.full_path);
                 let input = RoundInput { prior: &ctx.prior, retrieved: &retrieved, carried: &ctx.carried, ctx_mode: self.context_mode, transcript_len: ctx.transcript_len };
-                match run_round(&seats, &text, self.registry.as_ref(), RunMode::ReadOnly, input) {
-                    Ok(round) => { self.append_round(&round); StepOutcome::Print(render(&round)) }
-                    Err(e) => StepOutcome::Print(format!("[에러] {e:?}")),
-                }
+                let (round, err) = run_round(&seats, &text, self.registry.as_ref(), RunMode::ReadOnly, input);
+                StepOutcome::Print(self.finish_round(round, err).0)
             }
             Command::Write { engine, text } => {
                 let seats: Vec<Participant> =
@@ -672,10 +712,8 @@ impl Session {
                 let ctx = self.round_context();
                 let retrieved = self.retrieve_for_from_path(&text, &ctx.full_path);
                 let input = RoundInput { prior: &ctx.prior, retrieved: &retrieved, carried: &ctx.carried, ctx_mode: self.context_mode, transcript_len: ctx.transcript_len };
-                match run_round(&seats, &text, self.registry.as_ref(), RunMode::Write, input) {
-                    Ok(round) => { self.append_round(&round); StepOutcome::Print(render(&round)) }
-                    Err(e) => StepOutcome::Print(format!("[에러] {e:?}")),
-                }
+                let (round, err) = run_round(&seats, &text, self.registry.as_ref(), RunMode::Write, input);
+                StepOutcome::Print(self.finish_round(round, err).0)
             }
             Command::Conclude(engine) => {
                 let eng = engine.or_else(|| self.participants.first().map(|p| p.engine.clone()));
@@ -690,10 +728,8 @@ impl Session {
                 let ctx = self.round_context();
                 let retrieved = self.retrieve_for_from_path("지금까지의 토론을 종합해 결론을 정리해줘.", &ctx.full_path);
                 let input = RoundInput { prior: &ctx.prior, retrieved: &retrieved, carried: &ctx.carried, ctx_mode: self.context_mode, transcript_len: ctx.transcript_len };
-                match run_round(&synth, "지금까지의 토론을 종합해 결론을 정리해줘.", self.registry.as_ref(), RunMode::ReadOnly, input) {
-                    Ok(round) => { self.append_round(&round); StepOutcome::Print(render(&round)) }
-                    Err(e) => StepOutcome::Print(format!("[에러] {e:?}")),
-                }
+                let (round, err) = run_round(&synth, "지금까지의 토론을 종합해 결론을 정리해줘.", self.registry.as_ref(), RunMode::ReadOnly, input);
+                StepOutcome::Print(self.finish_round(round, err).0)
             }
             Command::Debate { turns, topic } => {
                 let mut out = String::new();
@@ -705,17 +741,18 @@ impl Session {
                     };
                     // 매 라운드마다 새 발언이 추가되므로 active_path 재계산은 불가피.
                     let ctx = self.round_context();
-                    let retrieved = self.retrieve_for_from_path(&round_topic, &ctx.full_path);
+                    // 검색 질의는 진행용 지시문(round_topic)이 아니라 원래 topic을 쓴다(결함 #5:
+                    // 고정 지시문 문자열이 FTS/시맨틱 질의로 새어 들어가 무관한 히트를 끌어오는 것 방지).
+                    let retrieved = self.retrieve_for_from_path(&topic, &ctx.full_path);
                     let input = RoundInput { prior: &ctx.prior, retrieved: &retrieved, carried: &ctx.carried, ctx_mode: self.context_mode, transcript_len: ctx.transcript_len };
-                    match run_round(&self.participants, &round_topic, self.registry.as_ref(), RunMode::ReadOnly, input) {
-                        Ok(round) => {
-                            self.append_round(&round);
-                            out.push_str(&format!("### 라운드 {}\n{}\n\n", k + 1, render(&round)));
-                        }
-                        Err(e) => {
-                            out.push_str(&format!("[라운드 {} 에러] {e:?}\n", k + 1));
-                            break;
-                        }
+                    let (round, err) = run_round(&self.participants, &round_topic, self.registry.as_ref(), RunMode::ReadOnly, input);
+                    let runner_error = err.is_some();
+                    let (text, append_failed) = self.finish_round(round, err);
+                    out.push_str(&format!("### 라운드 {}\n{text}\n\n", k + 1));
+                    // 러너 실패뿐 아니라 core-sync 저장 실패에도 중단한다(권위 전사가 깨진 채 계속
+                    // 토론하면 후속 라운드가 옛 head를 부모로 삼아 체인이 어긋난다, gemini HIGH).
+                    if runner_error || append_failed {
+                        break;
                     }
                 }
                 StepOutcome::Print(out)
@@ -743,7 +780,12 @@ impl Session {
             }
             Command::Branches => StepOutcome::Print(self.snapshot.tree_summary()),
             Command::Checkout(id) => {
-                if self.snapshot.checkout(id) {
+                // core-sync 모드: 매 명령 시작에 adopt_from_core가 DB 권위 head로 스냅샷을 통째
+                // 교체하므로 여기서 head를 옮겨도 다음 step에서 바로 덮인다(결함 #2: 조용한 무력화
+                // 대신 명시적으로 미지원임을 안내하고 head를 건드리지 않는다).
+                if self.core_sync.is_some() {
+                    StepOutcome::Print("core 모드에서는 분기(checkout)를 지원하지 않습니다(DB head가 매 명령마다 채택되어 분기가 무력화됩니다).".into())
+                } else if self.snapshot.checkout(id) {
                     StepOutcome::Print(format!("checkout #{id} (현재 분기 전환). 이어서 메시지를 보내면 분기됩니다."))
                 } else {
                     StepOutcome::Print(format!("그런 메시지가 없습니다: #{id}"))
@@ -795,6 +837,12 @@ impl Session {
         };
         if !self.snapshot.contains(id) {
             return StepOutcome::Print(format!("그런 발언이 없습니다: #{id}"));
+        }
+        // 대체 발언(by)도 존재 검증한다(결함 #7: 오타 id가 검증 없이 저장되던 것 방지).
+        if let Some(b) = by
+            && !self.snapshot.contains(b)
+        {
+            return StepOutcome::Print(format!("대체 발언이 없습니다: #{b}"));
         }
         match sink.set_validity(&self.session_id, id, state, by) {
             Ok(()) => {
@@ -903,6 +951,26 @@ mod tests {
         }
         fn append_turn(&self, _sid: &str, speaker: &str, content: &str) -> Result<u64, String> {
             Ok(self.append_inner(speaker, content))
+        }
+    }
+
+    /// core-sync append 실패를 흉내내는 가짜(결함 #3 테스트용). 지정한 순번(1-based)에서 실패한다.
+    struct FailingCoreSync {
+        fail_at: usize,
+        calls: std::sync::Mutex<usize>,
+    }
+    impl crate::orchestrator::CoreSync for FailingCoreSync {
+        fn load_session(&self, _sid: &str) -> Option<crate::types::ConversationSnapshot> {
+            None
+        }
+        fn append_turn(&self, _sid: &str, _speaker: &str, _content: &str) -> Result<u64, String> {
+            let mut c = self.calls.lock().unwrap();
+            *c += 1;
+            if *c == self.fail_at {
+                Err("의도된 실패".into())
+            } else {
+                Ok(*c as u64)
+            }
         }
     }
 
@@ -1061,18 +1129,26 @@ mod tests {
         let sink = std::sync::Arc::new(CapturingSink {
             last: std::sync::Mutex::new(None),
         });
-        // 메시지 1건 있는 세션 구성(sink 배선).
+        // 메시지 2건 있는 세션 구성(sink 배선). by(#2)도 존재해야 검증(결함 #7)을 통과한다.
         let mut s =
             session_with_two_seats().with_validity_sink(Some(Box::new(SinkHandle(sink.clone()))));
         s.seed_from(
             StoredSession {
-                messages: vec![StoredMessage {
-                    id: 1,
-                    parent_id: None,
-                    speaker: "claude".into(),
-                    content: "x".into(),
-                }],
-                head: Some(1),
+                messages: vec![
+                    StoredMessage {
+                        id: 1,
+                        parent_id: None,
+                        speaker: "claude".into(),
+                        content: "x".into(),
+                    },
+                    StoredMessage {
+                        id: 2,
+                        parent_id: Some(1),
+                        speaker: "codex".into(),
+                        content: "y".into(),
+                    },
+                ],
+                head: Some(2),
             }
             .into(),
         );
@@ -1097,6 +1173,40 @@ mod tests {
             sink.last.lock().unwrap().clone(),
             None,
             "없는 발언은 sink 미호출"
+        );
+    }
+
+    #[test]
+    fn supersede_missing_by_is_rejected_and_does_not_call_sink() {
+        // by(대체 발언 id)가 존재하지 않으면 대상 id와 같은 방식으로 거부돼야 한다(결함 #7).
+        let sink = std::sync::Arc::new(CapturingSink {
+            last: std::sync::Mutex::new(None),
+        });
+        let mut s =
+            session_with_two_seats().with_validity_sink(Some(Box::new(SinkHandle(sink.clone()))));
+        s.seed_from(
+            StoredSession {
+                messages: vec![StoredMessage {
+                    id: 1,
+                    parent_id: None,
+                    speaker: "claude".into(),
+                    content: "x".into(),
+                }],
+                head: Some(1),
+            }
+            .into(),
+        );
+        match s.step(Command::Supersede {
+            id: 1,
+            by: Some(99),
+        }) {
+            StepOutcome::Print(t) => assert!(t.contains("99"), "없는 by id 안내 불일치: {t}"),
+            other => panic!("expected Print, got {other:?}"),
+        }
+        assert_eq!(
+            sink.last.lock().unwrap().clone(),
+            None,
+            "존재하지 않는 by는 sink 미호출"
         );
     }
 
@@ -1283,6 +1393,55 @@ mod tests {
             "외부 post_turn이 활성 경로에 흡수되어야 함: {:?}",
             path.iter().map(|u| u.content.as_str()).collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn core_sync_append_failure_halts_chain_and_surfaces_warning() {
+        // 2번째 append_turn 호출(codex 좌석)에서 실패 -> 1번(claude) 발언은 화면에 남고, 실패가
+        // StepOutcome에 표면화되며, 3번째 이후 append는 시도되지 않는다(체인 무결성, 결함 #3).
+        let cs = FailingCoreSync {
+            fail_at: 2,
+            calls: std::sync::Mutex::new(0),
+        };
+        let mut reg = MapRegistry::new();
+        reg.insert(
+            "claude",
+            Box::new(FakeRunner {
+                reply: "제안".into(),
+            }),
+        );
+        reg.insert(
+            "codex",
+            Box::new(FakeRunner {
+                reply: "리뷰".into(),
+            }),
+        );
+        let participants = vec![
+            Participant {
+                engine: "claude".into(),
+                role: Some("proposer".into()),
+                instruction: String::new(),
+            },
+            Participant {
+                engine: "codex".into(),
+                role: Some("reviewer".into()),
+                instruction: String::new(),
+            },
+        ];
+        let mut s = Session::new(participants, Box::new(reg)).with_core_sync(Some(Box::new(cs)));
+        match s.step(Command::Message("주제".into())) {
+            StepOutcome::Print(t) => {
+                assert!(
+                    t.contains("제안"),
+                    "먼저 완료된 발언은 화면에 남아야 함: {t}"
+                );
+                assert!(
+                    t.contains("실패"),
+                    "실패가 사용자 출력에 표면화돼야 함: {t}"
+                );
+            }
+            other => panic!("expected Print, got {other:?}"),
+        }
     }
 
     #[test]
@@ -1561,6 +1720,39 @@ mod tests {
         assert_eq!(s.transcript_len(), 4);
     }
 
+    /// 검색 질의를 캡처하는 가짜 retriever(결함 #5 테스트용).
+    struct CapturingRetriever {
+        queries: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    }
+    impl crate::orchestrator::ContextRetriever for CapturingRetriever {
+        fn retrieve(&self, q: &str, _limit: usize) -> Result<Vec<Utterance>, String> {
+            self.queries.lock().unwrap().push(q.to_string());
+            Ok(Vec::new())
+        }
+    }
+
+    #[test]
+    fn debate_uses_original_topic_for_retrieval_not_round_directive() {
+        // 2라운드 이상에서도 검색 질의는 진행용 고정 지시문(round_topic)이 아니라 원래 topic이어야
+        // 한다(결함 #5: 지시문이 FTS/시맨틱 질의로 새어 들어가 무관한 히트를 끌어오는 것 방지).
+        let queries = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut s = session_with_two_seats().with_retriever(Some(Box::new(CapturingRetriever {
+            queries: queries.clone(),
+        })));
+        let _ = s.step(Command::Debate {
+            turns: 3,
+            topic: "원래 주제".into(),
+        });
+        let qs = queries.lock().unwrap();
+        assert_eq!(qs.len(), 3, "라운드마다 검색 호출: {qs:?}");
+        for q in qs.iter() {
+            assert_eq!(
+                q, "원래 주제",
+                "매 라운드 검색 질의는 원래 topic 고정: {qs:?}"
+            );
+        }
+    }
+
     #[test]
     fn step_debate_stops_on_error() {
         // 첫 라운드는 OK, 이후 에러나는 시나리오는 FakeRunner로 만들기 번거로우니
@@ -1586,6 +1778,40 @@ mod tests {
             StepOutcome::Print(t) => assert!(t.contains("없")),
             other => panic!("got {other:?}"),
         }
+    }
+
+    #[test]
+    fn checkout_is_refused_in_core_sync_mode() {
+        // core-sync 모드에서는 adopt_from_core가 매 명령마다 DB head로 스냅샷을 통째 교체하므로
+        // checkout이 실제로는 무력하다. 조용히 "분기됩니다"라고 안내하는 대신 명시적으로 거부해야
+        // 한다(결함 #2). head도 옮기지 않아야 한다.
+        let cs = FakeCoreSync::new();
+        let mut s = core_sync_session(cs.clone());
+        let _ = s.step(Command::Message("주제".into())); // DB에 발언 2건(claude, codex).
+        let path_before = s.active_path();
+
+        match s.step(Command::Checkout(1)) {
+            StepOutcome::Print(t) => {
+                assert!(
+                    t.contains("지원하지 않"),
+                    "core 모드 미지원 안내가 있어야 함: {t}"
+                );
+                assert!(
+                    !t.contains("분기 전환"),
+                    "실제 분기 전환처럼 보이면 안 됨: {t}"
+                );
+            }
+            other => panic!("expected Print, got {other:?}"),
+        }
+
+        // head가 그대로 유지되어 다음 메시지가 checkout(1) 기준이 아니라 기존 head 기준으로 이어진다.
+        let _ = s.step(Command::Message("이어서".into()));
+        let path_after = s.active_path();
+        assert_eq!(
+            path_after.len(),
+            path_before.len() + 2,
+            "checkout이 무시되고 기존 head에서 정상 진행돼야 함: {path_after:?}"
+        );
     }
 
     struct FakeRetriever {
