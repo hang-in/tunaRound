@@ -16,7 +16,7 @@ use crate::codex_appserver::{
     ApprovalPolicy, IncomingMessage, SandboxMode, build_approval_granted, build_elicitation_accept,
     build_initialize_request, build_thread_resume_request, build_thread_start_request,
     build_turn_start_request, classify_message, extract_final_agent_message, is_mcp_elicitation,
-    is_turn_completed, parse_thread_id,
+    is_turn_completed, parse_thread_id, parse_turn_id_from_start_result,
 };
 use crate::config::expand_home;
 
@@ -112,11 +112,25 @@ pub enum InjectAction {
 /// [`IncomingMessage`] + 우리 threadId로부터 다음 행동을 결정한다(순수 함수, ws IO 없음).
 pub fn decide_action(msg: &IncomingMessage, our_thread_id: &str) -> InjectAction {
     match msg {
-        IncomingMessage::ServerRequest { id, method, .. } => {
+        IncomingMessage::ServerRequest { id, method, params } => {
             if let Some(req_id) = is_mcp_elicitation(method, id) {
                 InjectAction::RespondWith(build_elicitation_accept(&req_id))
             } else if is_approval_method(method) {
-                InjectAction::RespondWith(build_approval_granted(id, method))
+                // threadId 필터(Notification 분기와 동일 규약, 아래 참고): 멀티클라이언트 attach 시
+                // 다른 thread(사람이 열어둔 세션)의 승인 요청까지 우리 주입 커넥션이 먼저 자동 승인하면
+                // 사람 게이트를 우회한다. params에 threadId가 있고 우리 thread와 다르면 무응답(LogOnly).
+                // threadId 필드 자체가 없으면(구 포맷 등) 판단 불가라 보수적으로 기존 자동 승인을 유지한다.
+                let other_thread = params
+                    .get("threadId")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|t| t != our_thread_id);
+                if other_thread {
+                    InjectAction::LogOnly(format!(
+                        "다른 thread의 승인 요청(method={method:?}) - 무응답(사람 게이트 보호)"
+                    ))
+                } else {
+                    InjectAction::RespondWith(build_approval_granted(id, method))
+                }
             } else {
                 InjectAction::LogOnly(format!(
                     "알 수 없는 ServerRequest method={method:?}(id={id:?}) - 무응답(설계 §5.2)"
@@ -170,6 +184,35 @@ pub fn decide_action(msg: &IncomingMessage, our_thread_id: &str) -> InjectAction
             Some(e) => InjectAction::Fail(format!("codex 에러 응답: {e}")),
             None => InjectAction::Ignore,
         },
+    }
+}
+
+/// Notification이 `turn/completed`면 그 turn_id를 뽑는다(그 외 변형·메서드는 None). decide_action이
+/// 이미 threadId만으로 InjectAction::Complete를 판정한 뒤, turn_id 세부 비교가 필요한 pump_turn이
+/// 원본 메시지를 다시 들여다볼 때 쓴다(decide_action은 판정 후 TurnCompleted를 버린다).
+fn notification_turn_id(incoming: &IncomingMessage) -> Option<String> {
+    if let IncomingMessage::Notification { method, params } = incoming {
+        // 서버가 turn_id를 빈 문자열로 주면 '없음(None)'과 같게 취급한다(gemini medium: Some("")이
+        // turn_completion_matches에서 정확일치 비교에 걸려 우리 턴 완료를 영영 못 잡는 것 방지 →
+        // None이면 threadId-only 폴백).
+        is_turn_completed(method, params)
+            .map(|tc| tc.turn_id)
+            .filter(|id| !id.is_empty())
+    } else {
+        None
+    }
+}
+
+/// turn/completed 알림이 우리 턴과 일치하는지 판정한다(순수부, 이슈 #88 관련 실비판). `our_turn_id`를
+/// 확보했으면(= turn/start 응답에서 turn id 파싱 성공) 알림의 turn_id까지 정확히 일치해야 우리 턴
+/// 완료로 본다 - 같은 thread에 사람이 동시에 프롬프트를 쳐도 그 사람 턴의 완료를 우리 턴으로 오인하지
+/// 않는다. `our_turn_id`가 None(응답에서 turn id를 못 얻음, 필드 부재 등)이면 기존 threadId-only
+/// 매칭을 그대로 신뢰한다(회귀 방지 폴백) - decide_action이 이미 threadId 일치를 확인했으므로 여기선
+/// 항상 true.
+fn turn_completion_matches(our_turn_id: Option<&str>, got_turn_id: Option<&str>) -> bool {
+    match our_turn_id {
+        Some(want) => got_turn_id == Some(want),
+        None => true,
     }
 }
 
@@ -465,11 +508,18 @@ async fn pump_turn(
 ) -> Result<String, String> {
     eprintln!("[codex-inject] thread={thread_id}로 turn/start 주입");
     *next_id += 1;
+    let start_id = *next_id;
     send_json(
         sink,
-        &build_turn_start_request(*next_id, thread_id, text, Some(approval)),
+        &build_turn_start_request(start_id, thread_id, text, Some(approval)),
     )
     .await?;
+
+    // turn/start 응답에서 우리 turn id를 확보해 보관한다(있으면). relay 주입 대상은 사람이 보는 라이브
+    // thread라 사람이 동시에 프롬프트를 치면 그 사람 턴의 turn/completed가 threadId만으론 우리 턴
+    // 완료로 오인될 수 있다(이슈 #88 관련 실비판). 응답에 turn id가 없으면(스키마 미확정 등) turn_id는
+    // None으로 남아 아래 turn_completion_matches가 기존 threadId-only 매칭으로 폴백한다(회귀 방지).
+    let mut our_turn_id: Option<String> = None;
 
     let mut answer = String::new();
     loop {
@@ -477,10 +527,27 @@ async fn pump_turn(
         let Some(incoming) = classify_message(&msg) else {
             continue;
         };
+        // turn/start 자신의 응답: turn id만 캐시하고 완료 판정 루프로 넘기지 않는다(에러 응답은 기존
+        // decide_action과 동일하게 즉시 실패로 surface).
+        if let IncomingMessage::Response { id, result, error } = &incoming
+            && id.as_u64() == Some(start_id)
+        {
+            if let Some(e) = error {
+                return Err(format!("codex-inject: turn/start 에러 응답: {e}"));
+            }
+            our_turn_id = result.as_ref().and_then(parse_turn_id_from_start_result);
+            continue;
+        }
         match handle_incoming(sink, &incoming, thread_id).await? {
             InjectAction::Complete => {
-                eprintln!("[codex-inject] turn/completed 수신, 종료");
-                return Ok(answer);
+                let got = notification_turn_id(&incoming);
+                if turn_completion_matches(our_turn_id.as_deref(), got.as_deref()) {
+                    eprintln!("[codex-inject] turn/completed 수신, 종료");
+                    return Ok(answer);
+                }
+                eprintln!(
+                    "[codex-inject] 다른 turn_id의 turn/completed 무시(동시 프롬프트로 추정, 우리={our_turn_id:?} 수신={got:?})"
+                );
             }
             InjectAction::Fail(e) => return Err(format!("codex-inject: 턴 실패: {e}")),
             InjectAction::PrintText(t) => {
@@ -617,6 +684,35 @@ mod tests {
     }
 
     #[test]
+    fn decide_action_approval_method_other_thread_logs_only() {
+        // 멀티클라이언트 attach 시 다른 thread(사람이 연 세션)의 승인 요청은 자동 승인하지 않는다.
+        let msg = IncomingMessage::ServerRequest {
+            id: json!(7),
+            method: "execCommandApproval".to_string(),
+            params: json!({ "threadId": "tid-OTHER" }),
+        };
+        match decide_action(&msg, "tid-1") {
+            InjectAction::LogOnly(s) => {
+                assert!(s.contains("execCommandApproval"), "method 포함 기대: {s}")
+            }
+            other => panic!("LogOnly를 기대했는데 {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decide_action_approval_method_same_thread_still_auto_grants() {
+        let msg = IncomingMessage::ServerRequest {
+            id: json!(7),
+            method: "execCommandApproval".to_string(),
+            params: json!({ "threadId": "tid-1" }),
+        };
+        assert_eq!(
+            decide_action(&msg, "tid-1"),
+            InjectAction::RespondWith(build_approval_granted(&json!(7), "execCommandApproval"))
+        );
+    }
+
+    #[test]
     fn decide_action_unknown_server_request_logs_only() {
         let msg = IncomingMessage::ServerRequest {
             id: json!(9),
@@ -656,6 +752,49 @@ mod tests {
                 turn_id: "turn-9".to_string()
             })
         );
+    }
+
+    // -- turn_id 매칭(이슈 #88: turn/completed가 threadId만으로 매칭되지 않게) ------------------
+
+    #[test]
+    fn notification_turn_id_extracts_from_turn_completed_and_ignores_others() {
+        let completed = IncomingMessage::Notification {
+            method: "turn/completed".to_string(),
+            params: json!({"threadId":"tid-1","turn":{"id":"turn-9"}}),
+        };
+        assert_eq!(notification_turn_id(&completed).as_deref(), Some("turn-9"));
+
+        let other = IncomingMessage::Notification {
+            method: "turn/started".to_string(),
+            params: json!({}),
+        };
+        assert_eq!(notification_turn_id(&other), None);
+
+        let req = IncomingMessage::ServerRequest {
+            id: json!(1),
+            method: "execCommandApproval".to_string(),
+            params: json!({}),
+        };
+        assert_eq!(notification_turn_id(&req), None);
+    }
+
+    #[test]
+    fn turn_completion_matches_requires_exact_turn_id_when_captured() {
+        // 우리 turn id를 확보했으면 일치하는 turn_id만 우리 턴 완료로 본다(다른 turn_id는 사람의
+        // 동시 프롬프트로 추정해 무시).
+        assert!(turn_completion_matches(Some("turn-1"), Some("turn-1")));
+        assert!(!turn_completion_matches(Some("turn-1"), Some("turn-2")));
+        assert!(
+            !turn_completion_matches(Some("turn-1"), None),
+            "turn id를 확보했는데 알림에 turn_id가 없으면(파싱 실패 등) 안전하게 불일치로 본다"
+        );
+    }
+
+    #[test]
+    fn turn_completion_matches_falls_back_to_thread_only_when_uncaptured() {
+        // turn/start 응답에서 turn id를 못 얻었으면(스키마 미확정 등) 기존 threadId-only 매칭 유지.
+        assert!(turn_completion_matches(None, Some("turn-2")));
+        assert!(turn_completion_matches(None, None));
     }
 
     #[test]

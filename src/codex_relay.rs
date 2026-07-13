@@ -5,11 +5,14 @@
 // 설계 정본 docs/design/v2-46-codex-relay_2026-07-11.md.
 
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use crate::codex_appserver::{ApprovalPolicy, SandboxMode};
 use crate::mcp_client::McpHttpClient;
-use crate::presence_scan::enumerate_codex_sessions;
+use crate::presence_scan::{
+    self, LiveSession, apply_codex_human_input_gate, enumerate_codex_sessions,
+    system_time_to_db_datetime,
+};
 use crate::worker::parse_open_tasks;
 
 // ---------------------------------------------------------------------------
@@ -44,6 +47,22 @@ pub fn build_inject_text(task_id: &str, msg: &str) -> String {
     )
 }
 
+/// codex 세션 목록에 이슈 #88 시간창 게이트를 적용한다(순수부). presence 스캐너(cli_daemons.rs)와
+/// 동일하게 [`apply_codex_human_input_gate`]를 재사용해, 게이트로 로스터에서 GC됐어야 할 유령 codex
+/// thread(사람활동이 window보다 오래되거나 없는 thread)에 relay가 대리 claim해 주입하는 것을 막는다
+/// (스캐너는 로스터에만 배선돼 있었고 relay는 별도 세션 소비 경로라 게이트가 미적용이었다). threshold
+/// 계산 실패(예: now가 UNIX epoch보다 이전)는 fail-open(미드롭, 스캐너와 동일 규약).
+pub fn gate_sessions(
+    sessions: Vec<LiveSession>,
+    now: SystemTime,
+    window: Duration,
+) -> Vec<LiveSession> {
+    match now.checked_sub(window).and_then(system_time_to_db_datetime) {
+        Some(min_active) => apply_codex_human_input_gate(sessions, &min_active),
+        None => sessions,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 데몬 루프 (라이브 IO)
 // ---------------------------------------------------------------------------
@@ -57,8 +76,15 @@ pub struct RelayOpts {
     pub codex_dir: Option<PathBuf>,
     pub home: Option<PathBuf>,
     pub stale: Duration,
+    /// 이슈 #88: 사람활동 신선도 window(gate_sessions). presence-scan의 codex_human_window_mins와
+    /// 동일 규약(기본 60분).
+    pub codex_human_window: Duration,
     pub interval_secs: u64,
     pub inject_timeout_secs: u64,
+    /// 주입 승인 정책(기본 Never, --approval로 노브 제공).
+    pub approval: ApprovalPolicy,
+    /// 주입 샌드박스 모드(기본 WorkspaceWrite, --sandbox로 노브 제공).
+    pub sandbox: SandboxMode,
     pub once: bool,
 }
 
@@ -79,6 +105,9 @@ pub async fn run(opts: RelayOpts) -> Result<(), String> {
     let self_id = relay_agent_id(&opts.machine);
     let self_tags = relay_tags(&opts.machine);
     let display = format!("{}-릴레이", opts.machine);
+    // codex 입력 신호 tail 스캔의 주기 간 캐시(uuid→(mtime, human_input_at)). 이슈 #88 게이트가
+    // human_input_at을 요구하므로(스캐너와 동일 규약) 더는 스캔을 생략하지 않는다.
+    let mut codex_input_cache = presence_scan::CodexInputCache::new();
 
     loop {
         // 자기 등록 = heartbeat 겸용(register가 last_heartbeat를 now로 덮는다. 스캐너 답습).
@@ -89,18 +118,23 @@ pub async fn run(opts: RelayOpts) -> Result<(), String> {
             eprintln!("[codex-relay] 자기 등록 실패(무시): {e}");
         }
 
+        let now = std::time::SystemTime::now();
         // 로컬 라이브 codex 세션 = 주입 대상 전집합. rollout 파일이 스캐너와 같은 SoR이라
-        // 로스터의 codex 세션 카드와 자동으로 일치한다.
+        // 로스터의 codex 세션 카드와 자동으로 일치한다. human_input_at 스캔(input_cache)을 켜서
+        // 이슈 #88 게이트(gate_sessions)가 실데이터로 판정하게 한다(스캐너와 동일 규약).
         let sessions = match &opts.codex_dir {
             Some(dir) => enumerate_codex_sessions(
                 dir,
-                std::time::SystemTime::now(),
+                now,
                 opts.stale,
                 opts.home.as_deref(),
-                None, // relay는 주입 대상 uuid만 필요 = 입력 신호 tail 스캔 생략(무비용).
+                Some(&mut codex_input_cache),
             ),
             None => Vec::new(),
         };
+        // 이슈 #88: 게이트로 로스터에서 GC됐어야 할 유령 codex thread에 대리 claim해 주입하지 않게
+        // 시간창 밖 세션을 여기서도 제외한다(스캐너는 로스터에만 배선, relay는 별도 소비 경로였음).
+        let sessions = gate_sessions(sessions, now, opts.codex_human_window);
 
         let mut reconnect = false;
         for s in &sessions {
@@ -134,8 +168,8 @@ pub async fn run(opts: RelayOpts) -> Result<(), String> {
                     "",
                     Some(&s.uuid),
                     &text,
-                    ApprovalPolicy::Never,
-                    SandboxMode::WorkspaceWrite,
+                    opts.approval,
+                    opts.sandbox,
                     opts.inject_timeout_secs,
                     false,
                 )
@@ -201,6 +235,40 @@ mod tests {
         assert!(
             !text.contains("claim_task로 가져와"),
             "claim 절차 지시는 없어야(대리 claim): {text}"
+        );
+    }
+
+    fn codex_session(uuid: &str, human_input_at: Option<&str>) -> LiveSession {
+        LiveSession {
+            uuid: uuid.to_string(),
+            runner: "codex".to_string(),
+            project: None,
+            human_input_at: human_input_at.map(str::to_string),
+            created_at: None,
+        }
+    }
+
+    #[test]
+    fn gate_sessions_drops_stale_and_keeps_fresh_human_input() {
+        // 이슈 #88: relay가 게이트로 GC 대상인 유령(사람입력이 window보다 오래됨)을 주입 대상에서
+        // 뺴는지 확인. window=60분, now 기준 90분 전 입력은 밖, 5분 전 입력은 안.
+        let now = SystemTime::now();
+        let window = Duration::from_secs(60 * 60);
+        let stale_ts = system_time_to_db_datetime(now - Duration::from_secs(90 * 60)).unwrap();
+        let fresh_ts = system_time_to_db_datetime(now - Duration::from_secs(5 * 60)).unwrap();
+        let sessions = vec![
+            codex_session("ghost", Some(&stale_ts)),
+            codex_session("live", Some(&fresh_ts)),
+            codex_session("nosignal", None),
+        ];
+        let kept: Vec<String> = gate_sessions(sessions, now, window)
+            .into_iter()
+            .map(|s| s.uuid)
+            .collect();
+        assert_eq!(
+            kept,
+            vec!["live"],
+            "window 밖·무신호 세션은 주입 대상에서 제외돼야"
         );
     }
 

@@ -514,6 +514,9 @@ pub fn codex_relay(rt: &tokio::runtime::Runtime, a: CodexRelayArgs) {
             .or_else(|_| std::env::var(ENV_HOME))
             .ok()
             .map(std::path::PathBuf::from);
+        // 주입 정책 노브(#4): 기본값은 현행 하드코딩(never/workspace-write)과 같아 런타임 동작 불변.
+        let approval = tunaround::codex_inject::parse_approval_policy(&a.approval)?;
+        let sandbox = tunaround::codex_inject::parse_sandbox_mode(&a.sandbox)?;
         tunaround::codex_relay::run(tunaround::codex_relay::RelayOpts {
             core,
             token,
@@ -522,8 +525,14 @@ pub fn codex_relay(rt: &tokio::runtime::Runtime, a: CodexRelayArgs) {
             codex_dir,
             home,
             stale: std::time::Duration::from_secs(a.stale_mins.saturating_mul(60)),
+            // 이슈 #88: presence-scan과 동일 규약(사람활동 신선도 window).
+            codex_human_window: std::time::Duration::from_secs(
+                a.codex_human_window_mins.saturating_mul(60),
+            ),
             interval_secs: a.interval,
             inject_timeout_secs: a.inject_timeout,
+            approval,
+            sandbox,
             once: a.once,
         })
         .await

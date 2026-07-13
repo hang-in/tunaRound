@@ -375,12 +375,25 @@ pub struct CodexRelayArgs {
     /// 라이브로 간주할 활동 신선도 창(분, 기본 240. presence 스캐너와 동일 규약).
     #[arg(long, default_value_t = 240)]
     pub stale_mins: u64,
+    /// codex 세션 사람활동 신선도 window(분, 기본 60). 이슈 #88: presence-scan(PresenceScanArgs)의
+    /// apply_codex_human_input_gate와 동일 규약 - 사람입력/생성이 이보다 오래되거나 없는 codex 세션은
+    /// 주입 대상에서 제외한다(게이트로 GC된 유령 thread에 relay가 대리 claim해 주입하는 것 방지).
+    #[arg(long, default_value_t = 60)]
+    pub codex_human_window_mins: u64,
     /// 폴 간격(초, 기본 15).
     #[arg(long, default_value_t = 15)]
     pub interval: u64,
     /// 주입 1건의 turn/completed 대기 타임아웃(초, 기본 1800 = 워커 on-task 상한과 동일).
     #[arg(long, default_value_t = 1800)]
     pub inject_timeout: u64,
+    /// 주입 승인 정책(기본 never, codex-inject CLI와 동일 파서): untrusted/on-failure/on-request/never.
+    /// 기본값은 현행 하드코딩과 같아 런타임 동작은 불변, 노브만 제공한다.
+    #[arg(long, default_value = "never")]
+    pub approval: String,
+    /// 주입 샌드박스 모드(기본 workspace-write, codex-inject CLI와 동일 파서):
+    /// read-only/workspace-write/danger-full-access.
+    #[arg(long, default_value = "workspace-write")]
+    pub sandbox: String,
     /// 한 패스만 실행하고 종료(테스트·수동 실행용).
     #[arg(long)]
     pub once: bool,
@@ -808,6 +821,48 @@ mod cli_tests {
         match cli.command {
             Some(Commands::Poll(a)) => assert_eq!(a.tags, None),
             other => panic!("Poll 서브커맨드 기대, 실제: {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "worker")]
+    #[test]
+    fn codex_relay_defaults_to_never_workspace_write_and_60min_window() {
+        // #88 게이트 window·주입 정책 노브의 기본값이 현행 하드코딩과 같은지(런타임 동작 불변) 확인.
+        let cli = Cli::try_parse_from(["tunaround", "codex-relay", "--ws", "ws://x:8790"])
+            .expect("파싱 성공");
+        match cli.command {
+            Some(Commands::CodexRelay(a)) => {
+                assert_eq!(a.codex_human_window_mins, 60);
+                assert_eq!(a.approval, "never");
+                assert_eq!(a.sandbox, "workspace-write");
+            }
+            other => panic!("CodexRelay 서브커맨드 기대, 실제: {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "worker")]
+    #[test]
+    fn codex_relay_accepts_explicit_window_and_policy_overrides() {
+        let cli = Cli::try_parse_from([
+            "tunaround",
+            "codex-relay",
+            "--ws",
+            "ws://x:8790",
+            "--codex-human-window-mins",
+            "30",
+            "--approval",
+            "on-request",
+            "--sandbox",
+            "danger-full-access",
+        ])
+        .expect("파싱 성공");
+        match cli.command {
+            Some(Commands::CodexRelay(a)) => {
+                assert_eq!(a.codex_human_window_mins, 30);
+                assert_eq!(a.approval, "on-request");
+                assert_eq!(a.sandbox, "danger-full-access");
+            }
+            other => panic!("CodexRelay 서브커맨드 기대, 실제: {other:?}"),
         }
     }
 }
