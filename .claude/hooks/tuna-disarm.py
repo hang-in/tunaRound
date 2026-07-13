@@ -50,6 +50,10 @@ def main() -> int:
             (tuna_arm.state_dir() / f"{safe_id}.rx").unlink()
         except Exception:
             pass
+
+    # tombstone·고아 .rx GC(무한 축적 방지, 실측 2일 155개). SessionEnd마다(=이 훅이 도는 시점) 훑어
+    # stale 창을 넘긴 것만 지운다 - 자주 도는 훅이라 별도 스케줄러 없이도 주기적으로 정리된다.
+    tuna_arm.gc_stale_markers()
     return 0
 
 

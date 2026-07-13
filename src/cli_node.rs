@@ -535,12 +535,88 @@ pub fn run_doctor(cfg_path: Option<&str>) -> i32 {
         }
     }
 
+    // 훅 배포 동기화 진단(#6, 정보성 - exit code에 영향 없음). 바이너리와 달리 훅에는 sync 메커니즘이
+    // 없어(각 머신이 ~/.claude/hooks에 수동 복사한 사본을 실제로 실행), 레포 훅을 고쳐 머지해도 각
+    // 머신 사본을 재복사하기 전까지 반영되지 않는 잠복 문제가 있었다. 레포 밖에서 doctor를 돌리는
+    // 경우(레포 .claude/hooks가 cwd 기준으로 없음)는 조용히 스킵한다.
+    check_hook_sync();
+
     if fails == 0 {
         println!("\n진단 통과. `tunaround node`로 상주하세요.");
         0
     } else {
         println!("\n{fails}개 항목 FAIL. 위를 고친 뒤 다시 진단하세요.");
         1
+    }
+}
+
+/// 레포 훅 파일 하나와 그 배포 사본의 비교 결과(#6, 순수부 - 테스트 용이하게 IO만 여기서 하고 판정은
+/// 반환값으로 낸다).
+#[cfg(all(feature = "serve", feature = "worker"))]
+#[derive(Debug, PartialEq)]
+enum HookSyncStatus {
+    Match,
+    Mismatch,
+    Missing,
+}
+
+/// 레포 훅 경로와 배포 사본 경로를 바이트 단위로 비교한다. 레포 파일 자체를 못 읽으면 None(비교
+/// 불가 - 호출부가 건너뜀).
+#[cfg(all(feature = "serve", feature = "worker"))]
+fn hook_sync_status(
+    repo_path: &std::path::Path,
+    home_path: &std::path::Path,
+) -> Option<HookSyncStatus> {
+    let repo_bytes = std::fs::read(repo_path).ok()?;
+    Some(match std::fs::read(home_path) {
+        Ok(home_bytes) if home_bytes == repo_bytes => HookSyncStatus::Match,
+        Ok(_) => HookSyncStatus::Mismatch,
+        Err(_) => HookSyncStatus::Missing,
+    })
+}
+
+/// 레포 `.claude/hooks/*.py`와 실제 실행되는 `~/.claude/hooks/*.py` 사본을 바이트 단위로 비교해
+/// 불일치·부재를 WARN으로 보고한다(#6, doctor의 기존 OK/WARN/FAIL 출력 패턴을 따름). 레포 훅
+/// 디렉터리가 없으면(cwd가 레포 밖) 아무것도 출력하지 않고 조용히 스킵한다. 정보성 진단이라 doctor의
+/// fail count·exit code는 건드리지 않는다.
+#[cfg(all(feature = "serve", feature = "worker"))]
+fn check_hook_sync() {
+    let repo_hooks = std::path::Path::new(".claude/hooks");
+    let Ok(entries) = std::fs::read_dir(repo_hooks) else {
+        return; // 레포 밖에서 실행 - 비교 대상 없음, 조용히 스킵.
+    };
+    let home_hooks = tunaround::config::expand_home("~/.claude/hooks");
+    let mut checked = 0usize;
+    let mut mismatched = 0usize;
+    for e in entries.flatten() {
+        let path = e.path();
+        if path.extension().and_then(|x| x.to_str()) != Some("py") {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        let dest = std::path::Path::new(&home_hooks).join(name);
+        let Some(status) = hook_sync_status(&path, &dest) else {
+            continue; // 레포 훅 자체를 못 읽으면 비교 불가 - 조용히 건너뜀.
+        };
+        checked += 1;
+        match status {
+            HookSyncStatus::Match => {}
+            HookSyncStatus::Mismatch => {
+                mismatched += 1;
+                println!(
+                    "WARN hook {name}: 레포 사본과 ~/.claude/hooks 사본 내용이 다릅니다(재복사 필요할 수 있음)"
+                );
+            }
+            HookSyncStatus::Missing => {
+                mismatched += 1;
+                println!("WARN hook {name}: ~/.claude/hooks에 사본 없음(미배포)");
+            }
+        }
+    }
+    if checked > 0 && mismatched == 0 {
+        println!("OK   hooks: 레포 훅 {checked}개 전부 ~/.claude/hooks 사본과 일치");
     }
 }
 
@@ -559,6 +635,33 @@ mod tests {
             ["win", "mac", "unix"].contains(&m.as_str()),
             "감지된 머신 태그: {m}"
         );
+    }
+
+    #[test]
+    fn hook_sync_status_matches_mismatches_and_missing() {
+        let dir = std::env::temp_dir().join(format!("tuna-hooksync-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let repo = dir.join("repo.py");
+        let same = dir.join("same.py");
+        let diff = dir.join("diff.py");
+        let missing = dir.join("missing.py");
+        std::fs::write(&repo, "print(1)").unwrap();
+        std::fs::write(&same, "print(1)").unwrap();
+        std::fs::write(&diff, "print(2)").unwrap();
+
+        assert_eq!(hook_sync_status(&repo, &same), Some(HookSyncStatus::Match));
+        assert_eq!(
+            hook_sync_status(&repo, &diff),
+            Some(HookSyncStatus::Mismatch)
+        );
+        assert_eq!(
+            hook_sync_status(&repo, &missing),
+            Some(HookSyncStatus::Missing)
+        );
+        // 레포 파일 자체가 없으면 비교 불가(None).
+        assert_eq!(hook_sync_status(&missing, &same), None);
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

@@ -23,7 +23,10 @@ MODEL_DIR="$KIWI_DIR/models/cong/base"
 echo "[kiwi-install] 대상 경로: $KIWI_DIR"
 
 # ── 멱등 체크 ──────────────────────────────────────────────────────────────────
-if [ -f "$LIB_DIR/kiwi.dll" ] && [ -d "$MODEL_DIR" ]; then
+# MODEL_DIR은 아래에서 tgz 추출 전에 먼저 mkdir로 생기므로, 디렉터리 존재만 보면 dll은 성공했으나
+# 모델 추출이 실패한 반쪽 설치(dll+빈 MODEL_DIR)를 "이미 설치됨"으로 오판해 건너뛴다. 실제로 모델
+# 파일이 들어있는지(비어있지 않은지)까지 확인한다.
+if [ -f "$LIB_DIR/kiwi.dll" ] && [ -d "$MODEL_DIR" ] && [ -n "$(ls -A "$MODEL_DIR" 2>/dev/null)" ]; then
   echo "[kiwi-install] 이미 설치돼 있습니다. 건너뜁니다."
   echo "[kiwi-install] dll: $LIB_DIR/kiwi.dll"
   echo "[kiwi-install] 모델: $MODEL_DIR"

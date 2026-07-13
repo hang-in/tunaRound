@@ -86,6 +86,47 @@ def state_dir() -> Path:
     return d
 
 
+# tombstone(.ctx="dead") GC 임계값(분): 시간창 게이트(240분)+여유. 이보다 오래된 것만 지운다 - 같은
+# id의 resume은 SessionStart의 write_marker가 .ctx를 재생성하므로 삭제해도 부활에 지장 없다.
+_STALE_MARKER_MINUTES = 360
+
+
+def gc_stale_markers(max_age_minutes: int = _STALE_MARKER_MINUTES) -> None:
+    """오래된 tombstone(.ctx="dead") + 고아 .rx(대응 .ctx 없음)를 정리한다.
+
+    SessionEnd(tuna-disarm)마다 .ctx에 "dead"를 남기지만 이를 지우는 경로가 없어 무한 축적된다
+    (실측 2일 155개, 스캐너가 매 주기 전 .ctx를 read_to_string해 파일 수에 비례해 IO 증가). 이 함수는
+    stale 창을 넘긴 tombstone만 지운다(살아있는 Pid/Unknown 마커는 스캐너 판정에 맡기고 건드리지
+    않는다). best-effort: 개별 파일 오류는 무시하고 계속한다(정리 실패가 세션을 막으면 안 됨).
+    """
+    try:
+        d = state_dir()
+        cutoff = time.time() - max_age_minutes * 60
+        # 1) 오래된 tombstone(dead) .ctx 삭제.
+        for p in d.glob("*.ctx"):
+            try:
+                if p.stat().st_mtime >= cutoff:
+                    continue  # 아직 신선 - 재생성(resume) 유예 기간 안이라 유지.
+                if p.read_text(encoding="utf-8").strip() != "dead":
+                    continue  # tombstone만 대상(Pid/Unknown 마커는 스캐너가 별도 판정).
+                p.unlink()
+            except Exception:
+                continue
+        # 2) 대응 .ctx가 없는(위 삭제 반영 후) 오래된 고아 .rx 삭제(수신 지시 1회 마커의 잔재 청소).
+        ctx_stems = {p.stem for p in d.glob("*.ctx")}
+        for p in d.glob("*.rx"):
+            try:
+                if p.stem in ctx_stems:
+                    continue
+                if p.stat().st_mtime >= cutoff:
+                    continue
+                p.unlink()
+            except Exception:
+                continue
+    except Exception:
+        pass
+
+
 def is_temp_cwd(cwd) -> bool:
     """cwd가 시스템 temp 아래인지. 자동화가 %TEMP%에서 돌리는 headless 세션은 로스터 노이즈라
     안내·핑 대상에서 제외한다(2026-07-10 실측)."""

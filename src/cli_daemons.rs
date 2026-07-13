@@ -245,8 +245,16 @@ pub fn presence_scan(rt: &tokio::runtime::Runtime, a: PresenceScanArgs) {
         let interval = a.interval.max(1);
         let mut last_report = String::new();
         // codex 입력 신호 tail 스캔의 주기 간 캐시(uuid→(mtime, human_input_at)). mtime 무변경 rollout은
-        // 재스캔을 건너뛴다(v2-45 P5).
-        let mut codex_input_cache = tunaround::presence_scan::CodexInputCache::new();
+        // 재스캔을 건너뛴다(v2-45 P5). 인메모리라 데몬 재시작(매 배포)마다 비었었는데, 마지막 사람입력이
+        // 256KB tail 밖으로 밀린 장기 codex 세션이 재스캔 None+게이트 드롭될 수 있어(#88 minor2 후속),
+        // 디스크 스냅샷에서 기동 첫 주기에 seed하고 매 주기 갱신 저장한다(취약성 완화, 완전 해결은 아님).
+        let codex_cache_path = home
+            .as_deref()
+            .map(|h| h.join(".tunaround").join("presence-codex-input.json"));
+        let mut codex_input_cache = match &codex_cache_path {
+            Some(p) => tunaround::presence_scan::load_codex_input_cache_from_disk(p),
+            None => tunaround::presence_scan::CodexInputCache::new(),
+        };
         // P8 유휴-열림 세션 캐시: 프로세스 스냅샷 성공 주기에 갱신하고, 실패(None) 주기엔 직전 세트를
         // 유지해 fresh 세션과 대칭으로 None 주기 깜빡임(→ sync_presence stale 제거·★ GC)을 막는다
         // (적대 리뷰 finding 1). 스냅샷이 실제로 죽음을 확인한 세션은 다음 성공 주기에 자연히 빠진다.
@@ -270,6 +278,10 @@ pub fn presence_scan(rt: &tokio::runtime::Runtime, a: PresenceScanArgs) {
                     home.as_deref(),
                     Some(&mut codex_input_cache),
                 ));
+                // 매 주기 갱신 저장(best-effort, #88 minor2 후속 - 다음 재시작이 이 스냅샷을 seed로 쓴다).
+                if let Some(p) = &codex_cache_path {
+                    tunaround::presence_scan::save_codex_input_cache_to_disk(p, &codex_input_cache);
+                }
             }
             // tombstone(깨끗한 종료 확정)은 프로세스 스냅샷과 무관하게 항상 제거한다(v2-46:
             // 스냅샷 실패 주기에도 직전 종료 세션이 유령 B석으로 남지 않게). last_idle 캐시에도 적용해,

@@ -73,11 +73,21 @@ pub fn build_registry(
     search_token: Option<&str>,
 ) -> Result<MapRegistry, String> {
     let mut reg = MapRegistry::new();
-    let mut seen: Vec<String> = Vec::new();
+    // engine명 → 첫 좌석 참조. 같은 engine명 두 번째 좌석부터는 러너를 새로 만들지 않고 첫 좌석
+    // 러너를 공유하는데(#10), 그 좌석 설정(base_url·model·api_key_env)이 첫 좌석과 다르면 조용히
+    // 무시되던 것을 경고로 표면화한다. 완전히 동일한 중복은 조용히 스킵 유지.
+    let mut seen: std::collections::HashMap<String, &SeatConfig> = std::collections::HashMap::new();
     for seat in &roster.seats {
-        if seen.contains(&seat.engine) {
+        if let Some(&first) = seen.get(&seat.engine) {
+            if seat_configs_conflict(first, seat) {
+                eprintln!(
+                    "[roster] 경고: engine '{}' 중복 좌석의 설정이 다릅니다 - 첫 좌석 base_url={:?} model={:?}가 쓰이고 이 좌석 base_url={:?} model={:?}는 무시됩니다",
+                    seat.engine, first.base_url, first.model, seat.base_url, seat.model
+                );
+            }
             continue;
         }
+        seen.insert(seat.engine.clone(), seat);
         match seat.engine.as_str() {
             "claude" => reg.insert(
                 "claude",
@@ -141,9 +151,14 @@ pub fn build_registry(
                 }
             }
         }
-        seen.push(seat.engine.clone());
     }
     Ok(reg)
+}
+
+/// 두 좌석의 러너 생성 관련 설정(base_url·model·api_key_env)이 다른지 판정한다(순수부, #10). 같은
+/// engine명 중복 좌석에서 build_registry가 이 판정으로 경고 여부를 정한다.
+fn seat_configs_conflict(a: &SeatConfig, b: &SeatConfig) -> bool {
+    a.base_url != b.base_url || a.model != b.model || a.api_key_env != b.api_key_env
 }
 
 #[cfg(test)]
@@ -214,6 +229,43 @@ mod tests {
     fn empty_seats_is_error() {
         let roster = parse_roster(r#"{"seats":[]}"#).unwrap();
         assert!(build_participants_checked(&roster).is_err());
+    }
+
+    #[test]
+    fn seat_configs_conflict_detects_model_mismatch_and_ignores_identical_dupes() {
+        // #10: 같은 engine명 두 좌석의 model이 다르면 경고 대상(true), 완전히 동일하면 조용히 스킵(false).
+        let base = SeatConfig {
+            engine: "opencode".to_string(),
+            role: None,
+            instruction: String::new(),
+            base_url: None,
+            model: Some("gemma3".to_string()),
+            api_key_env: None,
+        };
+        let mut different_model = base.clone();
+        different_model.model = Some("gemma4".to_string());
+        assert!(seat_configs_conflict(&base, &different_model));
+
+        let identical = base.clone();
+        assert!(!seat_configs_conflict(&base, &identical));
+
+        let mut different_base_url = base.clone();
+        different_base_url.base_url = Some("http://127.0.0.1:9".to_string());
+        assert!(seat_configs_conflict(&base, &different_base_url));
+    }
+
+    #[test]
+    fn build_registry_duplicate_engine_with_different_model_still_ok_first_wins() {
+        // 경고(eprintln)를 내지만 build_registry 자체는 여전히 성공하고, 두 번째 좌석 설정은
+        // 무시된 채 첫 좌석 러너가 유지된다(완전 동일 중복과 같은 스킵 경로, 경고만 추가됨).
+        let roster = parse_roster(
+            r#"{"seats":[
+                {"engine":"opencode","model":"gemma3"},
+                {"engine":"opencode","model":"gemma4"}
+            ]}"#,
+        )
+        .unwrap();
+        assert!(build_registry(&roster, None, None, None).is_ok());
     }
 
     #[cfg(feature = "engines")]
