@@ -192,7 +192,12 @@ pub fn decide_action(msg: &IncomingMessage, our_thread_id: &str) -> InjectAction
 /// 원본 메시지를 다시 들여다볼 때 쓴다(decide_action은 판정 후 TurnCompleted를 버린다).
 fn notification_turn_id(incoming: &IncomingMessage) -> Option<String> {
     if let IncomingMessage::Notification { method, params } = incoming {
-        is_turn_completed(method, params).map(|tc| tc.turn_id)
+        // 서버가 turn_id를 빈 문자열로 주면 '없음(None)'과 같게 취급한다(gemini medium: Some("")이
+        // turn_completion_matches에서 정확일치 비교에 걸려 우리 턴 완료를 영영 못 잡는 것 방지 →
+        // None이면 threadId-only 폴백).
+        is_turn_completed(method, params)
+            .map(|tc| tc.turn_id)
+            .filter(|id| !id.is_empty())
     } else {
         None
     }
@@ -525,7 +530,7 @@ async fn pump_turn(
         // turn/start 자신의 응답: turn id만 캐시하고 완료 판정 루프로 넘기지 않는다(에러 응답은 기존
         // decide_action과 동일하게 즉시 실패로 surface).
         if let IncomingMessage::Response { id, result, error } = &incoming
-            && *id == json!(start_id)
+            && id.as_u64() == Some(start_id)
         {
             if let Some(e) = error {
                 return Err(format!("codex-inject: turn/start 에러 응답: {e}"));
