@@ -54,8 +54,14 @@ def main() -> int:
     # 지시를 주입해 스스로 수신 루프를 걸게 한다. 사용자가 A2A를 수동으로 챙기지 않는 것이
     # 제품의 존재 이유(no-shuttle). .rx 마커 = 주입 1회 보장(O_EXCL, 다중 발화 안전).
     cwd = payload.get("cwd") or ""
+    # 비대화형(스크립트/워크플로 스폰) 세션은 사람 입력이 아니므로 ★(총감독) 판정과 수신 루프 주입을
+    # 오염시키면 안 된다: %TEMP% cwd(자동화 관행)는 is_temp_cwd로, 프로젝트 cwd headless 스폰은 스포너가
+    # TUNA_NO_HUMAN_PING로 옵트아웃한다(cfg는 파일 우선이라 env로 못 끄므로 os.environ 직접 조회).
+    suppress_human = tuna_arm.is_temp_cwd(cwd) or os.environ.get(
+        "TUNA_NO_HUMAN_PING", ""
+    ).strip().lower() in ("1", "true", "yes")
     safe_id = tuna_arm.sanitize_session_id(session_id)
-    if safe_id and not tuna_arm.is_temp_cwd(cwd):
+    if safe_id and not suppress_human:
         rx = tuna_arm.state_dir() / f"{safe_id}.rx"
         try:
             fd = os.open(str(rx), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
@@ -81,6 +87,10 @@ def main() -> int:
             pass
         except Exception:
             pass
+
+    # ★ 오염 방지: 비대화형 세션은 human-ping을 보내지 않는다(총감독 = 사람이 앉은 세션 불변).
+    if suppress_human:
+        return 0
 
     # 핑: {core-base}/dashboard/human-ping {agent=세션 id}. core는 .../mcp라 base로 절단.
     c = tuna_arm.broker_core().rstrip("/")

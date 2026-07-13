@@ -4,12 +4,13 @@
 use crate::cli::InitArgs;
 
 /// lane.runner(문자열)로부터 Runner를 만든다. 알 수 없는 이름·미충족 피처는 Err.
-// token은 runner=http(engines) 경로에서만 쓰여, engines 미포함 빌드에선 미사용이 정상이다.
+// _token(브로커 인증)은 어느 runner 분기도 쓰지 않는다: http는 lane.http_api_key(분리된 전용 키)를
+// 쓰고, a2a는 lane.a2a_token을 쓴다(브로커 토큰이 외부 엔드포인트로 새지 않도록 분리, 보안 하드닝).
+// 시그니처는 호출부 호환을 위해 유지한다.
 #[cfg(feature = "worker")]
-#[cfg_attr(not(feature = "engines"), allow(unused_variables))]
 pub fn build_lane_runner(
     lane: &tunaround::config::Lane,
-    token: &Option<String>,
+    _token: &Option<String>,
 ) -> Result<std::sync::Arc<dyn tunaround::runner::Runner + Send + Sync>, String> {
     use std::sync::Arc;
     let runner: Arc<dyn tunaround::runner::Runner + Send + Sync> = match lane.runner.as_str() {
@@ -27,7 +28,8 @@ pub fn build_lane_runner(
             Arc::new(tunaround::runner::http::OpenAiChatRunner::new(
                 base,
                 lane.model.as_deref().unwrap_or(""),
-                token.clone(),
+                // 빈/공백 http_api_key는 무헤더(None)로 강등(coderabbit/gemini).
+                lane.http_api_key.clone().filter(|k| !k.trim().is_empty()),
             ))
         }
         #[cfg(not(feature = "engines"))]

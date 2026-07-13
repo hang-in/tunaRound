@@ -7,6 +7,10 @@ use clap::{Args, Parser, Subcommand};
 pub const ENV_BROKER_CORE: &str = "TUNA_BROKER_CORE";
 #[cfg_attr(not(any(feature = "serve", feature = "worker")), allow(dead_code))]
 pub const ENV_BROKER_TOKEN: &str = "TUNA_BROKER_TOKEN";
+// http 러너(OpenAI 호환 엔드포인트) 전용 API 키 env. 브로커 인증(TUNA_BROKER_TOKEN)과 분리해,
+// work --runner http가 브로커 토큰을 외부 LLM 엔드포인트로 재사용하지 않게 한다.
+#[cfg_attr(not(all(feature = "worker", feature = "engines")), allow(dead_code))]
+pub const ENV_HTTP_API_KEY: &str = "TUNA_HTTP_API_KEY";
 #[cfg_attr(not(feature = "worker"), allow(dead_code))]
 pub const ENV_USERPROFILE: &str = "USERPROFILE";
 #[cfg_attr(not(feature = "worker"), allow(dead_code))]
@@ -228,6 +232,11 @@ pub struct WorkArgs {
     /// --runner http 전용: OpenAI 호환 chat API의 base URL(예: http://localhost:11434).
     #[arg(long = "http-base-url")]
     pub http_base_url: Option<String>,
+    /// --runner http 전용: OpenAI 호환 엔드포인트 API 키. 브로커 인증(--token)과 분리되어 있어, 이
+    /// 값이 없으면 외부 엔드포인트로 브로커 토큰이 새지 않고 무헤더로 보낸다. 미지정 시
+    /// TUNA_HTTP_API_KEY env 폴백(argv 노출 회피).
+    #[arg(long = "http-api-key")]
+    pub http_api_key: Option<String>,
     /// --runner a2a 전용: 외부 표준 A2A 에이전트 카드 발견 URL(예: http://some-agent.example/).
     #[arg(long = "a2a-card")]
     pub a2a_card: Option<String>,
@@ -743,6 +752,44 @@ mod cli_tests {
                 );
             }
             other => panic!("Poll 서브커맨드 기대, 실제: {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "worker")]
+    #[test]
+    fn work_http_api_key_parses_separately_from_broker_token() {
+        // --token(브로커 인증)과 --http-api-key(외부 http 러너 엔드포인트 인증)는 별개 필드다
+        // (보안 하드닝: 브로커 토큰이 외부 LLM 엔드포인트로 재사용되지 않게 분리).
+        let cli = Cli::try_parse_from([
+            "tunaround",
+            "work",
+            "--core",
+            "http://127.0.0.1:8770/mcp",
+            "--token",
+            "broker-tok",
+            "--http-base-url",
+            "http://localhost:11434",
+            "--http-api-key",
+            "outbound-key",
+        ])
+        .expect("파싱 성공");
+        match cli.command {
+            Some(Commands::Work(a)) => {
+                assert_eq!(a.token.as_deref(), Some("broker-tok"));
+                assert_eq!(a.http_api_key.as_deref(), Some("outbound-key"));
+            }
+            other => panic!("Work 서브커맨드 기대, 실제: {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "worker")]
+    #[test]
+    fn work_http_api_key_is_optional() {
+        let cli = Cli::try_parse_from(["tunaround", "work", "--core", "http://127.0.0.1:8770/mcp"])
+            .expect("파싱 성공");
+        match cli.command {
+            Some(Commands::Work(a)) => assert_eq!(a.http_api_key, None),
+            other => panic!("Work 서브커맨드 기대, 실제: {other:?}"),
         }
     }
 
