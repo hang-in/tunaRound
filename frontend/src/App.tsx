@@ -115,12 +115,12 @@ export default function App() {
 
   // taskId의 타이머를 교체 등록한다(기존 것 정리 후). 발화 시 자기 항목을 맵에서 지운다.
   const setTransientTimer = useCallback(
-    (taskId: string, cb: () => void, ms: number) => {
+    (taskId: string, onExpire: () => void, delayMs: number) => {
       clearTransientTimer(taskId)
       const timerId = window.setTimeout(() => {
         transientTimersRef.current.delete(taskId)
-        cb()
-      }, ms)
+        onExpire()
+      }, delayMs)
       transientTimersRef.current.set(taskId, timerId)
     },
     [clearTransientTimer],
