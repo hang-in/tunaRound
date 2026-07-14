@@ -391,12 +391,29 @@ fn drain_complete_lines(buf: &mut Vec<u8>, chunk: &[u8]) -> Vec<String> {
     lines
 }
 
+/// 세션 마커(이슈 #118) 점검 주기(초). digest flush_at처럼 접속 루프 안의 자체 타이머다 - 건강한
+/// SSE 접속 중엔(총괄이 한동안 task를 안 던지면) 이벤트 프레임이 뜸하거나 아예 없을 수 있어, 바깥
+/// 재접속 루프(단절 시에만 도는)만으로는 마커가 dead여도 다음 단절까지 검사할 기회가 없다.
+const SESSION_MARKER_CHECK_SECS: u64 = 15;
+
+/// run_once의 반환값(단절 사유의 두 갈래, 이슈 #118). MarkerGone은 세션 자동무장 마커가 사라지거나
+/// (/clear·창닫기) tombstone("dead", tuna-disarm.py)돼 이 인박스도 함께 정상 종료해야 함을 뜻한다 -
+/// 호출부(run)가 이 경우 재접속을 시도하지 않고 즉시 Ok(())로 빠진다. 그 외 단절은 기존처럼
+/// Disconnected(사유 문자열)로 실려 재접속·백오프 판정에 쓰인다.
+#[derive(Debug, PartialEq)]
+enum RunEnd {
+    MarkerGone,
+    Disconnected(String),
+}
+
 /// SSE 접속 1회분: 접속해 끊길 때까지 이벤트를 처리하고, 단절 사유를 돌려준다. 서버가 잘린
 /// 재생 스냅샷 후 스트림을 정상 종료하는 catch-up 경로(P3 서버 계약)도 "스트림 종료" 단절로
 /// 돌아와 호출부 재접속 루프가 전진한 워터마크로 이어받는다.
 /// 2xx 스트림 수립에 성공하면 *connected_at=수립 시점(호출부가 순수 생존 시간으로 실패 카운터
 /// 리셋을 판정할 근거), 결과를 1건이라도 통지하면 *progressed=true(catch-up 연쇄 판정 근거).
 /// state(seen·pending·flush_at·watermark)는 호출부(재접속 루프) 소유라 재접속을 넘어 유지된다.
+/// `session_marker`가 있으면(이슈 #118) 접속 중에도 [`SESSION_MARKER_CHECK_SECS`]마다 종료를
+/// 점검한다.
 async fn run_once(
     client: &reqwest::Client,
     url: &str,
@@ -405,15 +422,16 @@ async fn run_once(
     state: &mut InboxState,
     connected_at: &mut Option<tokio::time::Instant>,
     progressed: &mut bool,
-) -> String {
+    session_marker: Option<&std::path::Path>,
+) -> RunEnd {
     use futures_util::StreamExt;
     use std::io::Write;
     let resp = match client.get(url).send().await {
         Ok(r) => r,
-        Err(e) => return format!("SSE 접속 실패({url}): {e}"),
+        Err(e) => return RunEnd::Disconnected(format!("SSE 접속 실패({url}): {e}")),
     };
     if !resp.status().is_success() {
-        return format!("SSE 상태 {}", resp.status());
+        return RunEnd::Disconnected(format!("SSE 상태 {}", resp.status()));
     }
     *connected_at = Some(tokio::time::Instant::now());
     eprintln!("[watch-results] {url} 구독 시작 (dispatcher={dispatcher}, digest={digest_secs}s)");
@@ -422,8 +440,19 @@ async fn run_once(
     // 접속마다 새로 시작한다(끊긴 접속의 반쪽 라인을 새 스트림에 이어 붙이면 오염).
     let mut buf: Vec<u8> = Vec::new();
     let mut stream = resp.bytes_stream();
+    // 세션 마커 주기 점검용 인터벌. session_marker가 None이면 select! 가드로 이 분기 자체가
+    // 비활성화되므로 tick()이 불려도(호출되지 않아도) 무해하다.
+    let mut marker_check =
+        tokio::time::interval(std::time::Duration::from_secs(SESSION_MARKER_CHECK_SECS));
+    marker_check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         tokio::select! {
+            _ = marker_check.tick(), if session_marker.is_some() => {
+                // unwrap 안전: 이 분기는 session_marker.is_some()일 때만 선택된다.
+                if crate::worker::session_marker_terminated(session_marker.unwrap()) {
+                    return RunEnd::MarkerGone;
+                }
+            }
             // digest 마감: 묶인 completed를 한 번에 내보낸다(출력 burst 1회 = 총괄 wake 1회).
             _ = async { tokio::time::sleep_until(state.flush_at.unwrap()).await }, if state.flush_at.is_some() => {
                 flush_pending(&mut state.pending);
@@ -432,11 +461,11 @@ async fn run_once(
             }
             chunk = stream.next() => {
                 let Some(chunk) = chunk else {
-                    return "SSE 스트림이 종료됨".to_string();
+                    return RunEnd::Disconnected("SSE 스트림이 종료됨".to_string());
                 };
                 let chunk = match chunk {
                     Ok(c) => c,
-                    Err(e) => return format!("스트림 오류: {e}"),
+                    Err(e) => return RunEnd::Disconnected(format!("스트림 오류: {e}")),
                 };
                 for line in drain_complete_lines(&mut buf, &chunk) {
                     let Some(data) = line.trim_end().strip_prefix("data: ") else {
@@ -450,7 +479,7 @@ async fn run_once(
                         eprintln!(
                             "[watch-results] 서버 브로드캐스트 지연(lagged) 신호 수신 - 워터마크 보류, 재접속"
                         );
-                        return "서버 lagged 신호 수신(워터마크 보류·재접속)".to_string();
+                        return RunEnd::Disconnected("서버 lagged 신호 수신(워터마크 보류·재접속)".to_string());
                     }
                     let Some(result) = parse_result_line(data, dispatcher, &mut state.seen) else {
                         continue;
@@ -488,11 +517,17 @@ async fn run_once(
 /// v2-45 P3: (재)접속 때 워터마크가 있으면 `?since=`로 구독해 인박스 다운 중 완료된 task를
 /// 서버 재생으로 선행 수신한다(통지 유실 해소). 워터마크 초기값 = --since 오버라이드 > 상태 파일 >
 /// 없음(재생 없이 라이브부터).
+///
+/// `session_marker`가 있으면(이슈 #118) 세션 자동무장 마커(.ctx)가 사라지거나 tombstone("dead")
+/// 되는 순간 이 인박스도 stdout 한 줄을 남기고 Ok(())로 정상 종료한다(/clear·창닫기 후 유령
+/// watch-results가 영구 잔존하는 것 방지). 접속 중엔 run_once가 주기 점검하고, 접속 시도 자체가
+/// 반복 실패해 run_once에 못 들어가는 상황(코어 다운 등)도 대비해 재접속 직전에 한 번 더 점검한다.
 pub async fn run(
     core: &str,
     dispatcher: &str,
     digest_secs: u64,
     since_override: Option<&str>,
+    session_marker: Option<std::path::PathBuf>,
 ) -> Result<(), String> {
     // connect timeout만 둔다(SSE 바디는 무한정 열려 있어야 하므로 전체 요청 timeout은 두지 않는다).
     // TCP는 붙었는데 응답이 없는 상황(방화벽 drop)에서 send가 무한 대기하는 것을 막는다.
@@ -542,11 +577,22 @@ pub async fn run(
     };
     let mut consecutive_failures: u32 = 0;
     loop {
+        // 재접속 직전 마커 점검(이슈 #118): run_once 안에서 접속조차 못 하고 곧바로 리턴을
+        // 반복하는 상황(코어 다운 등)에서도, 이 검사가 없으면 죽은 세션의 유령 인박스가 계속
+        // 백오프·재접속만 반복하며 살아남는다. 건강한 접속 중의 점검은 run_once가 맡는다.
+        if let Some(m) = &session_marker
+            && crate::worker::session_marker_terminated(m)
+        {
+            println!("[watch-results] 세션 마커 종료(dead) - 수신 루프 정상 종료");
+            use std::io::Write;
+            let _ = std::io::stdout().flush();
+            return Ok(());
+        }
         // 매 접속마다 현재 워터마크로 URL을 다시 조립한다(재접속 = 전진한 워터마크부터 재생).
         let url = build_events_url(core, dispatcher, state.watermark.as_deref());
         let mut connected_at: Option<tokio::time::Instant> = None;
         let mut progressed = false;
-        let reason = run_once(
+        let end = run_once(
             &client,
             &url,
             dispatcher,
@@ -554,13 +600,23 @@ pub async fn run(
             &mut state,
             &mut connected_at,
             &mut progressed,
+            session_marker.as_deref(),
         )
         .await;
-        // 모든 단절 경로(접속 실패·비2xx·스트림 종료·청크 오류)에서 pending을 먼저 flush한다
-        // (digest 묶음 유실 방지). flush했으니 예정 시각도 지우고 워터마크를 영속한다.
+        // 모든 단절 경로(접속 실패·비2xx·스트림 종료·청크 오류·마커 종료)에서 pending을 먼저
+        // flush한다(digest 묶음 유실 방지). flush했으니 예정 시각도 지우고 워터마크를 영속한다.
         flush_pending(&mut state.pending);
         state.flush_at = None;
         state.persist_if_drained();
+        let reason = match end {
+            RunEnd::MarkerGone => {
+                println!("[watch-results] 세션 마커 종료(dead) - 수신 루프 정상 종료");
+                use std::io::Write;
+                let _ = std::io::stdout().flush();
+                return Ok(());
+            }
+            RunEnd::Disconnected(reason) => reason,
+        };
         // 실패 연쇄 리셋: 최소 생존을 넘긴 접속 외에, 결과를 1건이라도 실어 나른 접속도 건강으로
         // 본다(P3 catch-up 연쇄: 서버가 잘린 스냅샷 후 정상 종료 → 30초 미만 접속이 반복되는데,
         // 진전이 있는 한 실패 예산을 태우지 않고 백오프도 1s로 유지해 빠르게 따라잡는다).
@@ -1072,7 +1128,7 @@ mod tests {
         };
         let mut connected_at: Option<tokio::time::Instant> = None;
         let mut progressed = false;
-        let reason = run_once(
+        let end = run_once(
             &client,
             &url,
             "dashboard",
@@ -1080,11 +1136,13 @@ mod tests {
             &mut state,
             &mut connected_at,
             &mut progressed,
+            None, // 세션 마커 미지정(이슈 #118 무관 경로 검증).
         )
         .await;
 
         assert_eq!(
-            reason, "SSE 스트림이 종료됨",
+            end,
+            RunEnd::Disconnected("SSE 스트림이 종료됨".to_string()),
             "서버가 body를 다 보내고 연결을 닫으면 스트림 종료로 단절돼야 함"
         );
         assert!(

@@ -290,6 +290,12 @@ pub struct PollArgs {
     /// 예: --on-task 'codex exec resume --last "브로커 task {id}를 claim해서 처리하고 complete로 보고"'.
     #[arg(long)]
     pub on_task: Option<String>,
+    /// 세션 자동무장 마커(.ctx) 경로. 파일이 사라지거나 내용이 dead면 수신 루프를 정상 종료한다
+    /// (이슈 #118: /clear·창닫기 후에도 이 파일이 남아있으면 유령 poll이 계속 도는 것 방지).
+    /// 생략하면 종료 판정을 하지 않는다(기존 동작 불변). 주의: --on-task 사용 데몬은 task 실행
+    /// 블로킹(최대 30분)으로 종료가 지연될 수 있다.
+    #[arg(long = "session-marker")]
+    pub session_marker: Option<String>,
 }
 
 /// `watch-results` 서브커맨드(worker 피처 전용): 총괄이 던진 task의 완료/실패를 브로커 SSE로 받아
@@ -313,6 +319,11 @@ pub struct WatchResultsArgs {
     /// 되감지는 않는다(단조 영속). 생략 시 상태 파일(없으면 재생 없이 라이브부터, v2-45 P3).
     #[arg(long)]
     pub since: Option<String>,
+    /// 세션 자동무장 마커(.ctx) 경로. 파일이 사라지거나 내용이 dead면 수신 루프를 정상 종료한다
+    /// (이슈 #118: /clear·창닫기 후에도 이 파일이 남아있으면 유령 watch-results가 계속 도는 것 방지).
+    /// 생략하면 종료 판정을 하지 않는다(기존 동작 불변).
+    #[arg(long = "session-marker")]
+    pub session_marker: Option<String>,
 }
 
 /// `presence-scan` 서브커맨드(worker 피처 전용): 머신당 1개 상주하며 로컬 라이브 세션 전집합을
@@ -765,6 +776,75 @@ mod cli_tests {
                 );
             }
             other => panic!("Poll 서브커맨드 기대, 실제: {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "worker")]
+    #[test]
+    fn poll_parses_session_marker() {
+        // 이슈 #118: 세션 마커 경로가 poll에 배선돼 있어야 자가 종료 판정을 할 수 있다.
+        let cli = Cli::try_parse_from([
+            "tunaround",
+            "poll",
+            "--core",
+            "http://127.0.0.1:8770/mcp",
+            "--agent",
+            "sess-1",
+            "--session-marker",
+            "/home/u/.tunaround/autoarm/sess-1.ctx",
+        ])
+        .expect("파싱 성공");
+        match cli.command {
+            Some(Commands::Poll(a)) => {
+                assert_eq!(
+                    a.session_marker.as_deref(),
+                    Some("/home/u/.tunaround/autoarm/sess-1.ctx")
+                );
+            }
+            other => panic!("Poll 서브커맨드 기대, 실제: {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "worker")]
+    #[test]
+    fn poll_session_marker_defaults_to_none() {
+        // 미지정 시 종료 판정을 하지 않는 기존 동작이 유지돼야 한다.
+        let cli = Cli::try_parse_from([
+            "tunaround",
+            "poll",
+            "--core",
+            "http://127.0.0.1:8770/mcp",
+            "--agent",
+            "sess-1",
+        ])
+        .expect("파싱 성공");
+        match cli.command {
+            Some(Commands::Poll(a)) => assert_eq!(a.session_marker, None),
+            other => panic!("Poll 서브커맨드 기대, 실제: {other:?}"),
+        }
+    }
+
+    #[cfg(feature = "worker")]
+    #[test]
+    fn watch_results_parses_session_marker() {
+        // 이슈 #118: watch-results 총괄 인박스도 같은 마커 배선으로 자가 종료해야 한다.
+        let cli = Cli::try_parse_from([
+            "tunaround",
+            "watch-results",
+            "--core",
+            "http://127.0.0.1:8770",
+            "--session-marker",
+            "/home/u/.tunaround/autoarm/sess-2.ctx",
+        ])
+        .expect("파싱 성공");
+        match cli.command {
+            Some(Commands::WatchResults(a)) => {
+                assert_eq!(
+                    a.session_marker.as_deref(),
+                    Some("/home/u/.tunaround/autoarm/sess-2.ctx")
+                );
+            }
+            other => panic!("WatchResults 서브커맨드 기대, 실제: {other:?}"),
         }
     }
 

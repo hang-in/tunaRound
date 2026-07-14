@@ -525,6 +525,24 @@ fn run_on_task(cmd: &str, id: &str, msg: &str) {
     }
 }
 
+/// 세션 마커 내용으로 수신 루프 종료 여부를 판정하는 순수 함수(이슈 #118). SessionStart 훅
+/// (tuna-autoarm.py)이 세션당 `.ctx` 마커를 쓰고, SessionEnd 훅(tuna-disarm.py)은 파일을 지우지
+/// 않고 내용을 "dead"로 남긴다(tombstone) - 그래서 "파일이 사라짐"과 "내용이 dead"를 둘 다
+/// 종료 신호로 봐야 한다. PID 숫자나 "unknown"(owner 탐색 실패, tuna_arm.write_marker 참고)은
+/// 세션이 아직 산 것으로 보고 계속 수신한다.
+pub(crate) fn marker_gone(content: Option<&str>) -> bool {
+    match content {
+        None => true,
+        Some(c) => c.trim() == "dead",
+    }
+}
+
+/// [`marker_gone`]의 파일시스템 래퍼: 마커를 읽어 판정한다. 읽기 실패(파일 없음·권한 오류 등)는
+/// 전부 "부재"로 취급한다(None과 동치) - 판정 불가를 생존으로 오인해 유령을 살려두지 않는다.
+pub(crate) fn session_marker_terminated(path: &std::path::Path) -> bool {
+    marker_gone(std::fs::read_to_string(path).ok().as_deref())
+}
+
 /// 감시 전용 루프: agent 앞 새 submitted task만 알린다(claim은 하지 않는다).
 /// Claude Code 세션이 이 커맨드를 Monitor로 감싸면, task 도착이 stdout 이벤트로 세션을 깨워 스스로
 /// claim/처리하게 할 수 있다(감독 레인을 유휴 0토큰으로 운용). Monitor가 없는 하네스(codex 등)를 위해
@@ -532,6 +550,8 @@ fn run_on_task(cmd: &str, id: &str, msg: &str) {
 /// (task는 claim 전까지 submitted로 남아 매 폴마다 재등장하므로 중복 알림을 막는다).
 /// run_worker_loop와 동일하게 로스터 자기 등록(1회) + 매 패스 heartbeat로 online을 유지한다
 /// (감독도 AGENT_TTL_SECS를 넘기지 않아야 to_selector 발견 대상에서 stale로 빠지지 않는다).
+/// `session_marker`가 있으면(이슈 #118) 매 패스 시작 시 [`session_marker_terminated`]로 종료를
+/// 판정한다 - /clear·창닫기로 세션이 사라져도 마커가 남아 유령 poll이 영구 잔존하던 것을 없앤다.
 #[allow(clippy::too_many_arguments)] // CLI 인자를 그대로 받는 배선 함수(구조체화는 T4.7에서).
 pub async fn run_poll_loop(
     client: &McpHttpClient,
@@ -542,6 +562,7 @@ pub async fn run_poll_loop(
     on_task: Option<&str>,
     display_name: Option<&str>,
     register: bool,
+    session_marker: Option<std::path::PathBuf>,
 ) -> Result<(), String> {
     use std::io::Write;
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -571,6 +592,15 @@ pub async fn run_poll_loop(
     };
 
     loop {
+        // 세션 마커 종료 판정(이슈 #118): heartbeat·poll보다 먼저 확인해, 죽은 세션에 대해
+        // 불필요한 로스터 요청조차 내지 않고 즉시 정상 종료한다.
+        if let Some(m) = &session_marker
+            && session_marker_terminated(m)
+        {
+            println!("[poll] 세션 마커 종료(dead) - 수신 루프 정상 종료");
+            let _ = std::io::stdout().flush();
+            return Ok(());
+        }
         // online 유지. 코어가 재기동돼 로스터가 비었으면(미등록 응답) 재등록한다.
         if skip_heartbeat {
             skip_heartbeat = false;
@@ -1306,6 +1336,61 @@ mod tests {
             "미등록 uuid=x(register_agent 먼저 호출하세요)"
         ));
         assert!(!needs_reregister("heartbeat 갱신: x"));
+    }
+
+    // --- 이슈 #118: 세션 마커 종료 판정 ---
+
+    #[test]
+    fn marker_gone_none_is_gone() {
+        // 마커 부재(파일 삭제) = 종료. tuna-disarm.py는 보통 삭제 대신 tombstone("dead")을
+        // 남기지만, 파일 자체가 없는 경로(수동 삭제·GC)도 방어적으로 종료로 본다.
+        assert!(marker_gone(None));
+    }
+
+    #[test]
+    fn marker_gone_dead_content_is_gone() {
+        // SessionEnd 훅(tuna-disarm.py)의 tombstone 규약.
+        assert!(marker_gone(Some("dead")));
+        // 개행·공백이 섞여도 trim 후 판정(파일 쓰기 관례상 개행이 붙을 수 있음).
+        assert!(marker_gone(Some("dead\n")));
+        assert!(marker_gone(Some("  dead  ")));
+    }
+
+    #[test]
+    fn marker_gone_pid_content_is_alive() {
+        // owner PID 숫자 = 세션이 살아 있음(스캐너의 per-session 생존 판정과 동일 규약).
+        assert!(!marker_gone(Some("12345")));
+    }
+
+    #[test]
+    fn marker_gone_unknown_content_is_alive() {
+        // owner 탐색 실패 sentinel "unknown"은 죽음을 의미하지 않는다(보수적 유지).
+        assert!(!marker_gone(Some("unknown")));
+    }
+
+    #[test]
+    fn session_marker_terminated_reads_fs_and_matches_marker_gone() {
+        let dir = std::env::temp_dir().join(format!("tuna-worker-marker-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+
+        // 파일 없음 = 종료.
+        let missing = dir.join("missing.ctx");
+        let _ = std::fs::remove_file(&missing);
+        assert!(session_marker_terminated(&missing));
+
+        // dead tombstone = 종료.
+        let dead = dir.join("dead.ctx");
+        std::fs::write(&dead, "dead").unwrap();
+        assert!(session_marker_terminated(&dead));
+
+        // PID 내용 = 생존.
+        let alive = dir.join("alive.ctx");
+        std::fs::write(&alive, "98765").unwrap();
+        assert!(!session_marker_terminated(&alive));
+
+        let _ = std::fs::remove_file(&dead);
+        let _ = std::fs::remove_file(&alive);
+        let _ = std::fs::remove_dir(&dir);
     }
 
     // run_one_pass(run_worker_loop once=true 경유)의 claim->실행->complete/fail 계약 검증.

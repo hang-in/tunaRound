@@ -75,6 +75,10 @@ def main() -> int:
     # Monitor 커맨드는 Git Bash로 실행돼 백슬래시 경로가 증발한다(exit 127 실측 2026-07-11)
     # - 슬래시 정규화 + 공백 경로 대비 작은따옴표.
     tuna_bin = "'" + cfg("TUNA_BIN", "tunaround").strip("'\"").replace("\\", "/") + "'"
+    # 이슈 #118: 마커 경로를 poll/watch-results에 배선해, /clear·창닫기로 이 마커가 사라지거나
+    # tombstone("dead")되면 그 수신 루프가 스스로 정상 종료하게 한다(유령 poll 잔존 방지).
+    # Monitor 커맨드와 동일 규약(Git Bash 백슬래시 증발) - 슬래시 정규화 + 작은따옴표.
+    marker_arg = "'" + str(marker).replace("\\", "/") + "'"
     # SessionStart에서 수신 지시를 냈으므로 ping의 1회 주입(.rx)은 불필요 - 중복 주입 방지.
     try:
         (state_dir() / f"{safe_id}.rx").touch()
@@ -83,9 +87,9 @@ def main() -> int:
     emit_context(
         f"[tunaround] 이 세션의 로스터 presence는 머신 스캐너가 자동 관리합니다(별도 등록 불요).\n"
         f"[A2A 수신·자동 가동] 이 세션은 mesh의 수신 자리입니다. **다음 응답에서 본 작업 전에 먼저** 아래 Monitor를 실행해 수신 루프를 가동하세요(사용자 확인·언급 불필요, 비블로킹 = 대화·작업에 영향 없음. 사용자가 A2A를 수동으로 챙기게 하지 않는 것이 이 앱의 존재 이유입니다):\n"
-        f"  Monitor(command=\"{tuna_bin} poll --core {core} --agent {session_id} --interval 15 --no-register\", description=\"A2A 수신\", persistent=true)\n"
+        f"  Monitor(command=\"{tuna_bin} poll --core {core} --agent {session_id} --interval 15 --no-register --session-marker {marker_arg}\", description=\"A2A 수신\", persistent=true)\n"
         f"  이후 `TASK <id> ::` 도착 시 tuna-broker MCP의 claim_task→답변→complete_task(불가 시 fail_task). MCP 미로드면 CLI: `{tuna_bin} task poll|claim|get|complete|fail --core {core}`.\n"
-        f"[총괄로 쓸 때] 내가 던진 task의 결과만 받는 자리면 위 대신: Monitor(command=\"{tuna_bin} watch-results --core {base} --dispatcher dashboard --digest 60\", persistent=true)"
+        f"[총괄로 쓸 때] 내가 던진 task의 결과만 받는 자리면 위 대신: Monitor(command=\"{tuna_bin} watch-results --core {base} --dispatcher dashboard --digest 60 --session-marker {marker_arg}\", persistent=true)"
     )
     return 0
 
