@@ -537,10 +537,16 @@ pub(crate) fn marker_gone(content: Option<&str>) -> bool {
     }
 }
 
-/// [`marker_gone`]의 파일시스템 래퍼: 마커를 읽어 판정한다. 읽기 실패(파일 없음·권한 오류 등)는
-/// 전부 "부재"로 취급한다(None과 동치) - 판정 불가를 생존으로 오인해 유령을 살려두지 않는다.
+/// [`marker_gone`]의 파일시스템 래퍼: 마커를 읽어 판정한다. **NotFound만** 부재(=종료)로 취급하고,
+/// 그 외 IO 오류(권한·Windows 공유 위반 등 일시 오류)는 생존 유지로 본다(CodeRabbit) - 훅이 마커를
+/// 갱신하는 순간의 읽기 실패로 산 세션의 수신 루프를 죽이면 안 된다. 진짜 죽은 세션의 마커는
+/// 오류가 아니라 "없거나 dead"로 관측되므로, 일시 오류는 다음 주기(15초) 재판정으로 충분하다.
 pub(crate) fn session_marker_terminated(path: &std::path::Path) -> bool {
-    marker_gone(std::fs::read_to_string(path).ok().as_deref())
+    match std::fs::read_to_string(path) {
+        Ok(s) => marker_gone(Some(&s)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
+        Err(_) => false,
+    }
 }
 
 /// 감시 전용 루프: agent 앞 새 submitted task만 알린다(claim은 하지 않는다).
