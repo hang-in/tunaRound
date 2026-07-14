@@ -16,6 +16,17 @@
 - [x] mac relay 재배포(A2A task 964cba8e, mac-claude 자율 수행 완료: b80db20 빌드·원자 교체·재기동 37802/37804·로스터 확인. 왕복 E2E만 mac codex TUI 열릴 때 재검증)
 - [x] (파생) dependabot 첫 가동 3 PR 정비: #109 close(release.yml=cargo-dist 소유 충돌 → PR #114 ignore 4종+유효분 수동 반영·머지) / #110 frontend 머지 / #111 close → 메이저 5종 백로그 이슈 #115 + PR #116 lockfile-only 전환·머지(사용자 결정). main=f485a3a
 
+## 세션29 후반3: 열린 이슈 일소 캠페인 (2026-07-14, 사용자 지시 "이슈 모두 정리")
+
+> #115(cargo 메이저 5종)는 당일 결정된 전용 세션 백로그라 제외. 나머지 3건 = 정찰(3 에이전트) → 스펙 고정(Opus) → sonnet 실무자 3 병렬(worktree) → 중앙검증 → PR → CI·봇 → 머지.
+
+- [x] 정찰: #94 스피너(busy 계산·SSE envelope·프론트 배선) / #118 poll(마커=dead tombstone 발견) / #119 래퍼(구 래퍼 이력·서브에이전트 rollout 함정·게이트 합성 지점)
+- [ ] #94 구현: 서버 busy=Working+updated_at≤300s(heartbeat 근거) + 프론트 SSE transient 오버레이(최소표시 4s·만료 120s)
+- [ ] #118 구현: poll·watch-results --session-marker(부재 OR dead=정상종료 exit0) + watch select 15s 타이머 arm + 훅 3지점 배선
+- [ ] #119 구현: 래퍼 3파일(마커 기록만, resume argv·rollout session_meta 바인딩) + 게이트 3분기(Dead드롭/Pid·Unknown면제/NoMarker=window) presence+relay
+- [ ] 중앙검증(fmt·clippy all-targets 풀피처·test) → PR 3건 → CI green → 봇리뷰 전수 → 머지
+- [ ] 배포: win 훅 재배포(전역 훅이 repo보다 구버전 - 정찰 발견) + 새 바이너리 mesh 재배포 + 래퍼 PATH 배치(사용자 결정) + mac은 A2A 위임
+
 ## 세션28: fable 5 리뷰-패치 캠페인 (2026-07-14, 핸드오프 docs/prompts/v2-handoff_2026-07-14_session28.md)
 
 리뷰 103 findings → 약 85개를 15개 PR로 봉합, 전부 main 머지(4d08d68). 매 PR=sonnet 패치→Opus 검증→3-OS green→봇리뷰 반영→머지.
