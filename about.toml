@@ -1,0 +1,17 @@
+# cargo-about 설정: THIRD-PARTY-NOTICES.html 생성(B-3). 재생성(릴리스 준비 체크리스트):
+#   cargo install cargo-about --locked --features cli   (--features cli 없으면 바이너리 미설치)
+#   cargo about generate --fail --features "semantic morphology mcp serve worker engines a2a-out dashboard" about.hbs -o THIRD-PARTY-NOTICES.html
+# accepted = 릴리스 feature 세트 의존성에서 실제 발견된 라이선스 전집합(불필요 항목 0, 2026-07-14 실측).
+# targets 필터 없음 = 전 플랫폼 의존성 superset(cargo-dist 4타깃 커버리지에 안전).
+accepted = [
+    "AGPL-3.0-only",        # tunaround 자신
+    "Apache-2.0",
+    "BSD-3-Clause",         # subtle, matchit, encoding_rs(AND), aws-lc-sys(AND)
+    "CC0-1.0",              # encoding-index-* 6종
+    "CDLA-Permissive-2.0",  # webpki-roots, webpki-root-certs
+    "ISC",                  # untrusted, rustls-webpki, ring(AND)
+    "LGPL-2.1-or-later",    # kiwi-rs
+    "MIT",
+    "Unicode-3.0",          # icu 계열 + unicode-ident(AND)
+    "Zlib",                 # foldhash
+]

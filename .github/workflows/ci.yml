@@ -101,8 +101,10 @@ jobs:
         run: cargo clippy --features "morphology mcp serve worker dashboard" --all-targets -- -D warnings
 
   # 릴리스 실조합 컴파일 게이트(리뷰 #26): cargo-dist가 빌드하는 feature 세트(default + semantic mcp
-  # serve worker engines a2a-out)를 CI가 미리 컴파일해, 태그 push 시점에야 처음 드러나던 릴리스 빌드
-  # 실패를 막는다. semantic·engines·a2a-out은 컴파일만 하면 되고 네트워크(Ollama)는 런타임에만 필요하다.
+  # serve worker engines a2a-out dashboard)를 CI가 미리 컴파일해, 태그 push 시점에야 처음 드러나던
+  # 릴리스 빌드 실패를 막는다. semantic·engines·a2a-out은 컴파일만 하면 되고 네트워크(Ollama)는
+  # 런타임에만 필요하다. dashboard는 rust-embed가 컴파일 타임에 frontend/dist를 요구해 npm build 선행
+  # (release.yml build-setup 주입과 같은 레시피 = 릴리스 경로 그대로 재현).
   # ubuntu 1잡(컴파일 검증이라 3-OS 불요, cfg(unix) 경로는 build-test-clippy가 이미 커버).
   release-features:
     name: release feature combo (check + clippy)
@@ -120,11 +122,24 @@ jobs:
       - name: Cache cargo
         uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
 
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build frontend (Vite + React, rust-embed 임베드용)
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
       - name: Check (no-default-features)
         run: cargo check --no-default-features --verbose
 
       - name: Clippy (release feature combo, deny warnings)
-        run: cargo clippy --features "semantic morphology mcp serve worker engines a2a-out" --all-targets -- -D warnings
+        run: cargo clippy --features "semantic morphology mcp serve worker engines a2a-out dashboard" --all-targets -- -D warnings
 
   # mesh 운영 파일 구문 검증(리뷰 #95): cargo/npm만 돌던 CI가 놓치던 SessionStart 훅(.py)·재기동
   # 스크립트(.ps1/.sh)의 구문 오류를 잡는다. 이들은 mesh 운영(자동무장·재부팅 복구)의 실배포 코드다.
