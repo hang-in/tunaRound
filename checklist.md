@@ -28,7 +28,8 @@
 - [x] 배포(win): 훅 4종 재배포 + mesh 새 바이너리(ad714d1, broker 50996·scan 10968·relay 43576·watch 32108) + 대시보드 새 번들 서빙 확인. **래퍼는 의외의 즉시 활성**(구 래퍼 시절 PATH 항목 scripts가 잔존 → #122 파일 부활로 codex가 래퍼로 해석, --version 스모크 통과)
 - [x] 배포(mac, A2A task b0f6cfba 자율 수행): 바이너리 ad714d1 원자 교체 + mesh 재기동(scan 81919·relay 81921) + 훅 4종 배포(--session-marker 배선 확인) + #118 스모크 mac에서도 PASS. 래퍼 PATH만 미배치(사용자 결정 대기)
 - [x] 라이브 검증: #118 win·mac 양쪽 PASS(/dead→exit 0) + 이 세션 poll·인박스를 마커 판으로 재무장(도그푸딩). #94 스피너·#119 래퍼 마커는 자연 도그푸딩(다음 codex TUI·task 흐름에서 관찰)
-- [ ] 잔여: mac 래퍼 PATH 배치(사용자 결정) / #94·#119 자연 도그푸딩 관찰
+- [x] mac 래퍼 배치(사용자 지시 체인: mac-codex 조사 903b6841 → mac-claude 처리 4df3f576): RC-free로 ~/.local/bin에 codex+codex_wrapper.py 배치, which 1위·--version 스모크 ✓. **이 체인이 mac relay 왕복 E2E 재검증 겸함**(relay 주입→codex 로컬 조사→completed 회수)
+- [ ] 잔여: #94 스피너 프론트 표시 확인(서버 busy=정상 실측, 사용자 브라우저 관찰 대기) / #119 래퍼 마커 라이브(양 머신, 사용자가 터미널 codex 첫 대화 시) / VS Code 기동 codex는 래퍼 미커버=60분 window 유지(120 상향은 사용 패턴 확인 후)
 
 ## 세션28: fable 5 리뷰-패치 캠페인 (2026-07-14, 핸드오프 docs/prompts/v2-handoff_2026-07-14_session28.md)
 
