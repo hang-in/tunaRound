@@ -295,12 +295,20 @@ pub fn presence_scan(rt: &tokio::runtime::Runtime, a: PresenceScanArgs) {
             // codex는 마커·PID가 없어 종료된 유령 세션(rollout mtime이 relay resume으로 fresh)이
             // apply_process_gate(러너 all-or-nothing)를 통과해 오라우팅됐다. human_input_at(relay 주입 면역)
             // 또는 created_at(신규 grace)이 window 이내인 codex만 남긴다. threshold 계산 실패는 fail-open(미드롭).
+            // 이슈 #119: codex_wrapper.py 마커(marker_dir)가 있으면 hybrid 판정(Dead=즉시 드롭 / Pid·Unknown=
+            // window 면제 / NoMarker=기존 window 판정)이 우선한다(apply_codex_human_input_gate 주석 참고).
             if let Some(min_active) = now
                 .checked_sub(codex_window)
                 .and_then(tunaround::presence_scan::system_time_to_db_datetime)
             {
-                sessions =
-                    tunaround::presence_scan::apply_codex_human_input_gate(sessions, &min_active);
+                let marker_dir = home
+                    .as_deref()
+                    .map(|h| h.join(".tunaround").join("autoarm"));
+                sessions = tunaround::presence_scan::apply_codex_human_input_gate(
+                    sessions,
+                    &min_active,
+                    marker_dir.as_deref(),
+                );
             }
             // 프로세스 스냅샷 1회: 러너 카운트 게이트 + 마커 생존 판정이 공유한다.
             if let Some((proc_text, is_win)) = tunaround::presence_scan::process_list_text() {
@@ -526,6 +534,10 @@ pub fn codex_relay(rt: &tokio::runtime::Runtime, a: CodexRelayArgs) {
             .or_else(|_| std::env::var(ENV_HOME))
             .ok()
             .map(std::path::PathBuf::from);
+        // 이슈 #119: presence-scan의 marker_dir 도출(cli_daemons.rs presence_scan)과 동일 규약.
+        let marker_dir = home
+            .as_deref()
+            .map(|h| h.join(".tunaround").join("autoarm"));
         // 주입 정책 노브(#4): 기본값은 현행 하드코딩(never/workspace-write)과 같아 런타임 동작 불변.
         let approval = tunaround::codex_inject::parse_approval_policy(&a.approval)?;
         let sandbox = tunaround::codex_inject::parse_sandbox_mode(&a.sandbox)?;
@@ -541,6 +553,7 @@ pub fn codex_relay(rt: &tokio::runtime::Runtime, a: CodexRelayArgs) {
             codex_human_window: std::time::Duration::from_secs(
                 a.codex_human_window_mins.saturating_mul(60),
             ),
+            marker_dir,
             interval_secs: a.interval,
             inject_timeout_secs: a.inject_timeout,
             approval,

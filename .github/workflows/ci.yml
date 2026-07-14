@@ -152,7 +152,8 @@ jobs:
           persist-credentials: false
 
       - name: Python hooks compile
-        run: python3 -m py_compile .claude/hooks/*.py
+        # scripts/codex_wrapper.py(이슈 #119)도 여기 커버된다(.claude/hooks/*.py와 같은 glob 확장).
+        run: python3 -m py_compile .claude/hooks/*.py scripts/*.py
 
       - name: Shell scripts syntax
         run: |
