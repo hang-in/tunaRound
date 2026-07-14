@@ -2,6 +2,18 @@
 
 > 작업 중 결정과 근거. 계속 append. (규율 #7) 다음 세션이 결정을 재유도하지 않게.
 
+## 2026-07-13~14 세션28: fable 5 코드베이스 리뷰 → 15개 PR 봉합 + CI 하드닝 + 브랜치 보호 + relay 라이브검증. 재론 금지 결정·교훈
+
+- **리뷰 방식 정본**: 멀티에이전트 워크플로(서브시스템 13 + 크로스컷 6 파인더 → 중복제거 → 적대 검증 2렌즈) → 103 confirmed(major 29·minor 74). 전문=스크래치패드 `tunaround-review-2026-07-13.md`(사용자 전달). 약 85개를 15개 PR로 봉합·머지(#95~108·#112).
+- **패치 파이프라인 정본**: 매 PR = sonnet 실무자 정밀 패치(설계 판단은 Opus가 스펙에 확정) → Opus 중앙 검증(`cargo fmt --all -- --check` + clippy `--all-targets` 풀피처(semantic·mcp·serve·worker·dashboard·engines·a2a-out) + test) → CI 3-OS green → CodeRabbit·gemini 봇 리뷰 **전수 반영** → 머지. **중앙 검증에 fmt --check 필수**(초기 누락으로 여러 PR이 CI fmt 게이트에서 튕김).
+- **브랜치 보호 = admin-bypass 룰셋 확정**(main-protection, id 18893642). PR 필수 + 6개 CI 체크 required(build·test·clippy 3-OS / dashboard / fmt / release feature combo) + non-fast-forward + Admin bypass:always. **이제 `gh pr merge`는 6개 체크 다 green이어야 통과**(BLOCKED→CLEAN, #112가 windows CI 끝까지 BLOCKED로 실증). main 직접 push는 admin bypass(`--admin` 또는 owner 신원)로만. 완전 강제(owner도 CI 없이 못 머지)는 paths-ignore 제거 필요=macOS 비용 트레이드오프라 사용자 선택으로 보류.
+- **GitHub Actions 일시 장애 대응**: "Failed to resolve action download info. Service Unavailable"(액션 다운로드 서비스 degraded)로 #102·#103·main CI가 스퓨리어스 실패. **로그로 인프라 사유 확인 → `gh run rerun <id> --failed`로 green.** 코드 문제로 오판 금지.
+- **relay 라이브 검증 방법 정본**: broker 무중단으로 relay만 교체(기존 relay PID kill → 새 바이너리로 `codex-relay --ws ws://127.0.0.1:8790` 기동, env=`~/.tunaround/config` 소싱) → `/a2a` SendMessage(fromAgent/toAgent uuid/message.parts)로 codex 세션에 테스트 task → `task get`으로 completed 관찰. 검증 후 `restart-win-mesh.ps1 -SourceBin <release exe>`로 정식 배포. **restart-win-mesh는 wall-time 2분+ 걸려 bash 타임아웃 나도 데몬은 detached라 완료됨 → mesh.pids·포트로 결과 확인**(실측: 타임아웃 후 mesh.pids=39244/18520/44688/38324 정상).
+- **codex app-server에 turn 취소(interrupt) API 없음**(codex_appserver.rs grep 0건 확증). #9(주입 타임아웃 시 서버측 턴 계속)는 완전 취소 불가 → fail 사유에 명시로 대응. 완전 취소는 codex app-server 프로토콜 지원 전까지 불가.
+- **봇 오판 식별(근거로 기각)**: gemini `u64::is_multiple_of` HIGH(clippy 1.94가 권장하는 형태, `% ==0`으로 되돌리면 오히려 manual_is_multiple_of가 -D warnings로 CI 깨짐)·gemini `ws_reachable` cfg HIGH(codex_relay 모듈 전체가 이미 `#[cfg(feature="worker")]`=중복)·DeepSource `/tmp` 리터럴(프리픽스 상수 오탐, 자문성).
+- **배포 상태**: **win mesh만** 새 릴리스 바이너리 배포됨. **mac relay는 아직 옛 바이너리**(코드는 main 머지됨, mac 재빌드·restart-mac-mesh 필요) = 다음 세션 첫 행동.
+- **남은 미패치**: B-2(대시보드 릴리스 포함)·B-3(라이선스 NOTICE)=v0.5.0 릴리스 준비 때(실 릴리스 run으로만 검증). RustSec `encoding`=lindera 업스트림 몫(취약점 아직 없음, audit 잡이 RUSTSEC-2021-0153 무시로 감시). relay 완전 동시성(#8 잔여=여러 codex 세션 병렬)·watch-results at-least-once(#38)는 후속 후보.
+
 ## 2026-07-13 세션27 후반: 대시보드 동작 스피너 + 러너 아이콘, 그리고 스피너 버그 #94
 
 사용자 아이디어(presence online 위에 "지금 일하는 중" 표시가 없다). 재론 금지:

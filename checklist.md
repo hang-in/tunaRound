@@ -2,6 +2,18 @@
 
 > 규율 #7. task 완료 시 체크. plan 전문은 docs/plans/.
 
+## 세션28: fable 5 리뷰-패치 캠페인 (2026-07-14, 핸드오프 docs/prompts/v2-handoff_2026-07-14_session28.md)
+
+리뷰 103 findings → 약 85개를 15개 PR로 봉합, 전부 main 머지(4d08d68). 매 PR=sonnet 패치→Opus 검증→3-OS green→봇리뷰 반영→머지.
+
+- [x] #95 fail-visible / #96 보안 / #97 이식성 / #98 워커 / #99 codex / #100 검색 / #101 REPL
+- [x] #102 프론트 / #103 watch·mcp / #104 store무결성 / #105 mesh운영 / #106 테스트커버리지(+#29) / #107 정리
+- [x] #108 CI 공급망 하드닝(SHA핀·dependabot·release-features/scripts/audit 잡)
+- [x] main 브랜치 보호 룰셋(id 18893642): PR필수+6 CI체크 required+admin bypass
+- [x] #112 codex-relay 비동기(주입 중 heartbeat/lease·ws 게이트·#9 명시) — win 라이브 검증·배포
+- [ ] **mac relay 재배포**(win만 배포됨) — 다음 세션 ①
+- [ ] v0.5.0 준비 때: 대시보드 릴리스 포함(B-2) + 라이선스 NOTICE(B-3, cargo-about) — 실 릴리스 run 검증
+
 ## Plan 01: 스캐폴드 + Codex 러너 (docs/plans/v1-01-agent-runner.md)
 
 - [x] Task 1: 스캐폴드 + 도메인 타입(RunInput·RunOutput·RunMode·RunError) + Runner trait (5330063)
