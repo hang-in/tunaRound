@@ -1,0 +1,18 @@
+# cargo-dist github-build-setup: release.yml의 build-local-artifacts에 checkout 직후 주입되는 steps.
+# dashboard 피처가 컴파일 타임에 rust-embed로 임베드하는 frontend/dist(gitignore)를 cargo 빌드 전에
+# 만들어 둔다(ci.yml dashboard 잡과 같은 레시피). workflows/ 밖에 두는 이유 = GitHub이 독립 워크플로로
+# 오인하지 않게(cargo-dist 문서 권고). 갱신 후 `dist generate`로 release.yml 재생성.
+# 액션 SHA 핀은 ci.yml과 동일 커밋(공급망 하드닝, 리뷰 #99). 매트릭스 전 러너(win 포함)에서 돌므로 shell 명시.
+- name: Setup Node
+  uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+  with:
+    node-version: '22'
+    cache: npm
+    cache-dependency-path: frontend/package-lock.json
+# 주의: cargo-dist 재생성이 working-directory 키를 통과시키지 않음(실측) -> cd를 run 안에 둔다.
+- name: Build frontend (Vite + React, rust-embed 임베드용)
+  shell: bash
+  run: |
+    cd frontend
+    npm ci
+    npm run build

@@ -29,6 +29,15 @@ tap = "hang-in/homebrew-tap"
 # Publish jobs to run in CI
 publish-jobs = ["homebrew"]
 # 풀 기능 단일 바이너리: morphology·sqlite는 default. 릴리스 바이너리 하나로 코어(serve/mcp) +
-# 감독/자동 워커 노드(worker=poll/work/node) + http 러너(engines) + 외부 표준 A2A 위임(a2a-out)까지
-# 전부 되게 켠다(brew 설치본으로 tunaround node/poll/work가 바로 동작하도록).
-features = ["semantic", "mcp", "serve", "worker", "engines", "a2a-out"]
+# 감독/자동 워커 노드(worker=poll/work/node) + http 러너(engines) + 외부 표준 A2A 위임(a2a-out) +
+# 대시보드 SPA(dashboard, rust-embed 임베드)까지 전부 되게 켠다(brew 설치본으로 tunaround
+# node/poll/work·/dashboard가 바로 동작하도록).
+features = ["semantic", "mcp", "serve", "worker", "engines", "a2a-out", "dashboard"]
+# dashboard 피처는 컴파일 타임에 frontend/dist를 rust-embed로 임베드하는데 frontend/dist는
+# gitignore라 릴리스 체크아웃에 없다 -> build-local-artifacts의 checkout 직후에 setup-node +
+# npm build 스텝을 주입해 cargo 빌드 전에 만들어 둔다(경로는 .github/workflows/ 상대 = 실파일
+# .github/build-setup.yml). 변경 후 `dist generate`로 release.yml 재생성 필요.
+github-build-setup = "../build-setup.yml"
+# 아카이브·인스톨러 루트에 서드파티 라이선스 고지 동봉(B-3). 파일은 cargo-about로 생성해 커밋
+# (재생성 = 릴리스 준비 체크리스트: cargo about generate --fail, about.toml 참고).
+include = ["THIRD-PARTY-NOTICES.html"]

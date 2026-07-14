@@ -2,6 +2,19 @@
 
 > 규율 #7. task 완료 시 체크. plan 전문은 docs/plans/.
 
+## 세션29: v0.5.0 준비 - B-2 대시보드 릴리스 포함 + B-3 라이선스 NOTICE (2026-07-14, 브랜치 build/release-dashboard-and-notices)
+
+> 최종 검증은 실 릴리스 run 몫(v0.5.0 태그 때). 이 PR은 설정을 미리 깔아 릴리스 세션을 가볍게 한다.
+
+- [x] B-2a: dist-workspace.toml - features에 dashboard 추가 + github-build-setup + include(NOTICE)
+- [x] B-2b: 릴리스 빌드셋업 스텝 파일 `.github/build-setup.yml`(setup-node SHA핀 + npm ci/build. ⚠ working-directory 키는 재생성서 탈락 - cd를 run 안에)
+- [x] B-2c: `dist generate`로 release.yml 재생성(diff=주입 12줄뿐 = 순수 재생성 확증)
+- [x] B-2d: ci.yml release-features 잡 = 릴리스 실조합에 dashboard 포함(npm build 선행)
+- [x] B-3: about.toml(accepted 10종·주석) + about.hbs(tunaround 문구) + THIRD-PARTY-NOTICES.html(503KB) + dist include + CHANGELOG
+- [x] 검증: dist plan green(4아카이브 NOTICES) + generate --check 클린 + clippy 릴리스콤보+dashboard 클린 + dist build 스모크(zip에 NOTICES 동봉·exe에 SPA 자산 임베드 바이트 확인)
+- [ ] PR + CI green + 봇리뷰 반영 + 머지
+- [x] mac relay 재배포(A2A task 964cba8e, mac-claude 자율 수행 완료: b80db20 빌드·원자 교체·재기동 37802/37804·로스터 확인. 왕복 E2E만 mac codex TUI 열릴 때 재검증)
+
 ## 세션28: fable 5 리뷰-패치 캠페인 (2026-07-14, 핸드오프 docs/prompts/v2-handoff_2026-07-14_session28.md)
 
 리뷰 103 findings → 약 85개를 15개 PR로 봉합, 전부 main 머지(4d08d68). 매 PR=sonnet 패치→Opus 검증→3-OS green→봇리뷰 반영→머지.
