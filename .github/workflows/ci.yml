@@ -156,8 +156,9 @@ jobs:
         run: python3 -m py_compile .claude/hooks/*.py scripts/*.py
 
       - name: Shell scripts syntax
+        # 확장자 없는 scripts/codex(POSIX sh 래퍼, 이슈 #119)도 명시 포함(CodeRabbit).
         run: |
-          for f in scripts/*.sh; do
+          for f in scripts/*.sh scripts/codex; do
             echo "bash -n $f"
             bash -n "$f"
           done

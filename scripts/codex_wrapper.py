@@ -174,16 +174,25 @@ def _list_rollout_files(sessions_dir):
         return []
 
 
-def find_bound_thread_id(sessions_dir, cwd, stop_event, poll_interval=SESSION_POLL_INTERVAL_SECS):
+def find_bound_thread_id(
+    sessions_dir, cwd, stop_event, poll_interval=SESSION_POLL_INTERVAL_SECS,
+    initial_known=None, try_claim=None,
+):
     """래퍼 시작 이후 새로 나타난 rollout 파일 중 이 cwd의 메인 session_meta를 찾을 때까지
     poll_interval 간격으로 폴링한다(파일명 uuid는 신뢰하지 않고 매번 내용을 파싱한다).
     stop_event가 set되면(자식 종료) 다음 대기 직전에 멈춘다. 찾으면 session_id, 못 찾으면 None.
 
     '래퍼 시작 이후 생성'의 기준은 시각(mtime) 비교가 아니라 **최초 스냅샷 이후 신규 등장**이다
-    (클록 스큐·파일시스템 타임스탬프 해상도 차이에 흔들리지 않는다 - 시작 시점에 이미 있던 파일은
-    known에 담겨 다시는 후보가 되지 않는다).
+    (클록 스큐·파일시스템 타임스탬프 해상도 차이에 흔들리지 않는다). 스냅샷은 호출부가
+    initial_known으로 **자식 실행 전에 동기로** 떠서 넘긴다(CodeRabbit) - 이 스레드가 늦게
+    스케줄되면 자식이 먼저 만든 rollout이 스냅샷에 들어가 바인딩을 영구히 놓치기 때문.
+    try_claim(sid)->bool이 주어지면 claim 성공한 후보만 채택한다: 같은 cwd에서 래퍼 여럿이
+    동시에 떠도 한 rollout은 한 래퍼만 가져간다(실패 시 다음 신규 rollout을 계속 탐색).
     """
-    known = set(_list_rollout_files(sessions_dir))
+    if initial_known is not None:
+        known = set(initial_known)
+    else:
+        known = set(_list_rollout_files(sessions_dir))
     while True:
         for path in _list_rollout_files(sessions_dir):
             if path in known:
@@ -193,7 +202,7 @@ def find_bound_thread_id(sessions_dir, cwd, stop_event, poll_interval=SESSION_PO
                 # 판정이 확정된 파일만 known에 담는다. 미완결(갓 생성돼 첫 줄이 아직 없음)은
                 # 다음 주기에 재시도 - 여기서 known에 넣으면 바인딩을 영구히 놓친다(gemini).
                 known.add(path)
-            if sid:
+            if sid and (try_claim is None or try_claim(sid)):
                 return sid
         if stop_event.is_set():
             return None
@@ -205,15 +214,20 @@ def find_bound_thread_id(sessions_dir, cwd, stop_event, poll_interval=SESSION_PO
 def find_real_codex():
     """래퍼 자신의 디렉토리를 제외한 PATH 상에서 진짜 codex 실행파일 경로를 찾는다. 못 찾으면 None.
 
-    비교는 realpath로 한다(gemini): 래퍼가 다른 경로에 심볼릭 링크돼 있으면 abspath 비교로는
-    그 링크 디렉토리가 걸러지지 않아 래퍼가 자기 자신을 재실행하는 무한 루프가 된다. 후보 파일
-    자체의 realpath가 래퍼 디렉토리 안을 가리키는 경우(개별 파일 symlink)도 제외한다."""
-    wrapper_dir = os.path.realpath(os.path.dirname(os.path.abspath(__file__)))
+    비교는 realpath+normcase로 한다(gemini·CodeRabbit): 래퍼가 다른 경로에 심볼릭 링크돼 있으면
+    abspath 비교로는 그 링크 디렉토리가 걸러지지 않아 래퍼가 자기 자신을 재실행하는 무한 루프가
+    되고, Windows에선 PATH와 __file__의 대소문자 표기가 달라도 같은 경로다. 후보 파일 자체의
+    realpath가 래퍼 디렉토리 안을 가리키는 경우(개별 파일 symlink)도 제외한다."""
+
+    def _canon(p):
+        return os.path.normcase(os.path.realpath(p))
+
+    wrapper_dir = _canon(os.path.dirname(os.path.abspath(__file__)))
     paths = os.environ.get("PATH", "").split(os.pathsep)
-    filtered = [p for p in paths if os.path.realpath(p) != wrapper_dir]
+    filtered = [p for p in paths if _canon(p) != wrapper_dir]
 
     def _is_self(candidate):
-        real = os.path.realpath(candidate)
+        real = _canon(candidate)
         return real == wrapper_dir or os.path.dirname(real) == wrapper_dir
 
     bin_names = ["codex.cmd", "codex.bat", "codex"] if os.name == "nt" else ["codex"]
@@ -248,7 +262,8 @@ def marker_path(thread_id):
 
 def write_live_marker(thread_id, pid):
     """마커에 래퍼 자신의 PID를 기록한다(presence_scan::MarkerState::Pid 생존판정 근거).
-    실패는 조용히 무시한다(마커는 best-effort 힌트일 뿐, 실패가 codex 실행을 막으면 안 된다)."""
+    실패는 조용히 무시한다(마커는 best-effort 힌트일 뿐, 실패가 codex 실행을 막으면 안 된다).
+    resume 경로 전용(기존 마커의 정당한 재기록). 신규 바인딩은 claim_live_marker를 쓴다."""
     path = marker_path(thread_id)
     if path is None:
         return
@@ -259,13 +274,37 @@ def write_live_marker(thread_id, pid):
         pass
 
 
-def write_dead_marker(thread_id):
+def claim_live_marker(thread_id, pid):
+    """마커를 O_EXCL로 배타 생성해 이 rollout의 소유를 선점한다(CodeRabbit: 같은 cwd 동시 래퍼가
+    같은 rollout에 이중 바인딩하는 것 방지). 이미 존재하면(다른 래퍼가 선점) False."""
+    path = marker_path(thread_id)
+    if path is None:
+        return False
+    try:
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        try:
+            os.write(fd, str(pid).encode("utf-8"))
+        finally:
+            os.close(fd)
+        return True
+    except FileExistsError:
+        return False
+    except OSError:
+        return False
+
+
+def write_dead_marker(thread_id, owner_pid=None):
     """종료 확정 tombstone(claude SessionEnd 훅과 같은 컨벤션: 내용="dead", presence_scan
-    ::MarkerState::Dead가 즉시 제외 판정)."""
+    ::MarkerState::Dead가 즉시 제외 판정). owner_pid가 주어지면 현재 내용이 그 PID일 때만
+    덮어쓴다 - 그 사이 다른 래퍼(resume)가 재소유한 산 마커를 내가 tombstone하지 않게."""
     path = marker_path(thread_id)
     if path is None:
         return
     try:
+        if owner_pid is not None:
+            with open(path, "r", encoding="utf-8") as f:
+                if f.read().strip() != str(owner_pid):
+                    return
         with open(path, "w", encoding="utf-8") as f:
             f.write("dead")
     except OSError:
@@ -292,12 +331,20 @@ def main():
     else:
         sessions_dir = default_codex_sessions_dir()
         if os.path.isdir(sessions_dir):
+            # 기준 스냅샷은 자식 실행 전에 **동기로** 뜬다(CodeRabbit): 백그라운드 스레드가 늦게
+            # 스케줄되면 자식이 먼저 만든 rollout이 스냅샷에 섞여 바인딩을 영구히 놓친다.
+            initial_known = set(_list_rollout_files(sessions_dir))
+
+            def _try_claim(sid):
+                return claim_live_marker(sid, os.getpid())
 
             def _bind():
-                sid = find_bound_thread_id(sessions_dir, cwd, stop_event)
+                sid = find_bound_thread_id(
+                    sessions_dir, cwd, stop_event,
+                    initial_known=initial_known, try_claim=_try_claim,
+                )
                 if sid:
                     bound["thread_id"] = sid
-                    write_live_marker(sid, os.getpid())
 
             binder = threading.Thread(target=_bind, daemon=True)
             binder.start()
@@ -319,7 +366,8 @@ def main():
             binder.join(timeout=SESSION_POLL_INTERVAL_SECS + 0.5)
         thread_id = bound["thread_id"]
         if thread_id:
-            write_dead_marker(thread_id)
+            # owner_pid 확인부: 그 사이 다른 래퍼가 같은 thread를 재소유(resume)했으면 건드리지 않는다.
+            write_dead_marker(thread_id, owner_pid=os.getpid())
 
     return returncode
 
