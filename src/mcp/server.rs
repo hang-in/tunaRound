@@ -591,22 +591,27 @@ async fn dashboard_roster_handler(
         last_heartbeat: String,
         online: bool,
         human_input_at: Option<String>,
-        /// 이 세션이 지금 실제로 일하는 중인지(=state=working 열린 task의 대상). 대시보드가 presence 닷
-        /// 위에 "동작 중" 스피너를 얹는 소프트 신호(v2-54). 조회 실패 시 false(스피너만 안 뜸).
+        /// 이 세션이 지금 실제로 일하는 중인지(=state=working이면서 updated_at이 신선한 열린 task의
+        /// 대상). 대시보드가 presence 닷 위에 "동작 중" 스피너를 얹는 소프트 신호(v2-54, 신선도
+        /// 게이트=v2-55/이슈 #94). 조회 실패 시 false(스피너만 안 뜸).
         busy: bool,
     }
     // health 핸들러와 동일 패턴(fail-visible): spawn_blocking JoinError(내부 패닉/취소)를 빈 배열
     // 200으로 위장하지 않고 500으로 표면화한다.
     let result: Result<Vec<DashAgent>, String> = tokio::task::spawn_blocking(move || {
+        use crate::mcp::format::is_busy_fresh;
         let store = store.lock().unwrap_or_else(|e| e.into_inner());
         let now = store.now().unwrap_or_default();
-        // "동작 중" 세션 = 열린 task 중 state=working인 것의 to_agent 집합. relay 대리 claim도 to_agent가
-        // 대상 세션 uuid라 그대로 매칭된다. 소프트 인디케이터라 조회 실패는 빈 집합으로 무시한다.
+        // "동작 중" 세션 = 열린 task 중 state=working이면서 updated_at이 BUSY_FRESH_SECS(5분) 이내로
+        // 갱신된 것의 to_agent 집합(이슈 #94: 갱신 없는 오래된 working=정체라 스피너 FP였다). 워커
+        // 러너 heartbeat(#98)·relay 주입 heartbeat/lease(#112)가 5분 안에 updated_at을 갱신하므로
+        // 실제 진행 중인 task는 이 창 안에 든다. relay 대리 claim도 to_agent가 대상 세션 uuid라 그대로
+        // 매칭된다. 소프트 인디케이터라 조회 실패는 빈 집합으로 무시한다.
         let busy: std::collections::HashSet<String> = store
             .list_all_open_tasks()
             .unwrap_or_default()
             .into_iter()
-            .filter(|t| t.state == crate::store::a2a::TaskState::Working)
+            .filter(|t| is_busy_fresh(t, &now))
             .map(|t| t.to_agent)
             .collect();
         // TTL=i64::MAX로 오프라인 포함 전체 조회 후, online은 실제 TTL(AGENT_TTL_SECS)로 per-agent 계산.
@@ -2835,6 +2840,59 @@ mod tests {
                 "task_counts 필드 필요: {body}"
             );
             assert_eq!(body["open_tasks"], 0);
+        }
+
+        /// roster busy: state=Working이면서 updated_at이 신선(5분 이내)한 task의 to_agent만 busy=true여야
+        /// 한다(이슈 #94 FP 수정 - 갱신 없는 오래된 working=정체라 스피너를 꺼야 함). submitted는 애초에
+        /// working이 아니니 busy=false 대조군으로 같이 확인한다.
+        #[tokio::test]
+        async fn roster_busy_requires_fresh_updated_at_v2_55() {
+            use crate::store::a2a::Task;
+            let store = test_store();
+            let now = { store.lock().unwrap().now().unwrap() };
+            {
+                let s = store.lock().unwrap();
+                s.register_agent("fresh-worker", BTreeMap::new(), None, &now);
+                s.register_agent("stale-worker", BTreeMap::new(), None, &now);
+                s.register_agent("idle-worker", BTreeMap::new(), None, &now);
+
+                // 방금 갱신된 working -> busy true.
+                let mut fresh = Task::new("t-fresh", None, "win", "fresh-worker", now.as_str());
+                fresh.state = TaskState::Working;
+                s.create_task(&fresh).unwrap();
+
+                // working이지만 5분(BUSY_FRESH_SECS) 초과 갱신정지 -> busy false(정체로 간주).
+                let mut stale = Task::new("t-stale", None, "win", "stale-worker", now.as_str());
+                stale.state = TaskState::Working;
+                s.create_task(&stale).unwrap();
+                s.test_force_task_stale("t-stale", 10);
+
+                // submitted(아직 working 아님) -> busy false.
+                let idle = Task::new("t-idle", None, "win", "idle-worker", now.as_str());
+                s.create_task(&idle).unwrap();
+            }
+
+            let resp = dashboard_roster_handler(axum::extract::State(store)).await;
+            assert_eq!(resp.status(), axum::http::StatusCode::OK);
+            let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+                .await
+                .expect("본문 읽기");
+            let body: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+            let agents = body.as_array().expect("배열이어야 함");
+            let busy_of = |uuid: &str| -> bool {
+                agents
+                    .iter()
+                    .find(|a| a["uuid"] == uuid)
+                    .unwrap_or_else(|| panic!("{uuid} 로스터에 없음: {agents:?}"))["busy"]
+                    .as_bool()
+                    .unwrap()
+            };
+            assert!(busy_of("fresh-worker"), "신선한 working은 busy=true여야 함");
+            assert!(
+                !busy_of("stale-worker"),
+                "5분 초과 갱신정지 working은 busy=false여야 함(정체)"
+            );
+            assert!(!busy_of("idle-worker"), "submitted는 busy=false여야 함");
         }
 
         /// human-ping: 미등록(무장 전) uuid도 영속 테이블에 선기록되고 200을 반환한다(v2-45 P4,

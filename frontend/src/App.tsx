@@ -22,6 +22,13 @@ const HEALTH_POLL_MS = 5000
 // 무상한 Map 은 계속 자라므로, 넘으면 가장 오래 전에 넣은 항목부터 비운다.
 const SEEN_STATE_CAP = 500
 
+// transientBusy(SSE 실시간 동작 오버레이, 이슈 #94) 타이밍 상수.
+// - MIN: 완료가 와도 이보다 짧게 일했으면 스피너를 이 시간까지 붙잡아 눈에 보이게 한다(빠른 task 펄스 가시화).
+// - MAX: 종결 이벤트를 SSE가 놓쳐도(lease 만료 requeue 등은 이벤트가 없다) 무한히 켜져 있지 않도록 하는 안전망
+//   상한이다. 서버 roster busy(5초 폴, BUSY_FRESH_SECS=5분)가 이미 기준선이라 transient는 그 사이 공백만 메운다.
+const TRANSIENT_BUSY_MIN_MS = 4000
+const TRANSIENT_BUSY_MAX_MS = 120000
+
 // 브라우저 알림 옵트인 여부를 세션 간 기억(권한이 유지될 때만 유효).
 const NOTIFY_PREF_KEY = 'tuna-notify'
 const notifySupported = typeof Notification !== 'undefined'
@@ -66,6 +73,67 @@ export default function App() {
 
   const prevHbRef = useRef<Record<string, string>>({})
   const pulseTimersRef = useRef<number[]>([])
+
+  // transientBusy: SSE 라이브로 관측한 "지금 동작 중" 오버레이(이슈 #94 FN 해소). 서버 roster busy는
+  // 5초 폴이라 빠른 task 를 놓치므로, working/종결 SSE 이벤트로 즉시 스피너를 켜고 끈다. ref=최신값을
+  // 동기로 읽기 위한 미러(핸들러가 setState 콜백 안에서 타이머를 잡는 부수효과를 피하려는 목적, 위
+  // pulses 패턴과 동일 계열). state=렌더 트리거.
+  const transientBusyRef = useRef<Record<string, { taskId: string; since: number }>>({})
+  const [transientBusy, setTransientBusy] = useState<Record<string, { taskId: string; since: number }>>({})
+  // taskId -> 활성 타이머(안전망 만료 또는 지연 제거). task당 하나만 유지하고 상태 전이 때 기존 것을
+  // clearTimeout으로 확정 정리한다 - 대시보드는 수일~수주 열어두므로 발화 대기 타이머를 쌓지 않는다(gemini).
+  const transientTimersRef = useRef<Map<string, number>>(new Map())
+
+  const applyTransientBusy = useCallback((next: Record<string, { taskId: string; since: number }>) => {
+    transientBusyRef.current = next
+    setTransientBusy(next)
+  }, [])
+
+  // uuid의 transientBusy 항목을 taskId가 일치할 때만 제거한다(그 사이 같은 uuid에 새 task가 붙었으면
+  // 손대지 않는다 - 늦게 도착한 지연 타이머가 최신 항목을 잘못 지우는 것 방지).
+  const removeTransientBusy = useCallback(
+    (uuid: string, taskId: string) => {
+      const cur = transientBusyRef.current
+      const entry = cur[uuid]
+      if (!entry || entry.taskId !== taskId) return
+      // delete·computed-key 구조분해 대신 filter 재구성(동적 키 delete 지양, DeepSource JS).
+      const next = Object.fromEntries(Object.entries(cur).filter(([key]) => key !== uuid))
+      applyTransientBusy(next)
+    },
+    [applyTransientBusy],
+  )
+
+  // taskId의 기존 타이머를 확정 정리한다(있으면 clearTimeout + 맵에서 제거).
+  const clearTransientTimer = useCallback((taskId: string) => {
+    const timers = transientTimersRef.current
+    const timerId = timers.get(taskId)
+    if (timerId !== undefined) {
+      window.clearTimeout(timerId)
+      timers.delete(taskId)
+    }
+  }, [])
+
+  // taskId의 타이머를 교체 등록한다(기존 것 정리 후). 발화 시 자기 항목을 맵에서 지운다.
+  const setTransientTimer = useCallback(
+    (taskId: string, onExpire: () => void, delayMs: number) => {
+      clearTransientTimer(taskId)
+      const timerId = window.setTimeout(() => {
+        transientTimersRef.current.delete(taskId)
+        onExpire()
+      }, delayMs)
+      transientTimersRef.current.set(taskId, timerId)
+    },
+    [clearTransientTimer],
+  )
+
+  // 언마운트 시 잔여 transient 타이머 정리(누수 방지).
+  useEffect(() => {
+    const timers = transientTimersRef.current
+    return () => {
+      timers.forEach((timerId) => window.clearTimeout(timerId))
+      timers.clear()
+    }
+  }, [])
 
   // 브로커 헬스(버전·상태별 카운트·헬스 게이지·스캐너). Header/StatTiles/Footer가 공유(HealthPanel 폴 이관).
   const [health, setHealth] = useState<BrokerHealth | null>(null)
@@ -267,10 +335,40 @@ export default function App() {
       if (oldest === undefined) break
       seen.delete(oldest)
     }
-  }, [])
+
+    // transientBusy: working이면 켜고(+안전망 만료 타이머), 종결이면 최소 표시시간을 지켜 끈다(#94 FN).
+    // 타이머는 taskId당 하나(setTransientTimer가 기존 것을 clear 후 교체) - 종결 시점에 안전망
+    // 타이머가 즉시 정리되어 장기 상주 대시보드에 발화 대기 타이머가 누적되지 않는다(gemini).
+    const toAgent = msg.task.toAgent
+    if (state === 'working') {
+      applyTransientBusy({ ...transientBusyRef.current, [toAgent]: { taskId: id, since: Date.now() } })
+      setTransientTimer(id, () => removeTransientBusy(toAgent, id), TRANSIENT_BUSY_MAX_MS)
+    } else if (terminalStates.includes(state)) {
+      // 최신 entry가 다른 task로 바뀌었어도 이 task의 안전망 타이머는 정리한다(발화해도 no-op이지만
+      // 대기 자체를 남기지 않는다).
+      const entry = transientBusyRef.current[toAgent]
+      if (!entry || entry.taskId !== id) {
+        clearTransientTimer(id)
+      } else {
+        const elapsed = Date.now() - entry.since
+        if (elapsed >= TRANSIENT_BUSY_MIN_MS) {
+          clearTransientTimer(id)
+          removeTransientBusy(toAgent, id)
+        } else {
+          // 너무 빨리 끝났다 - 최소 표시시간(TRANSIENT_BUSY_MIN_MS)까지 지연 제거(안전망 타이머 교체).
+          setTransientTimer(id, () => removeTransientBusy(toAgent, id), TRANSIENT_BUSY_MIN_MS - elapsed)
+        }
+      }
+    }
+  }, [applyTransientBusy, removeTransientBusy, setTransientTimer, clearTransientTimer])
 
   // 로스터 = online(heartbeat) 세션 전부. 총감독 = human_input_at 최신(설계 v2-43).
-  const { rows, autoBossUuid } = useMemo(() => buildRoster(agents), [agents])
+  const { rows: baseRows, autoBossUuid } = useMemo(() => buildRoster(agents), [agents])
+  // 유효 busy = 서버 roster busy(5초 폴 기준선) OR transientBusy(SSE 실시간 오버레이, #94 FN 해소).
+  const rows = useMemo(
+    () => baseRows.map((r) => ({ ...r, busy: r.busy || Boolean(transientBusy[r.uuid]) })),
+    [baseRows, transientBusy],
+  )
 
   // 목표 제출 대상 선택(App 소유): 로스터 상세의 "이 세션에 목표"와 GoalForm이 공유한다.
   const [goalTargets, setGoalTargets] = useState<Record<string, boolean>>({})

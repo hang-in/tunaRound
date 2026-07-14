@@ -11,6 +11,12 @@ use crate::store::agents::{
 pub(crate) const STUCK_WORKING_SECS: i64 = 15 * 60;
 /// submitted가 이 초과 미claim이면 no-consumer? 표시(폴러 없음 의심).
 pub(crate) const NO_CONSUMER_SUBMITTED_SECS: i64 = 5 * 60;
+/// 대시보드 roster의 "동작 중" 스피너(busy) 신선도 임계(이슈 #94). STUCK_WORKING_SECS(15분)보다
+/// 훨씬 타이트하게 잡는다: stuck?은 "죽었을 수도 있다"는 느슨한 경고고, busy 스피너는 "지금 실제로
+/// 갱신되고 있다"는 좁은 신호라 목적이 다르다. 워커 러너 실행 중 heartbeat(#98)·relay 주입 중
+/// heartbeat/lease(#112)가 5분 안에 최소 한 번 updated_at을 갱신하므로, 이 창을 넘겨 갱신이 없는
+/// working은 정체(stuck)로 보고 스피너를 끈다(FP: t-978e 7분+ working 실측).
+pub(crate) const BUSY_FRESH_SECS: i64 = 5 * 60;
 
 /// task 건강 분류(표시·집계 공용 단일 소스). 임계 이내·다른 상태·now 파싱 실패는 Ok.
 pub(crate) enum TaskHealth {
@@ -35,6 +41,16 @@ pub(crate) fn classify_task_health(task: &crate::store::a2a::Task, now: &str) ->
         },
         _ => TaskHealth::Ok,
     }
+}
+
+/// task가 "지금 실제로 동작 중"인지(대시보드 busy 스피너 신호, 이슈 #94). state=Working이고
+/// updated_at이 BUSY_FRESH_SECS 이내로 갱신됐어야 true. 그 외(다른 상태·갱신 정지·now/updated_at
+/// 파싱 실패)는 false다: busy는 fail-visible 대상인 헬스 집계가 아니라 소프트 UI 신호라, 판정
+/// 불확실이면 스피너를 안 띄우는 쪽(false)이 안전하다.
+pub(crate) fn is_busy_fresh(task: &crate::store::a2a::Task, now: &str) -> bool {
+    use crate::store::a2a::age_secs;
+    task.state == TaskState::Working
+        && matches!(age_secs(now, &task.updated_at), Some(secs) if secs <= BUSY_FRESH_SECS)
 }
 
 /// task의 미배달/고착 의심 주석을 만든다(표시 전용, 상태 전이·저장 없음). 임계·판정은 classify_task_health

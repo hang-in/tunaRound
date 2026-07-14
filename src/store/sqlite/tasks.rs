@@ -53,6 +53,17 @@ impl SqliteStore {
             )
             .unwrap();
     }
+
+    /// task의 updated_at을 `minutes_ago`분 전으로 강제한다(대시보드 busy 신선도 게이트 등 시간경과
+    /// 시나리오 테스트용). test_force_lease_expired와 같은 raw SQL 우회 패턴, 대상 컬럼만 다르다.
+    pub(crate) fn test_force_task_stale(&self, task_id: &str, minutes_ago: i64) {
+        self.conn
+            .execute(
+                "UPDATE tasks SET updated_at=datetime('now', ?1) WHERE task_id=?2",
+                rusqlite::params![format!("-{minutes_ago} minutes"), task_id],
+            )
+            .unwrap();
+    }
 }
 
 #[cfg(test)]
