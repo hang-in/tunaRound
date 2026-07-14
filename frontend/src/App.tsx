@@ -80,7 +80,9 @@ export default function App() {
   // pulses 패턴과 동일 계열). state=렌더 트리거.
   const transientBusyRef = useRef<Record<string, { taskId: string; since: number }>>({})
   const [transientBusy, setTransientBusy] = useState<Record<string, { taskId: string; since: number }>>({})
-  const transientTimersRef = useRef<number[]>([])
+  // taskId -> 활성 타이머(안전망 만료 또는 지연 제거). task당 하나만 유지하고 상태 전이 때 기존 것을
+  // clearTimeout으로 확정 정리한다 - 대시보드는 수일~수주 열어두므로 발화 대기 타이머를 쌓지 않는다(gemini).
+  const transientTimersRef = useRef<Map<string, number>>(new Map())
 
   const applyTransientBusy = useCallback((next: Record<string, { taskId: string; since: number }>) => {
     transientBusyRef.current = next
@@ -94,18 +96,43 @@ export default function App() {
       const cur = transientBusyRef.current
       const entry = cur[uuid]
       if (!entry || entry.taskId !== taskId) return
-      const next = { ...cur }
-      delete next[uuid]
+      // delete 대신 구조분해 omit(동적 키 delete 지양, DeepSource JS).
+      const { [uuid]: _omit, ...next } = cur
+      void _omit
       applyTransientBusy(next)
     },
     [applyTransientBusy],
   )
 
+  // taskId의 기존 타이머를 확정 정리한다(있으면 clearTimeout + 맵에서 제거).
+  const clearTransientTimer = useCallback((taskId: string) => {
+    const timers = transientTimersRef.current
+    const t = timers.get(taskId)
+    if (t !== undefined) {
+      window.clearTimeout(t)
+      timers.delete(taskId)
+    }
+  }, [])
+
+  // taskId의 타이머를 교체 등록한다(기존 것 정리 후). 발화 시 자기 항목을 맵에서 지운다.
+  const setTransientTimer = useCallback(
+    (taskId: string, cb: () => void, ms: number) => {
+      clearTransientTimer(taskId)
+      const t = window.setTimeout(() => {
+        transientTimersRef.current.delete(taskId)
+        cb()
+      }, ms)
+      transientTimersRef.current.set(taskId, t)
+    },
+    [clearTransientTimer],
+  )
+
   // 언마운트 시 잔여 transient 타이머 정리(누수 방지).
   useEffect(() => {
+    const timers = transientTimersRef.current
     return () => {
-      transientTimersRef.current.forEach(window.clearTimeout)
-      transientTimersRef.current = []
+      timers.forEach((t) => window.clearTimeout(t))
+      timers.clear()
     }
   }, [])
 
@@ -311,32 +338,30 @@ export default function App() {
     }
 
     // transientBusy: working이면 켜고(+안전망 만료 타이머), 종결이면 최소 표시시간을 지켜 끈다(#94 FN).
+    // 타이머는 taskId당 하나(setTransientTimer가 기존 것을 clear 후 교체) - 종결 시점에 안전망
+    // 타이머가 즉시 정리되어 장기 상주 대시보드에 발화 대기 타이머가 누적되지 않는다(gemini).
     const toAgent = msg.task.toAgent
     if (state === 'working') {
       applyTransientBusy({ ...transientBusyRef.current, [toAgent]: { taskId: id, since: Date.now() } })
-      const maxTimer = window.setTimeout(() => {
-        removeTransientBusy(toAgent, id)
-        transientTimersRef.current = transientTimersRef.current.filter((t) => t !== maxTimer)
-      }, TRANSIENT_BUSY_MAX_MS)
-      transientTimersRef.current.push(maxTimer)
+      setTransientTimer(id, () => removeTransientBusy(toAgent, id), TRANSIENT_BUSY_MAX_MS)
     } else if (terminalStates.includes(state)) {
+      // 최신 entry가 다른 task로 바뀌었어도 이 task의 안전망 타이머는 정리한다(발화해도 no-op이지만
+      // 대기 자체를 남기지 않는다).
       const entry = transientBusyRef.current[toAgent]
-      if (entry && entry.taskId === id) {
+      if (!entry || entry.taskId !== id) {
+        clearTransientTimer(id)
+      } else {
         const elapsed = Date.now() - entry.since
         if (elapsed >= TRANSIENT_BUSY_MIN_MS) {
+          clearTransientTimer(id)
           removeTransientBusy(toAgent, id)
         } else {
-          // 너무 빨리 끝났다 - 최소 표시시간(TRANSIENT_BUSY_MIN_MS)까지 지연 제거.
-          const delay = TRANSIENT_BUSY_MIN_MS - elapsed
-          const delayTimer = window.setTimeout(() => {
-            removeTransientBusy(toAgent, id)
-            transientTimersRef.current = transientTimersRef.current.filter((t) => t !== delayTimer)
-          }, delay)
-          transientTimersRef.current.push(delayTimer)
+          // 너무 빨리 끝났다 - 최소 표시시간(TRANSIENT_BUSY_MIN_MS)까지 지연 제거(안전망 타이머 교체).
+          setTransientTimer(id, () => removeTransientBusy(toAgent, id), TRANSIENT_BUSY_MIN_MS - elapsed)
         }
       }
     }
-  }, [applyTransientBusy, removeTransientBusy])
+  }, [applyTransientBusy, removeTransientBusy, setTransientTimer, clearTransientTimer])
 
   // 로스터 = online(heartbeat) 세션 전부. 총감독 = human_input_at 최신(설계 v2-43).
   const { rows: baseRows, autoBossUuid } = useMemo(() => buildRoster(agents), [agents])
