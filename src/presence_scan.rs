@@ -623,7 +623,17 @@ pub enum MarkerState {
 
 /// 세션 uuid의 마커를 읽는다(마커 디렉토리 = ~/.tunaround/autoarm, 훅과 같은 sanitize 규약 전제 -
 /// uuid는 hex+하이픈이라 파일명 그대로).
+/// 방어(gemini, 이슈 #119): codex 경로에선 uuid가 rollout 파일 **내용**(session_meta)에서 오므로
+/// 신뢰 경계 밖이다 - 허용 문자 밖(경로 구분자 등)이 섞인 uuid는 join 전에 NoMarker로 거른다
+/// (마커 파일명 sanitize 집합과 동일: 영숫자·`.`·`_`·`-`). 경로 이탈로 임의 파일을 읽는 것 차단.
 pub fn read_marker(dir: &Path, uuid: &str) -> MarkerState {
+    if uuid.is_empty()
+        || !uuid
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+    {
+        return MarkerState::NoMarker;
+    }
     let path = dir.join(format!("{uuid}.ctx"));
     match std::fs::read_to_string(&path) {
         Err(_) => MarkerState::NoMarker,
@@ -852,15 +862,34 @@ pub fn apply_process_gate(
 /// (stale_mins→window). **수용된 잔여**: 방금 쓰다 닫은 세션은 human_input이 최근이라 살아있는 idle 세션과
 /// 시간만으론 구분 불가 → window 동안 로스터에 잔존(codex_gate_fresh_churn_ghost_lingers 테스트가 명시).
 /// 부수 FP: window 넘게 입력 없는 살아있는 codex(장기작업 관전)는 드롭되나 다음 입력 시 ≤interval 자기치유.
+///
+/// **hybrid 게이트(이슈 #119)**: 위 (1)의 "PID-마커 이식 불가"는 app-server 프로토콜 얘기였을 뿐, codex CLI
+/// 자체를 PATH shim(`scripts/codex_wrapper.py`)으로 감싸면 래퍼 프로세스의 threadId<->PID 생존은 claude와
+/// 동형으로 마커링(`~/.tunaround/autoarm/<threadId>.ctx`)할 수 있다(codex_wrapper.py가 argv `resume <uuid>`
+/// 또는 rollout session_meta 관측으로 threadId를 바인딩해 기록). `marker_dir`가 주어지면 시간창보다
+/// **마커를 우선** 판정한다: `Dead`(래퍼가 종료를 확정 통보) → window 무관 즉시 드롭 / `Pid`·`Unknown`(래퍼
+/// 생존 중 또는 owner 미상) → window 면제하고 유지 - **PID가 실제로 살아있는지의 권위 판정은 이 함수가 아니라
+/// 뒤이어 합성되는 [`filter_dead_sessions`]가 프로세스 스냅샷으로 내린다**(여기선 "래퍼가 아직 안 죽었다고
+/// 주장한다"는 값싼 사전 통과만) / `NoMarker`(래퍼 비경유 - VS Code 자체 codex 확장 등) → 기존 시간창 판정으로
+/// 폴백한다(마커가 없는 세션은 이 hybrid 도입 전과 동일하게 동작, 하위호환). `marker_dir=None`이면 마커 조회를
+/// 아예 생략하고 순수 시간창 판정만 수행한다(기존 호출부·테스트 하위호환, presence-scan은 항상 Some을 준다).
 pub fn apply_codex_human_input_gate(
     sessions: Vec<LiveSession>,
     min_active_db: &str,
+    marker_dir: Option<&Path>,
 ) -> Vec<LiveSession> {
     sessions
         .into_iter()
         .filter(|s| {
             if s.runner != "codex" {
                 return true; // codex 전용 게이트.
+            }
+            if let Some(dir) = marker_dir {
+                match read_marker(dir, &s.uuid) {
+                    MarkerState::Dead => return false, // 래퍼가 종료 확정 통보 → window 무관 드롭.
+                    MarkerState::Pid(_) | MarkerState::Unknown => return true, // 래퍼 생존 중 → window 면제(PID 생존 권위 판정은 filter_dead_sessions 몫).
+                    MarkerState::NoMarker => {} // 래퍼 비경유 → 아래 window 판정으로 폴백.
+                }
             }
             let fresh = |ts: &Option<String>| ts.as_deref().is_some_and(|t| t >= min_active_db);
             fresh(&s.human_input_at) || fresh(&s.created_at)
@@ -1091,7 +1120,7 @@ mod tests {
                 created_at: None,
             },
         ];
-        let kept: Vec<String> = apply_codex_human_input_gate(sessions, threshold)
+        let kept: Vec<String> = apply_codex_human_input_gate(sessions, threshold, None)
             .into_iter()
             .map(|s| s.uuid)
             .collect();
@@ -1105,7 +1134,8 @@ mod tests {
         assert_eq!(
             apply_codex_human_input_gate(
                 vec![codex_session("b", Some(threshold), None)],
-                threshold
+                threshold,
+                None
             )
             .len(),
             1
@@ -1114,7 +1144,8 @@ mod tests {
         assert_eq!(
             apply_codex_human_input_gate(
                 vec![codex_session("b", Some("2026-07-11 08:59:59"), None)],
-                threshold
+                threshold,
+                None
             )
             .len(),
             0
@@ -1138,7 +1169,7 @@ mod tests {
             2,
             "process_gate는 count>=1이면 유령도 유지"
         );
-        let after_human: Vec<String> = apply_codex_human_input_gate(after_proc, threshold)
+        let after_human: Vec<String> = apply_codex_human_input_gate(after_proc, threshold, None)
             .into_iter()
             .map(|s| s.uuid)
             .collect();
@@ -1156,15 +1187,88 @@ mod tests {
         let fresh_ghost = codex_session("fresh-ghost", Some("2026-07-11 09:20:00"), None);
         // 라이브: 더 최근 입력 → 당연히 통과. 둘 다 남아 dispatcher/사용자가 유령을 고를 수 있다.
         let live = codex_session("live", Some("2026-07-11 09:40:00"), None);
-        let kept: Vec<String> = apply_codex_human_input_gate(vec![fresh_ghost, live], threshold)
-            .into_iter()
-            .map(|s| s.uuid)
-            .collect();
+        let kept: Vec<String> =
+            apply_codex_human_input_gate(vec![fresh_ghost, live], threshold, None)
+                .into_iter()
+                .map(|s| s.uuid)
+                .collect();
         assert_eq!(
             kept,
             vec!["fresh-ghost", "live"],
             "fresh-churn 유령은 window 동안 잔존(원리적 한계): 게이트는 유령 수명 상한과 relay 자기유지 차단만 보장"
         );
+    }
+
+    #[test]
+    fn codex_gate_marker_hybrid_overrides_window_by_state() {
+        // 이슈 #119: marker_dir가 주어지면 threadId<->래퍼PID 마커가 시간창보다 우선한다.
+        use std::collections::HashSet;
+        let marker_dir = std::env::temp_dir().join(format!(
+            "tuna-codex-hybrid-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        std::fs::create_dir_all(&marker_dir).unwrap();
+        // Dead(래퍼가 종료 확정 통보) → human_input이 신선해도 무조건 드롭.
+        std::fs::write(marker_dir.join("codex-dead.ctx"), "dead").unwrap();
+        // Pid(래퍼 생존 중) → 사람입력·생성 둘 다 stale이어도 window 면제로 유지.
+        std::fs::write(marker_dir.join("codex-pid-stale.ctx"), "4242").unwrap();
+        // Unknown(마커는 있으나 owner 미상) → 마찬가지로 stale이어도 유지.
+        std::fs::write(marker_dir.join("codex-unknown-stale.ctx"), "").unwrap();
+        // codex-nomarker-* 는 마커 파일 자체가 없음(NoMarker) → 기존 시간창 판정 폴백.
+
+        let threshold = "2026-07-11 09:00:00";
+        let stale = Some("2026-07-11 08:00:00");
+        let fresh = Some("2026-07-11 09:30:00");
+        let sessions = vec![
+            codex_session("codex-dead", fresh, fresh),
+            codex_session("codex-pid-stale", stale, stale),
+            codex_session("codex-unknown-stale", stale, stale),
+            codex_session("codex-nomarker-stale", stale, stale),
+            codex_session("codex-nomarker-fresh", fresh, None),
+        ];
+        let kept: HashSet<String> =
+            apply_codex_human_input_gate(sessions.clone(), threshold, Some(&marker_dir))
+                .into_iter()
+                .map(|s| s.uuid)
+                .collect();
+        assert!(
+            !kept.contains("codex-dead"),
+            "Dead 마커는 신선해도 드롭: {kept:?}"
+        );
+        assert!(
+            kept.contains("codex-pid-stale"),
+            "Pid 마커는 stale이어도 window 면제: {kept:?}"
+        );
+        assert!(
+            kept.contains("codex-unknown-stale"),
+            "Unknown 마커도 window 면제: {kept:?}"
+        );
+        assert!(
+            !kept.contains("codex-nomarker-stale"),
+            "마커 없음은 window 판정 폴백(stale=드롭): {kept:?}"
+        );
+        assert!(
+            kept.contains("codex-nomarker-fresh"),
+            "마커 없음+fresh는 기존과 동일하게 유지: {kept:?}"
+        );
+
+        // marker_dir=None이면 마커 존재와 무관하게 순수 시간창 판정(하위호환)으로 폴백한다.
+        let kept_no_marker_dir: HashSet<String> =
+            apply_codex_human_input_gate(sessions, threshold, None)
+                .into_iter()
+                .map(|s| s.uuid)
+                .collect();
+        assert_eq!(
+            kept_no_marker_dir,
+            ["codex-dead", "codex-nomarker-fresh"]
+                .into_iter()
+                .map(str::to_string)
+                .collect::<HashSet<String>>(),
+            "marker_dir=None은 마커 파일이 있어도 순수 시간창 판정만 수행: {kept_no_marker_dir:?}"
+        );
+
+        std::fs::remove_dir_all(&marker_dir).ok();
     }
 
     #[test]
@@ -1624,11 +1728,11 @@ mod tests {
         assert!(found.is_empty());
     }
 
-    /// cli_daemons.rs presence_scan 루프의 게이트 합성 순서(tombstone → codex 사람활동 게이트 →
-    /// 죽은 owner-pid 마커 제외 → idle 캐시 병합)를 그대로 재현하는 시나리오 테스트. 개별 게이트는
-    /// 각자 단위테스트가 있지만, 순서대로 합성했을 때의 누적 효과(이 단계에서 뭐가 왜 빠지는지)는
-    /// 무테스트였다(회귀 위험: 순서를 바꾸면 tombstone된 codex 유령이 codex 게이트를 먼저 통과해버리는
-    /// 식의 은닉 버그가 생길 수 있다).
+    /// cli_daemons.rs presence_scan 루프의 게이트 합성 순서(tombstone → codex 사람활동 게이트(#119
+    /// hybrid marker 포함) → 죽은 owner-pid 마커 제외 → idle 캐시 병합)를 그대로 재현하는 시나리오
+    /// 테스트. 개별 게이트는 각자 단위테스트가 있지만, 순서대로 합성했을 때의 누적 효과(이 단계에서
+    /// 뭐가 왜 빠지는지)는 무테스트였다(회귀 위험: 순서를 바꾸면 tombstone된 codex 유령이 codex
+    /// 게이트를 먼저 통과해버리는 식의 은닉 버그가 생길 수 있다).
     #[test]
     fn presence_pipeline_composes_gates_in_cli_daemons_order() {
         use std::collections::HashSet;
@@ -1641,8 +1745,16 @@ mod tests {
         std::fs::write(marker_dir.join("claude-deadpid.ctx"), "9999").unwrap();
         // owner pid가 스냅샷에 살아있는 세션 → 끝까지 생존.
         std::fs::write(marker_dir.join("claude-live.ctx"), "100").unwrap();
+        // #119: codex_wrapper.py가 남긴 tombstone - 신선한 timestamp라도 1단계에서 이미 빠져야 한다
+        // (2단계 codex 게이트가 먼저 통과시켜 버리는 순서 버그를 이 케이스가 못박는다).
+        std::fs::write(marker_dir.join("codex-tomb.ctx"), "dead").unwrap();
+        // #119: codex_wrapper.py 래퍼가 살아있다고 기록한 세션 - human_input/created 둘 다 stale이라
+        // 예전(순수 시간창) 규약이면 2단계에서 드롭됐을 것. hybrid 마커가 2단계는 면제시키고,
+        // 3단계 프로세스 스냅샷(pid 200 alive)이 그 생존을 권위 판정으로 재확인한다.
+        std::fs::write(marker_dir.join("codex-pid-live.ctx"), "200").unwrap();
 
         let threshold = "2026-07-11 09:00:00";
+        let stale = Some("2026-07-11 08:00:00");
         let sessions = vec![
             LiveSession {
                 uuid: "claude-tomb".into(),
@@ -1665,41 +1777,52 @@ mod tests {
                 human_input_at: None,
                 created_at: None,
             },
-            // 유령: 사람입력·생성 둘 다 threshold 이전(codex 게이트에서 드롭돼야 함).
+            // #119 codex tombstone(위 참고) - fresh timestamp인데도 1단계에서 빠져야 함.
+            codex_session("codex-tomb", Some("2026-07-11 09:30:00"), None),
+            // #119 marker-live codex(위 참고) - stale timestamp인데도 마커로 2단계를 통과해야 함.
+            codex_session("codex-pid-live", stale, stale),
+            // 유령: 마커 없음 + 사람입력·생성 둘 다 threshold 이전(codex 게이트에서 드롭돼야 함).
             codex_session(
                 "codex-ghost",
                 Some("2026-07-11 08:00:00"),
                 Some("2026-07-11 07:00:00"),
             ),
-            // 활성: 최근 사람입력(codex 게이트 통과, 마커가 없어 filter_dead_sessions은 보수적 유지).
+            // 활성: 마커 없음 + 최근 사람입력(codex 게이트 통과, filter_dead_sessions은 보수적 유지).
             codex_session("codex-fresh", Some("2026-07-11 09:30:00"), None),
         ];
 
-        // 1) tombstone 제거는 스냅샷과 무관하게 항상 먼저 적용된다(cli_daemons.rs 주석과 동일 순서).
+        // 1) tombstone 제거는 스냅샷과 무관하게 항상 먼저 적용된다(cli_daemons.rs 주석과 동일 순서,
+        // claude·codex 구분 없이 uuid 마커만 본다).
         let sessions = filter_tombstoned(sessions, &marker_dir);
         let after_tomb: HashSet<&str> = sessions.iter().map(|s| s.uuid.as_str()).collect();
         assert!(
-            !after_tomb.contains("claude-tomb"),
-            "tombstone 세션은 1단계에서 제거돼야 함: {after_tomb:?}"
+            !after_tomb.contains("claude-tomb") && !after_tomb.contains("codex-tomb"),
+            "tombstone 세션은 claude·codex 구분 없이 1단계에서 제거돼야 함: {after_tomb:?}"
         );
         assert_eq!(
             sessions.len(),
-            4,
-            "tombstone 하나만 빠져야 함: {after_tomb:?}"
+            5,
+            "tombstone 둘(claude-tomb·codex-tomb)만 빠져야 함: {after_tomb:?}"
         );
 
-        // 2) codex 사람활동 신선도 게이트(#88) - 유령 codex만 드롭, claude는 무관.
-        let sessions = apply_codex_human_input_gate(sessions, threshold);
+        // 2) codex 사람활동 신선도 게이트(#88) + hybrid 마커(#119) - 마커 없는 유령 codex만 드롭,
+        // 마커로 살아있다 기록된 codex는 stale이어도 면제, claude는 무관.
+        let sessions = apply_codex_human_input_gate(sessions, threshold, Some(&marker_dir));
         let after_codex: HashSet<&str> = sessions.iter().map(|s| s.uuid.as_str()).collect();
         assert!(
             !after_codex.contains("codex-ghost"),
-            "유령 codex는 2단계에서 드롭돼야 함: {after_codex:?}"
+            "마커 없는 유령 codex는 2단계에서 드롭돼야 함: {after_codex:?}"
+        );
+        assert!(
+            after_codex.contains("codex-pid-live"),
+            "마커로 생존 기록된 codex는 stale이어도 2단계를 통과해야 함(hybrid 면제): {after_codex:?}"
         );
         assert!(after_codex.contains("codex-fresh"));
-        assert_eq!(sessions.len(), 3);
+        assert_eq!(sessions.len(), 4);
 
-        // 3) 죽은 owner-pid 마커 제외(claude-deadpid는 alive 집합에 없음).
-        let alive: HashSet<u32> = [100u32].into_iter().collect();
+        // 3) 죽은 owner-pid 마커 제외(claude-deadpid는 alive 집합에 없음). codex-pid-live(200)는
+        // alive 집합에 있어 2단계의 "면제"가 여기서 권위 있게 재확인된다(가짜 생존이면 여기서 빠진다).
+        let alive: HashSet<u32> = [100u32, 200].into_iter().collect();
         let sessions = filter_dead_sessions(sessions, &marker_dir, &alive);
         let after_dead: HashSet<&str> = sessions.iter().map(|s| s.uuid.as_str()).collect();
         assert!(
@@ -1708,13 +1831,17 @@ mod tests {
         );
         assert!(after_dead.contains("claude-live"));
         assert!(
+            after_dead.contains("codex-pid-live"),
+            "codex-pid-live는 3단계 프로세스 스냅샷으로 생존이 재확인돼야 함: {after_dead:?}"
+        );
+        assert!(
             after_dead.contains("codex-fresh"),
             "마커 없는 codex는 filter_dead_sessions에서 보수적으로 유지돼야 함"
         );
         assert_eq!(
             sessions.len(),
-            2,
-            "claude-live + codex-fresh만 남아야 함: {after_dead:?}"
+            3,
+            "claude-live + codex-pid-live + codex-fresh만 남아야 함: {after_dead:?}"
         );
 
         // 4) idle 캐시 병합(cli_daemons.rs 마지막 단계): 이번 주기에 이미 있는 uuid는 idle 사본으로
@@ -1744,7 +1871,12 @@ mod tests {
         final_uuids.sort_unstable();
         assert_eq!(
             final_uuids,
-            vec!["claude-live", "codex-fresh", "idle-revived"]
+            vec![
+                "claude-live",
+                "codex-fresh",
+                "codex-pid-live",
+                "idle-revived"
+            ]
         );
         let claude_live = sessions.iter().find(|s| s.uuid == "claude-live").unwrap();
         assert_eq!(

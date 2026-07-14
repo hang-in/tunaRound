@@ -4,7 +4,7 @@
 // (uuid=threadId)이 곧 주입 대상이라, 사용자가 관전 중인 세션에 task와 답이 그대로 보인다.
 // 설계 정본 docs/design/v2-46-codex-relay_2026-07-11.md.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 use crate::codex_appserver::{ApprovalPolicy, SandboxMode};
@@ -47,18 +47,29 @@ pub fn build_inject_text(task_id: &str, msg: &str) -> String {
     )
 }
 
-/// codex 세션 목록에 이슈 #88 시간창 게이트를 적용한다(순수부). presence 스캐너(cli_daemons.rs)와
-/// 동일하게 [`apply_codex_human_input_gate`]를 재사용해, 게이트로 로스터에서 GC됐어야 할 유령 codex
-/// thread(사람활동이 window보다 오래되거나 없는 thread)에 relay가 대리 claim해 주입하는 것을 막는다
-/// (스캐너는 로스터에만 배선돼 있었고 relay는 별도 세션 소비 경로라 게이트가 미적용이었다). threshold
-/// 계산 실패(예: now가 UNIX epoch보다 이전)는 fail-open(미드롭, 스캐너와 동일 규약).
+/// codex 세션 목록에 이슈 #88 시간창 게이트(+ #119 hybrid 마커)를 적용한다(순수부). presence
+/// 스캐너(cli_daemons.rs)와 동일하게 [`apply_codex_human_input_gate`]를 재사용해, 게이트로
+/// 로스터에서 GC됐어야 할 유령 codex thread(사람활동이 window보다 오래되거나 없는 thread)에 relay가
+/// 대리 claim해 주입하는 것을 막는다(스캐너는 로스터에만 배선돼 있었고 relay는 별도 세션 소비
+/// 경로라 게이트가 미적용이었다). threshold 계산 실패(예: now가 UNIX epoch보다 이전)는 fail-open
+/// (미드롭, 스캐너와 동일 규약).
+///
+/// **marker_dir(#119)**: presence 스캐너와 같은 codex_wrapper.py 마커(`~/.tunaround/autoarm/
+/// <threadId>.ctx`)를 relay도 본다. 다만 relay는 presence 스캐너와 달리 **프로세스 스냅샷을 뜨지
+/// 않는다**(tasklist/ps 조회가 없다) - 그래서 [`apply_codex_human_input_gate`]의 `Pid`/`Unknown`
+/// 분기(window 면제)까지는 스캐너와 동일하게 적용되지만, 그 뒤 스캐너가 하는 `filter_dead_sessions`
+/// (프로세스 스냅샷으로 PID 생존을 권위 판정)에 대응하는 단계가 relay엔 없다. 즉 **relay가 실제로
+/// 얻는 효과는 `Dead` 마커(래퍼가 종료를 확정 통보)의 즉시 제외뿐**이고, "Pid 마커가 있는데 실은
+/// 그 PID가 죽었다"는 오탐은 relay 단독으론 못 거른다(주입 시도 자체가 codex_inject 접속 실패로
+/// 이어져 fail_task로 흡수되므로 안전망은 있다 - 완전한 생존 검증 부재를 수용한다).
 pub fn gate_sessions(
     sessions: Vec<LiveSession>,
     now: SystemTime,
     window: Duration,
+    marker_dir: Option<&Path>,
 ) -> Vec<LiveSession> {
     match now.checked_sub(window).and_then(system_time_to_db_datetime) {
-        Some(min_active) => apply_codex_human_input_gate(sessions, &min_active),
+        Some(min_active) => apply_codex_human_input_gate(sessions, &min_active, marker_dir),
         None => sessions,
     }
 }
@@ -79,6 +90,10 @@ pub struct RelayOpts {
     /// 이슈 #88: 사람활동 신선도 window(gate_sessions). presence-scan의 codex_human_window_mins와
     /// 동일 규약(기본 60분).
     pub codex_human_window: Duration,
+    /// 이슈 #119: codex_wrapper.py 마커 디렉토리(`~/.tunaround/autoarm`, presence-scan의 marker_dir
+    /// 도출과 동일 규약 - cli_daemons.rs가 home으로부터 만들어 넘긴다). None이면 순수 시간창 게이트로
+    /// 폴백(home 미확정 등, apply_codex_human_input_gate와 동일 하위호환 규약).
+    pub marker_dir: Option<PathBuf>,
     pub interval_secs: u64,
     pub inject_timeout_secs: u64,
     /// 주입 승인 정책(기본 Never, --approval로 노브 제공).
@@ -162,7 +177,13 @@ pub async fn run(opts: RelayOpts) -> Result<(), String> {
         };
         // 이슈 #88: 게이트로 로스터에서 GC됐어야 할 유령 codex thread에 대리 claim해 주입하지 않게
         // 시간창 밖 세션을 여기서도 제외한다(스캐너는 로스터에만 배선, relay는 별도 소비 경로였음).
-        let sessions = gate_sessions(sessions, now, opts.codex_human_window);
+        // 이슈 #119: marker_dir가 있으면 hybrid 마커가 시간창보다 우선한다(gate_sessions 주석 참고).
+        let sessions = gate_sessions(
+            sessions,
+            now,
+            opts.codex_human_window,
+            opts.marker_dir.as_deref(),
+        );
 
         // #65: app-server(ws) 도달성을 이 주기 시작에 1회 확인한다(머신당 app-server 1개). 미도달이면
         // codex task를 claim했다가 ws 접속 실패로 즉시 fail로 승격시키지 않도록 이번 주기 주입을 통째로
@@ -338,7 +359,7 @@ mod tests {
             codex_session("live", Some(&fresh_ts)),
             codex_session("nosignal", None),
         ];
-        let kept: Vec<String> = gate_sessions(sessions, now, window)
+        let kept: Vec<String> = gate_sessions(sessions, now, window, None)
             .into_iter()
             .map(|s| s.uuid)
             .collect();
@@ -347,6 +368,44 @@ mod tests {
             vec!["live"],
             "window 밖·무신호 세션은 주입 대상에서 제외돼야"
         );
+    }
+
+    #[test]
+    fn gate_sessions_excludes_dead_marker_even_with_fresh_human_input() {
+        // 이슈 #119: relay는 프로세스 스냅샷이 없어 Pid 생존까지는 권위 판정 못 하지만, 래퍼가 종료를
+        // 확정 통보한 Dead 마커는 human_input이 신선해도 즉시 제외해야 한다(죽은 세션에 대리 claim해
+        // 주입을 시도하지 않게).
+        let marker_dir = std::env::temp_dir().join(format!(
+            "tuna-relay-marker-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        std::fs::create_dir_all(&marker_dir).unwrap();
+        std::fs::write(marker_dir.join("ghost-dead.ctx"), "dead").unwrap();
+        // Pid 마커(생존 기록)는 stale이어도 relay 단계에선 면제(프로세스 스냅샷 부재로 그 이상의
+        // 권위 판정은 못 함 - 실제 접속 실패는 codex_inject의 fail_task 경로가 흡수).
+        std::fs::write(marker_dir.join("pid-marked.ctx"), "4242").unwrap();
+
+        let now = SystemTime::now();
+        let window = Duration::from_secs(60 * 60);
+        let stale_ts = system_time_to_db_datetime(now - Duration::from_secs(90 * 60)).unwrap();
+        let fresh_ts = system_time_to_db_datetime(now - Duration::from_secs(5 * 60)).unwrap();
+        let sessions = vec![
+            codex_session("ghost-dead", Some(&fresh_ts)), // 신선해도 Dead 마커가 이긴다.
+            codex_session("pid-marked", Some(&stale_ts)), // stale이어도 Pid 마커가 면제한다.
+            codex_session("no-marker-stale", Some(&stale_ts)), // 마커 없음 → 기존 window 판정.
+        ];
+        let kept: Vec<String> = gate_sessions(sessions, now, window, Some(&marker_dir))
+            .into_iter()
+            .map(|s| s.uuid)
+            .collect();
+        assert_eq!(
+            kept,
+            vec!["pid-marked"],
+            "Dead 마커는 신선해도 제외, Pid 마커는 stale이어도 유지, 마커 없음은 window 판정: {kept:?}"
+        );
+
+        std::fs::remove_dir_all(&marker_dir).ok();
     }
 
     #[test]
@@ -490,6 +549,7 @@ mod tests {
                 home: None,
                 stale: Duration::from_secs(3600),
                 codex_human_window: Duration::from_secs(3600),
+                marker_dir: None,
                 interval_secs: 1,
                 inject_timeout_secs: 5,
                 approval: ApprovalPolicy::Never,
