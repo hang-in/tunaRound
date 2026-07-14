@@ -96,9 +96,8 @@ export default function App() {
       const cur = transientBusyRef.current
       const entry = cur[uuid]
       if (!entry || entry.taskId !== taskId) return
-      // delete 대신 구조분해 omit(동적 키 delete 지양, DeepSource JS).
-      const { [uuid]: _omit, ...next } = cur
-      void _omit
+      // delete·computed-key 구조분해 대신 filter 재구성(동적 키 delete 지양, DeepSource JS).
+      const next = Object.fromEntries(Object.entries(cur).filter(([key]) => key !== uuid))
       applyTransientBusy(next)
     },
     [applyTransientBusy],
@@ -107,9 +106,9 @@ export default function App() {
   // taskId의 기존 타이머를 확정 정리한다(있으면 clearTimeout + 맵에서 제거).
   const clearTransientTimer = useCallback((taskId: string) => {
     const timers = transientTimersRef.current
-    const t = timers.get(taskId)
-    if (t !== undefined) {
-      window.clearTimeout(t)
+    const timerId = timers.get(taskId)
+    if (timerId !== undefined) {
+      window.clearTimeout(timerId)
       timers.delete(taskId)
     }
   }, [])
@@ -118,11 +117,11 @@ export default function App() {
   const setTransientTimer = useCallback(
     (taskId: string, cb: () => void, ms: number) => {
       clearTransientTimer(taskId)
-      const t = window.setTimeout(() => {
+      const timerId = window.setTimeout(() => {
         transientTimersRef.current.delete(taskId)
         cb()
       }, ms)
-      transientTimersRef.current.set(taskId, t)
+      transientTimersRef.current.set(taskId, timerId)
     },
     [clearTransientTimer],
   )
@@ -131,7 +130,7 @@ export default function App() {
   useEffect(() => {
     const timers = transientTimersRef.current
     return () => {
-      timers.forEach((t) => window.clearTimeout(t))
+      timers.forEach((timerId) => window.clearTimeout(timerId))
       timers.clear()
     }
   }, [])
