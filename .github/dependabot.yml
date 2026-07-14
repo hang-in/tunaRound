@@ -44,3 +44,9 @@ updates:
         patterns: ['*']
     commit-message:
       prefix: 'chore(deps)'
+    # lockfile-only: Cargo.toml 범위 내(=cargo update 등가) 갱신만 제안 = 거의 항상 컴파일.
+    # 첫 cargo 그룹 PR(#111)이 전부 메이저/브레이킹(toml 1.x·lindera 4·rusqlite 0.40·rmcp 2.2·
+    # tokio-tungstenite 0.29)이라 CI가 정당하게 깨진 실측에서 전환(2026-07-14 사용자 결정).
+    # 메이저는 의도적 마이그레이션(백로그 이슈 #115). Rust 0.x는 dependabot semver 분류상
+    # minor로 잡혀 ignore(semver-major)로는 브레이킹을 못 거른다 - lockfile-only가 정답.
+    versioning-strategy: lockfile-only
