@@ -623,7 +623,17 @@ pub enum MarkerState {
 
 /// 세션 uuid의 마커를 읽는다(마커 디렉토리 = ~/.tunaround/autoarm, 훅과 같은 sanitize 규약 전제 -
 /// uuid는 hex+하이픈이라 파일명 그대로).
+/// 방어(gemini, 이슈 #119): codex 경로에선 uuid가 rollout 파일 **내용**(session_meta)에서 오므로
+/// 신뢰 경계 밖이다 - 허용 문자 밖(경로 구분자 등)이 섞인 uuid는 join 전에 NoMarker로 거른다
+/// (마커 파일명 sanitize 집합과 동일: 영숫자·`.`·`_`·`-`). 경로 이탈로 임의 파일을 읽는 것 차단.
 pub fn read_marker(dir: &Path, uuid: &str) -> MarkerState {
+    if uuid.is_empty()
+        || !uuid
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+    {
+        return MarkerState::NoMarker;
+    }
     let path = dir.join(format!("{uuid}.ctx"));
     match std::fs::read_to_string(&path) {
         Err(_) => MarkerState::NoMarker,

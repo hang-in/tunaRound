@@ -128,17 +128,30 @@ def parse_session_meta_payload(line):
 
 
 def read_session_id_if_matching(path, cwd):
-    """rollout 파일 첫 줄을 읽어 이 cwd의 메인 세션이면 session_id를, 아니면 None을 반환한다.
-    파일 IO 실패도 None(래퍼가 죽지 않게, 다음 폴링 주기에 재시도)."""
+    """rollout 파일 첫 줄을 읽어 (완결 여부, session_id)를 반환한다.
+
+    완결 여부(complete)는 "이 파일의 판정이 끝났는가"다: 첫 줄이 유효한 JSON이면 True(우리
+    세션이든 아니든 확정), 파일이 갓 생성돼 첫 줄이 비었거나 불완전한 JSON이면 False - 호출부가
+    known에 넣지 않고 다음 폴링 주기에 재시도한다(생성과 기록 사이 시간차로 바인딩을 영구히
+    놓치는 레이스 방지, gemini 리뷰). IO 실패도 False(재시도).
+    session_id는 이 cwd의 메인 세션일 때만 값이 있다."""
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        # path는 glob(_list_rollout_files)이 고정 sessions_dir 하위에서 연 것 - 외부 입력 아님.
+        with open(path, "r", encoding="utf-8") as f:  # skipcq: PTC-W6004
             first_line = f.readline()
     except OSError:
-        return None
-    payload = parse_session_meta_payload(first_line)
+        return (False, None)
+    try:
+        obj = json.loads(first_line)
+    except (ValueError, TypeError):
+        return (False, None)  # 빈 줄·기록 중 잘린 JSON = 미완결, 재시도.
+    payload = None
+    if isinstance(obj, dict) and obj.get("type") == "session_meta":
+        p = obj.get("payload")
+        payload = p if isinstance(p, dict) else None
     if payload is None or not session_meta_matches(payload, cwd):
-        return None
-    return payload.get("session_id") or payload.get("id")
+        return (True, None)  # 유효 JSON = 판정 확정(우리 세션 아님).
+    return (True, payload.get("session_id") or payload.get("id"))
 
 
 # ---------------------------------------------------------------------------
@@ -175,8 +188,11 @@ def find_bound_thread_id(sessions_dir, cwd, stop_event, poll_interval=SESSION_PO
         for path in _list_rollout_files(sessions_dir):
             if path in known:
                 continue
-            known.add(path)
-            sid = read_session_id_if_matching(path, cwd)
+            complete, sid = read_session_id_if_matching(path, cwd)
+            if complete:
+                # 판정이 확정된 파일만 known에 담는다. 미완결(갓 생성돼 첫 줄이 아직 없음)은
+                # 다음 주기에 재시도 - 여기서 known에 넣으면 바인딩을 영구히 놓친다(gemini).
+                known.add(path)
             if sid:
                 return sid
         if stop_event.is_set():
@@ -187,20 +203,31 @@ def find_bound_thread_id(sessions_dir, cwd, stop_event, poll_interval=SESSION_PO
 
 
 def find_real_codex():
-    """래퍼 자신의 디렉토리를 제외한 PATH 상에서 진짜 codex 실행파일 경로를 찾는다. 못 찾으면 None."""
-    wrapper_dir = os.path.dirname(os.path.abspath(__file__))
+    """래퍼 자신의 디렉토리를 제외한 PATH 상에서 진짜 codex 실행파일 경로를 찾는다. 못 찾으면 None.
+
+    비교는 realpath로 한다(gemini): 래퍼가 다른 경로에 심볼릭 링크돼 있으면 abspath 비교로는
+    그 링크 디렉토리가 걸러지지 않아 래퍼가 자기 자신을 재실행하는 무한 루프가 된다. 후보 파일
+    자체의 realpath가 래퍼 디렉토리 안을 가리키는 경우(개별 파일 symlink)도 제외한다."""
+    wrapper_dir = os.path.realpath(os.path.dirname(os.path.abspath(__file__)))
     paths = os.environ.get("PATH", "").split(os.pathsep)
-    filtered = [p for p in paths if os.path.abspath(p) != wrapper_dir]
+    filtered = [p for p in paths if os.path.realpath(p) != wrapper_dir]
+
+    def _is_self(candidate):
+        real = os.path.realpath(candidate)
+        return real == wrapper_dir or os.path.dirname(real) == wrapper_dir
 
     bin_names = ["codex.cmd", "codex.bat", "codex"] if os.name == "nt" else ["codex"]
     for p in filtered:
         for name in bin_names:
             candidate = os.path.join(p, name)
-            if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            if os.path.isfile(candidate) and os.access(candidate, os.X_OK) and not _is_self(candidate):
                 return candidate
 
     # 필터링된 PATH로 shutil.which를 재시도한다(우리 자신을 다시 찾는 것을 원천 차단).
-    return shutil.which("codex", path=os.pathsep.join(filtered))
+    found = shutil.which("codex", path=os.pathsep.join(filtered))
+    if found and _is_self(found):
+        return None
+    return found
 
 
 def marker_dir():
