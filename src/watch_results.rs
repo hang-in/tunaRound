@@ -414,6 +414,9 @@ enum RunEnd {
 /// state(seen·pending·flush_at·watermark)는 호출부(재접속 루프) 소유라 재접속을 넘어 유지된다.
 /// `session_marker`가 있으면(이슈 #118) 접속 중에도 [`SESSION_MARKER_CHECK_SECS`]마다 종료를
 /// 점검한다.
+// 인자 8개: 재접속 루프 소유 상태(state·connected_at·progressed)를 빌려주는 구조라 개별 전달이
+// 명시적이다. 구조체화는 run_poll_loop와 함께 후속(worker.rs 동일 defer).
+#[allow(clippy::too_many_arguments)]
 async fn run_once(
     client: &reqwest::Client,
     url: &str,
