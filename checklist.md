@@ -21,11 +21,14 @@
 > #115(cargo 메이저 5종)는 당일 결정된 전용 세션 백로그라 제외. 나머지 3건 = 정찰(3 에이전트) → 스펙 고정(Opus) → sonnet 실무자 3 병렬(worktree) → 중앙검증 → PR → CI·봇 → 머지.
 
 - [x] 정찰: #94 스피너(busy 계산·SSE envelope·프론트 배선) / #118 poll(마커=dead tombstone 발견) / #119 래퍼(구 래퍼 이력·서브에이전트 rollout 함정·게이트 합성 지점)
-- [ ] #94 구현: 서버 busy=Working+updated_at≤300s(heartbeat 근거) + 프론트 SSE transient 오버레이(최소표시 4s·만료 120s)
-- [ ] #118 구현: poll·watch-results --session-marker(부재 OR dead=정상종료 exit0) + watch select 15s 타이머 arm + 훅 3지점 배선
-- [ ] #119 구현: 래퍼 3파일(마커 기록만, resume argv·rollout session_meta 바인딩) + 게이트 3분기(Dead드롭/Pid·Unknown면제/NoMarker=window) presence+relay
-- [ ] 중앙검증(fmt·clippy all-targets 풀피처·test) → PR 3건 → CI green → 봇리뷰 전수 → 머지
-- [ ] 배포: win 훅 재배포(전역 훅이 repo보다 구버전 - 정찰 발견) + 새 바이너리 mesh 재배포 + 래퍼 PATH 배치(사용자 결정) + mac은 A2A 위임
+- [x] #94 구현·머지(PR #120): 서버 busy=Working+updated_at≤300s + 프론트 SSE transient 오버레이(taskId 키 Map 타이머로 확정 정리)
+- [x] #118 구현·머지(PR #121): poll·watch-results --session-marker(NotFound OR dead=정상종료 exit0, 일시 IO오류=생존 유지) + watch select 15s 타이머 + 훅 3지점 + write_marker 원자화
+- [x] #119 구현·머지(PR #122): 래퍼 3파일(스냅샷 선행·O_EXCL claim·realpath+normcase·소유확인 tombstone) + 게이트 3분기 presence+relay + read_marker uuid 검증
+- [x] 중앙검증(fmt·clippy all-targets 풀피처·test 697/701/729 pass, #118 clippy 8인자 검출) → CI 3~4라운드 green → 봇리뷰 전수(gemini·CodeRabbit 반영, relay Pid면제·DeepSource 잔여는 근거 처분) → 머지
+- [x] 배포(win): 훅 4종 재배포 + mesh 새 바이너리(ad714d1, broker 50996·scan 10968·relay 43576·watch 32108) + 대시보드 새 번들 서빙 확인. **래퍼는 의외의 즉시 활성**(구 래퍼 시절 PATH 항목 scripts가 잔존 → #122 파일 부활로 codex가 래퍼로 해석, --version 스모크 통과)
+- [x] 배포(mac, A2A task b0f6cfba 자율 수행): 바이너리 ad714d1 원자 교체 + mesh 재기동(scan 81919·relay 81921) + 훅 4종 배포(--session-marker 배선 확인) + #118 스모크 mac에서도 PASS. 래퍼 PATH만 미배치(사용자 결정 대기)
+- [x] 라이브 검증: #118 win·mac 양쪽 PASS(/dead→exit 0) + 이 세션 poll·인박스를 마커 판으로 재무장(도그푸딩). #94 스피너·#119 래퍼 마커는 자연 도그푸딩(다음 codex TUI·task 흐름에서 관찰)
+- [ ] 잔여: mac 래퍼 PATH 배치(사용자 결정) / #94·#119 자연 도그푸딩 관찰
 
 ## 세션28: fable 5 리뷰-패치 캠페인 (2026-07-14, 핸드오프 docs/prompts/v2-handoff_2026-07-14_session28.md)
 
