@@ -12,8 +12,9 @@
 - [x] B-2d: ci.yml release-features 잡 = 릴리스 실조합에 dashboard 포함(npm build 선행)
 - [x] B-3: about.toml(accepted 10종·주석) + about.hbs(tunaround 문구) + THIRD-PARTY-NOTICES.html(503KB) + dist include + CHANGELOG
 - [x] 검증: dist plan green(4아카이브 NOTICES) + generate --check 클린 + clippy 릴리스콤보+dashboard 클린 + dist build 스모크(zip에 NOTICES 동봉·exe에 SPA 자산 임베드 바이트 확인)
-- [ ] PR + CI green + 봇리뷰 반영 + 머지
+- [x] PR #113 + CI green(3라운드) + 봇리뷰 3건 전수 반영(gemini href 공백 / CodeRabbit DOCTYPE·charset + first_of_kind 고유 anchor) + 머지(main 391b49f)
 - [x] mac relay 재배포(A2A task 964cba8e, mac-claude 자율 수행 완료: b80db20 빌드·원자 교체·재기동 37802/37804·로스터 확인. 왕복 E2E만 mac codex TUI 열릴 때 재검증)
+- [x] (파생) dependabot 첫 가동 3 PR 정비: #109 close(release.yml=cargo-dist 소유 충돌 → PR #114 ignore 4종+유효분 수동 반영·머지) / #110 frontend 머지 / #111 close → 메이저 5종 백로그 이슈 #115 + PR #116 lockfile-only 전환·머지(사용자 결정). main=f485a3a
 
 ## 세션28: fable 5 리뷰-패치 캠페인 (2026-07-14, 핸드오프 docs/prompts/v2-handoff_2026-07-14_session28.md)
 
