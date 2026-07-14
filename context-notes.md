@@ -2,6 +2,14 @@
 
 > 작업 중 결정과 근거. 계속 append. (규율 #7) 다음 세션이 결정을 재유도하지 않게.
 
+## 2026-07-14 세션29 후반2: 운영 발견 3건 + codex attach-생존 프로브 (라이브 실측, 재론 금지)
+
+- **유령 poll 누적 발견·정리**: /clear는 대화만 지우고 persistent Monitor(A2A 수신 poll)는 남긴다 -> 죽은 세션 UUID poll 8개 + 스테일 watch-results 1개가 브로커를 15초마다 두드리며 누적(사용자 발견: "active shells 10개"). PID 선별 종료로 정리(mesh 데몬 4·현재 세션 poll 보호). **구조 수정 = 이슈 #118**(poll이 세션 마커(.ctx) 소멸 시 self-terminate, 안 1 권고).
+- **대시보드 미표시 원인 = 배포 바이너리에 dashboard 피처 누락**: 세션28 재빌드가 "semantic…a2a-out"(dashboard 없이)로 빌드·배포 -> /dashboard가 "대시보드 미포함 빌드" 폴백(실측). **dashboard 포함 재빌드 + restart-win-mesh -SourceBin 재배포로 복구**(사용자 정상 확인). 교훈: win 배포 표준 피처 세트 = semantic morphology mcp serve worker engines a2a-out **dashboard**(B-2 머지로 dist features와 일치).
+- **codex 로스터 조기 이탈 문의 = 의도된 변화**: 세션27 #88 게이트가 stale 240분 -> 사람활동 window 60분. 노브 `--codex-human-window-mins`. #112 ws 게이트로 "긴 window의 비용"이 오배달->로스터 유령 표시+task 대기 수준으로 완화됨. 120분 상향 여부 = 사용자 결정 대기.
+- **codex attach-생존 프로브 (사용자 협업 실측, 결론 확정)**: 사용자 제안 "`codex --remote ws://8790`으로 시작하면 loaded/list가 생존 신호 되지 않나"(세션27 비채택 논거 중 수동attach·VS Code 미커버는 사용자 사용 패턴상 무효). 실측: ① attach 시작 -> loaded/list 즉시 등장(019f5e5a) ✓ ② TUI 종료 직후·60초 후에도 **잔류 = unload-on-disconnect 없음** ✗. 019f554b는 세션27부터 이틀째 loaded 잔류(resume 오염의 장기 실증). **결론: loaded/list = "한 번이라도 로드됨"이지 클라이언트 수명과 무연동 -> --remote 시작 습관만으로 생존 오라클 불가**(세션27 시간창 정본 유지). 스키마엔 thread/unsubscribe만 있고 클라이언트 연결 조회 RPC 없음. 부수 발견: rollout 파일은 첫 메시지 전 미생성(빈 세션은 thread/list에도 안 뜸).
+- **새 활로 = 래퍼 마커(다음 후보)**: codex 래퍼(PATH shim)가 TUI의 부모라 종료를 확정적으로 안다. 래퍼 생존 중 생성되는 첫 rollout(파일명에 thread uuid)을 감지해 threadId<->래퍼PID 마커를 남기면 claude와 같은 PID 생존 신호를 codex에 구현 가능(업스트림 불요). 한계: 동시 다중 codex 시작 시 바인딩 레이스(드묾), 첫 메시지 전엔 바인딩 불가(스캐너도 rollout 기반이라 동일 사각 = 무해).
+
 ## 2026-07-14 세션29: v0.5.0 준비 - B-2 대시보드 릴리스 포함 + B-3 라이선스 NOTICE (브랜치 build/release-dashboard-and-notices)
 
 - **mac relay 재배포 완료**(핸드오프 ①, A2A task 964cba8e를 mac-claude가 자율 수행): main(b80db20) 풀피처 release 빌드 -> ~/.cargo/bin 원자 교체, PID 선별 종료 준수, 로스터 재등록 확인. **relay 왕복 E2E만 미완**(mac 라이브 codex TUI 0개라 검증 불가 상태였고, relay가 스테일 thread를 ws 게이트로 올바르게 스킵 = #112 게이트 의도 동작의 실측 증거). mac codex TUI 열릴 때 재검증 1건.
