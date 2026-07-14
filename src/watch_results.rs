@@ -444,15 +444,19 @@ async fn run_once(
     let mut buf: Vec<u8> = Vec::new();
     let mut stream = resp.bytes_stream();
     // 세션 마커 주기 점검용 인터벌. session_marker가 None이면 select! 가드로 이 분기 자체가
-    // 비활성화되므로 tick()이 불려도(호출되지 않아도) 무해하다.
+    // 비활성화되므로 tick()이 불려도(호출되지 않아도) 무해하다. interval_at으로 첫 tick을
+    // 한 주기 뒤로 미룬다 - 호출부(run)가 접속 직전에 이미 점검해 즉시 tick은 중복 IO(gemini).
+    let marker_period = std::time::Duration::from_secs(SESSION_MARKER_CHECK_SECS);
     let mut marker_check =
-        tokio::time::interval(std::time::Duration::from_secs(SESSION_MARKER_CHECK_SECS));
+        tokio::time::interval_at(tokio::time::Instant::now() + marker_period, marker_period);
     marker_check.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         tokio::select! {
             _ = marker_check.tick(), if session_marker.is_some() => {
-                // unwrap 안전: 이 분기는 session_marker.is_some()일 때만 선택된다.
-                if crate::worker::session_marker_terminated(session_marker.unwrap()) {
+                // if let: 가드가 is_some을 보장하지만 패닉 가능 경로를 원천 제거(gemini 관용구).
+                if let Some(m) = session_marker
+                    && crate::worker::session_marker_terminated(m)
+                {
                     return RunEnd::MarkerGone;
                 }
             }
