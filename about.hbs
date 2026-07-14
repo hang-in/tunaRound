@@ -1,6 +1,8 @@
+<!DOCTYPE html>
 <html>
 
 <head>
+    <meta charset="UTF-8">
     <style>
         @media (prefers-color-scheme: dark) {
             body {
@@ -53,8 +55,12 @@
         <ul class="licenses-list">
             {{#each licenses}}
             <li class="license">
+                {{! 같은 라이선스의 첫 블록에만 overview 링크 대상 anchor를 쓴다(업스트림 example 답습, 중복 id 방지) }}
+                {{#if first_of_kind}}
                 <h3 id="{{id}}">{{name}}</h3>
-                <h4>Used by:</h4>
+                {{/if}}
+                <h4 id="{{id}}-{{@index}}">{{name}}</h4>
+                <h5>Used by:</h5>
                 <ul class="license-used-by">
                     {{#each used_by}}
                     <li><a href="{{#if crate.repository}}{{crate.repository}}{{else}}https://crates.io/crates/{{crate.name}}{{/if}}">{{crate.name}} {{crate.version}}</a></li>
