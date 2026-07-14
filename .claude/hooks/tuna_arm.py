@@ -301,7 +301,11 @@ def write_marker(session_id: str) -> None:
         return
     try:
         owner = find_owner_pid()
-        p.write_text(str(owner) if owner > 0 else "unknown", encoding="utf-8")
+        # 원자적 교체(tmp + os.replace, CodeRabbit): poll이 이 마커를 주기 판독해 종료를 판정하므로
+        # (이슈 #118), 쓰기 도중의 부분 내용·공유 위반이 판독측에 노출되지 않게 한다.
+        tmp = p.with_name(p.name + ".tmp")
+        tmp.write_text(str(owner) if owner > 0 else "unknown", encoding="utf-8")
+        os.replace(tmp, p)
     except Exception:
         pass
 

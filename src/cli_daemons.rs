@@ -166,6 +166,7 @@ pub fn poll(rt: &tokio::runtime::Runtime, a: PollArgs) {
             .clone()
             .or_else(|| std::env::var(ENV_BROKER_TOKEN).ok());
         let client = tunaround::mcp_client::McpHttpClient::connect(a.core.clone(), token).await?;
+        let session_marker = a.session_marker.as_deref().map(std::path::PathBuf::from);
         tunaround::worker::run_poll_loop(
             &client,
             &a.agent,
@@ -175,6 +176,7 @@ pub fn poll(rt: &tokio::runtime::Runtime, a: PollArgs) {
             a.on_task.as_deref(),
             a.display_name.as_deref(),
             !a.no_register,
+            session_marker,
         )
         .await
     });
@@ -186,11 +188,13 @@ pub fn poll(rt: &tokio::runtime::Runtime, a: PollArgs) {
 
 /// watch-results <...>: 총괄이 던진 task의 완료/실패를 브로커 SSE로 받아 stdout으로 알린다(worker 피처).
 pub fn watch_results(rt: &tokio::runtime::Runtime, a: WatchResultsArgs) {
+    let session_marker = a.session_marker.as_deref().map(std::path::PathBuf::from);
     let result = rt.block_on(tunaround::watch_results::run(
         &a.core,
         &a.dispatcher,
         a.digest,
         a.since.as_deref(),
+        session_marker,
     ));
     if let Err(e) = result {
         eprintln!("[watch-results] 오류: {e}");
