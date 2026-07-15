@@ -1093,3 +1093,10 @@
 - **README 재작성(PR #125)**: 재작성 지도(docs/prompts/readme-rewrite-guide_2026-07-15.md 보존) 준수 - 첫 문장=복붙 통증, Quick Start=init·node·재시작(금지 어휘 0), chat=부수 기능 강등, 명령 위계화, 대시보드=다음 단계+소스빌드 명시, cargo install 함정 각주. onboarding.md §2 "로컬 첫 왕복" 신설(번호 재배열 2~9→3~10, README#설치 앵커 2곳 갱신). CodeRabbit의 설치 버전고정·체크섬 요구는 근거 기각(기존 방식 재배치·cargo-dist 표준·문서 부패).
 - **샌드박스 라이브 검증(USERPROFILE+CLAUDE_CONFIG_DIR 격리)**: init 1회로 node.toml(loopback·무token 키·3 lane)+config(토큰 주석)+MCP 등록(샌드박스 user scope 실등록 확인)+재시작 안내 마지막 줄 전부 실측. 실 ~/.claude.json 무오염 확인.
 - **신규 사용자 경로 확정**: 설치 1줄 → init → node → Claude 재시작 → 자연어 위임. 잔여 P2(get_task wait_secs 롱폴·watch-results dispatcher 규약)는 v2-54 문서에 백로그로 남음.
+
+## 2026-07-15 세션29 후반5: v0.5.0 릴리스 (재론 금지 기록)
+
+- **릴리스 절차 실측 재확인**: 프렙 PR(CHANGELOG 큐레이션+NOTICES 재생성) → `cargo release minor --execute`(release.toml이 CHANGELOG 굳히기·태그·push 전자동, dry run 먼저) → 태그가 release.yml 발화. cargo-release의 main 직접 push는 admin bypass로 통과.
+- **B-2·B-3 실전 검증 완료**: build-setup(npm 주입)이 4개 러너 전부에서 성공(첫 실전 가동), win zip에 THIRD-PARTY-NOTICES.html(514KB) 동봉 + exe에 SPA 임베드 바이트 확인. v0.5.0부터 릴리스 설치본에서 /dashboard 즉시 동작.
+- **재배포 중 send_task 순단**: restart-win-mesh가 브로커를 스왑하는 동안 MCP 호출이 "Unable to connect"로 실패 - 재기동 완료(health 200) 후 재시도하면 됨(세션 poll·인박스는 재접속 백오프로 생존).
+- CHANGELOG 큐레이션 기준: "사용자에게 영향" 필터로 45 PR → Added 9·Changed 4·Fixed 6·Security 2. 내부 리팩토링(v2-52)·CI·문서 PR은 제외.

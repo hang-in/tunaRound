@@ -16,6 +16,15 @@
 - [x] mac relay 재배포(A2A task 964cba8e, mac-claude 자율 수행 완료: b80db20 빌드·원자 교체·재기동 37802/37804·로스터 확인. 왕복 E2E만 mac codex TUI 열릴 때 재검증)
 - [x] (파생) dependabot 첫 가동 3 PR 정비: #109 close(release.yml=cargo-dist 소유 충돌 → PR #114 ignore 4종+유효분 수동 반영·머지) / #110 frontend 머지 / #111 close → 메이저 5종 백로그 이슈 #115 + PR #116 lockfile-only 전환·머지(사용자 결정). main=f485a3a
 
+## 세션29 후반5: v0.5.0 릴리스 (2026-07-15, 사용자 지시)
+
+- [x] 프렙 PR #126: CHANGELOG 큐레이션(PR #76~#125에서 사용자 영향 선별) + NOTICES 재생성(드리프트 54줄)
+- [x] cargo release minor --execute: 0.5.0 범프·CHANGELOG 굳히기·태그 v0.5.0·push (ca38a7f)
+- [x] 릴리스 run 29384784029 전 잡 success: **B-2 build-setup(npm 주입) 4러너 실전 검증** + brew 발행
+- [x] 아티팩트 실검증: win zip에 NOTICES(514KB, B-3) + exe에 SPA 임베드 바이트 + --version 0.5.0
+- [x] win mesh v0.5.0 재배포(health가 0.5.0 보고)
+- [ ] mac mesh v0.5.0 재배포(A2A task ac5891f6 진행 중)
+
 ## 세션29 후반4: 온보딩 P0+P1 + README 재작성 (2026-07-15, 사용자 지시서 준수)
 
 - [x] PR #124: P0①로컬 프리셋·②MCP 자동등록(bounded claude 호출)·③러너 전수 lane + P1④(node 사전검증·인증 로그) - 중앙검증 746 pass, 봇 3라운드 전수(CR Major 5 반영·DeepSource 처분)
