@@ -57,7 +57,7 @@ tunaround init    # 설정 스캐폴드 + 러너 lane 전수 탐지 + Claude Cod
 tunaround node    # 브로커(in-process) + 워커 lane 상주
 ```
 
-- `init` 기본은 로컬 전용입니다(listen `127.0.0.1:8770`, 무토큰 계약). 토큰 없이 동작하고 LAN에 노출되지 않습니다. LAN 공유가 필요해지면 "다른 머신에서 접속하기" 절을 따르세요(`--listen 0.0.0.0:8770` 지정 시 토큰 안내가 다시 나타납니다).
+- `init` 기본은 로컬 전용입니다(listen `127.0.0.1:8770`, 무토큰 계약). 토큰 없이 동작하고 LAN에 노출되지 않습니다. LAN 공유가 필요해지면 [다른 머신에서 접속하기](#5-다른-머신에서-접속하기) 절을 따르세요(`--listen 0.0.0.0:8770` 지정 시 토큰 안내가 다시 나타납니다).
 - `init`이 PATH의 claude·codex·opencode를 전부 lane으로 스캐폴드합니다(예: `codex-worker`). claude CLI가 있으면 tuna-broker MCP를 user scope로 자동 등록하고, 이미 등록돼 있으면 보존합니다(`--no-mcp-register`로 옵트아웃).
 - **Claude Code 재시작(새 세션) 필수**: 새로 등록된 MCP 서버는 이미 실행 중인 세션에 로드되지 않습니다.
 - 재시작한 세션에서 자연어로 위임하면 Claude가 tuna-broker 도구로 왕복합니다. 수동으로 확인하려면 `send_task(from_agent="me", to_agent="codex-worker", text="...")` 후 `get_task(task_id)`를 반복 조회하세요 - `state=completed`면 같은 응답에 결과 전문이 옵니다(5분 미소비면 `⚠no-consumer?` 표시로 수신측 부재를 알 수 있습니다).

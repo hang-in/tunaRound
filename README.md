@@ -94,9 +94,9 @@ cargo install --git https://github.com/hang-in/tunaRound tunaround --features "m
 
 첫 성공 이후, 필요해질 때 순서대로 깊어집니다.
 
-1. **LAN·원격 머신 연결** - 다른 머신의 에이전트에게도 맡기려면 코어를 LAN에 열고 토큰을 설정합니다. 절차는 [온보딩 가이드](docs/reference/onboarding.md)의 "다른 머신에서 접속하기".
-2. **워커 노드 조정** - `init`이 만든 `node.toml`의 lane(러너·권한·프로젝트)을 편집해 어떤 에이전트가 어떤 일을 받을지 조정합니다. [온보딩 가이드](docs/reference/onboarding.md) 참고.
-3. **검색과 기억** - 대화·문서를 SQLite + FTS5로 색인합니다. 한국어 형태소 검색, 선택적 의미 검색, 하이브리드 랭킹은 [온보딩 가이드](docs/reference/onboarding.md)의 검색 설정 절.
+1. **LAN·원격 머신 연결** - 다른 머신의 에이전트에게도 맡기려면 코어를 LAN에 열고 토큰을 설정합니다. 절차는 [온보딩 가이드의 "다른 머신에서 접속하기"](docs/reference/onboarding.md#5-다른-머신에서-접속하기) 절.
+2. **워커 노드 조정** - `init`이 만든 `node.toml`의 lane(러너·권한·프로젝트)을 편집해 어떤 에이전트가 어떤 일을 받을지 조정합니다. [온보딩 가이드의 설정 파일](docs/reference/onboarding.md#6-설정-파일) 절 참고.
+3. **검색과 기억** - 대화·문서를 SQLite + FTS5로 색인합니다. 한국어 형태소 검색, 선택적 의미 검색, 하이브리드 랭킹은 [온보딩 가이드의 검색 설정](docs/reference/onboarding.md#7-검색-설정) 절.
 4. **웹 대시보드** - 세션·작업 상태·결과 피드를 한 화면에서 관찰합니다. 릴리스 바이너리에는 대시보드가 포함되지 않아 **소스 빌드가 필요합니다**. [소스 빌드 가이드](docs/development/source-run.md) 참고.
 5. **설계 토론 REPL** - `tunaround chat`으로 여러 에이전트에 역할을 주고 토론시키는 부수 기능입니다. 분기·결론·저장을 지원합니다.
 
