@@ -1086,3 +1086,10 @@
 - **수용기준(사용자)**: 재시작 후 발견/유휴 없음 / 로스터=win·mac 모든 열린 TUI(claude+codex) / exit→사라짐(딜레이 OK).
 - **남은 배선(새 설계 아님)**: env→설정파일(신뢰성, env 두번 물림) · 수신 배선(autoarm이 Monitor(poll) 안내) · codex arming(claude 훅 밖) · 워커 섹션.
 - **env 교훈**: 훅 no-op 원인=env가 터미널 launch에 고정(setx는 새 터미널만). 기존 세션은 재시작 필요. 근본=설정파일.
+
+## 2026-07-15 세션29 후반4: 온보딩 P0+P1 구현·README 재작성 (PR #124·#125 머지, 재론 금지)
+
+- **v2-54 감사 P0 3건+P1④ 구현(PR #124)**: init 기본=로컬(127.0.0.1, node.toml token 키 생략=무토큰 계약 활용, config 토큰 주석 줄) / MCP 자동 등록(get 확인 후 add, user scope, 기존 등록 절대 remove 안 함, --no-mcp-register 옵트아웃, claude 호출은 run_claude_bounded=stdin null+try_wait 데드라인 15/20초+초과 kill) / 러너 전수 lane(agent=<runner>-worker) / node 러너 사전검증 경고+인증 모드 로그. 리뷰 반영: loopback 판정을 IpAddr::is_loopback 파싱으로(127. 접두사 호스트명 신뢰 차단, CodeRabbit)+IPv6 zone id(gemini), broker_core_url_from_listen 단일 소스(--listen 포트가 훅 config·MCP 등록에 전파, 와일드카드→127.0.0.1).
+- **README 재작성(PR #125)**: 재작성 지도(docs/prompts/readme-rewrite-guide_2026-07-15.md 보존) 준수 - 첫 문장=복붙 통증, Quick Start=init·node·재시작(금지 어휘 0), chat=부수 기능 강등, 명령 위계화, 대시보드=다음 단계+소스빌드 명시, cargo install 함정 각주. onboarding.md §2 "로컬 첫 왕복" 신설(번호 재배열 2~9→3~10, README#설치 앵커 2곳 갱신). CodeRabbit의 설치 버전고정·체크섬 요구는 근거 기각(기존 방식 재배치·cargo-dist 표준·문서 부패).
+- **샌드박스 라이브 검증(USERPROFILE+CLAUDE_CONFIG_DIR 격리)**: init 1회로 node.toml(loopback·무token 키·3 lane)+config(토큰 주석)+MCP 등록(샌드박스 user scope 실등록 확인)+재시작 안내 마지막 줄 전부 실측. 실 ~/.claude.json 무오염 확인.
+- **신규 사용자 경로 확정**: 설치 1줄 → init → node → Claude 재시작 → 자연어 위임. 잔여 P2(get_task wait_secs 롱폴·watch-results dispatcher 규약)는 v2-54 문서에 백로그로 남음.

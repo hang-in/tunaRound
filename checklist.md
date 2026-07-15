@@ -16,6 +16,13 @@
 - [x] mac relay 재배포(A2A task 964cba8e, mac-claude 자율 수행 완료: b80db20 빌드·원자 교체·재기동 37802/37804·로스터 확인. 왕복 E2E만 mac codex TUI 열릴 때 재검증)
 - [x] (파생) dependabot 첫 가동 3 PR 정비: #109 close(release.yml=cargo-dist 소유 충돌 → PR #114 ignore 4종+유효분 수동 반영·머지) / #110 frontend 머지 / #111 close → 메이저 5종 백로그 이슈 #115 + PR #116 lockfile-only 전환·머지(사용자 결정). main=f485a3a
 
+## 세션29 후반4: 온보딩 P0+P1 + README 재작성 (2026-07-15, 사용자 지시서 준수)
+
+- [x] PR #124: P0①로컬 프리셋·②MCP 자동등록(bounded claude 호출)·③러너 전수 lane + P1④(node 사전검증·인증 로그) - 중앙검증 746 pass, 봇 3라운드 전수(CR Major 5 반영·DeepSource 처분)
+- [x] PR #125: README 재작성(지도 §5 체크 10항 통과) + onboarding §2 로컬 첫 왕복(P1⑤) + 앵커 정비 - gemini 반영·CR 설치 하드닝은 근거 기각
+- [x] 라이브 검증: 샌드박스(USERPROFILE·CLAUDE_CONFIG_DIR 격리) init 풀경로 - loopback 무token node.toml·3 lane·MCP 실등록·재시작 안내 전부 실측, 실등록 무오염
+- [ ] 잔여(P2, v2-54 백로그): get_task wait_secs 롱폴 / watch-results dispatcher 규약 명문화
+
 ## 세션29 후반3: 열린 이슈 일소 캠페인 (2026-07-14, 사용자 지시 "이슈 모두 정리")
 
 > #115(cargo 메이저 5종)는 당일 결정된 전용 세션 백로그라 제외. 나머지 3건 = 정찰(3 에이전트) → 스펙 고정(Opus) → sonnet 실무자 3 병렬(worktree) → 중앙검증 → PR → CI·봇 → 머지.
