@@ -573,6 +573,9 @@ pub struct InitArgs {
     /// 기존 파일 덮어쓰기(node.toml + ~/.tunaround/config. config의 기존 토큰도 덮어쓰니 주의).
     #[arg(long)]
     pub force: bool,
+    /// Claude Code에 tuna-broker MCP 서버 자동 등록을 건너뛴다(기본: core가 loopback이면 자동 시도).
+    #[arg(long)]
+    pub no_mcp_register: bool,
 }
 
 #[cfg(test)]

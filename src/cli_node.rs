@@ -74,7 +74,47 @@ pub async fn connect_with_retry(
     Err(format!("코어 연결 실패({tries}회 재시도): {last}"))
 }
 
-/// node.toml을 생성한다(플래그 주도). 러너 자동 탐지 + 다음 단계 안내. 성공 0, 실패 non-zero.
+/// listen 주소가 loopback(127.0.0.1/localhost/[::1] 계열)인지 단순 host 문자열로 판정한다(순수
+/// 함수). mcp/server.rs::warn_if_insecure_bind와 같은 취지의 판정이지만 크레이트 경계(bin↔lib)로
+/// 직접 재사용이 안 되어 단순 prefix 비교로 동등 로직을 재구현했다(P0-①, 감사문서 D절 §1).
+#[cfg(all(feature = "serve", feature = "worker"))]
+fn is_loopback_listen(addr: &str) -> bool {
+    let host = if let Some(rest) = addr.strip_prefix('[') {
+        rest.split(']').next().unwrap_or("")
+    } else {
+        addr.rsplit_once(':').map(|(h, _)| h).unwrap_or(addr)
+    };
+    host == "127.0.0.1" || host.starts_with("127.") || host == "localhost" || host == "::1"
+}
+
+/// 자동탐지 lane 계획 하나(agent 이름 + runner). 순수부라 탐지 목록을 주입해 테스트하기 쉽다.
+#[cfg(all(feature = "serve", feature = "worker"))]
+#[derive(Debug, PartialEq)]
+struct AutoLane {
+    agent: String,
+    runner: String,
+}
+
+/// PATH에서 발견된 러너 이름 목록(found)으로 자동 레인 계획을 만든다(P0-③). 발견마다 lane 1개,
+/// agent 이름은 "<runner>-worker". 0개 발견이면 기존 폴백(claude 1개, agent=default_agent)으로 강등한다.
+#[cfg(all(feature = "serve", feature = "worker"))]
+fn plan_auto_lanes(found: &[&str], default_agent: &str) -> Vec<AutoLane> {
+    if found.is_empty() {
+        return vec![AutoLane {
+            agent: default_agent.to_string(),
+            runner: "claude".to_string(),
+        }];
+    }
+    found
+        .iter()
+        .map(|r| AutoLane {
+            agent: format!("{r}-worker"),
+            runner: r.to_string(),
+        })
+        .collect()
+}
+
+/// node.toml을 생성한다(플래그 주도). 러너 자동 탐지 + MCP 자동 등록 + 다음 단계 안내. 성공 0, 실패 non-zero.
 #[cfg(all(feature = "serve", feature = "worker"))]
 pub fn run_init(args: &InitArgs) -> i32 {
     let out = args
@@ -87,13 +127,6 @@ pub fn run_init(args: &InitArgs) -> i32 {
     }
     let core = args.core.clone().unwrap_or_else(|| "self".to_string());
     let agent = args.agent.clone().unwrap_or_else(|| "worker".to_string());
-    let runner = args.runner.clone().unwrap_or_else(|| {
-        ["claude", "codex", "opencode"]
-            .iter()
-            .find(|b| binary_on_path(b))
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| "claude".to_string())
-    });
     let project = args
         .project
         .clone()
@@ -111,21 +144,53 @@ pub fn run_init(args: &InitArgs) -> i32 {
         .unwrap_or_else(|| "TUNA_BROKER_TOKEN".to_string());
 
     let mut toml = format!("core = \"{core}\"\n");
+    // core=self 기본을 로컬 전용(loopback)으로 낮춘다(P0-①): 기존 0.0.0.0 기본은 무심코 LAN에
+    // 노출되는 함정이었다. --listen으로 비-loopback을 명시하면 기존 동작(토큰 노출)을 그대로 유지한다.
+    let mut listen = String::new();
     if core == "self" {
-        let listen = args
+        listen = args
             .listen
             .clone()
-            .unwrap_or_else(|| "0.0.0.0:8770".to_string());
+            .unwrap_or_else(|| "127.0.0.1:8770".to_string());
         toml.push_str(&format!("listen = \"{listen}\"\n"));
         toml.push_str("db = \"~/.tunaround/broker.db\"\n");
     }
-    toml.push_str(&format!("token = \"@env:{token_env}\"\n\n"));
-    toml.push_str("[[lane]]\n");
-    toml.push_str(&format!("agent = \"{agent}\"\n"));
-    toml.push_str(&format!("runner = \"{runner}\"\n"));
-    toml.push_str("mode = \"read-only\"   # 파일 수정 맡기려면 \"write\"\n");
-    toml.push_str(&format!("project = \"{project}\"\n"));
-    toml.push_str("interval = 20\n");
+    // core=self이고 listen이 loopback이면 "로컬 무토큰" 계약을 그대로 활용한다: token 키 자체를
+    // node.toml에 넣지 않는다(resolve_node_token(None)=None, 경고 없이 조용히 무토큰 - src/config/node.rs).
+    // --listen으로 비-loopback을 지정했거나 core가 원격이면 기존처럼 토큰 키를 남긴다.
+    let is_local = core == "self" && is_loopback_listen(&listen);
+    if is_local {
+        toml.push('\n');
+    } else {
+        toml.push_str(&format!("token = \"@env:{token_env}\"\n\n"));
+    }
+
+    // 러너 레인 계획(P0-③): --runner 명시 시 기존처럼 단일 lane, 미지정이면 PATH의
+    // claude·codex·opencode를 전부 탐지해 발견된 만큼 lane을 스캐폴드한다(0개면 claude 폴백).
+    let lanes: Vec<AutoLane> = match &args.runner {
+        Some(r) => vec![AutoLane {
+            agent: agent.clone(),
+            runner: r.clone(),
+        }],
+        None => {
+            let found: Vec<&str> = ["claude", "codex", "opencode"]
+                .into_iter()
+                .filter(|b| binary_on_path(b))
+                .collect();
+            plan_auto_lanes(&found, &agent)
+        }
+    };
+    for (i, lane) in lanes.iter().enumerate() {
+        if i > 0 {
+            toml.push('\n');
+        }
+        toml.push_str("[[lane]]\n");
+        toml.push_str(&format!("agent = \"{}\"\n", lane.agent));
+        toml.push_str(&format!("runner = \"{}\"\n", lane.runner));
+        toml.push_str("mode = \"read-only\"   # 파일 수정 맡기려면 \"write\"\n");
+        toml.push_str(&format!("project = \"{project}\"\n"));
+        toml.push_str("interval = 20\n");
+    }
 
     if let Some(parent) = std::path::Path::new(&out).parent()
         && !parent.as_os_str().is_empty()
@@ -141,29 +206,55 @@ pub fn run_init(args: &InitArgs) -> i32 {
 
     println!("작성됨: {out}\n");
     print!("{toml}");
+    println!("\n감지된 워커 레인:");
+    for lane in &lanes {
+        println!("  - {} (runner={})", lane.agent, lane.runner);
+    }
 
     // mesh·훅용 ~/.tunaround/config(dotenv)도 한 번에 스캐폴드해 "설정 파일 3종"을 최초 1회로 압축한다.
     // 기존 config는 실제 토큰을 담고 있을 수 있으므로 --force 없이는 절대 덮지 않는다(토큰 보존).
     let config_written = if args.no_mesh_config {
         false
     } else {
-        scaffold_mesh_config(&core, args.machine.as_deref(), args.force)
+        scaffold_mesh_config(&core, args.machine.as_deref(), args.force, is_local)
     };
 
     println!("\n다음 단계:");
-    if config_written {
-        println!(
-            "  1) ~/.tunaround/config 의 TUNA_BROKER_TOKEN 을 실제 토큰으로 채우기\n     (데몬·훅은 이 파일을 직접 읽습니다. node/doctor를 바로 실행하려면 같은 값을 export {token_env}=... 로도 설정하세요)"
-        );
+    let mut step = 1;
+    if !is_local {
+        if config_written {
+            println!(
+                "  {step}) ~/.tunaround/config 의 TUNA_BROKER_TOKEN 을 실제 토큰으로 채우기\n     (데몬·훅은 이 파일을 직접 읽습니다. node/doctor를 바로 실행하려면 같은 값을 export {token_env}=... 로도 설정하세요)"
+            );
+        } else {
+            println!(
+                "  {step}) 토큰: export {token_env}=<비밀토큰>  (Windows PowerShell: $env:{token_env}=\"...\")"
+            );
+        }
+        step += 1;
+    }
+    println!("  {step}) 진단: tunaround doctor");
+    step += 1;
+    println!(
+        "  {step}) 상주: tunaround node   (mesh 전체는 restart 스크립트가 config를 읽어 데몬에 상속)"
+    );
+
+    // MCP 자동 등록(P0-②): 로컬(loopback)일 때만 시도한다. 원격/비-loopback은 토큰이 필요해
+    // 자동화가 안전하지 않으니 --header 포함 수동 명령만 안내한다. --no-mcp-register는 완전 옵트아웃.
+    if args.no_mcp_register {
+        println!("\ntuna-broker MCP 자동 등록: --no-mcp-register로 건너뜁니다.");
+    } else if is_local {
+        try_register_mcp(&format!("http://{listen}/mcp"));
     } else {
+        let core_url = if core == "self" {
+            format!("http://{listen}/mcp")
+        } else {
+            core.clone()
+        };
         println!(
-            "  1) 토큰: export {token_env}=<비밀토큰>  (Windows PowerShell: $env:{token_env}=\"...\")"
+            "\nClaude Code에 MCP 등록(원격/토큰 필요라 수동):\n  claude mcp add --transport http --scope user tuna-broker {core_url} --header \"Authorization: Bearer <토큰>\""
         );
     }
-    println!("  2) 진단: tunaround doctor");
-    println!(
-        "  3) 상주: tunaround node   (mesh 전체는 restart 스크립트가 config를 읽어 데몬에 상속)"
-    );
     0
 }
 
@@ -183,9 +274,21 @@ fn detect_machine(explicit: Option<&str>) -> String {
 }
 
 /// ~/.tunaround/config(mesh·훅용 dotenv)의 내용을 만든다(순수 함수, 파일 IO 없음 - 테스트 용이).
-/// 토큰은 placeholder만 넣는다(실값 금지).
+/// 토큰은 placeholder만 넣는다(실값 금지). `local`이면(P0-①) 브로커가 무토큰 계약으로 뜨는
+/// 상태이므로 TUNA_BROKER_TOKEN 줄을 주석 처리해 둔다(LAN 확장 시 그대로 발견 가능하게 남겨둠).
 #[cfg(all(feature = "serve", feature = "worker"))]
-fn mesh_config_content(broker_core: &str, machine: &str, bin: &str) -> String {
+fn mesh_config_content(broker_core: &str, machine: &str, bin: &str, local: bool) -> String {
+    let token_block = if local {
+        "# 로컬(loopback) 전용이라 브로커가 무토큰 계약으로 뜹니다. LAN으로 확장하면 아래 주석을 해제하고\n\
+         # 실제 토큰으로 채우세요(node.toml의 @env:TUNA_BROKER_TOKEN도 같은 이름을 씁니다).\n\
+         # TUNA_BROKER_TOKEN=여기에-실제-토큰-넣기\n"
+            .to_string()
+    } else {
+        "# 브로커 인증 토큰(평문). 아래를 실제 토큰으로 바꾸세요. node.toml의 @env:TUNA_BROKER_TOKEN도\n\
+         # 이 이름을 씁니다. 파일 권한 제한 권장(mac/linux: chmod 600, Windows: icacls 본인만 R/W).\n\
+         TUNA_BROKER_TOKEN=여기에-실제-토큰-넣기\n"
+            .to_string()
+    };
     format!(
         "# tunaRound mesh·훅 설정(tunaround init 자동 생성). 값을 채운 뒤 SessionStart 훅과 restart\n\
          # 스크립트가 읽는다. 형식=KEY=VALUE, 우선순위=이 파일 > env > 기본값. 상세=docs/reference/onboarding.md\n\
@@ -193,9 +296,7 @@ fn mesh_config_content(broker_core: &str, machine: &str, bin: &str) -> String {
          TUNA_BIN={bin}\n\
          TUNA_BROKER_CORE={broker_core}\n\
          TUNA_MACHINE={machine}\n\
-         # 브로커 인증 토큰(평문). 아래를 실제 토큰으로 바꾸세요. node.toml의 @env:TUNA_BROKER_TOKEN도\n\
-         # 이 이름을 씁니다. 파일 권한 제한 권장(mac/linux: chmod 600, Windows: icacls 본인만 R/W).\n\
-         TUNA_BROKER_TOKEN=여기에-실제-토큰-넣기\n"
+         {token_block}"
     )
 }
 
@@ -203,8 +304,9 @@ fn mesh_config_content(broker_core: &str, machine: &str, bin: &str) -> String {
 /// 건드리지 않고 false를 반환한다. 토큰은 실값을 쓰지 않고 placeholder만 넣어 사용자가 채우게 한다
 /// (토큰이 argv/명령 히스토리에 남지 않게). node.toml의 @env:TUNA_BROKER_TOKEN과 같은 이름이라
 /// restart 스크립트가 이 파일을 읽어 데몬 env로 상속하면 node·데몬·훅이 한 토큰을 공유한다.
+/// `local`은 run_init이 판정한 loopback 여부를 그대로 넘겨받아 토큰 줄 주석 처리에 쓴다(P0-①).
 #[cfg(all(feature = "serve", feature = "worker"))]
-fn scaffold_mesh_config(core: &str, machine: Option<&str>, force: bool) -> bool {
+fn scaffold_mesh_config(core: &str, machine: Option<&str>, force: bool, local: bool) -> bool {
     let path = tunaround::config::expand_home("~/.tunaround/config");
     if std::path::Path::new(&path).exists() && !force {
         println!("\n참고: {path} 는 이미 있어 건드리지 않았습니다(실토큰 보존, 덮으려면 --force).");
@@ -221,7 +323,7 @@ fn scaffold_mesh_config(core: &str, machine: Option<&str>, force: bool) -> bool 
         .ok()
         .and_then(|p| p.to_str().map(|s| s.to_string()))
         .unwrap_or_else(|| "tunaround".to_string());
-    let content = mesh_config_content(broker_core, &machine, &bin);
+    let content = mesh_config_content(broker_core, &machine, &bin, local);
     if let Some(parent) = std::path::Path::new(&path).parent()
         && !parent.as_os_str().is_empty()
         && let Err(e) = std::fs::create_dir_all(parent)
@@ -263,6 +365,127 @@ pub fn binary_on_path(name: &str) -> bool {
         }
     }
     false
+}
+
+/// spawn용 실행 파일 전체 경로를 PATH에서 찾는다(Windows는 .exe/.cmd/.bat 순). Windows의
+/// `Command::new`는 확장자 없는 이름으로 PATH를 뒤지지 않아, claude가 .cmd 셸 스크립트로 설치된
+/// 경우(nvm·npm 글로벌 설치 등) 그냥 이름만 넘기면 spawn이 실패한다. 전체 경로(.cmd 포함)를 주면
+/// CreateProcess가 셸 연계로 정상 실행한다. src/runner/exec.rs::resolve_bin과 같은 취지지만
+/// 크레이트 경계(bin↔lib)로 재사용이 안 되어 여기 동등 로직으로 재구현했다(P0-②).
+#[cfg(all(feature = "serve", feature = "worker"))]
+fn resolve_spawnable_bin(name: &str) -> String {
+    #[cfg(windows)]
+    {
+        if let Some(path) = std::env::var_os("PATH") {
+            for dir in std::env::split_paths(&path) {
+                for ext in ["exe", "cmd", "bat"] {
+                    let cand = dir.join(format!("{name}.{ext}"));
+                    if cand.is_file() {
+                        return cand.to_string_lossy().into_owned();
+                    }
+                }
+            }
+        }
+        name.to_string()
+    }
+    #[cfg(not(windows))]
+    {
+        name.to_string()
+    }
+}
+
+/// MCP 자동 등록 판정 결과(순수부, P0-②). 실행 없이 무엇을 할지만 결정해 테스트 용이하게 한다.
+#[cfg(all(feature = "serve", feature = "worker"))]
+#[derive(Debug, PartialEq)]
+enum McpRegistrationPlan {
+    /// claude CLI가 PATH에 없음: 수동 안내만 출력.
+    NoClaudeBinary,
+    /// 이미 등록돼 있음: 기존 등록을 보존하고(remove 없음) 아무것도 하지 않음.
+    AlreadyRegistered,
+    /// 미등록: 이 argv로 `claude` 를 실행해 등록.
+    Register { add_args: Vec<String> },
+}
+
+/// (core_url, claude 존재 여부, 이미 등록됐는지)로 등록 계획을 판정하는 순수 함수.
+#[cfg(all(feature = "serve", feature = "worker"))]
+fn plan_mcp_registration(
+    core_url: &str,
+    claude_found: bool,
+    already_registered: bool,
+) -> McpRegistrationPlan {
+    if !claude_found {
+        return McpRegistrationPlan::NoClaudeBinary;
+    }
+    if already_registered {
+        return McpRegistrationPlan::AlreadyRegistered;
+    }
+    McpRegistrationPlan::Register {
+        add_args: vec![
+            "mcp".to_string(),
+            "add".to_string(),
+            "--transport".to_string(),
+            "http".to_string(),
+            "--scope".to_string(),
+            "user".to_string(),
+            "tuna-broker".to_string(),
+            core_url.to_string(),
+        ],
+    }
+}
+
+/// `claude mcp get tuna-broker`의 exit code만 본다(출력은 버림). 성공(exit 0) = 이미 등록됨.
+/// 실제 claude CLI를 실행하는 유일한 지점 중 하나라, 단위 테스트에서는 절대 호출하지 않는다
+/// (이 머신의 실 등록을 건드리면 안 됨 - plan_mcp_registration 순수부만 테스트).
+#[cfg(all(feature = "serve", feature = "worker"))]
+fn check_claude_mcp_registered() -> bool {
+    std::process::Command::new(resolve_spawnable_bin("claude"))
+        .args(["mcp", "get", "tuna-broker"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// core가 loopback일 때 Claude Code에 tuna-broker MCP 서버 등록을 시도한다(P0-②). 판정은
+/// plan_mcp_registration(순수)이 맡고, 여기는 claude CLI 실행만 담당하는 thin wrapper다.
+/// 실패해도 init 자체는 성공 종료(fail-open) - 수동 명령을 안내해 사용자가 이어갈 수 있게 한다.
+/// 기존 등록은 절대 remove하지 않는다(보존).
+#[cfg(all(feature = "serve", feature = "worker"))]
+fn try_register_mcp(core_url: &str) {
+    let manual_hint =
+        format!("claude mcp add --transport http --scope user tuna-broker {core_url}");
+    let claude_found = binary_on_path("claude");
+    let already_registered = claude_found && check_claude_mcp_registered();
+    match plan_mcp_registration(core_url, claude_found, already_registered) {
+        McpRegistrationPlan::NoClaudeBinary => {
+            println!(
+                "\n참고: claude CLI를 PATH에서 찾지 못해 tuna-broker MCP 자동 등록을 건너뜁니다. 수동 등록:\n  {manual_hint}"
+            );
+        }
+        McpRegistrationPlan::AlreadyRegistered => {
+            println!("\ntuna-broker MCP: 이미 등록돼 있어 그대로 둡니다.");
+        }
+        McpRegistrationPlan::Register { add_args } => {
+            let bin = resolve_spawnable_bin("claude");
+            match std::process::Command::new(&bin).args(&add_args).output() {
+                Ok(o) if o.status.success() => {
+                    println!("\ntuna-broker MCP 등록 완료.");
+                    println!("Claude Code를 재시작(새 세션)해야 tuna-broker 도구가 보입니다.");
+                }
+                Ok(o) => {
+                    let stderr = String::from_utf8_lossy(&o.stderr);
+                    println!(
+                        "\ntuna-broker MCP 자동 등록 실패({}). 수동 등록:\n  {manual_hint}",
+                        stderr.trim()
+                    );
+                }
+                Err(e) => {
+                    println!("\ntuna-broker MCP 자동 등록 실패({e}). 수동 등록:\n  {manual_hint}");
+                }
+            }
+        }
+    }
 }
 
 /// node 설정을 진단한다. 각 항목을 OK/WARN/FAIL로 출력하고, FAIL이 있으면 non-zero exit code를 돌려준다.
@@ -670,6 +893,7 @@ mod tests {
             "http://127.0.0.1:8770/mcp",
             "mac",
             "/usr/local/bin/tunaround",
+            false,
         );
         assert!(c.contains("TUNA_AUTOARM=1"), "autoarm 스위치 누락");
         assert!(
@@ -681,33 +905,168 @@ mod tests {
             c.contains("TUNA_BIN=/usr/local/bin/tunaround"),
             "bin 경로 미보간"
         );
-        // 토큰은 placeholder만: 실값을 쓰지 않는다.
+        // 토큰은 placeholder만: 실값을 쓰지 않는다. local=false라 주석 처리되지 않은 채로 존재.
         assert!(
             c.contains("TUNA_BROKER_TOKEN=여기에-실제-토큰-넣기"),
             "토큰 placeholder 누락"
         );
+        assert!(
+            !c.contains("# TUNA_BROKER_TOKEN="),
+            "local=false면 토큰 줄이 주석 처리되면 안 됨"
+        );
     }
 
     #[test]
-    fn run_init_writes_node_toml_with_unified_token_env() {
-        // no_mesh_config=true로 실 ~/.tunaround/config는 절대 건드리지 않고 node.toml만 검증한다.
-        let out = std::env::temp_dir()
-            .join("tuna_init_test_node.toml")
-            .to_string_lossy()
-            .into_owned();
-        let _ = std::fs::remove_file(&out);
-        let args = InitArgs {
+    fn mesh_config_content_local_comments_out_token_line() {
+        // local=true(P0-①): 토큰 줄이 주석으로 남아 LAN 확장 시 발견 가능해야 하고,
+        // 활성 TUNA_BROKER_TOKEN= 줄은 없어야 한다(무토큰 계약).
+        let c = mesh_config_content(
+            "http://127.0.0.1:8770/mcp",
+            "win",
+            "/usr/local/bin/tunaround",
+            true,
+        );
+        assert!(
+            c.contains("# TUNA_BROKER_TOKEN=여기에-실제-토큰-넣기"),
+            "local이면 토큰 줄이 주석으로 남아야 함: {c}"
+        );
+        assert!(
+            !c.lines().any(|l| l.starts_with("TUNA_BROKER_TOKEN=")),
+            "local이면 활성 TUNA_BROKER_TOKEN= 줄이 없어야 함: {c}"
+        );
+    }
+
+    #[test]
+    fn is_loopback_listen_detects_loopback_forms() {
+        assert!(is_loopback_listen("127.0.0.1:8770"));
+        assert!(
+            is_loopback_listen("127.5.5.5:9999"),
+            "127.x는 전부 loopback"
+        );
+        assert!(is_loopback_listen("localhost:8770"));
+        assert!(is_loopback_listen("[::1]:8770"));
+        assert!(!is_loopback_listen("0.0.0.0:8770"));
+        assert!(
+            !is_loopback_listen("192.0.2.10:8770"),
+            "LAN IP는 비-loopback"
+        );
+    }
+
+    #[test]
+    fn plan_auto_lanes_scaffolds_one_lane_per_found_runner() {
+        let lanes = plan_auto_lanes(&["claude", "codex"], "worker");
+        assert_eq!(
+            lanes,
+            vec![
+                AutoLane {
+                    agent: "claude-worker".to_string(),
+                    runner: "claude".to_string(),
+                },
+                AutoLane {
+                    agent: "codex-worker".to_string(),
+                    runner: "codex".to_string(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn plan_auto_lanes_falls_back_to_claude_when_none_found() {
+        let lanes = plan_auto_lanes(&[], "worker");
+        assert_eq!(
+            lanes,
+            vec![AutoLane {
+                agent: "worker".to_string(),
+                runner: "claude".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn plan_mcp_registration_no_claude_binary() {
+        assert_eq!(
+            plan_mcp_registration("http://127.0.0.1:8770/mcp", false, false),
+            McpRegistrationPlan::NoClaudeBinary
+        );
+    }
+
+    #[test]
+    fn plan_mcp_registration_already_registered_skips() {
+        assert_eq!(
+            plan_mcp_registration("http://127.0.0.1:8770/mcp", true, true),
+            McpRegistrationPlan::AlreadyRegistered
+        );
+    }
+
+    #[test]
+    fn plan_mcp_registration_unregistered_builds_add_command() {
+        let plan = plan_mcp_registration("http://127.0.0.1:8770/mcp", true, false);
+        assert_eq!(
+            plan,
+            McpRegistrationPlan::Register {
+                add_args: vec![
+                    "mcp".to_string(),
+                    "add".to_string(),
+                    "--transport".to_string(),
+                    "http".to_string(),
+                    "--scope".to_string(),
+                    "user".to_string(),
+                    "tuna-broker".to_string(),
+                    "http://127.0.0.1:8770/mcp".to_string(),
+                ]
+            }
+        );
+    }
+
+    /// InitArgs 테스트 빌더. no_mcp_register는 항상 true로 고정한다: 이 머신에 실제
+    /// `claude mcp add/get`을 실행하는 부작용을 테스트에서 절대 만들지 않기 위함(spec 요구).
+    fn init_args_for_test(listen: Option<&str>, runner: Option<&str>, out: &str) -> InitArgs {
+        InitArgs {
             core: None,
-            listen: None,
+            listen: listen.map(|s| s.to_string()),
             agent: None,
-            runner: Some("claude".to_string()),
+            runner: runner.map(|s| s.to_string()),
             project: Some("/tmp/proj".to_string()),
             token_env: None, // 기본값 = TUNA_BROKER_TOKEN(통일)
             machine: None,
-            out: Some(out.clone()),
+            out: Some(out.to_string()),
             no_mesh_config: true,
             force: false,
-        };
+            no_mcp_register: true,
+        }
+    }
+
+    #[test]
+    fn run_init_local_default_omits_token_key_and_binds_loopback() {
+        // core/listen 미지정 -> P0-① 기본이 127.0.0.1:8770(로컬 무토큰 계약)이라 token 키가 없어야 함.
+        let out = std::env::temp_dir()
+            .join("tuna_init_test_local.toml")
+            .to_string_lossy()
+            .into_owned();
+        let _ = std::fs::remove_file(&out);
+        let args = init_args_for_test(None, Some("claude"), &out);
+        assert_eq!(run_init(&args), 0, "init 성공(0) 반환");
+        let written = std::fs::read_to_string(&out).unwrap();
+        assert!(
+            written.contains("listen = \"127.0.0.1:8770\""),
+            "로컬 기본 listen이 127.0.0.1:8770이어야 함: {written}"
+        );
+        assert!(
+            !written.contains("token ="),
+            "loopback이면 token 키 자체가 없어야 함: {written}"
+        );
+        let _ = std::fs::remove_file(&out);
+    }
+
+    #[test]
+    fn run_init_non_loopback_listen_keeps_token_key() {
+        // --listen으로 비-loopback을 명시하면 기존 동작(토큰 키 포함) 유지.
+        let out = std::env::temp_dir()
+            .join("tuna_init_test_nonlocal.toml")
+            .to_string_lossy()
+            .into_owned();
+        let _ = std::fs::remove_file(&out);
+        let args = init_args_for_test(Some("0.0.0.0:8770"), Some("claude"), &out);
         assert_eq!(run_init(&args), 0, "init 성공(0) 반환");
         let written = std::fs::read_to_string(&out).unwrap();
         assert!(
