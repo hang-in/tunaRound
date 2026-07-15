@@ -84,7 +84,44 @@ fn is_loopback_listen(addr: &str) -> bool {
     } else {
         addr.rsplit_once(':').map(|(h, _)| h).unwrap_or(addr)
     };
-    host == "127.0.0.1" || host.starts_with("127.") || host == "localhost" || host == "::1"
+    // IPv6 zone identifier(::1%lo0)는 파싱 전에 떼어낸다(gemini 리뷰).
+    let host = host.split('%').next().unwrap_or(host);
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    // 리터럴 IP만 신뢰한다(CodeRabbit 리뷰): "127." 접두사 문자열 비교는 127.attacker.example 같은
+    // 호스트명(비-loopback으로 해석될 수 있음)까지 loopback으로 오판해 무토큰 바인드를 허용한다.
+    host.parse::<std::net::IpAddr>()
+        .map(|ip| ip.is_loopback())
+        .unwrap_or(false)
+}
+
+/// listen 바인드 주소에서 로컬 훅·MCP 등록이 쓸 도달 URL을 만든다(순수 함수). 와일드카드 바인드
+/// (0.0.0.0/::)는 그 주소로 접속할 수 없으므로 127.0.0.1로 치환하고 포트는 보존한다(CodeRabbit:
+/// 사용자 지정 --listen 포트가 mesh config·MCP 등록에 전파되지 않던 문제의 단일 소스).
+#[cfg(all(feature = "serve", feature = "worker"))]
+fn broker_core_url_from_listen(listen: &str) -> String {
+    let (host, port) = if let Some(rest) = listen.strip_prefix('[') {
+        let host = rest.split(']').next().unwrap_or("");
+        let port = rest.rsplit_once(':').map(|(_, p)| p).unwrap_or("8770");
+        (host.split('%').next().unwrap_or(host), port)
+    } else {
+        match listen.rsplit_once(':') {
+            Some((h, p)) => (h, p),
+            None => (listen, "8770"),
+        }
+    };
+    let is_wildcard = host
+        .parse::<std::net::IpAddr>()
+        .map(|ip| ip.is_unspecified())
+        .unwrap_or(false);
+    if is_wildcard {
+        format!("http://127.0.0.1:{port}/mcp")
+    } else if host.contains(':') {
+        format!("http://[{host}]:{port}/mcp")
+    } else {
+        format!("http://{host}:{port}/mcp")
+    }
 }
 
 /// 자동탐지 lane 계획 하나(agent 이름 + runner). 순수부라 탐지 목록을 주입해 테스트하기 쉽다.
@@ -146,19 +183,27 @@ pub fn run_init(args: &InitArgs) -> i32 {
     let mut toml = format!("core = \"{core}\"\n");
     // core=self 기본을 로컬 전용(loopback)으로 낮춘다(P0-①): 기존 0.0.0.0 기본은 무심코 LAN에
     // 노출되는 함정이었다. --listen으로 비-loopback을 명시하면 기존 동작(토큰 노출)을 그대로 유지한다.
-    let mut listen = String::new();
-    if core == "self" {
-        listen = args
+    let listen: Option<String> = if core == "self" {
+        let l = args
             .listen
             .clone()
             .unwrap_or_else(|| "127.0.0.1:8770".to_string());
-        toml.push_str(&format!("listen = \"{listen}\"\n"));
+        toml.push_str(&format!("listen = \"{l}\"\n"));
         toml.push_str("db = \"~/.tunaround/broker.db\"\n");
-    }
+        Some(l)
+    } else {
+        None
+    };
+    // 이 브로커에 로컬에서 도달하는 URL(훅 config·MCP 등록 공용 단일 소스 - 사용자 지정 포트 전파,
+    // CodeRabbit 리뷰). core가 원격이면 그 URL 그대로.
+    let broker_core_url = match &listen {
+        Some(l) => broker_core_url_from_listen(l),
+        None => core.clone(),
+    };
     // core=self이고 listen이 loopback이면 "로컬 무토큰" 계약을 그대로 활용한다: token 키 자체를
     // node.toml에 넣지 않는다(resolve_node_token(None)=None, 경고 없이 조용히 무토큰 - src/config/node.rs).
     // --listen으로 비-loopback을 지정했거나 core가 원격이면 기존처럼 토큰 키를 남긴다.
-    let is_local = core == "self" && is_loopback_listen(&listen);
+    let is_local = listen.as_deref().map(is_loopback_listen).unwrap_or(false);
     if is_local {
         toml.push('\n');
     } else {
@@ -216,7 +261,12 @@ pub fn run_init(args: &InitArgs) -> i32 {
     let config_written = if args.no_mesh_config {
         false
     } else {
-        scaffold_mesh_config(&core, args.machine.as_deref(), args.force, is_local)
+        scaffold_mesh_config(
+            &broker_core_url,
+            args.machine.as_deref(),
+            args.force,
+            is_local,
+        )
     };
 
     println!("\n다음 단계:");
@@ -244,15 +294,10 @@ pub fn run_init(args: &InitArgs) -> i32 {
     if args.no_mcp_register {
         println!("\ntuna-broker MCP 자동 등록: --no-mcp-register로 건너뜁니다.");
     } else if is_local {
-        try_register_mcp(&format!("http://{listen}/mcp"));
+        try_register_mcp(&broker_core_url);
     } else {
-        let core_url = if core == "self" {
-            format!("http://{listen}/mcp")
-        } else {
-            core.clone()
-        };
         println!(
-            "\nClaude Code에 MCP 등록(원격/토큰 필요라 수동):\n  claude mcp add --transport http --scope user tuna-broker {core_url} --header \"Authorization: Bearer <토큰>\""
+            "\nClaude Code에 MCP 등록(원격/토큰 필요라 수동):\n  claude mcp add --transport http --scope user tuna-broker {broker_core_url} --header \"Authorization: Bearer <토큰>\""
         );
     }
     0
@@ -305,19 +350,20 @@ fn mesh_config_content(broker_core: &str, machine: &str, bin: &str, local: bool)
 /// (토큰이 argv/명령 히스토리에 남지 않게). node.toml의 @env:TUNA_BROKER_TOKEN과 같은 이름이라
 /// restart 스크립트가 이 파일을 읽어 데몬 env로 상속하면 node·데몬·훅이 한 토큰을 공유한다.
 /// `local`은 run_init이 판정한 loopback 여부를 그대로 넘겨받아 토큰 줄 주석 처리에 쓴다(P0-①).
+/// `broker_core`는 호출부(run_init)가 listen에서 도출한 도달 URL을 그대로 받는다(사용자 지정
+/// 포트 전파, CodeRabbit 리뷰).
 #[cfg(all(feature = "serve", feature = "worker"))]
-fn scaffold_mesh_config(core: &str, machine: Option<&str>, force: bool, local: bool) -> bool {
+fn scaffold_mesh_config(
+    broker_core: &str,
+    machine: Option<&str>,
+    force: bool,
+    local: bool,
+) -> bool {
     let path = tunaround::config::expand_home("~/.tunaround/config");
     if std::path::Path::new(&path).exists() && !force {
         println!("\n참고: {path} 는 이미 있어 건드리지 않았습니다(실토큰 보존, 덮으려면 --force).");
         return false;
     }
-    // core=self면 브로커가 로컬이라 loopback URL, 아니면 넘겨받은 코어 URL을 그대로 쓴다.
-    let broker_core = if core == "self" {
-        "http://127.0.0.1:8770/mcp"
-    } else {
-        core
-    };
     let machine = detect_machine(machine);
     let bin = std::env::current_exe()
         .ok()
@@ -342,7 +388,13 @@ fn scaffold_mesh_config(core: &str, machine: Option<&str>, force: bool, local: b
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
     }
-    println!("\n작성됨: {path} (TUNA_BROKER_TOKEN 을 채우세요)");
+    // 로컬 무토큰 프리셋에선 토큰 입력을 요구하지 않는다(CodeRabbit: 주석 처리해 놓고 채우라고
+    // 안내하면 모순).
+    if local {
+        println!("\n작성됨: {path}");
+    } else {
+        println!("\n작성됨: {path} (TUNA_BROKER_TOKEN 을 채우세요)");
+    }
     true
 }
 
@@ -433,19 +485,69 @@ fn plan_mcp_registration(
     }
 }
 
-/// `claude mcp get tuna-broker`의 exit code만 본다(출력은 버림). 성공(exit 0) = 이미 등록됨.
-/// 실제 claude CLI를 실행하는 유일한 지점 중 하나라, 단위 테스트에서는 절대 호출하지 않는다
+/// claude CLI 데드라인 실행 결과.
+#[cfg(all(feature = "serve", feature = "worker"))]
+enum BoundedRun {
+    /// 데드라인 안에 종료(성공 여부 + stderr 요약용).
+    Completed { success: bool, stderr: String },
+    /// 데드라인 초과: 자식을 kill하고 반환.
+    TimedOut,
+    /// spawn 자체 실패.
+    SpawnErr(String),
+}
+
+/// claude CLI를 데드라인 안에서 실행한다(CodeRabbit 리뷰: status()/output()은 무기한 대기라
+/// claude가 멈추거나 입력을 기다리면 init이 끝나지 않는다). stdin은 null로 막아 대화형 대기를
+/// 차단하고, 초과 시 자식을 kill한 뒤 수동 안내로 강등할 수 있게 TimedOut을 돌려준다.
+/// stderr는 파이프로 모은다(claude mcp 에러는 짧아 파이프 버퍼 안에서 안전).
+/// 실제 claude CLI를 실행하는 유일한 지점이라, 단위 테스트에서는 절대 호출하지 않는다
 /// (이 머신의 실 등록을 건드리면 안 됨 - plan_mcp_registration 순수부만 테스트).
 #[cfg(all(feature = "serve", feature = "worker"))]
-fn check_claude_mcp_registered() -> bool {
-    std::process::Command::new(resolve_spawnable_bin("claude"))
-        .args(["mcp", "get", "tuna-broker"])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+fn run_claude_bounded(args: &[String], deadline: std::time::Duration) -> BoundedRun {
+    use std::process::{Command, Stdio};
+    let bin = resolve_spawnable_bin("claude");
+    let mut child = match Command::new(&bin)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => return BoundedRun::SpawnErr(e.to_string()),
+    };
+    let start = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let mut stderr = String::new();
+                if let Some(mut s) = child.stderr.take() {
+                    use std::io::Read;
+                    let _ = s.read_to_string(&mut stderr);
+                }
+                return BoundedRun::Completed {
+                    success: status.success(),
+                    stderr,
+                };
+            }
+            Ok(None) => {
+                if start.elapsed() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return BoundedRun::TimedOut;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+            Err(e) => return BoundedRun::SpawnErr(e.to_string()),
+        }
+    }
 }
+
+/// claude CLI 호출 데드라인. get은 조회라 짧게, add는 설정 쓰기까지라 여유를 둔다.
+#[cfg(all(feature = "serve", feature = "worker"))]
+const CLAUDE_GET_DEADLINE_SECS: u64 = 15;
+#[cfg(all(feature = "serve", feature = "worker"))]
+const CLAUDE_ADD_DEADLINE_SECS: u64 = 20;
 
 /// core가 loopback일 때 Claude Code에 tuna-broker MCP 서버 등록을 시도한다(P0-②). 판정은
 /// plan_mcp_registration(순수)이 맡고, 여기는 claude CLI 실행만 담당하는 thin wrapper다.
@@ -455,32 +557,62 @@ fn check_claude_mcp_registered() -> bool {
 fn try_register_mcp(core_url: &str) {
     let manual_hint =
         format!("claude mcp add --transport http --scope user tuna-broker {core_url}");
-    let claude_found = binary_on_path("claude");
-    let already_registered = claude_found && check_claude_mcp_registered();
-    match plan_mcp_registration(core_url, claude_found, already_registered) {
-        McpRegistrationPlan::NoClaudeBinary => {
+    if !binary_on_path("claude") {
+        println!(
+            "\n참고: claude CLI를 PATH에서 찾지 못해 tuna-broker MCP 자동 등록을 건너뜁니다. 수동 등록:\n  {manual_hint}"
+        );
+        return;
+    }
+    // 존재 확인(get)부터 데드라인 실행: claude가 행이면 판정 불가이므로 add까지 가지 않고
+    // 바로 수동 안내로 강등한다(초 단위 대기 2번 연속을 피함).
+    let get_args: Vec<String> = ["mcp", "get", "tuna-broker"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    let already_registered = match run_claude_bounded(
+        &get_args,
+        std::time::Duration::from_secs(CLAUDE_GET_DEADLINE_SECS),
+    ) {
+        BoundedRun::Completed { success, .. } => success,
+        BoundedRun::TimedOut => {
             println!(
-                "\n참고: claude CLI를 PATH에서 찾지 못해 tuna-broker MCP 자동 등록을 건너뜁니다. 수동 등록:\n  {manual_hint}"
+                "\ntuna-broker MCP 자동 등록: claude가 {CLAUDE_GET_DEADLINE_SECS}초 안에 응답하지 않아 건너뜁니다. 수동 등록:\n  {manual_hint}"
             );
+            return;
         }
+        BoundedRun::SpawnErr(e) => {
+            println!(
+                "\ntuna-broker MCP 자동 등록 실패(claude 실행: {e}). 수동 등록:\n  {manual_hint}"
+            );
+            return;
+        }
+    };
+    match plan_mcp_registration(core_url, true, already_registered) {
+        McpRegistrationPlan::NoClaudeBinary => unreachable!("claude 존재는 위에서 확인됨"),
         McpRegistrationPlan::AlreadyRegistered => {
             println!("\ntuna-broker MCP: 이미 등록돼 있어 그대로 둡니다.");
         }
         McpRegistrationPlan::Register { add_args } => {
-            let bin = resolve_spawnable_bin("claude");
-            match std::process::Command::new(&bin).args(&add_args).output() {
-                Ok(o) if o.status.success() => {
+            match run_claude_bounded(
+                &add_args,
+                std::time::Duration::from_secs(CLAUDE_ADD_DEADLINE_SECS),
+            ) {
+                BoundedRun::Completed { success: true, .. } => {
                     println!("\ntuna-broker MCP 등록 완료.");
                     println!("Claude Code를 재시작(새 세션)해야 tuna-broker 도구가 보입니다.");
                 }
-                Ok(o) => {
-                    let stderr = String::from_utf8_lossy(&o.stderr);
+                BoundedRun::Completed { stderr, .. } => {
                     println!(
                         "\ntuna-broker MCP 자동 등록 실패({}). 수동 등록:\n  {manual_hint}",
                         stderr.trim()
                     );
                 }
-                Err(e) => {
+                BoundedRun::TimedOut => {
+                    println!(
+                        "\ntuna-broker MCP 자동 등록: claude가 {CLAUDE_ADD_DEADLINE_SECS}초 안에 끝나지 않아 중단했습니다. 수동 등록:\n  {manual_hint}"
+                    );
+                }
+                BoundedRun::SpawnErr(e) => {
                     println!("\ntuna-broker MCP 자동 등록 실패({e}). 수동 등록:\n  {manual_hint}");
                 }
             }
@@ -941,14 +1073,50 @@ mod tests {
         assert!(is_loopback_listen("127.0.0.1:8770"));
         assert!(
             is_loopback_listen("127.5.5.5:9999"),
-            "127.x는 전부 loopback"
+            "127.0.0.0/8 리터럴은 전부 loopback"
         );
         assert!(is_loopback_listen("localhost:8770"));
         assert!(is_loopback_listen("[::1]:8770"));
+        assert!(
+            is_loopback_listen("[::1%lo0]:8770"),
+            "IPv6 zone identifier는 떼고 판정(gemini)"
+        );
         assert!(!is_loopback_listen("0.0.0.0:8770"));
         assert!(
             !is_loopback_listen("192.0.2.10:8770"),
             "LAN IP는 비-loopback"
+        );
+        assert!(
+            !is_loopback_listen("127.attacker.example:8770"),
+            "127. 접두사 호스트명은 리터럴 IP가 아니라 신뢰하지 않는다(CodeRabbit)"
+        );
+    }
+
+    #[test]
+    fn broker_core_url_from_listen_propagates_port_and_rewrites_wildcard() {
+        // 사용자 지정 포트가 훅 config·MCP 등록 URL에 그대로 전파된다(CodeRabbit).
+        assert_eq!(
+            broker_core_url_from_listen("127.0.0.1:9999"),
+            "http://127.0.0.1:9999/mcp"
+        );
+        // 와일드카드 바인드는 그 주소로 접속 불가라 127.0.0.1로 치환(포트 보존).
+        assert_eq!(
+            broker_core_url_from_listen("0.0.0.0:8123"),
+            "http://127.0.0.1:8123/mcp"
+        );
+        assert_eq!(
+            broker_core_url_from_listen("[::]:8770"),
+            "http://127.0.0.1:8770/mcp"
+        );
+        // IPv6 리터럴은 대괄호 유지.
+        assert_eq!(
+            broker_core_url_from_listen("[::1]:8770"),
+            "http://[::1]:8770/mcp"
+        );
+        // LAN 바인드는 그 주소 그대로(훅이 같은 머신에서 접속 가능).
+        assert_eq!(
+            broker_core_url_from_listen("192.0.2.10:8770"),
+            "http://192.0.2.10:8770/mcp"
         );
     }
 
