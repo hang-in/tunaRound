@@ -546,7 +546,7 @@ pub struct InitArgs {
     /// "self"(이 머신이 브로커) 또는 코어 /mcp URL(기본 self).
     #[arg(long)]
     pub core: Option<String>,
-    /// core=self일 때 브로커 바인드 주소(기본 0.0.0.0:8770).
+    /// core=self일 때 브로커 바인드 주소(기본 127.0.0.1:8770 = 로컬 전용. LAN 공유는 0.0.0.0:8770 + 토큰).
     #[arg(long)]
     pub listen: Option<String>,
     /// 이 워커의 agent id(기본 "worker").

@@ -520,11 +520,11 @@ fn run_claude_bounded(args: &[String], deadline: std::time::Duration) -> Bounded
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
-                let mut stderr = String::new();
-                if let Some(mut s) = child.stderr.take() {
-                    use std::io::Read;
-                    let _ = s.read_to_string(&mut stderr);
-                }
+                let stderr = child
+                    .stderr
+                    .take()
+                    .and_then(|s| std::io::read_to_string(s).ok())
+                    .unwrap_or_default();
                 return BoundedRun::Completed {
                     success: status.success(),
                     stderr,
