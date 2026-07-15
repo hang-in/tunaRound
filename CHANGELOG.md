@@ -10,6 +10,8 @@
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-15
+
 ### Added
 
 - 대시보드에 세션 등장·소멸과 사람 입력 이력을 최신순으로 보여주는 presence 타임라인 패널을 추가했습니다.
@@ -158,7 +160,8 @@
 
 - AGPL-3.0-only
 
-[Unreleased]: https://github.com/hang-in/tunaRound/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/hang-in/tunaRound/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/hang-in/tunaRound/releases/tag/v0.5.0
 [0.4.0]: https://github.com/hang-in/tunaRound/releases/tag/v0.4.0
 [0.3.0]: https://github.com/hang-in/tunaRound/releases/tag/v0.3.0
 [0.2.2]: https://github.com/hang-in/tunaRound/releases/tag/v0.2.2

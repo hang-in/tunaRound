@@ -1,6 +1,6 @@
 [package]
 name = "tunaround"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2024"
 description = "로컬·LAN의 터미널 에이전트 세션을 토론·검색·A2A 작업 위임으로 묶는 사용자 주도 오케스트레이터(개인 도구)"
 repository = "https://github.com/hang-in/tunaRound"
