@@ -23,7 +23,7 @@
 - [x] 릴리스 run 29384784029 전 잡 success: **B-2 build-setup(npm 주입) 4러너 실전 검증** + brew 발행
 - [x] 아티팩트 실검증: win zip에 NOTICES(514KB, B-3) + exe에 SPA 임베드 바이트 + --version 0.5.0
 - [x] win mesh v0.5.0 재배포(health가 0.5.0 보고)
-- [ ] mac mesh v0.5.0 재배포(A2A task ac5891f6 진행 중)
+- [x] mac mesh v0.5.0 재배포(A2A task ac5891f6 자율 완료: 릴리스 아티팩트 다운로드→원자 교체→재기동 8234/8236·로스터 확인) - 양 머신 = 동일 릴리스 바이너리
 
 ## 세션29 후반4: 온보딩 P0+P1 + README 재작성 (2026-07-15, 사용자 지시서 준수)
 
