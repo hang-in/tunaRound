@@ -321,6 +321,17 @@ pub(crate) fn run_serve_mcp(
     };
     let (retriever_arc, reader_arc, writer_arc, a2a_store_arc) =
         build_http_mcp_backends("serve-mcp", &db_str);
+    // 인증 모드를 기동 로그에 1줄 남긴다(P1-④b, 감사문서 D절 §4): env가 조용히 토큰을 못 읽어도
+    // 기동 로그만 보면 무인증으로 뜬 걸 바로 알 수 있게(기존 warn_if_insecure_bind는 비-loopback
+    // 전용이라, loopback 무토큰처럼 "의도된" 무인증은 경고 없이 지나가는 점을 이 로그가 보완한다).
+    eprintln!(
+        "[serve-mcp] 토큰 인증: {}",
+        if serve_token.is_some() {
+            "사용"
+        } else {
+            "미사용(무인증)"
+        }
+    );
     // 헤드리스 코어: post_turn 활성(단일 writer라 클로버 없음), 로스터 없음.
     if let Err(e) = rt.block_on(tunaround::mcp::start_http_mcp_server(
         addr,
@@ -394,6 +405,16 @@ pub(crate) fn run_node(rt: &tokio::runtime::Runtime, a: crate::cli::NodeArgs) {
             });
         });
         eprintln!("[node] 브로커 기동(self) listen={listen} db={db_str}");
+        // 인증 모드 1줄(P1-④b): loopback 무토큰은 의도된 계약이라 warn_if_insecure_bind가 조용히
+        // 넘어가는데, 그 "조용함"이 오히려 헷갈릴 수 있어 기동 로그로 항상 명시한다.
+        eprintln!(
+            "[node] 토큰 인증: {}",
+            if token.is_some() {
+                "사용"
+            } else {
+                "미사용(무인증)"
+            }
+        );
         tunaround::mcp::core_local_url(&listen)
     } else {
         cfg.core.clone()
@@ -431,6 +452,21 @@ pub(crate) fn run_node(rt: &tokio::runtime::Runtime, a: crate::cli::NodeArgs) {
         .filter(|l| !l.is_supervised())
         .cloned()
         .collect();
+
+    // 러너 사전 검증(P1-④a, 감사문서 D절 §4): 이 레인이 spawn할 CLI가 PATH에 없으면 첫 task가 실패로야
+    // 표면화됐다(worker.rs 실측). 기동 로그에서 미리 경고해 사용자가 미설치·미로그인을 바로 알아채게 한다.
+    // http/a2a는 CLI 바이너리가 아니라(별도 필수설정은 doctor가 검증) 여기서는 건드리지 않는다.
+    for l in &auto {
+        if matches!(l.runner.as_str(), "claude" | "codex" | "opencode")
+            && !crate::cli_node::binary_on_path(&l.runner)
+        {
+            eprintln!(
+                "[node] 경고: lane '{}'의 runner '{}'가 PATH에 없습니다 - 이 lane의 task는 실패합니다",
+                l.agent, l.runner
+            );
+        }
+    }
+
     eprintln!("[node] 자동 레인 {}개, core={core_url}", auto.len());
 
     rt.block_on(async {
