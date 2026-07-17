@@ -24,6 +24,8 @@
 - [x] 아티팩트 실검증: win zip에 NOTICES(514KB, B-3) + exe에 SPA 임베드 바이트 + --version 0.5.0
 - [x] win mesh v0.5.0 재배포(health가 0.5.0 보고)
 - [x] mac mesh v0.5.0 재배포(A2A task ac5891f6 자율 완료: 릴리스 아티팩트 다운로드→원자 교체→재기동 8234/8236·로스터 확인) - 양 머신 = 동일 릴리스 바이너리
+- [x] 유령 poll 잔재 소진: win 9(아침 PID 선별) + mac 1(task 0af86679, 구세대 cmdline 실증) + '기타' 로스터 항목 deregister
+- [ ] 2026-07-16 재부팅 복구: restart-win-mesh 세션 말미 실행 - 다음 세션이 health 0.5.0 확인
 
 ## 세션29 후반4: 온보딩 P0+P1 + README 재작성 (2026-07-15, 사용자 지시서 준수)
 
