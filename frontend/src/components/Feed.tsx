@@ -407,7 +407,9 @@ export default function Feed({ onConnectedChange, onEvent, agents }: Props) {
                 </button>
                 {text && !isOpen ? (
                   <div className="desc rendered">
-                    <Md text={text} />
+                    {/* 2줄 미리보기에 수십 KB md 전체 DOM을 만들 이유가 없다(gemini 리뷰): 앞부분만
+                        렌더. 잘린 md 구문(미닫힘 코드펜스 등)은 미리보기라 수용. */}
+                    <Md text={text.length > 600 ? text.slice(0, 600) : text} />
                   </div>
                 ) : null}
                 {isOpen ? (
