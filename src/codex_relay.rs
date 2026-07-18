@@ -343,6 +343,7 @@ mod tests {
             project: None,
             human_input_at: human_input_at.map(str::to_string),
             created_at: None,
+            active_at: None,
         }
     }
 

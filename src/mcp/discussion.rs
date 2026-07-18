@@ -196,6 +196,7 @@ mod tests {
             display_name: display.map(String::from),
             last_heartbeat: "2026-07-18 00:00:00".to_string(),
             human_input_at: None,
+            turn_active_at: None,
         }
     }
 

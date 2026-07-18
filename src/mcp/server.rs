@@ -225,6 +225,10 @@ pub async fn serve_http_mcp_on_listener(
             axum::routing::post(dashboard_human_ping_handler),
         )
         .route(
+            "/dashboard/turn-ping",
+            axum::routing::post(dashboard_turn_ping_handler),
+        )
+        .route(
             "/dashboard/deregister",
             axum::routing::post(dashboard_deregister_handler),
         );
@@ -635,7 +639,9 @@ async fn dashboard_roster_handler(
             .map(|a| {
                 let online =
                     crate::store::agents::is_online(&a.last_heartbeat, &now, AGENT_TTL_SECS);
-                let busy = busy.contains(&a.uuid);
+                // busy = A2A task 처리 중(fresh working, #94) OR 대화 턴 처리 중(turn 신호, 이슈 #123).
+                // 같은 스피너로 합친다: 사용자 관점 의미는 "지금 응답 생성 중" 하나다.
+                let busy = busy.contains(&a.uuid) || crate::store::agents::is_turn_active(&a, &now);
                 DashAgent {
                     uuid: a.uuid,
                     tags: a.tags,
@@ -1045,6 +1051,75 @@ async fn dashboard_human_ping_handler(
         // (CodeRabbit 리뷰). 핑 수신 자체는 성공(200)이고 다음 유효 핑에 정상 기록된다.
         if let Ok(now) = store.now() {
             store.mark_human_input(&req.agent, &now);
+            // 이슈 #123: 사람 프롬프트 = 대화 턴 시작이기도 하다. 훅이 별도 turn-ping을 한 번 더
+            // 보내지 않도록 여기 동승(훅은 매 프롬프트 동기 블로킹 = 왕복 1회 유지). 미등록이면 no-op.
+            store.record_turn_start(&req.agent, &now);
+        }
+    })
+    .await
+    .ok();
+    (axum::http::StatusCode::OK, "ok").into_response()
+}
+
+/// POST /dashboard/turn-ping: 세션 훅이 대화 턴 경계를 보고한다(이슈 #123, 대시보드 스피너 소프트
+/// 신호). body = {"agent": "<세션 uuid>", "phase": "start"|"end"}. start=UserPromptSubmit(백그라운드
+/// wake 포함 - human-ping과 달리 ★ 판정이 아니라 "지금 생성 중" 표시라 wake 턴도 대상), end=Stop 훅.
+/// 게이트는 human-ping과 동일(loopback 무조건 + 원격 Bearer). 미등록 uuid는 no-op 200(턴 신호는
+/// 인메모리 전용이라 선기록 가치가 없고, 다음 스캔 등록 후 턴부터 잡힌다 - FN 수용).
+#[cfg(feature = "serve")]
+async fn dashboard_turn_ping_handler(
+    axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    axum::extract::State(store): axum::extract::State<
+        Arc<Mutex<crate::store::sqlite::SqliteStore>>,
+    >,
+    axum::Extension(dash_token): axum::Extension<Arc<Option<String>>>,
+    headers: axum::http::HeaderMap,
+    body: axum::body::Bytes,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    if !dashboard_write_allowed(peer.ip(), &headers, &dash_token) {
+        return (
+            axum::http::StatusCode::FORBIDDEN,
+            "원격 핑은 Bearer 토큰이 필요합니다(무토큰 원격 = 관전 전용).",
+        )
+            .into_response();
+    }
+    if is_cross_site(&headers) {
+        return (
+            axum::http::StatusCode::FORBIDDEN,
+            "cross-site 요청 거부(local CSRF 방어).",
+        )
+            .into_response();
+    }
+    #[derive(serde::Deserialize)]
+    struct TurnPingReq {
+        agent: String,
+        phase: String,
+    }
+    let req: TurnPingReq = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(e) => {
+            return (
+                axum::http::StatusCode::BAD_REQUEST,
+                format!("잘못된 요청: {e}"),
+            )
+                .into_response();
+        }
+    };
+    if req.phase != "start" && req.phase != "end" {
+        return (
+            axum::http::StatusCode::BAD_REQUEST,
+            "phase는 start|end만 허용".to_string(),
+        )
+            .into_response();
+    }
+    tokio::task::spawn_blocking(move || {
+        let store = store.lock().unwrap_or_else(|e| e.into_inner());
+        if req.phase == "end" {
+            store.record_turn_end(&req.agent);
+        } else if let Ok(now) = store.now() {
+            // now() 실패 시 기록 생략(human-ping과 동일 방침: 빈 타임스탬프 오염 방지).
+            store.record_turn_start(&req.agent, &now);
         }
     })
     .await
@@ -2311,6 +2386,7 @@ mod tests {
                     project: project.map(str::to_string),
                     display_name: name.map(str::to_string),
                     human_input_at: None,
+                    active_at: None,
                 }
             };
             {
@@ -2951,6 +3027,67 @@ mod tests {
             assert!(
                 ghost.human_input_at.is_some(),
                 "핑으로 영속된 human_input_at이 register 시 복원돼야 함: {ghost:?}"
+            );
+        }
+
+        /// turn-ping(이슈 #123): start가 로스터 turn_active_at을 세우고 end가 클리어한다.
+        /// 미등록 uuid는 no-op 200, phase 오타는 400.
+        #[tokio::test]
+        async fn turn_ping_start_sets_and_end_clears_turn_signal() {
+            let store = test_store();
+            let loopback: std::net::SocketAddr = "127.0.0.1:9".parse().unwrap();
+            let now = {
+                let s = store.lock().unwrap();
+                let now = s.now().unwrap();
+                s.register_agent("sess-1", BTreeMap::new(), None, &now);
+                now
+            };
+            let ping = |phase: &str, agent: &str| {
+                let body = axum::body::Bytes::from(
+                    serde_json::json!({"agent": agent, "phase": phase}).to_string(),
+                );
+                dashboard_turn_ping_handler(
+                    axum::extract::ConnectInfo(loopback),
+                    axum::extract::State(store.clone()),
+                    axum::Extension(Arc::new(None::<String>)),
+                    axum::http::HeaderMap::new(),
+                    body,
+                )
+            };
+            assert_eq!(
+                ping("start", "sess-1").await.status(),
+                axum::http::StatusCode::OK
+            );
+            let turn_at = |uuid: &str| {
+                store
+                    .lock()
+                    .unwrap()
+                    .list_agents(&BTreeMap::new(), &now, i64::MAX)
+                    .into_iter()
+                    .find(|a| a.uuid == uuid)
+                    .and_then(|a| a.turn_active_at)
+            };
+            assert!(
+                turn_at("sess-1").is_some(),
+                "start가 turn_active_at을 세워야 함"
+            );
+            assert_eq!(
+                ping("end", "sess-1").await.status(),
+                axum::http::StatusCode::OK
+            );
+            assert!(
+                turn_at("sess-1").is_none(),
+                "end가 turn_active_at을 클리어해야 함"
+            );
+            // 미등록 uuid = no-op 200(인메모리 전용이라 선기록 없음).
+            assert_eq!(
+                ping("start", "ghost").await.status(),
+                axum::http::StatusCode::OK
+            );
+            // phase 오타 = 400.
+            assert_eq!(
+                ping("pause", "sess-1").await.status(),
+                axum::http::StatusCode::BAD_REQUEST
             );
         }
 

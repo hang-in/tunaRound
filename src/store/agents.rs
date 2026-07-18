@@ -18,6 +18,11 @@ pub struct AgentEntry {
     /// 마지막 사람 프롬프트 시각(UserPromptSubmit 훅 핑). 총감독=이 값 최신 세션(설계 v2-42). None=핑 없음.
     #[serde(default)]
     pub human_input_at: Option<String>,
+    /// 지금 대화 턴 처리 중 신호(이슈 #123). claude=turn-ping(start=시각/end=None 클리어),
+    /// codex=스캐너 rollout mtime(active_at, 종료 신호 없어 신선도 창으로만 소멸). 인메모리 전용 -
+    /// 재기동 시 소멸해도 스피너만 꺼지므로 무해(영속 불요, human_input_at과 다른 점).
+    #[serde(default)]
+    pub turn_active_at: Option<String>,
 }
 
 /// "k=v,k=v" 형식 태그 문자열을 파싱한다. `,`로 split 후 각 세그먼트를 trim, 빈 세그먼트는 건너뛴다
@@ -67,6 +72,10 @@ pub struct PresenceUpsert {
     /// 스캐너가 관측한 마지막 사람 입력 시각(v2-45 P5, codex rollout user_message tail 스캔).
     /// claude는 human-ping 훅이 별도 경로라 여기선 None. sync_presence가 인메모리·영속과 max-merge한다.
     pub human_input_at: Option<String>,
+    /// 스캐너가 관측한 마지막 활동 시각(이슈 #123, codex rollout mtime → DB datetime). 턴 생성 중에는
+    /// rollout이 계속 append되어 mtime이 신선하다. claude는 turn-ping 훅이 별도 경로라 None.
+    /// sync_presence가 인메모리(turn_active_at)와 max-merge한다.
+    pub active_at: Option<String>,
 }
 
 /// presence 이벤트 이력 한 건(v2-50, presence_events 테이블). 세션 등장·소멸·사람입력의 raw edge.
@@ -90,6 +99,28 @@ pub struct PresenceEvent {
 pub fn is_online(last_heartbeat: &str, now: &str, ttl_secs: i64) -> bool {
     match crate::store::a2a::age_secs(now, last_heartbeat) {
         Some(age) => age <= ttl_secs,
+        None => false,
+    }
+}
+
+/// 대화 턴 신호의 신선도 창(초, 이슈 #123). claude=turn-ping 쌍이 있어 크래시(Stop 미발화) 가드만
+/// 필요하므로 길게, codex=mtime 프록시라 종료 신호가 없어 짧게(#94 FP 교훈: 무갱신 신호는 타임아웃 필수).
+pub const TURN_FRESH_SECS_HOOK: i64 = 600;
+pub const TURN_FRESH_SECS_MTIME: i64 = 90;
+
+/// 이 로스터 항목이 "지금 대화 턴 처리 중"인지(이슈 #123, 대시보드 스피너 소프트 신호).
+/// runner별 신선도 창을 적용한다. 파싱 실패는 보수적으로 false(is_online과 동일 방침).
+pub fn is_turn_active(entry: &AgentEntry, now: &str) -> bool {
+    let Some(at) = entry.turn_active_at.as_deref() else {
+        return false;
+    };
+    let fresh = if entry.tags.get("runner").map(String::as_str) == Some("codex") {
+        TURN_FRESH_SECS_MTIME
+    } else {
+        TURN_FRESH_SECS_HOOK
+    };
+    match crate::store::a2a::age_secs(now, at) {
+        Some(age) => age <= fresh,
         None => false,
     }
 }
@@ -256,6 +287,49 @@ mod tests {
             SendTarget::Selector(s) => assert_eq!(s, "runner=claude"),
             SendTarget::Agent(_) => panic!("Selector여야 함"),
         }
+    }
+
+    fn entry_with_turn(runner: &str, turn_at: Option<&str>) -> AgentEntry {
+        let mut tags = BTreeMap::new();
+        tags.insert("runner".to_string(), runner.to_string());
+        AgentEntry {
+            uuid: "u".to_string(),
+            tags,
+            display_name: None,
+            last_heartbeat: "2026-07-18 10:00:00".to_string(),
+            human_input_at: None,
+            turn_active_at: turn_at.map(String::from),
+        }
+    }
+
+    #[test]
+    fn is_turn_active_applies_runner_specific_freshness() {
+        let now = "2026-07-18 10:10:00";
+        // claude(훅 신호): 10분 경과 = 600초 경계 안(<=)이라 아직 active(크래시 가드 창).
+        assert!(is_turn_active(
+            &entry_with_turn("claude", Some("2026-07-18 10:00:00")),
+            now
+        ));
+        // 601초 경과면 소등.
+        assert!(!is_turn_active(
+            &entry_with_turn("claude", Some("2026-07-18 09:59:59")),
+            now
+        ));
+        // codex(mtime 프록시): 90초 창 - 60초 전이면 active, 2분 전이면 소등.
+        assert!(is_turn_active(
+            &entry_with_turn("codex", Some("2026-07-18 10:09:00")),
+            now
+        ));
+        assert!(!is_turn_active(
+            &entry_with_turn("codex", Some("2026-07-18 10:08:00")),
+            now
+        ));
+        // 신호 없음·파싱 불가 = false(보수적).
+        assert!(!is_turn_active(&entry_with_turn("claude", None), now));
+        assert!(!is_turn_active(
+            &entry_with_turn("claude", Some("bogus")),
+            now
+        ));
     }
 
     #[test]

@@ -18,6 +18,10 @@ pub struct LiveSession {
     /// 세션 생성시각(codex session_meta timestamp, DB datetime 포맷). 이슈 #88 게이트의 신규-미입력 세션
     /// grace 신호(사람 입력 전이라도 최근 생성이면 유지). codex만 채우고 claude/idle/기타는 None.
     pub created_at: Option<String>,
+    /// 마지막 활동 시각(이슈 #123, codex rollout mtime → DB datetime). 턴 생성 중 rollout append로
+    /// mtime이 신선 = "지금 응답 생성 중" 프록시(15초 스캔 입도, 짧은 턴 FN 수용). claude는 turn-ping
+    /// 훅이 정밀 신호라 None.
+    pub active_at: Option<String>,
 }
 
 /// cwd가 홈 디렉토리 자체면 "home", 아니면 마지막 세그먼트. 훅의 project_from_cwd와 같은 규약
@@ -409,6 +413,8 @@ pub fn enumerate_codex_sessions(
             project,
             human_input_at,
             created_at,
+            // 이슈 #123: rollout mtime = "지금 응답 생성 중" 프록시(턴 중 append로 신선 유지).
+            active_at: system_time_to_db_datetime(mtime),
         });
     }
     // 이번 주기에 사라진 세션의 캐시 항목 정리(무한 성장 방지).
@@ -444,6 +450,7 @@ pub fn enumerate_claude_live(
             // claude ★ 신호는 UserPromptSubmit 훅(→ human-ping) 경로라 스캐너는 보고하지 않는다.
             human_input_at: None,
             created_at: None, // codex 전용 grace 신호(claude는 마커 경로라 게이트 비대상).
+            active_at: None,  // claude 턴 신호는 turn-ping 훅 경로(이슈 #123).
         })
         .collect()
 }
@@ -803,6 +810,7 @@ pub fn enumerate_idle_marker_sessions(
             // claude ★ 신호는 human-ping 훅 경로(enumerate_claude_live와 동일). jsonl age는 무시(유휴라 오래됨).
             human_input_at: None,
             created_at: None, // codex 전용 grace 신호(claude idle은 게이트 비대상).
+            active_at: None,  // claude 턴 신호는 turn-ping 훅 경로(이슈 #123).
         });
     }
     out.sort_by(|a, b| a.uuid.cmp(&b.uuid)); // HashSet 순회의 비결정성을 없애 보고 payload를 안정화.
@@ -913,6 +921,7 @@ pub fn to_report_json(machine: &str, sessions: &[LiveSession]) -> serde_json::Va
                 "project": s.project,
                 "display_name": display,
                 "human_input_at": s.human_input_at,
+                "active_at": s.active_at,
             })
         })
         .collect();
@@ -1047,6 +1056,7 @@ mod tests {
             project: None,
             human_input_at: None,
             created_at: None,
+            active_at: None,
         };
         let all = vec![s("claude"), s("codex")];
         // 확실한 0 → 해당 러너만 제거.
@@ -1086,6 +1096,7 @@ mod tests {
             project: None,
             human_input_at: hi.map(str::to_string),
             created_at: ca.map(str::to_string),
+            active_at: None,
         }
     }
 
@@ -1118,6 +1129,7 @@ mod tests {
                 project: None,
                 human_input_at: None,
                 created_at: None,
+                active_at: None,
             },
         ];
         let kept: Vec<String> = apply_codex_human_input_gate(sessions, threshold, None)
@@ -1367,17 +1379,31 @@ mod tests {
 
     #[test]
     fn report_json_shape_and_display_name() {
-        let sessions = vec![LiveSession {
-            uuid: "u1".into(),
-            runner: "claude".into(),
-            project: Some("tunaRound".into()),
-            human_input_at: Some("2026-07-11 09:00:00".into()),
-            created_at: None,
-        }];
+        let sessions = vec![
+            LiveSession {
+                uuid: "u1".into(),
+                runner: "claude".into(),
+                project: Some("tunaRound".into()),
+                human_input_at: Some("2026-07-11 09:00:00".into()),
+                created_at: None,
+                active_at: None,
+            },
+            LiveSession {
+                uuid: "x1".into(),
+                runner: "codex".into(),
+                project: None,
+                human_input_at: None,
+                created_at: None,
+                // 이슈 #123: codex rollout mtime이 활동 신호로 payload에 실린다.
+                active_at: Some("2026-07-18 10:00:00".into()),
+            },
+        ];
         let v = to_report_json("win", &sessions);
         assert_eq!(v[0]["uuid"], "u1");
         assert_eq!(v[0]["display_name"], "win-claude-tunaRound");
         assert_eq!(v[0]["human_input_at"], "2026-07-11 09:00:00");
+        assert_eq!(v[0]["active_at"], serde_json::Value::Null);
+        assert_eq!(v[1]["active_at"], "2026-07-18 10:00:00");
     }
 
     // --- v2-45 P5: codex 입력 신호 tail 스캔 ---
@@ -1762,6 +1788,7 @@ mod tests {
                 project: None,
                 human_input_at: None,
                 created_at: None,
+                active_at: None,
             },
             LiveSession {
                 uuid: "claude-deadpid".into(),
@@ -1769,6 +1796,7 @@ mod tests {
                 project: None,
                 human_input_at: None,
                 created_at: None,
+                active_at: None,
             },
             LiveSession {
                 uuid: "claude-live".into(),
@@ -1776,6 +1804,7 @@ mod tests {
                 project: None,
                 human_input_at: None,
                 created_at: None,
+                active_at: None,
             },
             // #119 codex tombstone(위 참고) - fresh timestamp인데도 1단계에서 빠져야 함.
             codex_session("codex-tomb", Some("2026-07-11 09:30:00"), None),
@@ -1854,6 +1883,7 @@ mod tests {
                 project: None,
                 human_input_at: None,
                 created_at: None,
+                active_at: None,
             },
             // 이미 존재하는 uuid의 스테일 idle 사본 - 병합 시 무시돼야 한다(existing 우선).
             LiveSession {
@@ -1862,6 +1892,7 @@ mod tests {
                 project: Some("stale-idle-copy".into()),
                 human_input_at: None,
                 created_at: None,
+                active_at: None,
             },
         ];
         let present: HashSet<String> = sessions.iter().map(|s| s.uuid.clone()).collect();
