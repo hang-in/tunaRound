@@ -12,6 +12,8 @@ pub mod config;
 #[cfg(feature = "worker")]
 pub mod discover;
 #[cfg(feature = "mcp")]
+pub mod discussion;
+#[cfg(feature = "mcp")]
 pub mod mcp;
 #[cfg(feature = "worker")]
 pub mod mcp_client;

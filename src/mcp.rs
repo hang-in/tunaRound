@@ -21,6 +21,7 @@ mod indexing;
 // server.rs가 `crate::mcp::backfill_unindexed_terminal_tasks` 경로로 호출하므로 재노출(경로 유지).
 pub(crate) use indexing::backfill_unindexed_terminal_tasks;
 // 17개 #[tool] 메서드를 토픽별 서브모듈로 분리하고 named tool_router를 합성한다(동작 불변, v2-52).
+mod discussion;
 mod registry;
 mod search;
 mod tasks;
@@ -49,6 +50,9 @@ pub struct TunaSearchServer {
     /// A2A task 저장소(inbox 툴 poll_tasks/claim_task/complete_task 전용). None이면 세 툴 모두 비활성
     /// 안내 텍스트를 반환한다(stdio mcp-search 경로처럼 A2A가 배선되지 않은 경우).
     a2a_store: Option<Arc<Mutex<SqliteStore>>>,
+    /// mesh 토론 레지스트리(v2-56 start/stop_discussion 전용, 브로커 serve 경로만 배선). None이면
+    /// 두 툴 모두 비활성 안내 텍스트를 반환한다.
+    discussions: Option<Arc<crate::discussion::DiscussionRegistry>>,
 }
 
 impl TunaSearchServer {
@@ -62,6 +66,7 @@ impl TunaSearchServer {
             roster: None,
             default_session: "default".to_string(),
             a2a_store: None,
+            discussions: None,
         }
     }
 
@@ -95,13 +100,27 @@ impl TunaSearchServer {
         self.a2a_store = Some(store);
         self
     }
+
+    /// mesh 토론 레지스트리를 연결한 빌더 메서드(start/stop_discussion 활성화, v2-56). driver가
+    /// a2a_store·writer를 함께 쓰므로 둘이 배선된 serve 경로에서만 의미가 있다.
+    pub fn with_discussions(
+        mut self,
+        registry: Arc<crate::discussion::DiscussionRegistry>,
+    ) -> Self {
+        self.discussions = Some(registry);
+        self
+    }
 }
 
 impl TunaSearchServer {
-    /// 세 서브모듈(search/tasks/registry)의 named tool_router를 `+`로 합성해 전체 툴 라우터를 만든다.
-    /// #[tool_handler] impl ServerHandler가 기본 라우터로 이 연관 함수를 호출한다(rmcp 1.8 규약).
+    /// 네 서브모듈(search/tasks/registry/discussion)의 named tool_router를 `+`로 합성해 전체 툴
+    /// 라우터를 만든다. #[tool_handler] impl ServerHandler가 기본 라우터로 이 연관 함수를 호출한다
+    /// (rmcp 1.8 규약).
     pub(crate) fn tool_router() -> ToolRouter<Self> {
-        Self::search_router() + Self::tasks_router() + Self::registry_router()
+        Self::search_router()
+            + Self::tasks_router()
+            + Self::registry_router()
+            + Self::discussion_router()
     }
 }
 
@@ -116,7 +135,8 @@ impl ServerHandler for TunaSearchServer {
                  워커/세션은 register_agent(uuid, tags?, display_name?)로 로스터에 등록하고 heartbeat(uuid)로 주기 갱신하며, \
                  dispatcher는 list_agents(selector?)로 online 에이전트를 발견합니다. \
                  머신당 presence 스캐너는 report_presence(machine, sessions)로 라이브 세션 전집합을 일괄 동기화합니다(v2-44). \
-                 브로커 운영자는 tasks()로 전체 열린 task를 미배달(no-consumer?)/고착(stuck?) 주석과 함께 조망할 수 있습니다."
+                 브로커 운영자는 tasks()로 전체 열린 task를 미배달(no-consumer?)/고착(stuck?) 주석과 함께 조망할 수 있습니다. \
+                 mesh 토론(v2-56)은 start_discussion(topic, seats, rounds?)으로 시작하고 stop_discussion(discussion_id)으로 중단합니다(전사=debate:<id> 세션)."
                     .to_string(),
             )
     }

@@ -31,11 +31,21 @@ pub(crate) fn build_terminal_index_payload(task: &Task) -> Option<TerminalIndexP
     if !matches!(task.state, TaskState::Completed | TaskState::Failed) {
         return None; // canceled·열린 task는 색인 비대상(§4 P6a).
     }
-    let request_text = task
-        .history
-        .first()
-        .and_then(|m| m.parts.first())
-        .and_then(|p| p.text.clone());
+    // v2-56: 토론 라운드 task의 요청문은 색인하지 않는다. 라운드 프롬프트는 prior 발언 전량 재조립이라
+    // task마다 같은 발언이 O(좌석×라운드)배로 FTS에 중복 축적되고, speaker `a2a/debate:<id>`가
+    // 대시보드 검색 스코프(a2a/*)를 통과해 §8-2 비노출 결정도 깨진다(적대 리뷰 major). 라운드 맥락의
+    // 정본은 debate:<id> 전사(§6-4)이고, 결과(발언 자체)만 1배 중복으로 색인한다.
+    let request_text = if task
+        .from_agent
+        .starts_with(crate::discussion::DEBATE_NS_PREFIX)
+    {
+        None
+    } else {
+        task.history
+            .first()
+            .and_then(|m| m.parts.first())
+            .and_then(|p| p.text.clone())
+    };
     let result_text = match task.state {
         TaskState::Completed => task
             .artifacts
@@ -135,4 +145,52 @@ pub(crate) fn backfill_unindexed_terminal_tasks(
         }
     }
     eprintln!("[index] 기동 백필: 미색인 종결 task {n}건 처리");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::a2a::{Artifact, Message, Part};
+
+    fn completed_task(from_agent: &str) -> Task {
+        let mut t = Task::new(
+            "t1".to_string(),
+            None,
+            from_agent,
+            "seat-a",
+            "2026-07-18 00:00:00".to_string(),
+        );
+        t.state = TaskState::Completed;
+        t.history = vec![Message {
+            message_id: "m1".to_string(),
+            role: "user".to_string(),
+            parts: vec![Part {
+                text: Some("라운드 프롬프트(prior 전량 포함)".to_string()),
+                ..Default::default()
+            }],
+            task_id: Some("t1".to_string()),
+            context_id: None,
+        }];
+        t.artifacts = vec![Artifact {
+            artifact_id: "a1".to_string(),
+            name: None,
+            parts: vec![Part {
+                text: Some("발언".to_string()),
+                ..Default::default()
+            }],
+        }];
+        t
+    }
+
+    #[test]
+    fn debate_tasks_index_result_only() {
+        // v2-56: debate:* 발신 task는 요청문(라운드 재조립) 비색인, 결과(발언)만 색인.
+        let p = build_terminal_index_payload(&completed_task("debate:abc")).unwrap();
+        assert!(p.request_text.is_none(), "debate 요청문은 비색인");
+        assert_eq!(p.result_text.as_deref(), Some("발언"));
+        // 일반 위임 task는 기존대로 요청+결과 색인.
+        let p2 = build_terminal_index_payload(&completed_task("win-boss")).unwrap();
+        assert!(p2.request_text.is_some());
+        assert_eq!(p2.result_text.as_deref(), Some("발언"));
+    }
 }

@@ -1,6 +1,6 @@
 # v2-56: mesh 토론 - 토론(chat)을 멀티세션 A2A mesh 위로 (설계 스케치)
 
-> 지위: 착수 전 스케치(2026-07-18, 사용자 발의 "지금 토론 할려면 TUI를 따로 열어야 하잖아? 멀티세션 구조로 올리면 안될까?"). 3렌즈 적대 검증(코드 계약·기존 결정·스코프) 1회 통과분 반영. 착수 세션에서 §8 열린 결정을 확정한 뒤 정본으로 승격한다.
+> 지위: **정본**(2026-07-18 사용자 발의 → 같은 날 "완료까지" 지시로 착수). 3렌즈 적대 검증 1회 + **Phase 0 게이트 통과**(§4a 실측 기록) 후 §8 결정을 확정하고 Phase 1을 구현했다(PR 참조).
 >
 > 번호 주의: v2-55는 `src/mcp/server.rs:596` 주석이 "스피너 신선도 게이트(이슈 #94)" 의미로 이미 선점하고 있어 건너뛴다. (코드 주석의 v2-54=스피너도 문서 v2-54=온보딩 감사와 겹쳐 있다. 착수 PR에서 주석을 이슈 번호 지칭으로 정리한다, §8-6.)
 
@@ -37,7 +37,7 @@
 | 라운드 프롬프트 조립(순차-인지·역할) | `build_round_prompt` src/orchestrator/prompt.rs:51-115 (순수 함수), `role_guidance` src/orchestrator/roles.rs | driver가 그대로 호출. 발언별 MAX_ANSWER_LEN=4000자 캡 내장 |
 | task 생성 | `create_task_from_message`(send_task/SendMessage 수렴) src/store/sqlite/tasks/state.rs:56-71 | 라운드 발언 1건 = task 1건, to_agent 직지정 |
 | claim/complete/fail + lease | src/store/sqlite/tasks/lease.rs (lease 30분, attempt≤3 requeue) | 좌석 소비 경로 무변경(워커·라이브 poll·relay 그대로) |
-| 늦은 완료 무해화 | `try_complete`의 `WHERE state='working'` 가드 src/store/sqlite/tasks/state.rs:207-237, `try_cancel` :286-304 | driver 타임아웃 시 cancel → 이후 도착하는 완료는 가드에 막힘 |
+| 늦은 완료 무해화 | `try_complete`의 `WHERE state='working'` 가드 src/store/sqlite/tasks/state.rs | driver 타임아웃 시 failed 마감 → 이후 도착하는 완료는 terminal 가드에 막힘(canceled가 아니라 failed인 이유 = watch-results 배달, §7-1) |
 | 전사 영속 | `append_turn`(BEGIN IMMEDIATE, 세션별 MAX(msg_id)+1 = DB id 권위) src/store/sqlite/messages.rs:167-248 | 토론 발언을 `debate:<id>` 세션에 증분 추가. save_session(전량 교체) 금지 |
 | 세션 네임스페이스 선례 | mesh 기억화 `a2a:<task_id>`·speaker `a2a/<agent>` src/mcp/indexing.rs:61-138 | `debate:<discussion_id>`·speaker `debate/<seat-label>` 로 답습 |
 | 인박스 | watch-results(fromAgent==dispatcher 필터, digest) src/watch_results.rs:273-304 | 라운드 결과·합의문 배달(§8-1) |
@@ -54,18 +54,27 @@
 
 한계(= Phase 1의 존재 이유): 총괄 컨텍스트·토큰을 소모하고, 라운드 조립이 모델 재량이라 비결정적이며, 총괄이 그 시간 동안 다른 일을 못 한다. 이 한계가 실사용에서 아프면 Phase 1로 간다.
 
+## 4a. Phase 0 실측 기록 (2026-07-18, 게이트 통과)
+
+총괄 세션(win)이 위 레시피로 2좌석 2라운드(3 leg) 크로스머신 토론을 실제 수행했다. 좌석 = mac-claude-tunaRound(라이브 세션, 자율 수신) + win-debate-worker(임시 헤드리스 work 데몬, ReadOnly, project=tunaRound). 주제 = 바로 이 문서의 §8-4(재기동 실패 처리 (a) vs (b)).
+
+- **가치 판정: PASS.** 토론이 설계를 실제로 개선했다. reviewer(win 워커)가 proposer(mac)의 자기모순(인메모리 락에 릴리스 단계를 둔 것)과 과장(마이그레이션 불가역론 - 이 레포는 v4→v11을 통상 비용으로 지불해 왔음)을 잡았고, "무-open-task 수 초 창 침묵사"라는 미발견 엣지를 찾아냈다. 라운드 2에서 proposer가 조건 5개 전부 수용·최종 5줄 스펙 합의. 순차-인지(직접 인용 반박) 성립.
+- **타이밍 실측**: leg당 150~200초(mac 라이브 190·150초, win 헤드리스 200초). 3 leg + 수동 조립 ≈ 15분.
+- **마찰 실측(→ Phase 1 반영)**: ① 프리앰블은 좌석 유형 인지 필요 - 헤드리스 좌석은 complete_task를 직접 못 부르므로 "출력=발언" 변형이 필요(라이브는 claim/complete 지시 유지). driver의 `debate_preamble(live)`로 반영. ② /a2a는 토큰 기동 브로커에서 Bearer 필수(로컬 무토큰은 init 프리셋 구성의 계약). ③ 라운드 조립·폴링이 총괄 컨텍스트를 그대로 소모 = Phase 1 정당화.
+- **토론 산출 스펙(§8-4에 채택)**: 기동 sweep = `from_agent LIKE 'debate:%' AND state IN(열린 상태 전부)` → failed, 사유 "broker restart" 명시 / 통지 = 라운드 task의 failed terminal 자체(watch-results --dispatcher debate:<id>) / 늦은 완료 = 기존 terminal 가드로 차단 / 락 릴리스 단계 없음(인메모리 자연 소멸) / 침묵사 창은 수용 잔여 리스크로 문서화(악화 시 debate-liveness 1행 표적 확장, 전면 영속 (b)는 '재개'가 실 요구일 때만).
+
 ## 5. Phase 1: 브로커 discussion driver + 총괄 MCP 도구
 
 - **MCP 도구 2개**(tuna-broker 서버에 추가. get_discussion은 YAGNI로 배제: 진행 상태는 인박스 RESULT 줄 + read_transcript(`debate:<id>`)로 충분).
-  - `start_discussion(topic, seats, rounds, dispatcher)` : seats = `[{agent(uuid), label?, role?, instruction?, live?}]` (2~6석), rounds 기본 3·상한 10. label 생략 시 로스터 display name으로 해석(speaker 가독성, uuid 원문 금지). 반환 = discussion_id. **동시 토론 1건 제한**(진행 중이면 거부, MVP).
+  - `start_discussion(topic, seats, rounds)` : seats = `[{agent(uuid), label?, role?, instruction?, live?}]` (2~6석, 라벨 중복 거부), rounds 기본 3·상한 10. label 생략 시 로스터 display name으로 해석(speaker 가독성, uuid 원문 금지). 인박스 식별은 from_agent=`debate:<id>` 고정(§8-1)이라 dispatcher 파라미터는 없다. 반환 = discussion_id. **동시 토론 1건 제한**(진행 중이면 거부, MVP).
   - `stop_discussion(discussion_id)` : 이후 라운드 발행 차단(인메모리 취소 플래그, 라운드 루프가 좌석 발행 전마다 확인). 이미 claim된 task의 러너 실행은 중단 불가(app-server 취소 API 부재, 세션28 #9)를 반환문에 명시.
 - **driver = 브로커 프로세스 안의 tokio task** (discussion 1건당 1 spawn). **store 접근(create_task_from_message·append_turn·get_task)은 전부 동기(rusqlite)이므로 기존 핸들러 관례대로 `spawn_blocking` 경유**(src/mcp/tasks.rs:36-39, src/mcp/server.rs:599-603 답습). 완료 대기는 **인프로세스 순수 폴링**(2~5초 간격 get_task + 좌석 타임아웃 기본 600초): driver는 브로커 안에 있어 이벤트 버스가 불필요하고, 버스를 쓰지 않으면 sweep 무이벤트·Lagged 리스크가 아예 발생하지 않는다(적대 검증 수용).
 - **라운드 루프.**
   1. 좌석 순서대로(순차-인지): `build_round_prompt`로 본문 조립 → 토론 프리앰블(§6-7) prepend → task 발행(from_agent=`debate:<id>`, to_agent=좌석 uuid) → 폴링 대기.
   2. terminal 도착 즉시 `append_turn("debate:<id>", "debate/<label>", 발언)` → 다음 좌석의 same_round로 주입.
-  3. 좌석 타임아웃 = `try_cancel` 시도 후 전사에 `[무응답: <사유>]` 기록하고 skip(늦은 완료는 canceled 가드에 막혀 무해). **skip-후-계속은 신규 결정이다**(REPL /debate 선례는 임의 실패 즉시 중단: src/repl/mod.rs:749-756. mesh는 좌석 부재가 일상이라 정책을 달리한다). 한 라운드에서 전 좌석이 실패하면 토론 중단.
-  4. rounds 소진 후 synthesizer 라운드 1회(§0 개정 2). **실행 주체 = start_discussion에서 지정한 synthesizer 좌석(기본 = 첫 좌석)에게 task로 위임**(driver는 러너가 없어 LLM 생성을 스스로 못 한다). synthesizer 좌석 실패 시 합의문 없이 부분 전사 포인터만 인박스로 배달(토론 유실 방지).
-  5. 종료(완주·중단·실패 공통): 결과 요약 1건을 인박스로 배달(§8-1).
+  3. 좌석 타임아웃 = **failed로 마감**(try_fail, 사유 명시) 후 전사에 `[무응답: <사유>]` 기록하고 skip. failed도 terminal 가드라 늦은 완료 차단 효과는 동일하면서 watch-results에 배달된다(canceled는 배달 안 됨 - 코드 적대 리뷰 3렌즈 공통 major). try_fail이 지는 밀리초 경합(그 사이 좌석 완료)이면 완료 발언을 채택한다. **skip-후-계속은 신규 결정이다**(REPL /debate 선례는 임의 실패 즉시 중단: src/repl/mod.rs:749-756. mesh는 좌석 부재가 일상이라 정책을 달리한다). 한 라운드에서 전 좌석이 실패하면 토론 중단.
+  4. rounds 소진 후 synthesizer 라운드 1회(§0 개정 2, 발행 직전 cancel 재확인). **실행 주체 = 첫 좌석 고정(MVP, §8-5)**에게 task로 위임(driver는 러너가 없어 LLM 생성을 스스로 못 한다). 좌석별 instruction은 종합에 상속하지 않는다(입장 지시가 합의문을 편향시키므로 역할만 synthesizer로 교체). synthesizer 좌석 실패 시 합의문 없이 부분 전사가 남고 그 failed terminal이 곧 통지다.
+  5. 종료 통지 = 별도 요약 task 없음. 마지막 task의 terminal(완주=종합 completed, 실패·타임아웃=failed)이 곧 인박스 신호다(§8-1). 통지가 닿지 않는 알려진 공백 2개(콜드 워터마크 재기동·무-open-task 창)는 a2a-usage §8.2에 명시하고 read_transcript 폴백을 안내한다.
 - **이월(carried) 없음(MVP).** rounds≤10이라 prior 전량 주입으로 시작한다(발언별 4000자 캡은 build_round_prompt 내장). REPL의 `carry_forward_digest_from_path`(src/repl/mod.rs:416-473)는 ReplSession 프라이빗이라 추출 리팩토링이 선행돼야 하며, 이는 필요가 실측된 뒤 후속으로 한다.
 - **브로커 재기동 = 진행 중 토론 실패 처리.** driver 상태가 인메모리이므로 "실패 처리"가 공짜가 아니다(적대 검증 수용). 방식은 §8-4에서 확정: 권고 = 기동 시 `from_agent LIKE 'debate:%'`인 open task를 fail 전이시키는 고아 sweep(신규 store 질의 1개). watch-results는 failed를 배달하므로 dispatcher 감시가 살아 있으면 통지도 성립한다. discussion 레코드 영속(신규 테이블·마이그레이션)은 MVP 비채택.
 
@@ -82,28 +91,28 @@
 
 ## 7. 함정·리스크 (적대 검증 정정 반영)
 
-1. **driver 타임아웃이 정본 탈출구다.** lease 만료 sweep은 poll 경로 의존 지연 sweep이라(src/mcp/format.rs:70-74가 유일 트리거) get_task 폴링은 terminal 전이를 "기다리는" 수단이 못 될 수 있다(좌석 앞으로 poll하는 소비자가 없으면 working으로 영원히 남음). driver 자체 타임아웃(600초) → try_cancel → skip이 유일하게 신뢰 가능한 탈출구다.
-2. **at-least-once 재배달 = 이중 발언 위험.** lease 만료 requeue 시 같은 라운드 지시문이 재배달된다. 완화: driver 타임아웃(600초) ≪ lease(30분) + 타임아웃 시 cancel(재배달 자체를 차단).
+1. **driver 타임아웃이 정본 탈출구다.** lease 만료 sweep은 poll 경로 의존 지연 sweep이라(src/mcp/format.rs:70-74가 유일 트리거) get_task 폴링은 terminal 전이를 "기다리는" 수단이 못 될 수 있다(좌석 앞으로 poll하는 소비자가 없으면 working으로 영원히 남음). driver 자체 타임아웃(600초) → try_fail(사유 명시) → skip이 유일하게 신뢰 가능한 탈출구다(failed = 인박스 통지 겸용).
+2. **at-least-once 재배달 = 이중 발언 위험.** lease 만료 requeue 시 같은 라운드 지시문이 재배달된다. 완화: driver 타임아웃(600초) ≪ lease(30분) + 타임아웃 시 failed 마감(재배달 자체를 차단).
 3. **취소는 상태 전이일 뿐.** 실행 중인 러너·codex 턴은 중단되지 않는다. stop_discussion 반환문에 명시.
 4. **다중 writer 규율.** 토론 전사 쓰기는 append_turn만 사용한다. save_session(전량 교체)은 클로버를 만든다.
 5. **대시보드 노출의 실효 범위.** /dashboard/search는 `a2a/*` 화자만 통과시키므로 `debate/*` 전사는 검색에 안 나온다. 단 이것이 막는 것은 "과거 검색성"뿐이다: 발언 전문 자체는 라운드 task로서 기존 a2a task와 동일하게 무인증 피드·SSE·replay에 이미 표출되는 노출 클래스다. §8-2는 이 정직한 범위 위에서 결정한다.
 6. **비용·지연 추정(순차-인지의 대가).** 3좌석 3라운드 + synthesizer = task 10건 직렬. 헤드리스 좌석은 fresh spawn마다 풀 컨텍스트 재수신(claude spawn 실측 약 35초)이라 정상 경로 대략 10~20분, 좌석 1개가 타임아웃까지 가면 +10분. 토론은 "던져놓고 인박스로 받는" 비동기 작업이지 실시간 관전물이 아니다. 이 전제를 사용자 표면(도구 설명)에 명시한다.
 7. **#115 메이저 범프와 파일 겹침.** rmcp 2.2(MCP tool 표면)는 v2-56 Phase 1이 만질 층과 겹친다. 전용 세션 순서를 정하고 동시 진행하지 않는다.
 
-## 8. 열린 결정 (착수 전 사용자 확정)
+## 8. 확정 결정 (2026-07-18 착수 세션, 사용자 "완료까지" 위임 하에 권고안 채택)
 
-1. **인박스 배달 방식.** 후보 (a) from_agent=`debate:<id>` 유지 + 총괄이 `watch-results --dispatcher debate:<id>`를 추가로 띄움(Monitor 1개 추가, 라운드별 RESULT 줄 + 종료 요약) / (b) from_agent를 시작 총괄의 dispatcher로 발행(Monitor 추가 없음, 기존 인박스에 라운드 노이즈 유입·digest로 완화). 권고 = (a).
-2. **대시보드 검색에 `debate/*` 노출 여부.** §7-5의 실효 범위(검색성만 차이) 전제 하에 결정. 권고 = MVP 비노출(결정 유보 비용이 0).
-3. **라이브 좌석 opt-in UX.** `live: true` 명시 플래그 요구 권고(실수로 사람 세션을 끌어들이는 것 방지).
-4. **재기동 실패 처리 방식.** (a) 고아 task 기동 sweep(`from_agent LIKE 'debate:%'` open → fail, 신규 store 질의 1개, 권고) / (b) discussion 레코드 영속(신규 테이블·마이그레이션, MVP 과투자). 재기동 후 진행 중이던 discussion_id 문의에 대한 계약(존재 안 함)도 함께.
-5. **synthesizer 좌석 규칙.** start_discussion 지정(기본 첫 좌석) 권고. 실패 시 부분 전사 포인터 배달로 합의.
-6. **v2-55 번호 주석 정리.** src/mcp/server.rs:596 등 코드 주석의 v2-54/v2-55 지칭을 이슈 번호(#94)로 바꿔 충돌 해소. 권고 = 착수 PR 동승(1줄).
-7. **CLAUDE.md 갱신(총괄 경유).** 세션12 "위임 vs 회담" 요약 줄과 스테일 포인터(a2a-usage §12·§13 - 현행 문서에 해당 섹션 없음)의 정리. 개정(§0)이 확정되는 착수 세션에서 수행.
+1. **인박스 배달 = (a) 확정.** 라운드 task from_agent = `debate:<id>`, 총괄이 `watch-results --dispatcher debate:<id>`를 추가로 띄운다(라운드마다 RESULT 줄, 마지막 완료=종합). start_discussion 응답이 정확한 명령을 안내한다.
+2. **대시보드 검색 `debate/*` = MVP 비노출 확정.** 실효 범위는 과거 검색성뿐(§7-5). 유보 비용 0.
+3. **라이브 좌석 = `live: true` 명시 필수 확정.** resolve_seats가 로스터 role=session 좌석에 강제한다.
+4. **재기동 실패 처리 = (a) 고아 sweep 확정**(Phase 0 토론 산출 스펙 그대로, §4a). `fail_orphan_debate_tasks`를 기동 housekeeping에서 backfill보다 먼저 실행(방금 실패분도 같은 기동에 색인). 재기동 후 discussion_id 문의 계약 = 존재하지 않음(레지스트리 인메모리).
+5. **synthesizer = 첫 좌석 고정(MVP) 확정.** 지정 파라미터는 필요가 실측되면 후속. 실패 시 합의문 없이 부분 전사 유지(failed terminal이 곧 통지).
+6. **v2-55 번호 주석 정리 = 착수 PR 동승 완료**(server.rs busy 주석을 이슈 #94 지칭으로 정정).
+7. **CLAUDE.md 갱신(총괄 경유) = 머지 후 수행.** 세션12 "위임 vs 회담" 요약 줄 개정 + 스테일 포인터(a2a-usage §12·§13) 정리.
 
 ## 9. 검증 계획
 
 - **Phase 0 게이트(선행)**: 운영 레시피로 2좌석(win 워커 + mac 워커) 2라운드 토론 1회 도그푸딩. 판정 = 발언 품질(순차-인지가 실제로 반박을 만드나)과 마찰(지연·좌석 부재)이 Phase 1 투자를 정당화하는가. 하지 않으면 Phase 1 착수 금지.
-- **Phase 1 E2E**: start_discussion(헤드리스 2 + 라이브 claude 1(live:true), 2라운드) → 인박스 라운드 RESULT 수신 → read_transcript(`debate:<id>`) 라운드 구조 확인 → 합의문 도착 → stop_discussion 중도 중단(진행 중 task의 늦은 완료가 canceled 가드에 막히는 것까지) → 브로커 재기동 후 고아 sweep 동작.
+- **Phase 1 E2E**: start_discussion(헤드리스 2 + 라이브 claude 1(live:true), 2라운드) → 인박스 라운드 RESULT 수신 → read_transcript(`debate:<id>`) 라운드 구조 확인 → 합의문 도착 → stop_discussion 중도 중단(진행 중 task가 failed로 마감되고 늦은 완료가 terminal 가드에 막히는 것까지) → 브로커 재기동 후 고아 sweep 동작.
 - **온보딩 절차 검증**: 토론 lane을 node.toml + 양 머신 재부팅 복구 스크립트에 반영하고 재부팅 1회 생존 확인.
 - 회귀: lib 테스트 전량 + driver 단위 테스트(부분 라운드·타임아웃·재기동 sweep은 시계 주입으로).
 

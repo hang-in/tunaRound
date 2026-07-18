@@ -226,9 +226,17 @@ impl SqliteStore {
             )
             .map_err(|e| format!("sqlite: {e}"))?;
         if affected != 1 {
-            return Err(format!(
-                "전이 불가: task_id={task_id} (현재 상태가 대상 아님)"
-            ));
+            // 현재 상태를 에러에 실어 늦은 completer(예: 토론 타임아웃으로 failed 마감된 좌석)가
+            // 원인을 추정 가능하게 한다(적대 리뷰 minor: 범용 에러만으론 발언 폐기 사실을 알 수 없음).
+            let state = self
+                .get_task(task_id)?
+                .map(|t| t.state.as_str().to_string());
+            return Err(match state {
+                Some(s) => format!(
+                    "전이 불가: task_id={task_id} (현재 state={s}, working만 complete 가능)"
+                ),
+                None => format!("전이 불가: task_id={task_id} (task 없음)"),
+            });
         }
         if let Some(task) = self.get_task(task_id)? {
             self.emit_task_event(TaskEvent::Completed(task));
@@ -301,6 +309,53 @@ impl SqliteStore {
             self.emit_task_event(TaskEvent::Status(task));
         }
         Ok(())
+    }
+
+    /// v2-56 기동 고아 sweep: 토론 driver(인메모리)가 브로커 재기동으로 소멸하면 열린 토론 라운드
+    /// task(from_agent가 `debate:` 프리픽스)가 고아로 남는다. 전부 failed로 전이시킨다(사유="broker
+    /// restart"). watch-results가 failed terminal을 배달하므로 이 전이가 곧 사용자 통지다(별도 결과
+    /// task 없음, Phase 0 토론 합의). 멱등: 열린 debate task가 없으면 0을 반환한다.
+    /// 잔여 리스크(수용): 라운드 task가 terminal이 된 직후~다음 라운드 발행 전 수 초 창에서 재기동하면
+    /// 열린 task가 0건이라 sweep이 잡지 못하고 토론이 무통지로 끝난다(비동기 인박스 작업 전제라 수용,
+    /// 악화 시 debate-liveness 1행으로 표적 확장. v2-56 §7-1).
+    pub fn fail_orphan_debate_tasks(&self) -> Result<usize, String> {
+        let ids: Vec<String> = {
+            let mut stmt = self
+                .conn
+                .prepare(
+                    "SELECT task_id FROM tasks \
+                     WHERE from_agent LIKE 'debate:%' \
+                     AND state IN ('submitted','working','input_required') \
+                     ORDER BY created_at",
+                )
+                .map_err(|e| format!("sqlite: {e}"))?;
+            stmt.query_map([], |row| row.get::<_, String>(0))
+                .map_err(|e| format!("sqlite: {e}"))?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| format!("sqlite: {e}"))?
+        };
+        let mut failed = 0usize;
+        for task_id in ids {
+            let reason = Message {
+                message_id: self.new_task_id()?,
+                role: "agent".to_string(),
+                parts: vec![crate::store::a2a::Part {
+                    text: Some(
+                        "브로커 재기동으로 토론이 중단되었습니다(broker restart). 재발의가 필요합니다."
+                            .to_string(),
+                    ),
+                    ..Default::default()
+                }],
+                task_id: Some(task_id.clone()),
+                context_id: None,
+            };
+            // failer=None = 브로커 직접 경로(모든 열린 상태에서 전이 허용). 개별 실패는 다음 기동 재시도.
+            match self.try_fail(&task_id, Some(&reason), None) {
+                Ok(()) => failed += 1,
+                Err(e) => eprintln!("[debate-sweep] {task_id} 실패 처리 불가(무시): {e}"),
+            }
+        }
+        Ok(failed)
     }
 
     /// history에 메시지를 append한다(기존 history_json을 읽어 병합 후 저장). 대상 task가 없으면 에러.

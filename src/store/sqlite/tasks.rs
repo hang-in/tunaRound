@@ -111,6 +111,53 @@ mod tests {
         }
 
         #[test]
+        fn fail_orphan_debate_tasks_sweeps_open_debate_only_and_is_idempotent() {
+            // v2-56 기동 sweep: debate:* 발신의 열린 task만 failed 전이(사유=broker restart),
+            // 비-debate·이미 종결된 task는 불변. 재실행은 0건(멱등).
+            let db = SqliteStore::open_memory().unwrap();
+            let submitted = db
+                .create_task_from_message("debate:d1", "seat-a", sample_message("m1"))
+                .unwrap();
+            let working = db
+                .create_task_from_message("debate:d1", "seat-b", sample_message("m2"))
+                .unwrap();
+            db.try_claim(&working.id, Some("seat-b"), None).unwrap();
+            let done = db
+                .create_task_from_message("debate:d1", "seat-c", sample_message("m3"))
+                .unwrap();
+            db.try_claim(&done.id, Some("seat-c"), None).unwrap();
+            db.try_complete(&done.id, &[], Some("seat-c")).unwrap();
+            let normal = db
+                .create_task_from_message("win-boss", "seat-a", sample_message("m4"))
+                .unwrap();
+
+            let swept = db.fail_orphan_debate_tasks().unwrap();
+            assert_eq!(swept, 2, "submitted+working 두 건만 sweep");
+            for id in [&submitted.id, &working.id] {
+                let t = db.get_task(id).unwrap().unwrap();
+                assert_eq!(t.state, TaskState::Failed);
+                let reason = t
+                    .status_message
+                    .as_ref()
+                    .and_then(|m| m.parts.first())
+                    .and_then(|p| p.text.as_deref())
+                    .unwrap_or_default();
+                assert!(reason.contains("broker restart"), "사유 명시: {reason}");
+            }
+            assert_eq!(
+                db.get_task(&done.id).unwrap().unwrap().state,
+                TaskState::Completed,
+                "종결분 불변"
+            );
+            assert_eq!(
+                db.get_task(&normal.id).unwrap().unwrap().state,
+                TaskState::Submitted,
+                "비-debate 불변"
+            );
+            assert_eq!(db.fail_orphan_debate_tasks().unwrap(), 0, "멱등");
+        }
+
+        #[test]
         fn create_get_roundtrip_preserves_all_fields() {
             let db = SqliteStore::open_memory().unwrap();
             let msg = sample_message("m1");
