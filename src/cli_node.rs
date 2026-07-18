@@ -340,7 +340,8 @@ fn mesh_config_content(broker_core: &str, machine: &str, bin: &str, local: bool)
     };
     format!(
         "# tunaRound mesh·훅 설정(tunaround init 자동 생성). 값을 채운 뒤 SessionStart 훅과 restart\n\
-         # 스크립트가 읽는다. 형식=KEY=VALUE, 우선순위=이 파일 > env > 기본값. 상세=docs/reference/onboarding.md\n\
+         # 스크립트가 읽는다. 형식=KEY=VALUE. 우선순위(소비자별): 훅·restart 스크립트=이 파일 > env,\n\
+         # node/doctor의 @env: 해석=비어있지 않은 셸 env > 이 파일(폴백). 상세=docs/reference/onboarding.md\n\
          TUNA_AUTOARM=1\n\
          TUNA_BIN={bin}\n\
          TUNA_BROKER_CORE={broker_core}\n\

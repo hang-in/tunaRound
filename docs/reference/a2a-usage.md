@@ -332,7 +332,7 @@ tunaround codex-relay --ws ws://127.0.0.1:<PORT>
 
 | 도구 | 용도 |
 | --- | --- |
-| `get_task(task_id, wait_secs?)` | 특정 작업 상태와 결과 확인. `wait_secs`(1~120)를 주면 terminal까지 서버가 대기(long-poll)하므로 호출자가 폴링 간격을 관리할 필요가 없습니다 |
+| `get_task(task_id, wait_secs?)` | 특정 작업 상태와 결과 확인. `wait_secs`(최대 120)를 주면 terminal까지 서버가 대기(long-poll)하므로 호출자가 폴링 간격을 관리할 필요가 없습니다. 호출 클라이언트의 HTTP/MCP 타임아웃보다 짧게 잡으세요(55 이하 권장) |
 | `tasks()` | 코어 전체의 열린 작업 확인 |
 | `poll_tasks(agent)` | 특정 워커 앞으로 온 작업 확인 |
 | 웹 대시보드 | 로스터, 작업 피드, 완료·실패 상태 확인 |
@@ -348,7 +348,7 @@ tunaround codex-relay --ws ws://127.0.0.1:<PORT>
 
 ## 5.5 토큰과 네트워크
 
-- 코어 토큰은 명령줄보다 환경변수나 `~/.tunaround/config`에 둡니다. `tunaround node`/`doctor`는 node.toml의 `@env:TUNA_BROKER_TOKEN`이 환경변수에 없으면 `~/.tunaround/config`의 같은 키를 폴백으로 읽습니다(환경변수가 있으면 환경변수 우선).
+- 코어 토큰은 명령줄보다 환경변수나 `~/.tunaround/config`에 둡니다. `tunaround node`/`doctor`는 node.toml의 `@env:TUNA_BROKER_TOKEN`이 환경변수에 없으면 `~/.tunaround/config`의 같은 키를 폴백으로 읽습니다(비어있지 않은 환경변수가 있으면 그쪽이 우선).
 - 토큰을 바꾸면 이미 실행 중인 데몬을 재기동해야 합니다.
 - 같은 LAN에서는 사설 IP를 사용합니다.
 - 외부 네트워크에서는 Tailscale이나 SSH 터널처럼 접근 범위를 제한하는 연결을 사용합니다.

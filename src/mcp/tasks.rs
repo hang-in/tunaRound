@@ -290,24 +290,28 @@ impl TunaSearchServer {
         };
         let task_id = p.task_id;
         // long-poll(v2-54 G7): terminal이 아니면 1초 간격 재확인, wait 소진 시 그 시점 상태 반환.
-        // 미존재·조회 오류는 대기 없이 즉시 반환한다(id 오타를 wait 내내 붙잡지 않음). lease 만료
-        // sweep은 poll 경로 트리거라 여기 대기가 requeue를 만들지는 않는다(관찰만 한다).
-        let wait = p.wait_secs.unwrap_or(0).clamp(0, 120);
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(wait);
-        loop {
-            let store2 = store.clone();
-            let tid = task_id.clone();
-            let state = tokio::task::spawn_blocking(move || {
-                let s = store2.lock().unwrap_or_else(|e| e.into_inner());
-                s.get_task(&tid).map(|o| o.map(|t| t.state))
-            })
-            .await
-            .unwrap_or_else(|e| Err(format!("작업 실패: {e}")));
-            let open = matches!(state, Ok(Some(st)) if st.is_open());
-            if !open || std::time::Instant::now() >= deadline {
-                break;
+        // 미존재·조회 오류는 대기 없이 즉시 반환한다(id 오타를 wait 내내 붙잡지 않고, 일시 store
+        // 오류도 조기 종료 후 아래 최종 조회가 표면화한다). wait=0/생략은 루프 자체를 건너뛰어 기존
+        // 경로와 동일하다(store 왕복 추가 없음). lease 만료 sweep은 poll 경로 트리거라 여기 대기가
+        // requeue를 만들지는 않는다(관찰만 한다). 락은 매 반복 spawn_blocking 안에서만 잡는다.
+        let wait = p.wait_secs.unwrap_or(0).min(120);
+        if wait > 0 {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(wait);
+            loop {
+                let store2 = store.clone();
+                let tid = task_id.clone();
+                let state = tokio::task::spawn_blocking(move || {
+                    let s = store2.lock().unwrap_or_else(|e| e.into_inner());
+                    s.get_task(&tid).map(|o| o.map(|t| t.state))
+                })
+                .await
+                .unwrap_or_else(|e| Err(format!("작업 실패: {e}")));
+                let open = matches!(state, Ok(Some(st)) if st.is_open());
+                if !open || std::time::Instant::now() >= deadline {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
             }
-            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
         }
         let outcome = tokio::task::spawn_blocking(move || {
             let store = store.lock().unwrap_or_else(|e| e.into_inner());

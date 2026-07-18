@@ -96,23 +96,39 @@ impl Lane {
 pub const TOKEN_PLACEHOLDER: &str = "여기에-실제-토큰-넣기";
 
 /// dotenv 형식(KEY=VALUE, `#` 주석) 텍스트에서 var 값을 찾는다(순수 함수). 빈 값·placeholder는
-/// None(미설정과 동일 취급). 값 양끝의 작은/큰따옴표는 벗긴다(수기 편집 관용).
+/// None(미설정과 동일 취급). **의미론은 같은 파일을 읽는 정본 파서(훅 .claude/hooks/tuna_arm.py·
+/// restart 스크립트)와 정렬한다**(적대 리뷰 major: 파서가 어긋나면 같은 파일에서 훅·데몬과
+/// node/doctor가 다른 토큰을 읽는 조용한 401이 생긴다): ① BOM 제거(Windows 편집기) ② 중복 키는
+/// last-wins ③ 따옴표는 짝 맞는 1쌍만 벗기고 내용 리터럴 보존 ④ 무따옴표 값은 " #" 인라인 주석 절단.
 pub fn parse_dotenv_var(content: &str, var: &str) -> Option<String> {
+    let content = content.trim_start_matches('\u{feff}');
+    let mut last: Option<String> = None;
     for line in content.lines() {
         let line = line.trim();
         if line.starts_with('#') {
             continue;
         }
-        if let Some((k, v)) = line.split_once('=')
-            && k.trim() == var
-        {
-            let v = v.trim().trim_matches('"').trim_matches('\'');
-            if !v.is_empty() && v != TOKEN_PLACEHOLDER {
-                return Some(v.to_string());
-            }
+        let Some((k, v)) = line.split_once('=') else {
+            continue;
+        };
+        if k.trim() != var {
+            continue;
         }
+        let v = v.trim();
+        let quoted = v.len() >= 2
+            && ((v.starts_with('"') && v.ends_with('"'))
+                || (v.starts_with('\'') && v.ends_with('\'')));
+        let val = if quoted {
+            v[1..v.len() - 1].to_string()
+        } else {
+            match v.find(" #") {
+                Some(i) => v[..i].trim_end().to_string(),
+                None => v.to_string(),
+            }
+        };
+        last = Some(val);
     }
-    None
+    last.filter(|v| !v.is_empty() && v != TOKEN_PLACEHOLDER)
 }
 
 /// 토큰 문자열을 해석한다. "@env:NAME"이면 그 환경변수를, 아니면 평문을 그대로 쓴다. None이면 None.
@@ -348,6 +364,37 @@ kind = "supervised"
     }
 
     #[test]
+    fn parse_dotenv_var_matches_hook_parser_semantics() {
+        // 적대 리뷰 major: 훅(tuna_arm.py)·restart 스크립트와 의미론 정렬 3종.
+        // ① 중복 키 = last-wins(토큰 로테이션 시 파일 끝에 새 줄을 추가하는 관용).
+        let dup = "TUNA_BROKER_TOKEN=old-tok\nTUNA_BROKER_TOKEN=new-tok\n";
+        assert_eq!(
+            parse_dotenv_var(dup, "TUNA_BROKER_TOKEN").as_deref(),
+            Some("new-tok")
+        );
+        // ② 무따옴표 값의 " #" 인라인 주석 절단 / 따옴표 값은 리터럴 보존('#' 포함).
+        assert_eq!(
+            parse_dotenv_var("TUNA_BROKER_TOKEN=abc # 메모\n", "TUNA_BROKER_TOKEN").as_deref(),
+            Some("abc")
+        );
+        assert_eq!(
+            parse_dotenv_var("TUNA_BROKER_TOKEN=\"abc # 리터럴\"\n", "TUNA_BROKER_TOKEN")
+                .as_deref(),
+            Some("abc # 리터럴")
+        );
+        // ③ BOM(Windows 편집기)이 첫 키를 오염시키지 않는다.
+        assert_eq!(
+            parse_dotenv_var("\u{feff}TUNA_BROKER_TOKEN=tok\n", "TUNA_BROKER_TOKEN").as_deref(),
+            Some("tok")
+        );
+        // 짝 안 맞는 따옴표는 벗기지 않는다(값 그대로).
+        assert_eq!(
+            parse_dotenv_var("TUNA_BROKER_TOKEN=\"half\n", "TUNA_BROKER_TOKEN").as_deref(),
+            Some("\"half")
+        );
+    }
+
+    #[test]
     fn resolve_node_token_falls_back_to_config_file_env_wins() {
         let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let file = Some("TUNA_TEST_FALLBACK_TOK=from-file\n".to_string());
@@ -363,6 +410,17 @@ kind = "supervised"
         assert_eq!(
             resolve_node_token_with(Some("@env:TUNA_TEST_FALLBACK_TOK"), || file.clone()),
             Some("from-env".to_string())
+        );
+        unsafe {
+            std::env::remove_var("TUNA_TEST_FALLBACK_TOK");
+        }
+        // 빈 env는 미설정과 동일 취급이라 파일이 이긴다("비어있지 않은 env가 우선" 계약 고정).
+        unsafe {
+            std::env::set_var("TUNA_TEST_FALLBACK_TOK", "");
+        }
+        assert_eq!(
+            resolve_node_token_with(Some("@env:TUNA_TEST_FALLBACK_TOK"), || file.clone()),
+            Some("from-file".to_string())
         );
         unsafe {
             std::env::remove_var("TUNA_TEST_FALLBACK_TOK");

@@ -131,13 +131,13 @@ impl ServerHandler for TunaSearchServer {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_instructions(
                 "토론 맥락을 검색하려면 search_context(query)를, 전사 통째를 읽으려면 read_transcript(session_id?, max_turns?)를 호출하세요. \
-                 작업을 맡기는 쪽(dispatcher)은 send_task(from_agent, to_agent 또는 to_selector, text, context_id?)로 위임하고 get_task(task_id)로 결과를 확인하세요. \
+                 작업을 맡기는 쪽(dispatcher)은 send_task(from_agent, to_agent 또는 to_selector, text, context_id?)로 위임하고 get_task(task_id, wait_secs?)로 결과를 확인하세요(wait_secs를 주면 완료까지 서버가 대기 - 폴링 불요, 최대 120·클라이언트 타임아웃보다 짧게). \
                  작업을 받는 쪽(worker)은 poll_tasks(agent)로 확인하고 claim_task(task_id)로 착수, complete_task(task_id, result)로 완료를 보고하세요. \
                  워커/세션은 register_agent(uuid, tags?, display_name?)로 로스터에 등록하고 heartbeat(uuid)로 주기 갱신하며, \
                  dispatcher는 list_agents(selector?)로 online 에이전트를 발견합니다. \
                  머신당 presence 스캐너는 report_presence(machine, sessions)로 라이브 세션 전집합을 일괄 동기화합니다(v2-44). \
                  브로커 운영자는 tasks()로 전체 열린 task를 미배달(no-consumer?)/고착(stuck?) 주석과 함께 조망할 수 있습니다. \
-                 mesh 토론(v2-56)은 start_discussion(topic, seats, rounds?)으로 시작하고 stop_discussion(discussion_id)으로 중단합니다(전사=debate:<id> 세션)."
+                 mesh 토론(v2-56)은 start_discussion(topic, seats, rounds?, gate?)으로 시작하고 stop_discussion(discussion_id)으로 중단합니다(전사=debate:<id> 세션). gate=true 토론은 라운드 사이에 사람 승인을 기다립니다: 다이제스트를 사용자에게 보고하고 지시가 있을 때만 continue_discussion(discussion_id, steer?, conclude?)를 호출하세요."
                     .to_string(),
             )
     }
