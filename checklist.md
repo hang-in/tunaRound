@@ -13,8 +13,8 @@
 - [x] (부수 발견) presence 테스트 gc 7일 시한폭탄 3건 해체(실시계 상대 ts 헬퍼) + 30일 클래스 스윕 = 이슈 #133 신설
 - [x] win mesh 재배포(release 빌드 -SourceBin, 툴 20개 서빙 확인) + README·mesh-architecture 게이트 반영(6a4b6b5)
 - [x] 게이트 라이브 검증 매트릭스 20항목 전부 통과(사용자 "토큰 고려 말고 충분히" 지시): 토론4건(af66e8e2a012=#115 실주제 2R+steer+종합 / 62337010a2d4=conclude 직행 / c4202ae619b2=대기 중 stop / 0e396008e062=**게이트 대기 중 브로커 재기동→표식 failed "broker restart" 인박스 재생 배달 실증**). 에러 표면(라벨 중복·게이트 힌트 거부·id 불일치·steer 4001자·소멸 에러)·색인 제외·피드 노출·워커 재기동 자가 재등록까지 확인
-- [ ] v2-54 P2: get_task wait_secs 롱폴 / node config 토큰 폴백 / watch-results dispatcher 규약 명문화
-- [ ] #115 착수(토론 산출 순서 반영. rmcp 2.2·tungstenite 0.29는 v2-56·relay 코드층 겹침 주의)
+- [x] v2-54 P2 = **PR #134 머지**: get_task wait_secs(1~120) 롱폴(0/생략=기존 경로) / node 토큰 config 폴백(env 우선, placeholder 가드) / dispatcher=fromAgent 완전일치 규약 명문화(a2a-usage §5.3). 적대 리뷰 2렌즈 major 2건 반영(**dotenv 파서=정본 tuna_arm.py 의미론 정렬**: BOM·last-wins·인라인 주석·따옴표 1쌍 / config 헤더 우선순위 소비자별 스코프). gemini HIGH(따옴표+주석)=근거 기각(정본 동일 quirk - 단독 수정은 파서 불일치 재생산, 주석 명문화)
+- [x] #115 ①② = **PR #135 머지**: toml 1.1.3·lindera 4.0.0 둘 다 코드 무변경 소스 호환. 사전 점검 2건 통과(R@5 기준 선기록·embed-ko-dic 존속) → **실코퍼스 R@5 재측정 = 기준과 완전 동일**(0.856/0.944/0.869, lindera 강제 경로) + audit 0 + NOTICES 재생성(--fail 통과). 이슈 #115에 잔여 순서(③→⑤→④)·게이트 합의 기록. 잔여=맥 실기 폴백 관찰 1건 + ③⑤④ 별도 세션
 
 ## 세션30: v2-56 mesh 토론 - 스케치→Phase 0 게이트→Phase 1 구현·머지 (2026-07-18, 사용자 "완료까지 달려보자")
 
