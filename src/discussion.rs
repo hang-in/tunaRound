@@ -1,7 +1,8 @@
 // mesh 토론 driver: chat의 라운드 오케스트레이션(순차-인지·역할·종합)을 브로커 안의 결정적 코드로
 // 수행한다(v2-56). 좌석 배달은 기존 A2A task 생명주기를 그대로 쓰고(1라운드 발언 = 1 task), 전사는
 // TranscriptWriter(append_turn)로 `debate:<id>` 세션에 영속한다. 완료 대기는 인프로세스 순수 폴링
-// (driver가 브로커 안에 있어 이벤트 버스 불필요, 타임아웃→try_cancel이 정본 탈출구).
+// (driver가 브로커 안에 있어 이벤트 버스 불필요). 타임아웃·중단 탈출구는 try_fail이다: canceled는
+// watch-results가 배달하지 않아 인박스 무통지가 되므로 failed로 마감한다(적대 리뷰 major).
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -226,13 +227,66 @@ async fn append_transcript(
         .map_err(|e| format!("spawn_blocking: {e}"))?
 }
 
-/// 좌석 하나에 라운드 task를 발행하고 terminal까지 폴링 대기한다. 타임아웃이면 try_cancel 후
-/// Skipped(늦은 완료는 canceled 가드에 막혀 무해 = 이중 발언 차단).
+/// 좌석 task를 열린 채 두지 않기 위한 마감 전이(적대 리뷰: canceled는 watch-results가 배달하지
+/// 않아 인박스 무통지가 되므로 **failed로 전이**한다 - terminal 가드라 늦은 완료 차단 효과는 동일).
+/// try_fail이 지는 경합(그 사이 좌석이 완료)이면 완료 발언을 채택해 전사·인박스 모순을 없앤다.
+async fn close_seat_task(
+    store: &Arc<Mutex<SqliteStore>>,
+    task_id: &str,
+    reason: &str,
+    marker: String,
+) -> SeatOutcome {
+    let tid = task_id.to_string();
+    let reason_owned = reason.to_string();
+    let failed = with_store(store, move |s| {
+        let message_id = s.new_task_id()?;
+        let msg = Message {
+            message_id,
+            role: "agent".to_string(),
+            parts: vec![Part {
+                text: Some(reason_owned),
+                ..Default::default()
+            }],
+            task_id: Some(tid.clone()),
+            context_id: None,
+        };
+        s.try_fail(&tid, Some(&msg), None)
+    })
+    .await;
+    if failed.is_ok() {
+        return SeatOutcome::Skipped(marker);
+    }
+    // 전이 불가 = 그 사이 terminal이 됨. completed였다면 발언을 채택(밀리초 경합 창).
+    let tid = task_id.to_string();
+    if let Ok(Some(task)) = with_store(store, move |s| s.get_task(&tid)).await
+        && task.state == TaskState::Completed
+    {
+        let text = artifacts_text(&task);
+        if !text.trim().is_empty() {
+            return SeatOutcome::Utterance(text);
+        }
+    }
+    SeatOutcome::Skipped(marker)
+}
+
+/// completed task의 artifact 텍스트를 모아 발언으로 만든다.
+fn artifacts_text(task: &crate::store::a2a::Task) -> String {
+    task.artifacts
+        .iter()
+        .flat_map(|a| a.parts.iter())
+        .filter_map(|p| p.text.as_deref())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// 좌석 하나에 라운드 task를 발행하고 terminal까지 폴링 대기한다. 타임아웃·중단 시 task를 failed로
+/// 마감(close_seat_task)해 열린 task를 남기지 않고, failed terminal이 인박스(watch-results) 통지가 된다.
 async fn run_seat(
     store: &Arc<Mutex<SqliteStore>>,
     from_agent: &str,
     seat: &DiscussionSeat,
     text: String,
+    cancel: &Arc<AtomicBool>,
     cfg: &DriverConfig,
 ) -> SeatOutcome {
     let from = from_agent.to_string();
@@ -264,6 +318,17 @@ async fn run_seat(
     let started = std::time::Instant::now();
     loop {
         tokio::time::sleep(std::time::Duration::from_millis(cfg.poll_interval_ms)).await;
+        // stop_discussion 반응성: 폴 회차마다 확인해 좌석 타임아웃 상한이 아니라 폴 간격 안에
+        // 점유가 풀리게 한다(적대 리뷰: stop 후 즉시 재시작이 최대 600초 차단되던 결함).
+        if cancel.load(Ordering::Relaxed) {
+            return close_seat_task(
+                store,
+                &task_id,
+                "[debate] stop_discussion으로 중단",
+                "[무응답: stop_discussion 중단]".to_string(),
+            )
+            .await;
+        }
         let tid = task_id.clone();
         let task = match with_store(store, move |s| s.get_task(&tid)).await {
             Ok(Some(t)) => t,
@@ -271,23 +336,24 @@ async fn run_seat(
                 return SeatOutcome::Skipped(format!("[무응답: task {task_id} 소실]"));
             }
             Err(e) => {
-                // 일시 DB 오류는 다음 폴에서 재시도(타임아웃이 상한).
+                // 일시 DB 오류는 다음 폴에서 재시도(타임아웃이 상한). 상한 도달 시에도 task를 열린
+                // 채 두지 않는다(열린 채 skip하면 다음 라운드와 이중 발언 경로가 생긴다).
                 eprintln!("[debate] get_task 오류(재시도): {e}");
                 if started.elapsed() >= deadline {
-                    return SeatOutcome::Skipped(format!("[무응답: 폴링 실패 - {e}]"));
+                    return close_seat_task(
+                        store,
+                        &task_id,
+                        "[debate] driver 폴링 실패",
+                        format!("[무응답: 폴링 실패 - {e}]"),
+                    )
+                    .await;
                 }
                 continue;
             }
         };
         match task.state {
             TaskState::Completed => {
-                let text: String = task
-                    .artifacts
-                    .iter()
-                    .flat_map(|a| a.parts.iter())
-                    .filter_map(|p| p.text.as_deref())
-                    .collect::<Vec<_>>()
-                    .join("\n");
+                let text = artifacts_text(&task);
                 if text.trim().is_empty() {
                     return SeatOutcome::Skipped("[무응답: 빈 발언(artifact 없음)]".to_string());
                 }
@@ -307,14 +373,15 @@ async fn run_seat(
             }
             _ => {
                 if started.elapsed() >= deadline {
-                    // 재배달(이중 발언) 차단: 취소를 시도하고 skip. 이미 실행 중인 러너는 중단되지
-                    // 않지만 늦은 complete는 canceled 가드(try_complete state='working')에 막힌다.
-                    let tid = task_id.clone();
-                    let _ = with_store(store, move |s| s.try_cancel(&tid)).await;
-                    return SeatOutcome::Skipped(format!(
-                        "[무응답: {}초 타임아웃]",
-                        cfg.seat_timeout_secs
-                    ));
+                    // 재배달(이중 발언) 차단 + 인박스 통지: failed로 마감한다. 이미 실행 중인
+                    // 러너는 중단되지 않지만 늦은 complete는 terminal 가드에 막힌다.
+                    return close_seat_task(
+                        store,
+                        &task_id,
+                        &format!("[debate] 좌석 타임아웃 {}초", cfg.seat_timeout_secs),
+                        format!("[무응답: {}초 타임아웃]", cfg.seat_timeout_secs),
+                    )
+                    .await;
                 }
             }
         }
@@ -361,7 +428,7 @@ pub async fn run_discussion(
             }
             let text = build_seat_task_text(seat, &spec.topic, &prior, &same_round);
             let speaker = format!("debate/{}", seat.label);
-            let content = match run_seat(&store, &ns, seat, text, &cfg).await {
+            let content = match run_seat(&store, &ns, seat, text, &cancel, &cfg).await {
                 SeatOutcome::Utterance(t) => t,
                 SeatOutcome::Skipped(marker) => {
                     failures += 1;
@@ -384,6 +451,11 @@ pub async fn run_discussion(
         eprintln!("[debate {}] 라운드 {round}/{} 완료", spec.id, spec.rounds);
     }
 
+    // stop이 마지막 좌석 실행 중에 들어온 경우: 좌석 루프는 자연 종료되므로 synthesizer 발행 전에
+    // 재확인한다("이후 라운드는 발행되지 않습니다" 계약 - synthesizer도 라운드다. 적대 리뷰 major).
+    if !canceled && cancel.load(Ordering::Relaxed) {
+        canceled = true;
+    }
     if canceled || aborted {
         let marker = if canceled {
             "[토론 중단: stop_discussion]"
@@ -397,13 +469,15 @@ pub async fn run_discussion(
 
     // synthesizer 라운드: 첫 좌석(v2-56 §8-5 기본값)에게 종합을 위임한다. driver는 러너가 없어 LLM
     // 생성을 스스로 못 한다. 실패 시 합의문 없이 종료(부분 전사가 남고, failed terminal이 곧 통지).
+    // instruction은 비운다: 좌석별 입장 지시(예: 반대 견지)가 종합에 상속되면 합의문이 편향된다.
     let synth_seat = DiscussionSeat {
         role: Some("synthesizer".to_string()),
+        instruction: String::new(),
         ..spec.seats[0].clone()
     };
     let text = build_seat_task_text(&synth_seat, &synthesis_topic(&spec.topic), &prior, &[]);
     let speaker = format!("debate/{}", synth_seat.label);
-    match run_seat(&store, &ns, &synth_seat, text, &cfg).await {
+    match run_seat(&store, &ns, &synth_seat, text, &cancel, &cfg).await {
         SeatOutcome::Utterance(t) => {
             let _ = append_transcript(&writer, &ns, &speaker, &t).await;
             eprintln!("[debate {}] 종합 완료(전사={ns})", spec.id);
@@ -675,10 +749,90 @@ mod tests {
             "타임아웃 마커: {rows:?}"
         );
         assert!(rows.iter().any(|(_, sp, _)| sp == "debate/seat-a"));
-        // 죽은 좌석의 task는 canceled로 전이됐다(재배달 차단).
+        // 죽은 좌석의 task는 failed로 마감됐다(열린 task 없음 + watch-results 배달 대상 = 인박스 통지).
         let s = store.lock().unwrap_or_else(|e| e.into_inner());
         let open = s.list_open_tasks_for("agent-dead").unwrap();
-        assert!(open.is_empty(), "고아 task가 canceled로 닫혀야 함");
+        assert!(open.is_empty(), "고아 task가 닫혀야 함");
+        use crate::store::sqlite::ReplayLimit;
+        let failed = s
+            .list_tasks_replay(Some("debate:t2"), None, &["failed"], ReplayLimit::All)
+            .unwrap();
+        assert_eq!(failed.len(), 1, "타임아웃 좌석 task는 failed여야 함");
+        let reason = failed[0]
+            .status_message
+            .as_ref()
+            .and_then(|m| m.parts.first())
+            .and_then(|p| p.text.as_deref())
+            .unwrap_or_default();
+        assert!(reason.contains("타임아웃"), "실패 사유 명시: {reason}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn driver_rechecks_cancel_before_synthesizer() {
+        // 마지막 좌석 실행 중 stop_discussion 시나리오: 좌석 완료 직후 cancel이 세워지면
+        // synthesizer task를 발행하지 않고 중단 마커로 끝나야 한다(계약: 이후 라운드 발행 금지).
+        let store = Arc::new(Mutex::new(SqliteStore::open_memory().unwrap()));
+        let cap = Arc::new(CapturingWriter(Mutex::new(Vec::new())));
+        let writer: Arc<dyn TranscriptWriter> = cap.clone();
+        let registry = Arc::new(DiscussionRegistry::new());
+        let cancel = registry.try_begin("t4").unwrap();
+
+        let store2 = store.clone();
+        let cancel2 = cancel.clone();
+        let received = Arc::new(Mutex::new(0usize));
+        let received2 = received.clone();
+        let seat_task = tokio::spawn(async move {
+            use crate::store::a2a::Artifact;
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                let s = store2.lock().unwrap_or_else(|e| e.into_inner());
+                for t in s.list_open_tasks_for("agent-a").unwrap_or_default() {
+                    if t.state == TaskState::Submitted
+                        && s.try_claim(&t.id, Some("agent-a"), None).is_ok()
+                    {
+                        *received2.lock().unwrap() += 1;
+                        let artifact = Artifact {
+                            artifact_id: "art".to_string(),
+                            name: None,
+                            parts: vec![Part {
+                                text: Some("마지막 발언".to_string()),
+                                ..Default::default()
+                            }],
+                        };
+                        s.try_complete(&t.id, &[artifact], Some("agent-a")).unwrap();
+                        // 완료 직후 stop_discussion이 들어온 상황 재현.
+                        cancel2.store(true, Ordering::Relaxed);
+                    }
+                }
+            }
+        });
+
+        let spec = DiscussionSpec {
+            id: "t4".to_string(),
+            topic: "취소 재확인 테스트".to_string(),
+            seats: vec![seat("agent-a", "seat-a", None, false)],
+            rounds: 1,
+        };
+        run_discussion(
+            spec,
+            store.clone(),
+            writer,
+            registry.clone(),
+            cancel,
+            test_cfg(),
+        )
+        .await;
+        seat_task.abort();
+
+        let rows = cap.0.lock().unwrap();
+        // user + seat-a 발언 + 중단 마커 = 3. synthesizer 미발행(수신 task 1건).
+        assert_eq!(rows.len(), 3, "{rows:?}");
+        assert!(rows[2].2.contains("stop_discussion"), "{rows:?}");
+        assert_eq!(
+            *received.lock().unwrap(),
+            1,
+            "synthesizer task가 발행되면 안 됨"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

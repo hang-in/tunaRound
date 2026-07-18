@@ -434,6 +434,7 @@ start_discussion(
 - 전사는 `debate:<id>` 세션에 영속됩니다: `read_transcript(session_id="debate:<id>")`로 전문을, `search_context`로 과거 토론을 검색합니다.
 - 토론은 비동기 작업입니다(좌석당 수 분, 좌석 타임아웃 600초). 던져놓고 다른 일을 하다 인박스로 받는 흐름이 정상입니다.
 - 브로커가 재기동되면 진행 중이던 토론은 실패 처리됩니다(열린 라운드 task가 기동 시 "broker restart" 사유의 failed로 전이 = 인박스 통지). 재발의하면 됩니다.
+- 알려진 통지 공백 두 가지: ① 첫 RESULT가 오기 전(watch-results 워터마크가 아직 없는 창)에 브로커가 재기동되면 그 failed 통지는 재접속 재생 대상이 아니라 유실될 수 있습니다. ② 라운드 task가 종결된 직후 다음 발행 전의 수 초 창에서 재기동되면 열린 task가 없어 실패 전이 자체가 없습니다. 인박스가 예상보다 오래 조용하면 `read_transcript(session_id="debate:<id>")`로 전사를 직접 확인하세요.
 
 ## 8.3 좌석이 받는 프리앰블 규약
 

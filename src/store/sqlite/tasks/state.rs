@@ -226,9 +226,17 @@ impl SqliteStore {
             )
             .map_err(|e| format!("sqlite: {e}"))?;
         if affected != 1 {
-            return Err(format!(
-                "전이 불가: task_id={task_id} (현재 상태가 대상 아님)"
-            ));
+            // 현재 상태를 에러에 실어 늦은 completer(예: 토론 타임아웃으로 failed 마감된 좌석)가
+            // 원인을 추정 가능하게 한다(적대 리뷰 minor: 범용 에러만으론 발언 폐기 사실을 알 수 없음).
+            let state = self
+                .get_task(task_id)?
+                .map(|t| t.state.as_str().to_string());
+            return Err(match state {
+                Some(s) => format!(
+                    "전이 불가: task_id={task_id} (현재 state={s}, working만 complete 가능)"
+                ),
+                None => format!("전이 불가: task_id={task_id} (task 없음)"),
+            });
         }
         if let Some(task) = self.get_task(task_id)? {
             self.emit_task_event(TaskEvent::Completed(task));

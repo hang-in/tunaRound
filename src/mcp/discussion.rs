@@ -28,6 +28,7 @@ pub(crate) fn resolve_seats(
         ));
     }
     let mut seen = std::collections::HashSet::new();
+    let mut seen_labels = std::collections::HashSet::new();
     let mut seats = Vec::with_capacity(params.len());
     for p in params {
         if !seen.insert(p.agent.clone()) {
@@ -57,6 +58,12 @@ pub(crate) fn resolve_seats(
             .or_else(|| entry.display_name.clone())
             .unwrap_or_else(|| p.agent.chars().take(8).collect())
             .replace('/', "-");
+        // 라벨 중복 = 서로 다른 좌석의 발언이 한 화자로 귀속(순차-인지·종합 왜곡)되므로 거부.
+        if !seen_labels.insert(label.clone()) {
+            return Err(format!(
+                "좌석 라벨 중복: {label} (label을 명시해 좌석을 구분하세요)"
+            ));
+        }
         seats.push(DiscussionSeat {
             agent: p.agent.clone(),
             label,
@@ -164,7 +171,7 @@ impl TunaSearchServer {
         };
         match registry.cancel(&p.discussion_id) {
             Ok(()) => Ok(CallToolResult::success(vec![Content::text(format!(
-                "토론 {} 중단 요청됨: 이후 라운드는 발행되지 않습니다. 이미 실행 중인 좌석 러너는 끝까지 돌 수 있으나 늦은 완료는 canceled 가드에 막힙니다.",
+                "토론 {} 중단 요청됨: 이후 라운드는 발행되지 않습니다. 이미 실행 중인 좌석 러너는 끝까지 돌 수 있으나 그 task는 failed로 마감되어 늦은 완료가 무시됩니다.",
                 p.discussion_id
             ))])),
             Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
@@ -239,6 +246,24 @@ mod tests {
         assert_eq!(ok[1].label, "mac-claude-home");
         assert!(ok[1].live);
         assert!(!ok[0].live);
+    }
+
+    #[test]
+    fn resolve_seats_rejects_duplicate_labels() {
+        // 같은 display_name의 세션 2개(같은 머신·같은 프로젝트)를 label 생략으로 지정하면 화자
+        // 오귀속이 생기므로 거부한다.
+        let online = vec![
+            entry("a", Some("win-claude"), None),
+            entry("b", Some("win-claude"), None),
+        ];
+        let err =
+            resolve_seats(&[seat_param("a", None), seat_param("b", None)], &online).unwrap_err();
+        assert!(err.contains("라벨 중복"), "{err}");
+        // label 명시로 구분하면 통과.
+        let mut p1 = seat_param("a", None);
+        p1.label = Some("win-claude-1".to_string());
+        let ok = resolve_seats(&[p1, seat_param("b", None)], &online).unwrap();
+        assert_eq!(ok[0].label, "win-claude-1");
     }
 
     #[test]

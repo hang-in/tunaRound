@@ -106,6 +106,15 @@ pub async fn serve_http_mcp_on_listener(
             Ok(()) => {}
             Err(e) => eprintln!("[serve] 브로커 기동 시각 기록 실패(무시): {e}"),
         }
+        // v2-56 기동 고아 sweep: 재기동으로 driver(인메모리)가 소멸한 토론의 열린 task를 failed로
+        // 전이한다(사유=broker restart, failed terminal이 곧 watch-results 통지). 서빙 개시 전 동기
+        // 실행이라 재기동 직후 시작된 새 토론의 task를 고아로 오인할 창이 없고, 방금 실패 처리된
+        // task는 아래 백그라운드 backfill이 이번 기동에 색인한다.
+        match store.fail_orphan_debate_tasks() {
+            Ok(n) if n > 0 => eprintln!("[debate-sweep] 재기동 고아 토론 task {n}건 실패 처리"),
+            Ok(_) => {}
+            Err(e) => eprintln!("[debate-sweep] 고아 sweep 실패(무시): {e}"),
+        }
     }
     // v2-45 P6a/P6b: 기동 housekeeping을 하나의 백그라운드 태스크로 던진다(서버 기동을 막지 않음,
     // gemini 리뷰). ① 미색인 종결 task를 mesh 기억에 백필(구 바이너리 완료분·유실 보완) → ② 그 뒤
@@ -116,19 +125,6 @@ pub async fn serve_http_mcp_on_listener(
         let a2a = a2a_store.clone();
         let w = writer.clone();
         tokio::task::spawn_blocking(move || {
-            // v2-56 기동 고아 sweep: 재기동으로 driver(인메모리)가 소멸한 토론의 열린 task를 failed로
-            // 전이한다(사유=broker restart, failed terminal이 곧 watch-results 통지). backfill보다 먼저
-            // 돌려 방금 실패 처리된 task도 이번 기동에 색인되게 한다.
-            {
-                let store = a2a.lock().unwrap_or_else(|e| e.into_inner());
-                match store.fail_orphan_debate_tasks() {
-                    Ok(n) if n > 0 => {
-                        eprintln!("[debate-sweep] 재기동 고아 토론 task {n}건 실패 처리")
-                    }
-                    Ok(_) => {}
-                    Err(e) => eprintln!("[debate-sweep] 고아 sweep 실패(무시): {e}"),
-                }
-            }
             if let Some(w) = &w {
                 crate::mcp::backfill_unindexed_terminal_tasks(&a2a, w);
             }
