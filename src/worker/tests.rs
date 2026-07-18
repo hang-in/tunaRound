@@ -517,6 +517,40 @@ fn write_lane_disrupts_node_disjoint_existing_dir_is_safe() {
 }
 
 #[test]
+fn write_lane_disrupts_node_relative_project_resolves_against_node_cwd_not_process_cwd() {
+    // #138 C-3 회귀: project가 상대경로면 이 프로세스의 CWD가 아니라 인자로 받은 node_cwd 기준으로
+    // 판정해야 한다. node_cwd를 프로세스 CWD와 분리된 실재 temp 디렉터리로 두고, project="."(자기
+    // 자신)을 넘기면 node_cwd 기준으로는 node_cwd 자신과 겹쳐 위험이어야 한다.
+    //
+    // 수정 전에는 write_lane_disrupts_node 내부가 std::fs::canonicalize(p)를 그대로 호출해 "."을
+    // 이 테스트 프로세스의 실제 CWD(레포 루트) 기준으로 풀었다 - node_cwd(temp)와는 무관한 경로가
+    // 나와 겹침이 감지되지 않고 거짓으로 안전 판정됐다(미탐). CWD를 실제로 바꾸지 않고 node_cwd를
+    // 인자로만 다르게 넘겨 재현한다(함수 시그니처가 node_cwd를 받으므로 std::env::set_current_dir
+    // 불필요).
+    let process_cwd = std::env::current_dir().unwrap();
+    let node_cwd =
+        std::env::temp_dir().join(format!("tuna-worker-guard-nodecwd-{}", std::process::id()));
+    // 생성 실패를 삼키면 canonicalize Err 폴백(어휘 정규화) 경로로 새서 테스트 의도(실경로 실측)가
+    // 무너진다 - 명시 실패(gemini 리뷰 반영).
+    std::fs::create_dir_all(&node_cwd).expect("테스트용 node_cwd temp 디렉터리 생성 실패");
+
+    // 방어: 극히 드문 환경에서 temp node_cwd가 프로세스 CWD와 같은 트리에 놓이면(예: TMPDIR이 레포
+    // 하위) 이 테스트의 전제(둘이 분리돼야 실측이 됨)가 깨지므로 건너뛴다(기존 테스트들과 동일 패턴).
+    let node_cwd_canon = std::fs::canonicalize(&node_cwd).unwrap_or_else(|_| node_cwd.clone());
+    let process_cwd_canon =
+        std::fs::canonicalize(&process_cwd).unwrap_or_else(|_| process_cwd.clone());
+    if !paths_overlap(&node_cwd_canon, &process_cwd_canon) {
+        assert!(
+            write_lane_disrupts_node(Some(std::path::Path::new(".")), &node_cwd),
+            "node_cwd와 다른 프로세스 CWD에서 상대경로 project('.')는 node_cwd 자신과 겹쳐 \
+             위험(true)으로 판정돼야 함"
+        );
+    }
+
+    let _ = std::fs::remove_dir(&node_cwd);
+}
+
+#[test]
 fn generate_agent_uuid_is_32_hex() {
     let id = generate_agent_uuid();
     assert_eq!(id.len(), 32);

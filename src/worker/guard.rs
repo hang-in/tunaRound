@@ -55,6 +55,12 @@ pub(super) fn normalize_lexically(
 /// 존재하는 경로는 canonical끼리 비교하고, 아직 없는 경로(canonicalize 실패)는 어휘 정규화로 폴백
 /// 판정한다(gemini 리뷰: 러너가 실행 중 cwd 하위에 그 경로를 생성하면 뒤늦게 self-disruption 여지 -
 /// 보수적으로 미리 겹침으로 본다).
+///
+/// project가 상대경로면 `node_cwd` 기준으로 절대화한 뒤 canonicalize한다(#138 C-3: 이전에는
+/// `std::fs::canonicalize(p)`를 그대로 호출해 상대경로가 이 프로세스의 CWD 기준으로 풀렸다.
+/// node_cwd와 프로세스 CWD가 다르면 - 예: 워커가 다른 디렉터리에서 실행되며 node_cwd만 전달받는
+/// 경우 - 엉뚱한 위치를 검사해 가드가 오탐/미탐할 수 있었다). Err 폴백의 `normalize_lexically`는
+/// 원래도 base=node_cwd로 상대경로를 올바르게 절대화하고 있었다.
 pub fn write_lane_disrupts_node(
     project: Option<&std::path::Path>,
     node_cwd: &std::path::Path,
@@ -62,7 +68,10 @@ pub fn write_lane_disrupts_node(
     let Some(p) = project else {
         return true; // 작업 디렉터리 미지정 = node cwd에서 write = 위험.
     };
-    match std::fs::canonicalize(p) {
+    // Path::join은 인자가 절대경로면 base를 버리고 그 절대경로를 그대로 반환하므로(std 계약)
+    // is_absolute 분기 없이 한 줄로 절대화된다(gemini 리뷰 반영).
+    let p_abs = node_cwd.join(p);
+    match std::fs::canonicalize(&p_abs) {
         Ok(pc) => {
             let cwd = std::fs::canonicalize(node_cwd).unwrap_or_else(|_| node_cwd.to_path_buf());
             paths_overlap(&pc, &cwd)
