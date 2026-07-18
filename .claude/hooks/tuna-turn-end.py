@@ -17,6 +17,8 @@ def main() -> int:
         return 0
     try:
         payload = json.load(sys.stdin) if not sys.stdin.isatty() else {}
+        if not isinstance(payload, dict):
+            payload = {}  # 리스트/문자열 JSON이 오면 .get에서 AttributeError(gemini 리뷰).
     except Exception:
         payload = {}
     session_id = str(payload.get("session_id") or "").strip()
