@@ -11,7 +11,9 @@
 - [x] §8 확정 7건(권고안 채택) → 정본 승격 → Phase 1 구현: driver(src/discussion.rs)+start/stop_discussion MCP+기동 고아 sweep - PR #127 머지(main ac6126a, 풀피처 722 pass·clippy 0)
 - [x] 코드 적대 리뷰 3렌즈 major 전량 반영(타임아웃=failed 마감으로 인박스 무통지 해소·stop 반응성·debate 색인 중복 차단) + 봇 리뷰 처분(반영 3·근거 기각 2·DeepSource 기각)
 - [x] CLAUDE.md 세션12 "위임 vs 회담" 줄 개정 + 스테일 포인터(a2a-usage §12·§13→§7) 정리
-- [ ] 라이브 E2E: win mesh 새 바이너리 재배포 → start_discussion 실토론(워커+mac 라이브) → 전사·인박스 확인
+- [x] 라이브 E2E: win mesh 재배포 → start_discussion 실토론 12049ab3a0e4(win 워커 proposer + mac 라이브 reviewer, 1라운드+종합) - 인박스 RESULT 3건·전사 4행(user→proposer→reviewer→종합) 전부 설계대로. 산출=다음 개선 1순위 합의 "(a) 라운드 간 사람 승인 게이트(옵트인)"
+- [x] (병렬 지시) 대시보드 피드 md 렌더링 + 토론 뱃지·발신 필터: PR #128 머지(react-markdown+remark-gfm, raw HTML 미허용, 라이브 검증=토론 필터 3/169·라이트/다크) → 재배포
+- [ ] 백로그 신설 후보: 토론 라운드 간 사람 승인 게이트 옵트인(E2E 토론 합의 산출, 이슈화 여부는 사용자 결정)
 
 ## 세션29: v0.5.0 준비 - B-2 대시보드 릴리스 포함 + B-3 라이선스 NOTICE (2026-07-14, 브랜치 build/release-dashboard-and-notices)
 
