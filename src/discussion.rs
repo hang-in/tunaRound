@@ -269,14 +269,25 @@ async fn close_seat_task(
     SeatOutcome::Skipped(marker)
 }
 
-/// completed task의 artifact 텍스트를 모아 발언으로 만든다.
+/// 좌석 발언 상한(자). 프롬프트 조립 캡(prompt.rs MAX_ANSWER_LEN=4000)과 동치. 프리앰블이 이 상한을
+/// 좌석에 지시하지만, 폭주 출력이 전사를 비대하게 만들지 않도록 회수 시점에도 강제한다(CodeRabbit).
+const SEAT_UTTERANCE_MAX_CHARS: usize = 4000;
+
+/// completed task의 artifact 텍스트를 모아 발언으로 만든다(상한 초과분은 절단 마커와 함께 잘라낸다).
 fn artifacts_text(task: &crate::store::a2a::Task) -> String {
-    task.artifacts
+    let text = task
+        .artifacts
         .iter()
         .flat_map(|a| a.parts.iter())
         .filter_map(|p| p.text.as_deref())
         .collect::<Vec<_>>()
-        .join("\n")
+        .join("\n");
+    if text.chars().count() <= SEAT_UTTERANCE_MAX_CHARS {
+        return text;
+    }
+    let mut capped: String = text.chars().take(SEAT_UTTERANCE_MAX_CHARS).collect();
+    capped.push_str("\n[발언 상한 4000자 초과로 절단됨]");
+    capped
 }
 
 /// 좌석 하나에 라운드 task를 발행하고 terminal까지 폴링 대기한다. 타임아웃·중단 시 task를 failed로
@@ -403,6 +414,18 @@ pub async fn run_discussion(
         registry,
         id: spec.id.clone(),
     };
+    // MCP 계층(resolve_seats·rounds clamp)이 보장하지만 driver는 pub API라 방어한다: 빈 좌석은
+    // synthesizer의 seats[0] 인덱스 패닉 전에, 0라운드는 빈 종합 전에 조기 반환(봇 리뷰. 가드가
+    // 점유를 해제한다).
+    if spec.seats.is_empty() || spec.rounds == 0 {
+        eprintln!(
+            "[debate {}] 좌석 {}석·{}라운드: 시작 불가",
+            spec.id,
+            spec.seats.len(),
+            spec.rounds
+        );
+        return;
+    }
     eprintln!(
         "[debate {}] 시작: 좌석 {}석, {}라운드, 주제={}",
         spec.id,
@@ -462,7 +485,9 @@ pub async fn run_discussion(
         } else {
             "[토론 중단: 라운드 전 좌석 실패]"
         };
-        let _ = append_transcript(&writer, &ns, "debate/driver", marker).await;
+        if let Err(e) = append_transcript(&writer, &ns, "debate/driver", marker).await {
+            eprintln!("[debate {}] 중단 마커 기록 실패(무시): {e}", spec.id);
+        }
         eprintln!("[debate {}] {marker}", spec.id);
         return;
     }
@@ -478,18 +503,25 @@ pub async fn run_discussion(
     let text = build_seat_task_text(&synth_seat, &synthesis_topic(&spec.topic), &prior, &[]);
     let speaker = format!("debate/{}", synth_seat.label);
     match run_seat(&store, &ns, &synth_seat, text, &cancel, &cfg).await {
-        SeatOutcome::Utterance(t) => {
-            let _ = append_transcript(&writer, &ns, &speaker, &t).await;
-            eprintln!("[debate {}] 종합 완료(전사={ns})", spec.id);
-        }
+        SeatOutcome::Utterance(t) => match append_transcript(&writer, &ns, &speaker, &t).await {
+            Ok(_) => eprintln!("[debate {}] 종합 완료(전사={ns})", spec.id),
+            // 전사 실패해도 합의문 자체는 synthesizer task의 artifact로 남는다(get_task로 회수 가능).
+            Err(e) => eprintln!(
+                "[debate {}] 종합 전사 기록 실패: {e} (합의문은 task artifact로만 존재)",
+                spec.id
+            ),
+        },
         SeatOutcome::Skipped(marker) => {
-            let _ = append_transcript(
+            if let Err(e) = append_transcript(
                 &writer,
                 &ns,
                 "debate/driver",
                 &format!("[종합 실패: {marker}]"),
             )
-            .await;
+            .await
+            {
+                eprintln!("[debate {}] 종합 실패 마커 기록 실패(무시): {e}", spec.id);
+            }
             eprintln!("[debate {}] 종합 실패: {marker}", spec.id);
         }
     }
@@ -765,6 +797,28 @@ mod tests {
             .and_then(|p| p.text.as_deref())
             .unwrap_or_default();
         assert!(reason.contains("타임아웃"), "실패 사유 명시: {reason}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn driver_rejects_empty_seats_without_panic() {
+        // MCP 계층이 2~6석을 보장하지만 driver 단독 호출(pub API) 방어(gemini 리뷰).
+        let store = Arc::new(Mutex::new(SqliteStore::open_memory().unwrap()));
+        let cap = Arc::new(CapturingWriter(Mutex::new(Vec::new())));
+        let writer: Arc<dyn TranscriptWriter> = cap.clone();
+        let registry = Arc::new(DiscussionRegistry::new());
+        let cancel = registry.try_begin("t5").unwrap();
+        let spec = DiscussionSpec {
+            id: "t5".to_string(),
+            topic: "x".to_string(),
+            seats: vec![],
+            rounds: 1,
+        };
+        run_discussion(spec, store, writer, registry.clone(), cancel, test_cfg()).await;
+        assert!(
+            cap.0.lock().unwrap().is_empty(),
+            "빈 좌석은 전사 기록 없이 종료"
+        );
+        assert!(registry.active_id().is_none(), "점유 해제");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
