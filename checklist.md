@@ -13,7 +13,9 @@
 - [x] CLAUDE.md 세션12 "위임 vs 회담" 줄 개정 + 스테일 포인터(a2a-usage §12·§13→§7) 정리
 - [x] 라이브 E2E: win mesh 재배포 → start_discussion 실토론 12049ab3a0e4(win 워커 proposer + mac 라이브 reviewer, 1라운드+종합) - 인박스 RESULT 3건·전사 4행(user→proposer→reviewer→종합) 전부 설계대로. 산출=다음 개선 1순위 합의 "(a) 라운드 간 사람 승인 게이트(옵트인)"
 - [x] (병렬 지시) 대시보드 피드 md 렌더링 + 토론 뱃지·발신 필터: PR #128 머지(react-markdown+remark-gfm, raw HTML 미허용, 라이브 검증=토론 필터 3/169·라이트/다크) → 재배포
-- [ ] 백로그 신설 후보: 토론 라운드 간 사람 승인 게이트 옵트인(E2E 토론 합의 산출, 이슈화 여부는 사용자 결정)
+- [x] (사용자 리포트) 대시보드 md 버그 2건: 미리보기 미렌더 → Md 렌더+2줄 클램프+600자 절단 / CJK 인접 `**` 미볼드 → remark-cjk-friendly. PR #129 머지·재배포
+- [x] (사용자 지시 "바로 정리") 이슈 #123 구현: claude=UserPromptSubmit↔Stop 훅 쌍(turn-ping)+codex=rollout mtime(active_at)→roster busy 합류(신선도 600s/90s). PR #130 머지→#123 CLOSED, win 훅 배포+Stop 등록+라이브 검증(start 점등→end 소등→오타 400), mac 배포=A2A task 22df407f 위임
+- [ ] 백로그 신설 후보: 토론 라운드 간 사람 승인 게이트 옵트인(continue_discussion+steer, E2E 토론 합의 산출·설계 방향 사용자 답변 완료. 이슈화 여부는 사용자 결정)
 
 ## 세션29: v0.5.0 준비 - B-2 대시보드 릴리스 포함 + B-3 라이선스 NOTICE (2026-07-14, 브랜치 build/release-dashboard-and-notices)
 
