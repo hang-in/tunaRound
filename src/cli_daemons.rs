@@ -447,7 +447,7 @@ pub fn task_cli(rt: &tokio::runtime::Runtime, a: TaskArgs) {
             TaskAction::Claim { task_id, agent } => {
                 client.claim_task(task_id, Some(agent), None).await?
             }
-            TaskAction::Get { task_id } => client.get_task(task_id).await?,
+            TaskAction::Get { task_id, wait } => client.get_task(task_id, *wait).await?,
             TaskAction::Complete {
                 task_id,
                 result,

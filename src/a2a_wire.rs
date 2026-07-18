@@ -6,6 +6,11 @@ use serde::{Deserialize, Serialize};
 /// poll_tasks 응답 JSON 프리픽스 라인의 sentinel. 이 접두로 시작하는 첫 줄이 있으면 그 뒤가 task 목록 JSON.
 pub const POLL_JSON_PREFIX: &str = "TASKS_JSON ";
 
+/// get_task long-poll(wait_secs)의 서버측 대기 상한(초, v2-54 G7). 브로커(mcp)의 clamp와 워커
+/// 클라이언트(mcp_client)의 per-request 타임아웃 산정이 같은 값을 봐야 "서버가 정상 대기 중인데
+/// 클라이언트가 먼저 끊는" 계약 불일치(#138 A-1)가 생기지 않으므로 여기(무피처 공유 모듈)에 둔다.
+pub const GET_TASK_MAX_WAIT_SECS: u64 = 120;
+
 /// poll_tasks JSON 항목: 워커(worker::ParsedTask)가 필요로 하는 필드와 1:1. state는 표시 주석
 /// (stuck?/no-consumer?)이 없는 clean 상태다(문자열 경로의 state_token 스트립 불요).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
