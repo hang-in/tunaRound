@@ -9,8 +9,10 @@
 - [x] 이슈 #131 등록(라운드 간 사람 승인 게이트 옵트인: 라운드 다이제스트 인박스 + continue_discussion(id, steer?))
 - [x] 게이트 설계 스케치 + 적대 검증 3렌즈(코드 정합·결정 정합·스코프) - 전부 GO_WITH_FIXES, major 3건이 설계 실변경(표식 task·승인 주체=사람 문구 계약·실패=중단)
 - [x] 구현(브랜치 feat/issue-131-discussion-gate): DiscussionSpec.gate·GateState·driver 게이트 대기+표식+다이제스트·continue_discussion MCP·steer=debate/user 전사 주입·테스트 +10(풀피처 736 pass)
-- [ ] 코드 적대 리뷰 3렌즈(GO×3, minor 반영) → 중앙검증 → PR #132 → 3-OS CI green → 봇 전수 처분 → 머지 → v2-56 §11 반영(동승)
-- [ ] win mesh 재배포 + 실주제 토론 도그푸딩 1회(주제=#115 cargo 메이저 마이그레이션 순서, gate:true = 게이트 검증 겸 #115 조사)
+- [x] 코드 적대 리뷰 3렌즈(GO×3, minor 반영) → 중앙검증 → PR #132 → 3-OS CI green → 봇 전수 처분(반영 5·근거 기각 3) → 머지(main c134ae1) → #131 CLOSED. v2-56 §11 동승
+- [x] (부수 발견) presence 테스트 gc 7일 시한폭탄 3건 해체(실시계 상대 ts 헬퍼) + 30일 클래스 스윕 = 이슈 #133 신설
+- [x] win mesh 재배포(release 빌드 -SourceBin, 툴 20개 서빙 확인) + README·mesh-architecture 게이트 반영(6a4b6b5)
+- [x] 게이트 라이브 검증 매트릭스 20항목 전부 통과(사용자 "토큰 고려 말고 충분히" 지시): 토론4건(af66e8e2a012=#115 실주제 2R+steer+종합 / 62337010a2d4=conclude 직행 / c4202ae619b2=대기 중 stop / 0e396008e062=**게이트 대기 중 브로커 재기동→표식 failed "broker restart" 인박스 재생 배달 실증**). 에러 표면(라벨 중복·게이트 힌트 거부·id 불일치·steer 4001자·소멸 에러)·색인 제외·피드 노출·워커 재기동 자가 재등록까지 확인
 - [ ] v2-54 P2: get_task wait_secs 롱폴 / node config 토큰 폴백 / watch-results dispatcher 규약 명문화
 - [ ] #115 착수(토론 산출 순서 반영. rmcp 2.2·tungstenite 0.29는 v2-56·relay 코드층 겹침 주의)
 
