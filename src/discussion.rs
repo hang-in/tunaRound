@@ -60,6 +60,9 @@ pub struct DriverConfig {
     pub seat_timeout_secs: u64,
     /// get_task 폴링 간격(밀리초).
     pub poll_interval_ms: u64,
+    /// 게이트 대기 표식 task의 lease 연장 주기(초). 워커 자동연장 관례(5분)와 동일, lease 30분보다
+    /// 짧다. 테스트가 0으로 주입해 연장 경로를 통과시킨다.
+    pub sentinel_extend_secs: u64,
 }
 
 impl Default for DriverConfig {
@@ -67,6 +70,7 @@ impl Default for DriverConfig {
         Self {
             seat_timeout_secs: 600,
             poll_interval_ms: 3000,
+            sentinel_extend_secs: 300,
         }
     }
 }
@@ -373,9 +377,6 @@ async fn close_seat_task(
     SeatOutcome::Skipped(marker)
 }
 
-/// 게이트 대기 표식 task의 lease 연장 주기(초). 워커 자동연장 관례(5분)와 동일, lease 30분보다 짧다.
-const SENTINEL_EXTEND_SECS: u64 = 300;
-
 /// 게이트 대기의 산출(라운드 루프가 소비).
 enum GateOutcome {
     /// continue_discussion 수신: steer(조향 지시)·conclude(남은 라운드 생략, 종합 직행).
@@ -452,10 +453,10 @@ async fn complete_driver_task(
     .await
 }
 
-/// 게이트 표식을 failed로 마감한다(중단·통지 실패 경로 = 인박스에 failed 통지). failer=None
-/// (dispatcher 직접 경로)이라 lease 만료 requeue로 submitted가 된 표식도 마감된다. 실패는 로그만:
-/// 남은 열린 표식은 다음 재기동의 고아 sweep이 정리한다.
-async fn close_gate_sentinel_failed(store: &Arc<Mutex<SqliteStore>>, task_id: &str, reason: &str) {
+/// driver 명의 task(표식·다이제스트)를 failed로 마감한다(중단·통지 실패 경로 = 인박스에 failed 통지).
+/// failer=None(dispatcher 직접 경로)이라 lease 만료 requeue로 submitted가 된 task도 마감된다. 실패는
+/// 로그만: 남은 열린 task는 다음 재기동의 고아 sweep이 정리한다.
+async fn fail_driver_task(store: &Arc<Mutex<SqliteStore>>, task_id: &str, reason: &str) {
     let tid = task_id.to_string();
     let msg = reason.to_string();
     let r = with_store(store, move |s| {
@@ -508,9 +509,15 @@ async fn gate_wait(
         total,
         digest,
     } = gr;
+    // Waiting을 먼저 세우므로 아래 발행 실패(Abort) 경로가 그 사이 도착한 Proceed를 덮어쓸 수 있다
+    // (continue_discussion은 이미 성공을 반환한 상태). store 병증 + 밀리초 창의 동시 continue라는
+    // 이중 조건이고 Abort 자체가 표식 failed·전사 마커로 통지되므로 수용하되, 폐기를 로그로 남긴다.
     let set_gate = |st: GateState| {
         let mut g = control.gate.lock().unwrap_or_else(|e| e.into_inner());
-        *g = st;
+        let prev = std::mem::replace(&mut *g, st);
+        if matches!(prev, GateState::Proceed { .. }) {
+            eprintln!("[debate] 게이트 종료 경로가 도착해 있던 continue(Proceed)를 폐기합니다");
+        }
     };
     set_gate(GateState::Waiting { round, total });
     if let Err(e) = append_transcript(
@@ -524,8 +531,10 @@ async fn gate_wait(
         set_gate(GateState::Idle);
         return GateOutcome::Abort(format!("게이트 마커 기록 실패: {e}"));
     }
+    // 문구 주의: 재기동만 단정하지 않는다 - 절전 등으로 lease 만료·재claim이 반복되면
+    // expire_stale_claims의 attempt 상한 격리로도 이 본문이 실패 사유로 배달될 수 있다(코드 리뷰 minor).
     let sentinel_text = format!(
-        "[게이트 대기 표식] 토론 {discussion_id} 라운드 {round}/{total} 사람 승인 대기. 브로커 재기동 시 이 task가 failed로 마감되어 인박스에 통지됩니다."
+        "[게이트 대기 표식] 토론 {discussion_id} 라운드 {round}/{total} 사람 승인 대기. driver가 이 task를 더 유지하지 못하면(브로커 재기동 등) failed로 마감되어 인박스에 통지됩니다."
     );
     let sentinel = match issue_driver_task(store, ns, &sentinel_text).await {
         Ok(id) => id,
@@ -534,17 +543,23 @@ async fn gate_wait(
             return GateOutcome::Abort(format!("게이트 표식 발행 실패: {e}"));
         }
     };
-    let digest_issue = async {
-        let id = issue_driver_task(
-            store,
-            ns,
-            &format!("[게이트 다이제스트] 라운드 {round}/{total}"),
-        )
-        .await?;
-        complete_driver_task(store, &id, digest).await
+    let digest_task = issue_driver_task(
+        store,
+        ns,
+        &format!("[게이트 다이제스트] 라운드 {round}/{total}"),
+    )
+    .await;
+    let digest_result = match &digest_task {
+        Ok(id) => complete_driver_task(store, id, digest).await,
+        Err(e) => Err(e.clone()),
     };
-    if let Err(e) = digest_issue.await {
-        close_gate_sentinel_failed(
+    if let Err(e) = digest_result {
+        // 발행됐지만 완료 못한 다이제스트 task도 마감한다(안 하면 재기동 sweep까지 열린 채 잔존
+        // = 헬스 노이즈, 코드 리뷰 minor).
+        if let Ok(id) = &digest_task {
+            fail_driver_task(store, id, "[debate] 게이트 다이제스트 완료 실패로 중단").await;
+        }
+        fail_driver_task(
             store,
             &sentinel,
             "[debate] 게이트 다이제스트 발행 실패로 중단",
@@ -557,12 +572,7 @@ async fn gate_wait(
     loop {
         tokio::time::sleep(std::time::Duration::from_millis(cfg.poll_interval_ms)).await;
         if control.cancel.load(Ordering::Relaxed) {
-            close_gate_sentinel_failed(
-                store,
-                &sentinel,
-                "[debate] stop_discussion으로 게이트 중단",
-            )
-            .await;
+            fail_driver_task(store, &sentinel, "[debate] stop_discussion으로 게이트 중단").await;
             set_gate(GateState::Idle);
             return GateOutcome::Canceled;
         }
@@ -588,7 +598,7 @@ async fn gate_wait(
             return GateOutcome::Proceed { steer, conclude };
         }
         // 표식 lease 자동연장(워커 관례 답습). 만료 requeue로 submitted가 됐으면 재claim으로 복구.
-        if last_extend.elapsed().as_secs() >= SENTINEL_EXTEND_SECS {
+        if last_extend.elapsed().as_secs() >= cfg.sentinel_extend_secs {
             last_extend = std::time::Instant::now();
             let sid = sentinel.clone();
             let r = with_store(store, move |s| {
@@ -1112,6 +1122,9 @@ mod tests {
         DriverConfig {
             seat_timeout_secs: 3,
             poll_interval_ms: 20,
+            // 0 = 게이트 대기 매 폴 회차마다 표식 lease 연장 경로를 통과시킨다(코드 리뷰: 상수라
+            // 테스트 도달 불가였던 분기).
+            sentinel_extend_secs: 0,
         }
     }
 
@@ -1197,6 +1210,7 @@ mod tests {
         let cfg = DriverConfig {
             seat_timeout_secs: 1,
             poll_interval_ms: 20,
+            sentinel_extend_secs: 0,
         };
         run_discussion(
             spec,
@@ -1633,6 +1647,140 @@ mod tests {
             "게이트 task 전부 마감"
         );
         assert!(registry.active_id().is_none(), "점유 해제");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn gate_stands_after_partial_failure_round_with_marker_in_digest() {
+        // 일부 좌석만 실패한 라운드는 성공 라운드다(전 좌석 실패만 중단). 게이트가 서고 다이제스트에
+        // [무응답] 마커 발언이 요약으로 실린다(코드 리뷰: 커버리지 공백).
+        let store = Arc::new(Mutex::new(SqliteStore::open_memory().unwrap()));
+        let cap = Arc::new(CapturingWriter(Mutex::new(Vec::new())));
+        let writer: Arc<dyn TranscriptWriter> = cap.clone();
+        let registry = Arc::new(DiscussionRegistry::new());
+        let control = registry.try_begin("g5").unwrap();
+        let gate_cell = control.gate.clone();
+
+        let recv_a = Arc::new(Mutex::new(Vec::new()));
+        let seat_a = spawn_fake_seat(store.clone(), "agent-a", "A", recv_a.clone());
+        // agent-dead는 아무도 처리하지 않는다(타임아웃 skip 경로).
+        let ap = spawn_gate_approver(registry.clone(), gate_cell, "g5", 1, None, false);
+
+        let spec = DiscussionSpec {
+            id: "g5".to_string(),
+            topic: "부분 실패 게이트 테스트".to_string(),
+            seats: vec![
+                seat("agent-a", "seat-a", None, false),
+                seat("agent-dead", "seat-dead", None, false),
+            ],
+            rounds: 1,
+            gate: true,
+        };
+        let cfg = DriverConfig {
+            seat_timeout_secs: 1,
+            poll_interval_ms: 20,
+            sentinel_extend_secs: 0,
+        };
+        run_discussion(spec, store.clone(), writer, registry.clone(), control, cfg).await;
+        seat_a.abort();
+        ap.abort();
+
+        // 전사: user + seat-a + seat-dead([무응답]) + 게이트 마커 + 종합 = 5행.
+        let rows = cap.0.lock().unwrap();
+        assert_eq!(rows.len(), 5, "{rows:?}");
+        assert!(rows[3].2.contains("[게이트] 라운드 1/1"), "{rows:?}");
+        assert_eq!(rows[4].1, "debate/seat-a", "종합까지 진행");
+        // 다이제스트 요약에 [무응답] 마커가 실린다.
+        let s = store.lock().unwrap_or_else(|e| e.into_inner());
+        use crate::store::sqlite::ReplayLimit;
+        let done = s
+            .list_tasks_replay(Some("debate:g5"), None, &["completed"], ReplayLimit::All)
+            .unwrap();
+        let digest = done
+            .iter()
+            .filter(|t| t.to_agent == DEBATE_DRIVER_AGENT)
+            .map(artifacts_text)
+            .find(|txt| txt.contains("[게이트]"))
+            .expect("다이제스트 존재");
+        assert!(
+            digest.contains("[무응답"),
+            "다이제스트에 skip 마커: {digest}"
+        );
+    }
+
+    /// fail_from(0-기반) 번째 append부터 실패하는 writer(게이트 Abort 경로 검증용).
+    struct FailingWriter {
+        inner: Mutex<Vec<(String, String, String)>>,
+        fail_from: usize,
+    }
+
+    impl TranscriptWriter for FailingWriter {
+        fn append_turn(
+            &self,
+            session_id: &str,
+            speaker: &str,
+            content: &str,
+        ) -> Result<u64, String> {
+            let mut v = self.inner.lock().unwrap();
+            if v.len() >= self.fail_from {
+                return Err("주입된 전사 실패".to_string());
+            }
+            v.push((
+                session_id.to_string(),
+                speaker.to_string(),
+                content.to_string(),
+            ));
+            Ok(v.len() as u64)
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn gate_marker_write_failure_aborts_without_leaks() {
+        // 게이트 마커 기록 실패 = store 병증 클래스 → 토론 중단(Waiting 무통지 대기 금지 정책,
+        // 자동 진행 폴백 비채택). 점유 해제·열린 task 무누수까지 확인(코드 리뷰: Abort 경로 미검증).
+        let store = Arc::new(Mutex::new(SqliteStore::open_memory().unwrap()));
+        // append 순서: user(0)·r1 발언(1) 성공, 게이트 마커(2)부터 실패.
+        let cap = Arc::new(FailingWriter {
+            inner: Mutex::new(Vec::new()),
+            fail_from: 2,
+        });
+        let writer: Arc<dyn TranscriptWriter> = cap.clone();
+        let registry = Arc::new(DiscussionRegistry::new());
+        let control = registry.try_begin("g6").unwrap();
+
+        let recv_a = Arc::new(Mutex::new(Vec::new()));
+        let seat_a = spawn_fake_seat(store.clone(), "agent-a", "A", recv_a.clone());
+
+        let spec = DiscussionSpec {
+            id: "g6".to_string(),
+            topic: "게이트 Abort 테스트".to_string(),
+            seats: vec![seat("agent-a", "seat-a", None, false)],
+            rounds: 2,
+            gate: true,
+        };
+        run_discussion(
+            spec,
+            store.clone(),
+            writer,
+            registry.clone(),
+            control,
+            test_cfg(),
+        )
+        .await;
+        seat_a.abort();
+
+        // r1 이후 중단: 좌석 수신 1건(라운드 2·종합 미발행), 전사는 실패 전 2행뿐.
+        assert_eq!(recv_a.lock().unwrap().len(), 1);
+        assert_eq!(cap.inner.lock().unwrap().len(), 2);
+        // 점유 해제(FinishGuard) + 게이트 마커 실패는 표식·다이제스트 발행 전이라 열린 task 없음.
+        assert!(registry.active_id().is_none(), "점유 해제");
+        let s = store.lock().unwrap_or_else(|e| e.into_inner());
+        assert!(
+            s.list_open_tasks_for(DEBATE_DRIVER_AGENT)
+                .unwrap()
+                .is_empty(),
+            "게이트 task 무누수"
+        );
+        assert!(s.list_open_tasks_for("agent-a").unwrap().is_empty());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

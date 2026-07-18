@@ -184,6 +184,16 @@ impl TunaSearchServer {
             .steer
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty());
+        // 좌석 발언과 같은 4000자 상한(프롬프트 조립 캡과 동치). 사람 지시를 조용히 절단하지 않고
+        // 명시적으로 거부한다(코드 리뷰: 전사·prior 주입이 무캡이던 비대칭).
+        if let Some(s) = &steer
+            && s.chars().count() > 4000
+        {
+            return Ok(CallToolResult::error(vec![Content::text(format!(
+                "진행 실패: steer가 4000자를 초과합니다({}자) - 줄여서 다시 호출하세요",
+                s.chars().count()
+            ))]));
+        }
         let conclude = p.conclude.unwrap_or(false);
         let steer_echo = steer.clone();
         match registry.continue_active(&p.discussion_id, steer, conclude) {
@@ -196,7 +206,12 @@ impl TunaSearchServer {
                     format!("라운드 {}", round + 1)
                 };
                 let steer_note = match steer_echo {
-                    Some(s) => format!("\n조향 반영: [사용자 조향 지시] {s}"),
+                    // 에코는 확인용 프리뷰만(전문은 전사 debate/user 턴에 남는다).
+                    Some(s) => {
+                        let preview: String = s.chars().take(200).collect();
+                        let ellipsis = if s.chars().count() > 200 { "…" } else { "" };
+                        format!("\n조향 반영: [사용자 조향 지시] {preview}{ellipsis}")
+                    }
                     None => String::new(),
                 };
                 Ok(CallToolResult::success(vec![Content::text(format!(
