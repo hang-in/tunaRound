@@ -112,6 +112,18 @@ pub(super) fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+/// 잘린 since 재생의 catch-up 고착(wedge)을 감지한다(순수 함수, #138 C-④ 토론 합의 c).
+/// 상한+1 peek 조회 결과에서 경계 행(row[max])과 마지막 배달 행(row[max-1])의 updated_at이 같으면,
+/// 초 단위 워터마크(>=)가 그 초를 넘지 못해 다음 재접속도 같은 첫 페이지를 본다 - 고착된 초를
+/// 반환한다(로그용). peek 행은 len > max일 때만 존재하므로 truncated 분기에서만 발화한다.
+pub(super) fn replay_wedge_second(tasks: &[crate::store::a2a::Task], max: usize) -> Option<&str> {
+    if max == 0 || tasks.len() <= max {
+        return None;
+    }
+    let boundary = tasks[max].updated_at.as_str();
+    (boundary == tasks[max - 1].updated_at).then_some(boundary)
+}
+
 /// raw query 문자열("a=1&b=2")을 DashboardEventsQuery로 파싱한다(순수 함수, 단위테스트 대상).
 /// 알 수 없는 키·파싱 불가 replay 값은 조용히 무시한다(기본 0 = 현행 라이브 전용과 동일).
 #[cfg(feature = "serve")]
@@ -201,6 +213,14 @@ pub(super) async fn dashboard_events_handler(
                     )?
                 };
                 let truncated = tasks.len() > DASHBOARD_REPLAY_MAX;
+                if let Some(sec) = replay_wedge_second(&tasks, DASHBOARD_REPLAY_MAX) {
+                    // 동일 초가 상한을 채우면 since(>=) 워터마크가 그 초를 넘어 전진하지 못해
+                    // catch-up 재접속이 같은 첫 페이지를 영구 반복한다(#138 C-④ 토론 합의 c:
+                    // 조용한 유실 금지). 이 로그의 첫 발화 = 근본해(keyset 커서 a)의 착수 트리거.
+                    eprintln!(
+                        "[dashboard/events] 재생 wedge 감지: updated_at={sec} 동일 초가 상한({DASHBOARD_REPLAY_MAX})을 채워 catch-up이 고착됩니다(해당 초 너머 미배달 잔여 있음)"
+                    );
+                }
                 tasks.truncate(DASHBOARD_REPLAY_MAX);
                 Ok((
                     tasks.iter().map(dashboard_envelope_json).collect(),

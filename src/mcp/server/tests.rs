@@ -1474,6 +1474,38 @@ fn dashboard_envelope_json_maps_only_completed_state_to_completed_event() {
     }
 }
 
+/// #138 C-④ 합의 c: 상한+1 peek 접기 - 경계 행과 마지막 배달 행의 updated_at이 같을 때만
+/// wedge(고착 초)를 보고한다. peek 행이 없거나(len<=max) 초가 다르면 정상 catch-up이라 None.
+#[cfg(feature = "serve")]
+#[test]
+fn replay_wedge_second_fires_only_on_same_second_boundary() {
+    use crate::store::a2a::Task;
+    let at = |ts: &str| {
+        let mut t = Task::new("t", None, "win", "mac", "2026-07-19 09:00:00");
+        t.updated_at = ts.to_string();
+        t
+    };
+    // len <= max = peek 행 없음(truncated 아님) -> None.
+    let two = vec![at("2026-07-19 09:00:01"), at("2026-07-19 09:00:01")];
+    assert_eq!(replay_wedge_second(&two, 2), None);
+    // 경계 초가 다름 = 워터마크가 다음 초로 전진 가능 -> None.
+    let advancing = vec![
+        at("2026-07-19 09:00:01"),
+        at("2026-07-19 09:00:01"),
+        at("2026-07-19 09:00:02"),
+    ];
+    assert_eq!(replay_wedge_second(&advancing, 2), None);
+    // 경계 행(row[max])과 마지막 배달 행(row[max-1])이 동일 초 = 고착 -> 그 초 반환.
+    let wedged = vec![
+        at("2026-07-19 09:00:00"),
+        at("2026-07-19 09:00:01"),
+        at("2026-07-19 09:00:01"),
+    ];
+    assert_eq!(replay_wedge_second(&wedged, 2), Some("2026-07-19 09:00:01"));
+    // max=0 방어(상한 0은 실운영에 없지만 인덱스 패닉 금지).
+    assert_eq!(replay_wedge_second(&wedged, 0), None);
+}
+
 #[cfg(feature = "serve")]
 #[test]
 fn parse_dashboard_events_query_defaults_and_each_param() {
