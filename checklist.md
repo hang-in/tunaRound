@@ -2,6 +2,20 @@
 
 > 규율 #7. task 완료 시 체크. plan 전문은 docs/plans/.
 
+## 세션32: #138 리팩토링 트랙 완주(A 전량+B 4모듈 전량) + v0.6.0 릴리스·배포 (2026-07-19)
+
+> 사용자 지시 "B는 모두 완료하고 릴리즈". 구현=PR #141 확립 레시피(순수 이동·정규화 diff 등가·적대 검증), 잔여 3모듈은 워크플로 병렬(sonnet 실무자 worktree → Fable 적대 검증 독립 재실행).
+
+- [x] #138 A-1 = **PR #139 머지**: a2a_wire::GET_TASK_MAX_WAIT_SECS 공유 상수 + McpHttpClient per-request 타임아웃(wait+30s, 컴파일 타임 계약 단언) + `task get --wait` CLI + wire 왕복 테스트. gemini saturating_add 반영
+- [x] #138 A-2 = **PR #140 머지**: stdin 쓰기 JoinHandle 회수(wait 후 join) → 쓰기 실패+비정상 종료=RunError::Io 재분류, exit 0 EPIPE 오탐 가드, 1MB stdin 재현 테스트 2건. gemini HIGH(wait 후 kill의 Windows PID 재사용 오살) 타당 판정 → cfg(unix) 한정 반영
+- [x] #138 B ① = **PR #141 머지**: server.rs 3,121→291 + assets/feed/read_api/write_api/tests 5파일. 등가=정규화(공백·트레일링 콤마) cmp 문자 단위 검증, lib 728 동일. 봇 지적 전수 처분(수용 5건→#142로 분리, subtle 의존·존댓말 문구·워터마크 커서 등 근거 기각)
+- [x] #138 B ②③④ = **PR #143(repl 2,128→19)·#144(presence_scan 1,920→496)·#145(worker 1,657→41) 머지**: 워크플로 4트랙 병렬(에이전트 8, 오류 0), 적대 검증 전부 PASS(바이트 등가·테스트 집합 --list 대조 동일·게이트 독립 재실행·외부 경로 재수출 보존). gemini 이동 코드 지적 4건 기각(단 #145 canonicalize 상대경로 건은 #138 C 백로그 등재)
+- [x] **PR #142 머지**: #141 봇 지적 수용 5건(roster now()? fail-visible / deregister JoinError→500 / feed 재생 락 축소 / goal 중복 target 방지+테스트 / 테스트 IP 203.0.113.5). CodeRabbit 재요청 결과 actionable 0·gemini 무피드백
+- [x] **v0.6.0 릴리스**: PR #146(CHANGELOG 프렙) 머지 → main 최종 게이트(lib 731) → cargo release minor(bd93395, 태그 v0.6.0) → Release run 전 잡 success(6타깃·brew·NOTICES)
+- [x] 배포: win mesh rename-swap 재배포(브로커 0.6.0 라이브, 스캐너 win·mac online, 세션 poll 생존) + mac 정렬 A2A task 발송(9a1b15d9, dashboard goal → mac-claude-tunaRound)
+- [x] (운영 사고) rust-analyzer 커밋 65GB 누수 → 커밋 고갈(여유 2.7GB)로 rustc 침묵사·rlib 오염·win presence 스캐너 파편사(OS 1450 패닉). 범인 색출(Private bytes)·해당 프로세스만 종료·스캐너 선별 재기동(WMI)·메모리 2건 기록
+- [ ] mac 정렬 task(9a1b15d9) 완료 확인 → 남은 도그푸딩 관찰(게이트 실사용·mac lindera 4.0 폴백 실기) → #115 ③ rusqlite(다음 세션)
+
 ## 세션31: 승인 게이트(#131) 구현 + 실주제 토론 도그푸딩 + v2-54 P2 + #115 (2026-07-18)
 
 > 사용자 결정: 게이트=이슈화+바로 구현. 세션 방향=실주제 토론 도그푸딩·#115·v2-54 P2(릴리스는 도그푸딩 후로 유보).

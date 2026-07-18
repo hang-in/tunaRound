@@ -2,6 +2,15 @@
 
 > 작업 중 결정과 근거. 계속 append. (규율 #7) 다음 세션이 결정을 재유도하지 않게.
 
+## 2026-07-19 세션32: #138 완주·v0.6.0 릴리스 (재론 금지)
+
+- **순수 이동 분해 파이프라인 확립**(PR #141에서 확립, #143~#145에 병렬 적용): 전문 정독→경계 확정→sed 기계 추출→pub(super) 최소 승격+부모 재수출(외부 경로 보존)→테스트 모듈은 파일 모듈로 통이동(내부 use super::* 의미 불변)→정규화(공백 tr + 트레일링 콤마 ,)→) cmp 등가→게이트(카운트 불변)→**적대 검증자 독립 재실행**(실무자 주장 불신). 워크플로 병렬 시 worktree 격리 + 공유 CARGO_TARGET_DIR(-j 6, 락 직렬화)로 콜드빌드·메모리 폭주 회피.
+- **가시성 방향 함정**: 자손은 조상 private을 보지만 부모는 자식 private을 못 본다. 분해 시 부모/형제가 쓰는 항목만 pub(super), 원래 pub류는 그대로 두고 부모에서 pub use 재수출. 구조체 필드도 경계를 넘으면 승격 필요.
+- **순수 이동 PR의 봇 리뷰 = 기존 코드 재귀속**: 이동과 수정을 섞으면 등가 검증이 무너지므로 전부 해당 PR에서는 기각하고, 실가치 항목만 후속 소 PR(#142)로 분리 수용. DeepSource Rust fail도 같은 원리(자문성, 머지 후 소멸). CodeRabbit rate limit 시 행동 변경 PR만 재요청 대기, 등가 증명된 이동 PR은 근거 코멘트 남기고 진행.
+- **커밋 차지 고갈 사고**(2026-07-19): rust-analyzer 1프로세스가 커밋 65GB 누수(working set 3.6GB뿐이라 눈에 안 띔) → 여유 2.7GB에서 rustc 침묵사(진단 없는 could not compile)·E0463/E0786 비결정 재발·target 아티팩트 오염·mesh 데몬 파편사(presence-scan OS 1450 스레드 스폰 패닉). 진단=FreeVirtualMemory→Private bytes 색출. 처방=범인만 종료, cargo clean 1회, 죽은 데몬만 WMI 선별 재기동(mesh.pids PID 교체). 상세=메모리 build-silent-death-commit-exhaustion.
+- **릴리스 v0.6.0**: release.toml이 CHANGELOG 굳히기까지 자동(cargo release minor 한 방). 의존성 무변경 세션이라 NOTICES 재생성 불요 판단. win 배포=restart-win-mesh.ps1 -SourceBin WMI 스폰(*> 리다이렉트 로그는 UTF-16이라 bash grep 매칭 불가 주의). mac 정렬=dashboard goal로 task 발송(총괄발 자율 규약).
+- **#138 상태**: A 전량·B 4모듈 전량 완료. 잔여=C 백로그(운영 경계 테스트·실행 정책 타입화·#145발 canonicalize 상대경로 건 추가됨). B로 인한 #115 ④ rmcp 게이트 카운터 리셋 유지(순서=토론 도그푸딩→④).
+
 ## 2026-07-18 세션31: 승인 게이트(#131) 설계 방향 (사용자 결정 반영)
 
 - **사용자 결정**: 게이트=이슈화(#131)+바로 구현 / 세션 방향=실주제 토론 도그푸딩·#115·v2-54 P2 / v0.6.0 릴리스는 도그푸딩-후 관례대로 유보.
