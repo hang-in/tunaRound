@@ -100,6 +100,11 @@ pub const TOKEN_PLACEHOLDER: &str = "여기에-실제-토큰-넣기";
 /// restart 스크립트)와 정렬한다**(적대 리뷰 major: 파서가 어긋나면 같은 파일에서 훅·데몬과
 /// node/doctor가 다른 토큰을 읽는 조용한 401이 생긴다): ① BOM 제거(Windows 편집기) ② 중복 키는
 /// last-wins ③ 따옴표는 짝 맞는 1쌍만 벗기고 내용 리터럴 보존 ④ 무따옴표 값은 " #" 인라인 주석 절단.
+///
+/// 알려진 quirk(정본과 동일해 의도적으로 유지): 따옴표 값 뒤 인라인 주석(`K="x" # 메모`)은 끝
+/// 따옴표 불일치로 무따옴표 분기에 떨어져 `"x"`(따옴표 포함)가 된다. tuna_arm.py:46-52가 정확히
+/// 같은 결과를 내므로 여기서 단독으로 "고치면" 소비자별 토큰 불일치를 재생산한다(gemini 제안 기각
+/// 근거). 손보려면 세 파서(py·rs·ps1)를 한 변경으로 함께 바꿔야 한다.
 pub fn parse_dotenv_var(content: &str, var: &str) -> Option<String> {
     let content = content.trim_start_matches('\u{feff}');
     let mut last: Option<String> = None;
