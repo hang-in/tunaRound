@@ -405,7 +405,11 @@ export default function Feed({ onConnectedChange, onEvent, agents }: Props) {
                     <ChevronDown size={13} />
                   </span>
                 </button>
-                {text && !isOpen ? <div className="desc">{text}</div> : null}
+                {text && !isOpen ? (
+                  <div className="desc rendered">
+                    <Md text={text} />
+                  </div>
+                ) : null}
                 {isOpen ? (
                   <div className="tcard-detail">
                     <DetailBlock label="요청" text={requestText(t)} />

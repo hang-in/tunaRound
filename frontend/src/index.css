@@ -182,6 +182,15 @@ main { flex: 1 1 auto; min-width: 0; padding: 16px 20px calc(var(--ftr-h) + 24px
 .state.failed { color: var(--err); background: color-mix(in srgb, var(--err) 14%, transparent); }
 .state.canceled { color: var(--faint); background: color-mix(in srgb, var(--faint) 14%, transparent); }
 .tcard .desc { margin-top: 6px; color: var(--muted); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 접힌 미리보기도 md 로 렌더한다(사용자 리포트: 미리보기만 raw md). 2줄 클램프 + 컴팩트 타이포
+   (헤딩을 본문 크기로 눌러 미리보기가 카드보다 커지지 않게). */
+.tcard .desc.rendered { white-space: normal; text-overflow: clip; display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; }
+.tcard .desc.rendered .md h1, .tcard .desc.rendered .md h2, .tcard .desc.rendered .md h3, .tcard .desc.rendered .md h4 { font-size: 12.5px; margin: 0; display: inline; }
+.tcard .desc.rendered .md p { margin: 0; display: inline; }
+.tcard .desc.rendered .md ul, .tcard .desc.rendered .md ol { margin: 0; padding-left: 16px; }
+.tcard .desc.rendered .md li { margin: 0; }
+.tcard .desc.rendered .md pre { margin: 2px 0; padding: 2px 6px; }
+.tcard .desc.rendered .md hr { display: none; }
 
 /* 피드 카드 확장 상세(요청·결과·실패 사유·이력). 기존 동작 보존. */
 .tcard-detail { margin-top: 9px; display: flex; flex-direction: column; gap: 9px; }
