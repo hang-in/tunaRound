@@ -58,6 +58,8 @@ def main() -> int:
         return 0
     try:
         payload = json.load(sys.stdin) if not sys.stdin.isatty() else {}
+        if not isinstance(payload, dict):
+            payload = {}  # 리스트/문자열 JSON이 오면 .get에서 AttributeError(gemini 리뷰).
     except Exception:
         payload = {}
     session_id = str(payload.get("session_id") or "").strip()
@@ -70,6 +72,10 @@ def main() -> int:
     # 시작 prefix만(실측 2종). 본문 부분 문자열 매칭은 그 문구를 인용하는 진짜 프롬프트까지 제외하므로 안 쓴다.
     prompt = str(payload.get("prompt") or "").lstrip()
     if prompt.startswith(("<task-notification>", "[SYSTEM NOTIFICATION")):
+        # 백그라운드 wake도 턴은 시작된다(이슈 #123): ★ 판정(human-ping)은 오염 방지로 건너뛰되
+        # "지금 응답 생성 중" 스피너용 turn-ping(start)만 보낸다. 사람 프롬프트 경로는 human-ping
+        # 서버 측이 turn start를 동승 기록하므로 별도 호출이 없다(왕복 1회 유지).
+        tuna_arm.post_dashboard("/dashboard/turn-ping", {"agent": session_id, "phase": "start"})
         return 0
 
     # 마커 자가치유: 마커가 없거나 내용이 비었으면 1회 채운다(훅 배포 전에 뜬 세션의 전환 경로).

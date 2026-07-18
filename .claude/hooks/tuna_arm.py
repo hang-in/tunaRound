@@ -332,6 +332,27 @@ def deregister(agent, core, token=None) -> None:
         pass
 
 
+def post_dashboard(path: str, body: dict, timeout: float = 0.75) -> None:
+    """브로커 대시보드 쓰기 엔드포인트로 소형 POST(훅 공용, 이슈 #123 turn-ping 등).
+
+    deregister와 같은 규약: base=broker_core에서 /mcp 절단, loopback HTTP 전용, 토큰은 cfg 폴백,
+    실패는 조용히 통과(훅은 세션을 절대 막지 않는다).
+    """
+    c = broker_core().rstrip("/")
+    base = c[:-4] if c.endswith("/mcp") else c
+    if not base.startswith(("http://", "https://")):
+        return
+    req = urllib.request.Request(base + path, data=json.dumps(body).encode(), method="POST")
+    req.add_header("Content-Type", "application/json")
+    token = cfg("TUNA_BROKER_TOKEN", "")
+    if token:
+        req.add_header("Authorization", "Bearer " + token)
+    try:
+        urllib.request.urlopen(req, timeout=timeout).read()
+    except Exception:
+        pass
+
+
 def disarm_session(session_id: str) -> str:
     """구식 detached poll 정리(전환기 전용): kill(사망 확인) + deregister + pidfile 삭제.
 

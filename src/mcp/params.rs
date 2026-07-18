@@ -190,6 +190,10 @@ pub struct PresenceSessionInput {
     /// 생략 가능(claude 세션·신호 없음). 브로커가 인메모리·영속과 max-merge한다.
     #[serde(default)]
     pub human_input_at: Option<String>,
+    /// 스캐너가 관측한 마지막 활동 시각(이슈 #123, codex rollout mtime). DB datetime 포맷.
+    /// 생략 가능(claude=turn-ping 훅 경로). 브로커가 인메모리 turn_active_at과 max-merge한다.
+    #[serde(default)]
+    pub active_at: Option<String>,
 }
 
 /// report_presence 툴 파라미터(머신당 스캐너 데몬이 라이브 세션 전집합을 일괄 보고).

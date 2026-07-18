@@ -188,8 +188,34 @@ impl SqliteStore {
                 display_name,
                 last_heartbeat: now.to_string(),
                 human_input_at,
+                // 재등록(재기동/재무장)은 새 턴 신호가 아니므로 기존 인메모리 값을 승계하지 않고
+                // 비운다(어차피 다음 turn-ping/스캔이 채운다).
+                turn_active_at: None,
             },
         );
+    }
+
+    /// 이슈 #123: 대화 턴 시작 신호(claude turn-ping start / human-ping 동승). 로스터에 있으면
+    /// turn_active_at을 갱신하고 true, 미등록 uuid면 false(스캐너 등록 전 신호는 유실 = 다음 턴이 채움).
+    pub fn record_turn_start(&self, uuid: &str, now: &str) -> bool {
+        match self.agent_roster.borrow_mut().get_mut(uuid) {
+            Some(e) => {
+                e.turn_active_at = Some(now.to_string());
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// 이슈 #123: 대화 턴 종료 신호(claude Stop 훅). turn_active_at을 클리어한다(스피너 즉시 소등).
+    pub fn record_turn_end(&self, uuid: &str) -> bool {
+        match self.agent_roster.borrow_mut().get_mut(uuid) {
+            Some(e) => {
+                e.turn_active_at = None;
+                true
+            }
+            None => false,
+        }
     }
 
     /// presence 스캐너 일괄 동기화(설계 v2-44 §6): 보고된 세션은 upsert(human_input_at 보존),
@@ -256,6 +282,13 @@ impl SqliteStore {
             // Option<String>은 None < Some 순서(파생 Ord)라 std::cmp::max가 곧 max(base, 보고값)이다
             // (DB datetime 포맷은 사전순=시간순, gemini 리뷰). 커스텀 헬퍼 대신 stdlib.
             let human_input_at = std::cmp::max(base.clone(), s.human_input_at.clone());
+            // 이슈 #123: 턴 활동 신호도 인메모리와 max-merge한다. 스캐너 upsert가 엔트리를 재구성하므로
+            // 병합 없이는 claude의 turn-ping(인메모리 전용)이 매 스캔(15초)마다 증발한다. claude의
+            // turn-end(None 클리어)는 보고값도 None(claude는 active_at 미보고)이라 그대로 유지된다.
+            let turn_active_at = std::cmp::max(
+                roster.get(&s.uuid).and_then(|e| e.turn_active_at.clone()),
+                s.active_at.clone(),
+            );
             let mut tags = BTreeMap::new();
             tags.insert("machine".to_string(), machine.to_string());
             tags.insert("runner".to_string(), s.runner.clone());
@@ -299,6 +332,7 @@ impl SqliteStore {
                     display_name: s.display_name.clone(),
                     last_heartbeat: now.to_string(),
                     human_input_at,
+                    turn_active_at,
                 },
             );
         }
@@ -522,6 +556,7 @@ mod tests {
             project: project.map(str::to_string),
             display_name: project.map(|p| format!("win-{runner}-{p}")),
             human_input_at: None,
+            active_at: None,
         }
     }
 
@@ -531,6 +566,65 @@ mod tests {
             human_input_at: Some(at.to_string()),
             ..presence(uuid, "codex", None)
         }
+    }
+
+    #[test]
+    fn record_turn_start_end_roundtrip_and_unregistered_noop() {
+        let db = SqliteStore::open_memory().unwrap();
+        let now = "2026-07-18 10:00:00";
+        assert!(!db.record_turn_start("ghost", now), "미등록=false(no-op)");
+        assert!(!db.record_turn_end("ghost"));
+        db.register_agent("s1", tags(&[("runner", "claude")]), None, now);
+        assert!(db.record_turn_start("s1", now));
+        let turn = |db: &SqliteStore| {
+            db.list_agents(&std::collections::BTreeMap::new(), now, i64::MAX)
+                .into_iter()
+                .find(|a| a.uuid == "s1")
+                .and_then(|a| a.turn_active_at)
+        };
+        assert_eq!(turn(&db).as_deref(), Some(now));
+        assert!(db.record_turn_end("s1"));
+        assert_eq!(turn(&db), None);
+    }
+
+    #[test]
+    fn sync_presence_merges_turn_signal_and_preserves_claude_ping() {
+        let db = SqliteStore::open_memory().unwrap();
+        let t0 = "2026-07-18 10:00:00";
+        let t1 = "2026-07-18 10:00:10";
+        // claude 세션: 스캐너 보고(active_at 없음) 후 turn-ping(start) → 다음 스캔에도 신호가 살아야
+        // 한다(스캐너 upsert가 엔트리를 재구성하므로 mem 병합 없이는 15초마다 증발).
+        db.sync_presence("win", &[presence("c1", "claude", Some("proj"))], t0);
+        assert!(db.record_turn_start("c1", t0));
+        db.sync_presence("win", &[presence("c1", "claude", Some("proj"))], t1);
+        let turn = |uuid: &str| {
+            db.list_agents(&std::collections::BTreeMap::new(), t1, i64::MAX)
+                .into_iter()
+                .find(|a| a.uuid == uuid)
+                .and_then(|a| a.turn_active_at)
+        };
+        assert_eq!(
+            turn("c1").as_deref(),
+            Some(t0),
+            "claude turn-ping이 스캔을 넘어 보존"
+        );
+        // turn-end 후 스캔이 와도 None 유지(claude는 active_at 미보고 = max(None,None)).
+        assert!(db.record_turn_end("c1"));
+        db.sync_presence("win", &[presence("c1", "claude", Some("proj"))], t1);
+        assert_eq!(turn("c1"), None, "end 클리어가 스캔에 되살아나면 안 됨");
+        // codex 세션: 스캐너 active_at이 단조 병합(max)된다 - 더 오래된 보고는 무시.
+        let mut cx = presence("x1", "codex", None);
+        cx.active_at = Some(t1.to_string());
+        db.sync_presence("win", &[presence("c1", "claude", Some("proj")), cx], t1);
+        assert_eq!(turn("x1").as_deref(), Some(t1));
+        let mut cx_old = presence("x1", "codex", None);
+        cx_old.active_at = Some(t0.to_string());
+        db.sync_presence("win", &[presence("c1", "claude", Some("proj")), cx_old], t1);
+        assert_eq!(
+            turn("x1").as_deref(),
+            Some(t1),
+            "오래된 mtime 보고가 최신을 후퇴시키면 안 됨"
+        );
     }
 
     #[test]
