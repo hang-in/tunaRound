@@ -94,15 +94,18 @@ pub(crate) fn run_with_watchdog(spec: &ExecSpec) -> Result<String, RunError> {
         .spawn()
         .map_err(|e| RunError::Spawn(format!("{} spawn 실패 ({}): {e}", spec.label, spec.bin)))?;
 
-    // 프롬프트 stdin 주입(별 스레드 - 큰 입력 pipe 데드락 회피).
-    if let Some(input) = &spec.stdin
+    // 프롬프트 stdin 주입(별 스레드 - 큰 입력 pipe 데드락 회피). 쓰기 결과는 버리지 않고 핸들로
+    // 보관했다가 자식 종료 후 join해 회수한다(#138 A-2: write_all 실패가 성공/idle timeout으로
+    // 위장되던 침묵 제거). 자식이 stdout를 쏟는 동안 이쪽은 pipe 역압으로 블록될 수 있어 선-join은
+    // 데드락이다 - join은 반드시 child.wait() 뒤.
+    let stdin_handle = if let Some(input) = &spec.stdin
         && let Some(mut stdin) = child.stdin.take()
     {
         let bytes = input.clone().into_bytes();
-        std::thread::spawn(move || {
-            let _ = stdin.write_all(&bytes);
-        });
-    }
+        Some(std::thread::spawn(move || stdin.write_all(&bytes)))
+    } else {
+        None
+    };
 
     // stderr 동시 배수(pipe-buffer 데드락 회피).
     let stderr_handle = child.stderr.take().map(|mut pipe| {
@@ -182,7 +185,17 @@ pub(crate) fn run_with_watchdog(spec: &ExecSpec) -> Result<String, RunError> {
         .wait()
         .map_err(|e| RunError::Io(format!("{} wait 실패: {e}", spec.label)))?;
 
-    // 타임아웃을 종료 코드 검사보다 먼저 본다(kill된 자식은 비정상 종료라 Spawn으로 오분류될 수 있음).
+    // stdin 쓰기 결과 회수(#138 A-2). 자식이 이미 종료해 파이프가 닫혔으므로 join은 곧 돌아온다.
+    // 스레드 패닉도 쓰기 실패로 취급한다(결과 유실을 성공으로 위장하지 않음).
+    let stdin_result = match stdin_handle {
+        Some(h) => h
+            .join()
+            .unwrap_or_else(|_| Err(std::io::Error::other("stdin 쓰기 스레드 패닉"))),
+        None => Ok(()),
+    };
+
+    // 타임아웃을 종료 코드 검사보다 먼저 본다(kill된 자식은 비정상 종료라 Spawn으로 오분류될 수 있음.
+    // 이때 쓰기 실패는 kill의 부수 결과라 근본 원인인 Timeout이 이긴다).
     if timed_out.load(Ordering::SeqCst) {
         return Err(RunError::Timeout(format!(
             "{} 타임아웃: {}s 무출력으로 watchdog가 종료했습니다.",
@@ -191,6 +204,17 @@ pub(crate) fn run_with_watchdog(spec: &ExecSpec) -> Result<String, RunError> {
         )));
     }
     if !status.success() {
+        // 쓰기 실패 + 자식 비정상 종료 = 입력이 통째/부분 유실된 실행(#138 A-2). exit 코드보다
+        // 근본 원인에 가까우므로 Io로 재분류하고, 남았을 수 있는 손자까지 트리를 정리한다.
+        if let Err(e) = &stdin_result {
+            kill_pid(pid);
+            return Err(RunError::Io(format!(
+                "{} stdin 주입 실패({e}) 후 자식 비정상 종료(exit {:?}): {}",
+                spec.label,
+                status.code(),
+                stderr.trim()
+            )));
+        }
         let detail = if stderr.trim().is_empty() {
             format!("exit {:?}", status.code())
         } else {
@@ -198,6 +222,8 @@ pub(crate) fn run_with_watchdog(spec: &ExecSpec) -> Result<String, RunError> {
         };
         return Err(RunError::Spawn(format!("{} 실패: {detail}", spec.label)));
     }
+    // 자식이 stdin을 다 읽지 않고 정상 종료(exit 0 + 유효 출력)하는 러너의 파이프 파손(EPIPE류)은
+    // 실패가 아니다(#138 A-2 뉘앙스) - 성공 경로에서는 쓰기 실패를 무시한다.
     Ok(collected)
 }
 
@@ -298,6 +324,39 @@ mod tests {
         // 무출력이지만 즉시 비정상 종료 -> Timeout 아님(Spawn).
         let out = run_with_watchdog(&spec_nonzero_exit(2000));
         assert!(matches!(out, Err(RunError::Spawn(_))));
+    }
+
+    // --- #138 A-2: stdin 쓰기 실패 가시화 ---
+
+    /// pipe 버퍼(수 KB~64KB)보다 확실히 큰 stdin. write_all이 자식 종료 시점까지 블록되다
+    /// 파이프 파손 에러를 받게 만든다(작은 입력은 버퍼에 다 들어가 실패가 재현되지 않음).
+    fn big_stdin() -> String {
+        "x".repeat(1_000_000)
+    }
+
+    #[test]
+    fn stdin_write_failure_with_abnormal_exit_is_io_error() {
+        // 큰 stdin을 읽지 않고 즉시 비정상 종료 -> 쓰기 실패가 exit 코드(Spawn)로 위장되지 않고
+        // 근본 원인인 Io(stdin 주입 실패)로 재분류되어야 한다.
+        let mut spec = spec_nonzero_exit(5_000);
+        spec.stdin = Some(big_stdin());
+        match run_with_watchdog(&spec) {
+            Err(RunError::Io(msg)) => assert!(
+                msg.contains("stdin"),
+                "에러 메시지에 stdin 주입 실패가 드러나야 함: {msg}"
+            ),
+            other => panic!("Io 재분류여야 함: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stdin_unread_with_success_exit_is_benign() {
+        // EPIPE 뉘앙스: stdin을 다 읽지 않고 정상 종료(exit 0 + 유효 출력)하는 러너를 실패로
+        // 오탐하면 안 된다(성공 경로에서 쓰기 실패는 무시).
+        let mut spec = spec_two_lines(5_000);
+        spec.stdin = Some(big_stdin());
+        let out = run_with_watchdog(&spec).expect("정상 종료는 stdin 미소비여도 성공이어야 함");
+        assert!(out.contains("line1"));
     }
 
     #[cfg(unix)]
