@@ -14,7 +14,8 @@
 - [x] **v0.6.0 릴리스**: PR #146(CHANGELOG 프렙) 머지 → main 최종 게이트(lib 731) → cargo release minor(bd93395, 태그 v0.6.0) → Release run 전 잡 success(6타깃·brew·NOTICES)
 - [x] 배포: win mesh rename-swap 재배포(브로커 0.6.0 라이브, 스캐너 win·mac online, 세션 poll 생존) + mac 정렬 A2A task 발송(9a1b15d9, dashboard goal → mac-claude-tunaRound)
 - [x] (운영 사고) rust-analyzer 커밋 65GB 누수 → 커밋 고갈(여유 2.7GB)로 rustc 침묵사·rlib 오염·win presence 스캐너 파편사(OS 1450 패닉). 범인 색출(Private bytes)·해당 프로세스만 종료·스캐너 선별 재기동(WMI)·메모리 2건 기록
-- [ ] mac 정렬 task(9a1b15d9) 완료 확인 → 남은 도그푸딩 관찰(게이트 실사용·mac lindera 4.0 폴백 실기) → #115 ③ rusqlite(다음 세션)
+- [x] mac 정렬 task(9a1b15d9) completed: mac은 brew 경로 아님(~/.cargo/bin 아티팩트, hang-in/tap=brew untrusted 상태 발견) → 릴리스 아티팩트 sha256 검증·원자 교체·codesign, 데몬 2종(presence-scan·codex-relay) 0.6.0 선별 재기동, 양 머신 스캐너 online 교차 검증. **long-poll(task get --wait) 첫 실사용 도그푸딩 성공**
+- [ ] 다음 세션: 도그푸딩 관찰(게이트 실사용·mac lindera 4.0 폴백 실기) → #115 ③ rusqlite → #138 C 백로그
 
 ## 세션31: 승인 게이트(#131) 구현 + 실주제 토론 도그푸딩 + v2-54 P2 + #115 (2026-07-18)
 
