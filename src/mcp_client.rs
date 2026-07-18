@@ -29,7 +29,8 @@ const GET_TASK_TIMEOUT_MARGIN_SECS: u64 = 30;
 /// 항상 길다(계약 = 아래 테스트가 단언).
 fn get_task_request_timeout(wait_secs: u64) -> std::time::Duration {
     let wait = wait_secs.min(crate::a2a_wire::GET_TASK_MAX_WAIT_SECS);
-    std::time::Duration::from_secs(wait + GET_TASK_TIMEOUT_MARGIN_SECS)
+    // clamp 뒤라 현재 상수로는 오버플로가 불가능하지만, 상수 변경에도 안전하도록 saturating(gemini).
+    std::time::Duration::from_secs(wait.saturating_add(GET_TASK_TIMEOUT_MARGIN_SECS))
 }
 
 // 이 상향 로직의 존재 이유를 컴파일 타임 계약으로 고정한다: 서버 대기 상한(120)이 클라이언트 전역
