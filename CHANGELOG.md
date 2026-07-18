@@ -13,6 +13,7 @@
 ### Added
 
 - mesh 토론: 쓰던 세션에서 `start_discussion`(tuna-broker MCP)으로 여러 머신의 에이전트에 역할을 나눠 라운드 토론을 시킵니다. 순차-인지 라운드 후 종합 발언이 생성되고, 전사는 `debate:<id>` 세션으로 저장되며 결과는 `watch-results --dispatcher debate:<id>`로 받습니다. `stop_discussion`으로 이후 라운드를 중단할 수 있고, 브로커 재기동 시 진행 중이던 토론은 실패로 정리되어 통지됩니다.
+- mesh 토론 라운드 간 사람 승인 게이트(옵트인): `start_discussion(gate=true)`면 각 라운드 완료 시 다이제스트가 인박스로 오고, `continue_discussion(discussion_id, steer?, conclude?)`로 사람이 진행을 승인합니다. steer는 조향 지시로 다음 라운드에 주입되고, conclude는 남은 라운드를 건너뛰고 종합으로 직행합니다. 게이트 대기 중 브로커가 재기동되면 대기 표식 작업이 failed로 마감되어 인박스에 통지됩니다.
 - 대시보드 피드: 카드 상세와 접힌 미리보기가 markdown으로 렌더됩니다. 토론 작업에는 전용 뱃지가 붙고, 발신(누가 보냈는지) 필터가 추가되었습니다.
 - 대시보드 로스터의 동작 스피너가 A2A 작업 외에 "지금 대화 턴을 처리 중"인 세션에도 켜집니다(claude=턴 시작·종료 훅 쌍, codex=rollout 활동 신선도).
 

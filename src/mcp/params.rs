@@ -141,6 +141,9 @@ pub struct StartDiscussionParams {
     pub seats: Vec<DiscussionSeatParams>,
     /// 라운드 수(기본 3, 1~10로 클램프). 소진 후 synthesizer 종합 1회가 추가로 돈다.
     pub rounds: Option<u32>,
+    /// 라운드 간 사람 승인 게이트(이슈 #131, 옵트인·기본 false). true면 각 라운드 완료 시(종합 직전
+    /// 포함) 다이제스트가 인박스로 배달되고 continue_discussion까지 대기한다. 승인 주체는 사람이다.
+    pub gate: Option<bool>,
 }
 
 /// stop_discussion 툴 파라미터(이후 라운드 발행 중단).
@@ -148,6 +151,18 @@ pub struct StartDiscussionParams {
 pub struct StopDiscussionParams {
     /// start_discussion이 반환한 토론 id.
     pub discussion_id: String,
+}
+
+/// continue_discussion 툴 파라미터(게이트 해제, 이슈 #131).
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ContinueDiscussionParams {
+    /// start_discussion이 반환한 토론 id.
+    pub discussion_id: String,
+    /// 조향 지시(선택). 전사에 debate/user 턴("[사용자 조향 지시]" 프리픽스)으로 남고 다음 라운드
+    /// 프롬프트에 주입된다.
+    pub steer: Option<String>,
+    /// true면 남은 라운드를 건너뛰고 synthesizer 종합으로 직행한다(사람의 "충분" 판단).
+    pub conclude: Option<bool>,
 }
 
 /// register_agent 툴 파라미터(워커/세션이 뜰 때 로스터에 자기 등록).

@@ -31,6 +31,15 @@ pub(crate) fn build_terminal_index_payload(task: &Task) -> Option<TerminalIndexP
     if !matches!(task.state, TaskState::Completed | TaskState::Failed) {
         return None; // canceled·열린 task는 색인 비대상(§4 P6a).
     }
+    // #131: 게이트 다이제스트·대기 표식(driver 자가 task)은 전면 비색인. 다이제스트 결과는 이미
+    // 결과로 색인된 좌석 발언의 스니펫 중복이고 표식은 운영 신호일 뿐이다(정본=debate 전사·인박스).
+    if task
+        .from_agent
+        .starts_with(crate::discussion::DEBATE_NS_PREFIX)
+        && task.to_agent == crate::discussion::DEBATE_DRIVER_AGENT
+    {
+        return None;
+    }
     // v2-56: 토론 라운드 task의 요청문은 색인하지 않는다. 라운드 프롬프트는 prior 발언 전량 재조립이라
     // task마다 같은 발언이 O(좌석×라운드)배로 FTS에 중복 축적되고, speaker `a2a/debate:<id>`가
     // 대시보드 검색 스코프(a2a/*)를 통과해 §8-2 비노출 결정도 깨진다(적대 리뷰 major). 라운드 맥락의
@@ -192,5 +201,18 @@ mod tests {
         let p2 = build_terminal_index_payload(&completed_task("win-boss")).unwrap();
         assert!(p2.request_text.is_some());
         assert_eq!(p2.result_text.as_deref(), Some("발언"));
+    }
+
+    #[test]
+    fn gate_driver_tasks_are_not_indexed() {
+        // #131: 게이트 다이제스트·대기 표식(to_agent=debate-driver)은 결과 포함 전면 비색인
+        // (다이제스트 요약 = 이미 색인된 좌석 발언의 스니펫 중복).
+        let mut t = completed_task("debate:abc");
+        t.to_agent = crate::discussion::DEBATE_DRIVER_AGENT.to_string();
+        assert!(build_terminal_index_payload(&t).is_none());
+        // 비-debate 발신이 우연히 같은 to_agent 문자열을 써도 색인은 유지(프리픽스 결합 조건).
+        let mut n = completed_task("win-boss");
+        n.to_agent = crate::discussion::DEBATE_DRIVER_AGENT.to_string();
+        assert!(build_terminal_index_payload(&n).is_some());
     }
 }
