@@ -2,6 +2,15 @@
 
 > 작업 중 결정과 근거. 계속 append. (규율 #7) 다음 세션이 결정을 재유도하지 않게.
 
+## 2026-07-18 세션30: v2-56 mesh 토론 확정 계약 + #123 신호 설계 (재론 금지)
+
+- **v2-56 확정 계약**(정본 §5·§8, 코드 적대 리뷰 3렌즈 반영): 1라운드 발언=1 task / from_agent=전사 세션=`debate:<id>` / **타임아웃·중단 탈출=try_fail**(canceled는 watch-results 미배달=인박스 침묵사 - 3렌즈 공통 major) / driver=인프로세스 순수 폴링(이벤트 버스 비사용=sweep 무이벤트·Lagged 리스크 원천 회피) / 재기동=고아 sweep 서빙 전 동기(사유 "broker restart") / synthesizer=첫 좌석 고정·instruction 비상속 / debate task 요청문 비색인(FTS O(좌석×라운드) 중복+검색 스코프 유출 차단) / 동시 1건 / 라이브 좌석 live:true 필수 / 라벨 중복 거부. 프리앰블은 좌석 유형 인지(라이브=claim/complete, 헤드리스=출력만 - Phase 0 실측).
+- **Phase 0 방법론 실증**: 코드 0 운영 레시피 게이트가 폐기성 Stage 1(chat mesh 좌석)을 대체. 토론 자체가 설계를 개선(락 자기모순·무-open-task 침묵사 창 발견). 세션12 "크로스머신 토론 비목표"는 사용자 발의로 개정(v2-56 §0).
+- **CJK `**` 미렌더 원인 = CommonMark 강조 플랭킹 규칙**(구두점+CJK 인접, `**...(옵트인)**가` 실측) → remark-cjk-friendly 플러그인이 정답(전처리 핵 금지).
+- **#123 신호 설계**: 무갱신 신호는 신선도 창 필수(#94 교훈 - 훅 600s/mtime 90s). turn_active_at은 인메모리로 충분(재기동=스피너만 소등, ★와 달리 영속 불요). **sync_presence가 15초마다 엔트리 재구성하므로 mem max-merge 없으면 훅 신호 증발**. wake 프롬프트는 turn-ping만(★=human-ping 오염 금지).
+- **mac 바이너리=dashboard 피처 제외가 실용 정답**(미서빙 dead code+npm 환경 문제). win 표준 피처 세트=dashboard 포함 유지. 대시보드 URL은 `/dashboard`(슬래시 붙이면 404).
+- DeepSource 자문성 처분 추가: JS module-scope 함수 선언 / Python urlopen 스킴 감사(가드 선행) / Rust Empty new() - 전부 기각.
+
 ## 2026-07-14 세션29 후반2: 운영 발견 3건 + codex attach-생존 프로브 (라이브 실측, 재론 금지)
 
 - **유령 poll 누적 발견·정리**: /clear는 대화만 지우고 persistent Monitor(A2A 수신 poll)는 남긴다 -> 죽은 세션 UUID poll 8개 + 스테일 watch-results 1개가 브로커를 15초마다 두드리며 누적(사용자 발견: "active shells 10개"). PID 선별 종료로 정리(mesh 데몬 4·현재 세션 poll 보호). **구조 수정 = 이슈 #118**(poll이 세션 마커(.ctx) 소멸 시 self-terminate, 안 1 권고).
