@@ -5,7 +5,7 @@
   --ground: #eef1f2; --panel: #ffffff; --panel-2: #f6f8f9; --border: #d6dde0;
   --border-soft: #e4e9eb; --text: #16211f; --muted: #61726f; --faint: #8595a1;
   --accent: #12938c; --accent-soft: #d3ecea; --good: #2f8f57; --warn: #b47613;
-  --err: #c4453f; --star: #b78412;
+  --err: #c4453f; --star: #b78412; --debate: #7a4fd0; --debate-soft: #ece4f9;
   --glow: color-mix(in srgb, var(--good) 22%, transparent);
   --glow-strong: color-mix(in srgb, var(--good) 40%, transparent);
   --mono: "JetBrains Mono Variable", ui-monospace, "SF Mono", "Cascadia Code", Consolas, monospace;
@@ -17,20 +17,20 @@
     --ground: #0d1417; --panel: #141d21; --panel-2: #10181b; --border: #24323a;
     --border-soft: #1c272c; --text: #e4edf0; --muted: #8ba0a6; --faint: #64777e;
     --accent: #38cabf; --accent-soft: #12312f; --good: #56c17e; --warn: #d6a13d;
-    --err: #e0655f; --star: #e2b23f;
+    --err: #e0655f; --star: #e2b23f; --debate: #a98ae8; --debate-soft: #2a2145;
   }
 }
 :root[data-theme="dark"] {
   --ground: #0d1417; --panel: #141d21; --panel-2: #10181b; --border: #24323a;
   --border-soft: #1c272c; --text: #e4edf0; --muted: #8ba0a6; --faint: #64777e;
   --accent: #38cabf; --accent-soft: #12312f; --good: #56c17e; --warn: #d6a13d;
-  --err: #e0655f; --star: #e2b23f;
+  --err: #e0655f; --star: #e2b23f; --debate: #a98ae8; --debate-soft: #2a2145;
 }
 :root[data-theme="light"] {
   --ground: #eef1f2; --panel: #ffffff; --panel-2: #f6f8f9; --border: #d6dde0;
   --border-soft: #e4e9eb; --text: #16211f; --muted: #61726f; --faint: #8595a1;
   --accent: #12938c; --accent-soft: #d3ecea; --good: #2f8f57; --warn: #b47613;
-  --err: #c4453f; --star: #b78412;
+  --err: #c4453f; --star: #b78412; --debate: #7a4fd0; --debate-soft: #ece4f9;
 }
 
 * { box-sizing: border-box; }
@@ -190,6 +190,34 @@ main { flex: 1 1 auto; min-width: 0; padding: 16px 20px calc(var(--ftr-h) + 24px
 .tdetail-label.ok { color: var(--good); } .tdetail-label.err { color: var(--err); }
 .tdetail-body { font-size: 12.5px; color: var(--text); white-space: pre-wrap; word-break: break-word;
   background: var(--panel-2); border: 1px solid var(--border-soft); border-radius: 7px; padding: 8px 10px; max-height: 240px; overflow-y: auto; }
+/* markdown 렌더 모드: 블록 배치는 md 가 담당하므로 pre-wrap 을 끈다(안 끄면 마크업 사이 개행이 이중 여백). */
+.tdetail-body.rendered { white-space: normal; max-height: 320px; }
+
+/* 토론(v2-56) 발신 뱃지: from_agent=debate:<id> task 를 한눈에 묶어 보이게 한다. */
+.debate-chip { display: inline-flex; align-items: center; gap: 4px; font-size: 10.5px; font-weight: 600;
+  color: var(--debate); background: var(--debate-soft); padding: 2px 8px; border-radius: 20px; white-space: nowrap; }
+
+/* task 본문 markdown 요소(react-markdown 출력). 카드 상세 안에서만 적용되는 최소 타이포그래피. */
+.md > :first-child { margin-top: 0; }
+.md > :last-child { margin-bottom: 0; }
+.md p { margin: 5px 0; }
+.md h1, .md h2, .md h3, .md h4 { margin: 10px 0 4px; line-height: 1.3; }
+.md h1 { font-size: 14.5px; } .md h2 { font-size: 13.5px; } .md h3, .md h4 { font-size: 12.5px; }
+.md ul, .md ol { margin: 5px 0; padding-left: 20px; }
+.md li { margin: 2px 0; }
+.md code { font-family: var(--mono); font-size: 11.5px; background: color-mix(in srgb, var(--faint) 14%, transparent);
+  border-radius: 4px; padding: 1px 4px; }
+.md pre { background: var(--panel); border: 1px solid var(--border-soft); border-radius: 6px;
+  padding: 8px 10px; overflow-x: auto; margin: 6px 0; }
+.md pre code { background: transparent; padding: 0; font-size: 11.5px; display: block; }
+.md blockquote { margin: 6px 0; padding: 2px 10px; border-left: 3px solid var(--border);
+  color: var(--muted); }
+.md table { border-collapse: collapse; margin: 6px 0; font-size: 12px; display: block; overflow-x: auto; }
+.md th, .md td { border: 1px solid var(--border-soft); padding: 3px 8px; text-align: left; }
+.md th { background: var(--panel); font-weight: 600; }
+.md hr { border: 0; border-top: 1px dashed var(--border-soft); margin: 8px 0; }
+.md a { color: var(--accent); }
+.md img { max-width: 100%; }
 .tdetail-history { display: flex; flex-direction: column; gap: 5px; border-top: 1px dashed var(--border-soft); padding-top: 8px; }
 .throw { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
 .throw .htext { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1 1 200px; }
