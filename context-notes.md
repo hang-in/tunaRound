@@ -2,6 +2,13 @@
 
 > 작업 중 결정과 근거. 계속 append. (규율 #7) 다음 세션이 결정을 재유도하지 않게.
 
+## 2026-07-18 세션31: 승인 게이트(#131) 설계 방향 (사용자 결정 반영)
+
+- **사용자 결정**: 게이트=이슈화(#131)+바로 구현 / 세션 방향=실주제 토론 도그푸딩·#115·v2-54 P2 / v0.6.0 릴리스는 도그푸딩-후 관례대로 유보.
+- **게이트 설계 골자**(세션30 답변 확정분): `start_discussion(gate:true)` 옵트인 → 각 라운드 완료 시 다이제스트를 인박스로 배달(기존 task 생명주기 재사용: driver가 자가 claim→complete로 terminal 전이 = watch-results 배달) → `continue_discussion(id, steer?)` 대기. **steer 주입 = 전사 debate/user 턴 append + prior 포함**(순차-인지 그대로, 프롬프트 수술 없음, 사람 개입이 전사에 남음). 게이트 지점 = 라운드 사이 + synthesizer 앞(synthesizer도 라운드라는 stop 계약과 일관). 대기 중 stop 유효(cancel 폴링 유지).
+- **수용 잔여(MVP)**: 게이트 대기 중 재기동=토론 증발(open task 없어 sweep 대상 아님, continue의 "진행 중 토론 없음"이 발견 신호) / 대기 타임아웃 없음(stop이 탈출구). 문서화로 수용.
+- **도그푸딩 실주제 = #115 마이그레이션 순서**: 게이트 검증과 #115 조사를 겸한다.
+
 ## 2026-07-18 세션30: v2-56 mesh 토론 확정 계약 + #123 신호 설계 (재론 금지)
 
 - **v2-56 확정 계약**(정본 §5·§8, 코드 적대 리뷰 3렌즈 반영): 1라운드 발언=1 task / from_agent=전사 세션=`debate:<id>` / **타임아웃·중단 탈출=try_fail**(canceled는 watch-results 미배달=인박스 침묵사 - 3렌즈 공통 major) / driver=인프로세스 순수 폴링(이벤트 버스 비사용=sweep 무이벤트·Lagged 리스크 원천 회피) / 재기동=고아 sweep 서빙 전 동기(사유 "broker restart") / synthesizer=첫 좌석 고정·instruction 비상속 / debate task 요청문 비색인(FTS O(좌석×라운드) 중복+검색 스코프 유출 차단) / 동시 1건 / 라이브 좌석 live:true 필수 / 라벨 중복 거부. 프리앰블은 좌석 유형 인지(라이브=claim/complete, 헤드리스=출력만 - Phase 0 실측).

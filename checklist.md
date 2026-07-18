@@ -2,6 +2,18 @@
 
 > 규율 #7. task 완료 시 체크. plan 전문은 docs/plans/.
 
+## 세션31: 승인 게이트(#131) 구현 + 실주제 토론 도그푸딩 + v2-54 P2 + #115 (2026-07-18)
+
+> 사용자 결정: 게이트=이슈화+바로 구현. 세션 방향=실주제 토론 도그푸딩·#115·v2-54 P2(릴리스는 도그푸딩 후로 유보).
+
+- [x] 이슈 #131 등록(라운드 간 사람 승인 게이트 옵트인: 라운드 다이제스트 인박스 + continue_discussion(id, steer?))
+- [ ] 게이트 설계 스케치 + 적대 검증 3렌즈(코드 정합·결정 정합·스코프)
+- [ ] 구현(브랜치): DiscussionSpec.gate·registry 게이트 상태·driver 라운드 간 대기+다이제스트 task(자가 claim→complete)·continue_discussion MCP·steer=debate/user 전사 주입·테스트
+- [ ] 코드 적대 리뷰 3렌즈 → 중앙검증(fmt·clippy·test) → PR → 3-OS CI → 봇 전수 → 머지 → v2-56 §11 반영
+- [ ] win mesh 재배포 + 실주제 토론 도그푸딩 1회(주제=#115 cargo 메이저 마이그레이션 순서, gate:true = 게이트 검증 겸 #115 조사)
+- [ ] v2-54 P2: get_task wait_secs 롱폴 / node config 토큰 폴백 / watch-results dispatcher 규약 명문화
+- [ ] #115 착수(토론 산출 순서 반영. rmcp 2.2·tungstenite 0.29는 v2-56·relay 코드층 겹침 주의)
+
 ## 세션30: v2-56 mesh 토론 - 스케치→Phase 0 게이트→Phase 1 구현·머지 (2026-07-18, 사용자 "완료까지 달려보자")
 
 > 병렬 조사 6 + 설계 적대 검증 3렌즈 + 코드 적대 리뷰 3렌즈 + CI 2라운드 + 봇 전수 처분으로 완주.
@@ -15,7 +27,7 @@
 - [x] (병렬 지시) 대시보드 피드 md 렌더링 + 토론 뱃지·발신 필터: PR #128 머지(react-markdown+remark-gfm, raw HTML 미허용, 라이브 검증=토론 필터 3/169·라이트/다크) → 재배포
 - [x] (사용자 리포트) 대시보드 md 버그 2건: 미리보기 미렌더 → Md 렌더+2줄 클램프+600자 절단 / CJK 인접 `**` 미볼드 → remark-cjk-friendly. PR #129 머지·재배포
 - [x] (사용자 지시 "바로 정리") 이슈 #123 구현: claude=UserPromptSubmit↔Stop 훅 쌍(turn-ping)+codex=rollout mtime(active_at)→roster busy 합류(신선도 600s/90s). PR #130 머지→#123 CLOSED, win 훅 배포+Stop 등록+라이브 검증(start 점등→end 소등→오타 400), mac 배포=A2A task 22df407f 위임
-- [ ] 백로그 신설 후보: 토론 라운드 간 사람 승인 게이트 옵트인(continue_discussion+steer, E2E 토론 합의 산출·설계 방향 사용자 답변 완료. 이슈화 여부는 사용자 결정)
+- [x] 백로그 신설 후보: 토론 라운드 간 사람 승인 게이트 옵트인(continue_discussion+steer, E2E 토론 합의 산출) → 세션31에서 사용자 결정 "이슈화+바로 구현" = 이슈 #131
 
 ## 세션29: v0.5.0 준비 - B-2 대시보드 릴리스 포함 + B-3 라이선스 NOTICE (2026-07-14, 브랜치 build/release-dashboard-and-notices)
 
