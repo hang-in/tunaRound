@@ -180,22 +180,26 @@ pub(super) async fn dashboard_events_handler(
     let snapshot_result: Result<(Vec<String>, bool), String> = if query.since.is_some()
         || query.replay > 0
     {
-        // lock은 spawn_blocking 안에서 짧게 잡는다(roster 핸들러 패턴). SSE 스트림 안에서 lock 보유 금지.
+        // lock은 질의 구간(Vec<Task> 확보까지)만 잡는다(roster 핸들러 패턴). truncate·
+        // dashboard_envelope_json 직렬화는 락 밖에서 수행 - SSE 핸들러가 store 락을 오래 쥐고 있으면
+        // 같은 락을 쓰는 다른 요청(roster·health·claim 등)이 직렬화 비용만큼 대기한다.
         tokio::task::spawn_blocking(move || {
             use crate::store::sqlite::ReplayLimit;
-            let store = store.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(since) = query.since.as_deref() {
                 let dispatcher = query.dispatcher.as_deref().filter(|d| !d.is_empty());
                 // since 경로에도 상한 적용(P2 리뷰 이월). 방향은 Oldest - 잘려도 오래된 것부터
                 // 이어받아야 클라이언트 워터마크가 앞에서부터 전진한다. 상한+1로 조회해 잘림을
                 // 모호하지 않게 판정한다(정확히 상한 개수인 스냅샷을 잘림으로 오판해 불필요한
                 // 재접속 연쇄를 만들지 않기 위해).
-                let mut tasks = store.list_tasks_replay(
-                    dispatcher,
-                    Some(since),
-                    &["completed", "failed"],
-                    ReplayLimit::Oldest(DASHBOARD_REPLAY_MAX + 1),
-                )?;
+                let mut tasks = {
+                    let store = store.lock().unwrap_or_else(|e| e.into_inner());
+                    store.list_tasks_replay(
+                        dispatcher,
+                        Some(since),
+                        &["completed", "failed"],
+                        ReplayLimit::Oldest(DASHBOARD_REPLAY_MAX + 1),
+                    )?
+                };
                 let truncated = tasks.len() > DASHBOARD_REPLAY_MAX;
                 tasks.truncate(DASHBOARD_REPLAY_MAX);
                 Ok((
@@ -205,8 +209,10 @@ pub(super) async fn dashboard_events_handler(
             } else {
                 // replay = 전 상태 스냅샷(canceled·열린 task 포함 - 피드는 전 상태 뷰).
                 // replay 값은 파서에서 이미 상한으로 클램프됨 = 잘림 판정 불요(창 뷰 의미론).
-                let tasks =
-                    store.list_tasks_replay(None, None, &[], ReplayLimit::Newest(query.replay))?;
+                let tasks = {
+                    let store = store.lock().unwrap_or_else(|e| e.into_inner());
+                    store.list_tasks_replay(None, None, &[], ReplayLimit::Newest(query.replay))?
+                };
                 Ok((tasks.iter().map(dashboard_envelope_json).collect(), false))
             }
         })

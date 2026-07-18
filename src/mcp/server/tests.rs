@@ -40,14 +40,14 @@ mod dashboard_write_gate {
 
     #[test]
     fn remote_with_matching_bearer_allowed() {
-        let ip: std::net::IpAddr = "192.168.0.9".parse().unwrap();
+        let ip: std::net::IpAddr = "203.0.113.5".parse().unwrap();
         let h = headers_with_auth(Some("Bearer tok"));
         assert!(dashboard_write_allowed(ip, &h, &Some("tok".into())));
     }
 
     #[test]
     fn remote_with_wrong_or_missing_bearer_denied() {
-        let ip: std::net::IpAddr = "192.168.0.9".parse().unwrap();
+        let ip: std::net::IpAddr = "203.0.113.5".parse().unwrap();
         assert!(!dashboard_write_allowed(
             ip,
             &headers_with_auth(Some("Bearer nope")),
@@ -63,7 +63,7 @@ mod dashboard_write_gate {
     #[test]
     fn remote_allowed_when_core_has_no_token() {
         // 무토큰 코어는 /mcp 전체가 무인증(동일 계약)이라 대시보드 쓰기도 게이트하지 않는다.
-        let ip: std::net::IpAddr = "192.168.0.9".parse().unwrap();
+        let ip: std::net::IpAddr = "203.0.113.5".parse().unwrap();
         assert!(dashboard_write_allowed(ip, &headers_with_auth(None), &None));
     }
 }
@@ -234,6 +234,39 @@ mod dashboard_goal_gate {
             status2,
             axum::http::StatusCode::BAD_REQUEST,
             "빈 targets는 거부"
+        );
+    }
+
+    #[tokio::test]
+    async fn duplicate_targets_create_task_once() {
+        // targets에 같은 uuid가 두 번 들어오면(체크박스 더블클릭 등) task를 두 번 만들지 않는다.
+        // 처음 본 것만 생성하고, 재등장은 created 없이 errors에 "중복" 사유로 기록된다.
+        let addr: std::net::SocketAddr = "127.0.0.1:9".parse().unwrap();
+        let store = test_store();
+        let body = axum::body::Bytes::from(
+            serde_json::json!({"text": "목표", "targets": ["dup-uuid", "dup-uuid"]}).to_string(),
+        );
+        let resp = dashboard_goal_handler(
+            axum::extract::ConnectInfo(addr),
+            axum::extract::State(store),
+            axum::http::HeaderMap::new(),
+            body,
+        )
+        .await;
+        let (status, body) = read_body(resp).await;
+        assert_eq!(
+            status,
+            axum::http::StatusCode::OK,
+            "요청 자체는 성공: {body}"
+        );
+        let parsed: serde_json::Value = serde_json::from_str(&body).expect("JSON 응답");
+        let created = parsed["created"].as_array().expect("created 배열");
+        let errors = parsed["errors"].as_array().expect("errors 배열");
+        assert_eq!(created.len(), 1, "task는 1건만 생성돼야 함: {body}");
+        assert_eq!(errors.len(), 1, "중복분은 errors에 1건 기록돼야 함: {body}");
+        assert!(
+            errors[0].as_str().unwrap_or_default().contains("중복"),
+            "errors 사유에 '중복'이 있어야 함: {body}"
         );
     }
 }

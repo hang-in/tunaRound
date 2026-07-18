@@ -32,7 +32,9 @@ pub(super) async fn dashboard_roster_handler(
     let result: Result<Vec<DashAgent>, String> = tokio::task::spawn_blocking(move || {
         use crate::mcp::format::is_busy_fresh;
         let store = store.lock().unwrap_or_else(|e| e.into_inner());
-        let now = store.now().unwrap_or_default();
+        // health 핸들러와 동일 원칙: 시각 조회 실패를 기본값(UNIX epoch 등)으로 위장해 정상 200
+        // 로스터처럼 보이게 하지 않고 500으로 표면화한다(fail-visible).
+        let now = store.now()?;
         // "동작 중" 세션 = 열린 task 중 state=working이면서 updated_at이 BUSY_FRESH_SECS(5분) 이내로
         // 갱신된 것의 to_agent 집합(이슈 #94: 갱신 없는 오래된 working=정체라 스피너 FP였다). 워커
         // 러너 heartbeat(#98)·relay 주입 heartbeat/lease(#112)가 5분 안에 updated_at을 갱신하므로
