@@ -1,0 +1,255 @@
+// mesh 토론 MCP 툴(start_discussion/stop_discussion): v2-56 driver의 세션 표면. 시작·중단은 총괄
+// 세션의 MCP 도구로만 한다(대시보드=관제탑 원칙, 웹 시작 폼은 비범위).
+
+use std::collections::BTreeMap;
+
+use rmcp::{
+    ErrorData as McpError,
+    handler::server::wrapper::Parameters,
+    model::{CallToolResult, Content},
+    tool, tool_router,
+};
+
+use super::TunaSearchServer;
+use super::params::{DiscussionSeatParams, StartDiscussionParams, StopDiscussionParams};
+use crate::discussion::{DiscussionSeat, DiscussionSpec, DriverConfig, debate_ns, run_discussion};
+use crate::store::agents::{AGENT_TTL_SECS, AgentEntry};
+
+/// 좌석 파라미터를 로스터 online 목록과 대조해 확정 좌석으로 해석한다(순수 로직, 단위테스트 대상).
+/// 실패 = 좌석 수 범위 밖 / 중복 좌석 / offline 에이전트 / 라이브 세션 live 미동의(v2-56 §8-3).
+pub(crate) fn resolve_seats(
+    params: &[DiscussionSeatParams],
+    online: &[AgentEntry],
+) -> Result<Vec<DiscussionSeat>, String> {
+    if !(2..=6).contains(&params.len()) {
+        return Err(format!(
+            "좌석은 2~6석이어야 합니다(현재 {}석)",
+            params.len()
+        ));
+    }
+    let mut seen = std::collections::HashSet::new();
+    let mut seats = Vec::with_capacity(params.len());
+    for p in params {
+        if !seen.insert(p.agent.clone()) {
+            return Err(format!("중복 좌석: {}", p.agent));
+        }
+        let Some(entry) = online.iter().find(|e| e.uuid == p.agent) else {
+            return Err(format!(
+                "로스터에 online이 아닌 에이전트: {} (list_agents로 확인)",
+                p.agent
+            ));
+        };
+        let is_session = entry.tags.get("role").is_some_and(|r| r == "session");
+        let live = p.live.unwrap_or(false);
+        if is_session && !live {
+            return Err(format!(
+                "{}는 라이브 세션입니다. 그 세션의 컨텍스트를 소모해도 좋다면 live:true를 명시하세요",
+                entry
+                    .display_name
+                    .clone()
+                    .unwrap_or_else(|| p.agent.clone())
+            ));
+        }
+        // 라벨은 전사 speaker(`debate/<label>`)에 들어가므로 '/'는 '-'로 치환(네임스페이스 보존).
+        let label = p
+            .label
+            .clone()
+            .or_else(|| entry.display_name.clone())
+            .unwrap_or_else(|| p.agent.chars().take(8).collect())
+            .replace('/', "-");
+        seats.push(DiscussionSeat {
+            agent: p.agent.clone(),
+            label,
+            role: p.role.clone(),
+            instruction: p.instruction.clone().unwrap_or_default(),
+            live,
+        });
+    }
+    Ok(seats)
+}
+
+#[tool_router(router = discussion_router, vis = "pub(crate)")]
+impl TunaSearchServer {
+    #[tool(
+        description = "mesh 토론을 시작한다(v2-56). 좌석=로스터 online 에이전트 2~6석(라이브 세션 좌석은 live:true 필수), 유한 라운드(기본 3, 최대 10, 순차-인지) 후 synthesizer(기본=첫 좌석) 종합 1회. 전사=debate:<id> 세션(read_transcript로 열람), 결과 수신=watch-results --dispatcher debate:<id>. 비동기 작업이다(좌석당 수 분)."
+    )]
+    pub(crate) async fn start_discussion(
+        &self,
+        Parameters(p): Parameters<StartDiscussionParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let (Some(registry), Some(store), Some(writer)) = (
+            self.discussions.clone(),
+            self.a2a_store.clone(),
+            self.writer.clone(),
+        ) else {
+            return Ok(CallToolResult::success(vec![Content::text(
+                "mesh 토론 미구성(start_discussion 비활성: 브로커 serve 경로에서만 지원)"
+                    .to_string(),
+            )]));
+        };
+        let rounds = p.rounds.unwrap_or(3).clamp(1, 10);
+        let topic = p.topic.trim().to_string();
+        if topic.is_empty() {
+            return Ok(CallToolResult::error(vec![Content::text(
+                "주제가 비어 있습니다".to_string(),
+            )]));
+        }
+        // 로스터 검증 + id 발급. SQLite 락 호출이라 spawn_blocking 관례(poll_tasks와 동일).
+        let store2 = store.clone();
+        let seats_params = p.seats;
+        let outcome = tokio::task::spawn_blocking(move || {
+            let s = store2.lock().unwrap_or_else(|e| e.into_inner());
+            let now = s.now()?;
+            let online = s.list_agents(&BTreeMap::new(), &now, AGENT_TTL_SECS);
+            let seats = resolve_seats(&seats_params, &online)?;
+            let id: String = s.new_task_id()?.chars().take(12).collect();
+            Ok::<_, String>((seats, id))
+        })
+        .await
+        .unwrap_or_else(|e| Err(format!("작업 실패: {e}")));
+        let (seats, id) = match outcome {
+            Ok(v) => v,
+            Err(e) => {
+                return Ok(CallToolResult::error(vec![Content::text(format!(
+                    "토론 시작 실패: {e}"
+                ))]));
+            }
+        };
+        // 동시 1건 점유(MVP). driver 종료(FinishGuard)가 해제한다.
+        let cancel = match registry.try_begin(&id) {
+            Ok(c) => c,
+            Err(e) => {
+                return Ok(CallToolResult::error(vec![Content::text(format!(
+                    "토론 시작 실패: {e}"
+                ))]));
+            }
+        };
+        let spec = DiscussionSpec {
+            id: id.clone(),
+            topic,
+            seats,
+            rounds,
+        };
+        let seat_list = spec
+            .seats
+            .iter()
+            .map(|s| format!("{}({})", s.label, s.role.as_deref().unwrap_or("-")))
+            .collect::<Vec<_>>()
+            .join(" → ");
+        let ns = debate_ns(&id);
+        tokio::spawn(run_discussion(
+            spec,
+            store,
+            writer,
+            registry,
+            cancel,
+            DriverConfig::default(),
+        ));
+        Ok(CallToolResult::success(vec![Content::text(format!(
+            "토론 시작: id={id}\n좌석: {seat_list}\n라운드: {rounds} + 종합 1회(첫 좌석)\n전사: read_transcript(session_id=\"{ns}\")\n결과 수신: tunaround watch-results --core <브로커 URL> --dispatcher {ns} (라운드마다 RESULT 줄, 마지막 완료=종합)\n중단: stop_discussion(discussion_id=\"{id}\")\n비고: 비동기 작업입니다(좌석당 수 분, 좌석 타임아웃 600초). 브로커 재기동 시 진행 중 토론은 실패 처리됩니다."
+        ))]))
+    }
+
+    #[tool(
+        description = "진행 중 mesh 토론의 이후 라운드 발행을 중단한다. 이미 실행 중인 좌석 러너는 중단되지 않는다(취소는 상태 전이일 뿐, 늦은 완료는 무시됨)."
+    )]
+    pub(crate) async fn stop_discussion(
+        &self,
+        Parameters(p): Parameters<StopDiscussionParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let Some(registry) = self.discussions.clone() else {
+            return Ok(CallToolResult::success(vec![Content::text(
+                "mesh 토론 미구성(stop_discussion 비활성)".to_string(),
+            )]));
+        };
+        match registry.cancel(&p.discussion_id) {
+            Ok(()) => Ok(CallToolResult::success(vec![Content::text(format!(
+                "토론 {} 중단 요청됨: 이후 라운드는 발행되지 않습니다. 이미 실행 중인 좌석 러너는 끝까지 돌 수 있으나 늦은 완료는 canceled 가드에 막힙니다.",
+                p.discussion_id
+            ))])),
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
+                "중단 실패: {e}"
+            ))])),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(uuid: &str, display: Option<&str>, role_tag: Option<&str>) -> AgentEntry {
+        let mut tags = BTreeMap::new();
+        if let Some(r) = role_tag {
+            tags.insert("role".to_string(), r.to_string());
+        }
+        AgentEntry {
+            uuid: uuid.to_string(),
+            tags,
+            display_name: display.map(String::from),
+            last_heartbeat: "2026-07-18 00:00:00".to_string(),
+            human_input_at: None,
+        }
+    }
+
+    fn seat_param(agent: &str, live: Option<bool>) -> DiscussionSeatParams {
+        DiscussionSeatParams {
+            agent: agent.to_string(),
+            label: None,
+            role: None,
+            instruction: None,
+            live,
+        }
+    }
+
+    #[test]
+    fn resolve_seats_rejects_out_of_range_and_duplicates() {
+        let online = vec![entry("a", None, None), entry("b", None, None)];
+        assert!(
+            resolve_seats(&[seat_param("a", None)], &online).is_err(),
+            "1석 거부"
+        );
+        let dup = [seat_param("a", None), seat_param("a", None)];
+        assert!(resolve_seats(&dup, &online).is_err(), "중복 거부");
+    }
+
+    #[test]
+    fn resolve_seats_rejects_offline_agent() {
+        let online = vec![entry("a", None, None)];
+        let params = [seat_param("a", None), seat_param("ghost", None)];
+        let err = resolve_seats(&params, &online).unwrap_err();
+        assert!(err.contains("online이 아닌"), "{err}");
+    }
+
+    #[test]
+    fn resolve_seats_requires_live_flag_for_session_agents() {
+        let online = vec![
+            entry("w", None, Some("worker")),
+            entry("s", Some("mac-claude-home"), Some("session")),
+        ];
+        let params = [seat_param("w", None), seat_param("s", None)];
+        let err = resolve_seats(&params, &online).unwrap_err();
+        assert!(err.contains("live:true"), "{err}");
+        // live:true 명시하면 통과 + 라벨=display_name.
+        let ok = resolve_seats(
+            &[seat_param("w", None), seat_param("s", Some(true))],
+            &online,
+        )
+        .unwrap();
+        assert_eq!(ok[1].label, "mac-claude-home");
+        assert!(ok[1].live);
+        assert!(!ok[0].live);
+    }
+
+    #[test]
+    fn resolve_seats_label_fallback_and_slash_sanitize() {
+        let online = vec![
+            entry("0123456789abcdef", None, None),
+            entry("x", Some("win/claude"), None),
+        ];
+        let params = [seat_param("0123456789abcdef", None), seat_param("x", None)];
+        let seats = resolve_seats(&params, &online).unwrap();
+        assert_eq!(seats[0].label, "01234567", "display 없으면 uuid 앞 8자");
+        assert_eq!(seats[1].label, "win-claude", "라벨의 '/'는 '-'로 치환");
+    }
+}

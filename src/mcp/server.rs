@@ -116,6 +116,19 @@ pub async fn serve_http_mcp_on_listener(
         let a2a = a2a_store.clone();
         let w = writer.clone();
         tokio::task::spawn_blocking(move || {
+            // v2-56 기동 고아 sweep: 재기동으로 driver(인메모리)가 소멸한 토론의 열린 task를 failed로
+            // 전이한다(사유=broker restart, failed terminal이 곧 watch-results 통지). backfill보다 먼저
+            // 돌려 방금 실패 처리된 task도 이번 기동에 색인되게 한다.
+            {
+                let store = a2a.lock().unwrap_or_else(|e| e.into_inner());
+                match store.fail_orphan_debate_tasks() {
+                    Ok(n) if n > 0 => {
+                        eprintln!("[debate-sweep] 재기동 고아 토론 task {n}건 실패 처리")
+                    }
+                    Ok(_) => {}
+                    Err(e) => eprintln!("[debate-sweep] 고아 sweep 실패(무시): {e}"),
+                }
+            }
             if let Some(w) = &w {
                 crate::mcp::backfill_unindexed_terminal_tasks(&a2a, w);
             }
@@ -138,12 +151,16 @@ pub async fn serve_http_mcp_on_listener(
     let reader2 = reader.clone();
     let writer2 = writer.clone();
     let roster2 = roster.clone();
+    // v2-56 mesh 토론 레지스트리: 브로커 프로세스당 1개(동시 1건 제한의 단일 소스). 요청마다 새로
+    // 만드는 TunaSearchServer 인스턴스들이 같은 Arc를 공유해야 start/stop이 서로 보인다.
+    let discussions = Arc::new(crate::discussion::DiscussionRegistry::new());
     // service_factory: 요청마다 새 TunaSearchServer 인스턴스를 생성한다(Clone 불필요, Arc 공유).
     let service: StreamableHttpService<TunaSearchServer, LocalSessionManager> =
         StreamableHttpService::new(
             move || {
                 let mut s = TunaSearchServer::new(retriever2.clone())
-                    .with_a2a_store(a2a_store_for_mcp.clone());
+                    .with_a2a_store(a2a_store_for_mcp.clone())
+                    .with_discussions(discussions.clone());
                 if let Some(r) = &reader2 {
                     s = s.with_transcript_reader(r.clone());
                 }
@@ -592,8 +609,9 @@ async fn dashboard_roster_handler(
         online: bool,
         human_input_at: Option<String>,
         /// 이 세션이 지금 실제로 일하는 중인지(=state=working이면서 updated_at이 신선한 열린 task의
-        /// 대상). 대시보드가 presence 닷 위에 "동작 중" 스피너를 얹는 소프트 신호(v2-54, 신선도
-        /// 게이트=v2-55/이슈 #94). 조회 실패 시 false(스피너만 안 뜸).
+        /// 대상). 대시보드가 presence 닷 위에 "동작 중" 스피너를 얹는 소프트 신호(스피너·신선도
+        /// 게이트=이슈 #94. 과거 주석의 v2-54/v2-55 표기는 설계 문서 번호와 충돌해 이슈 번호로 정리).
+        /// 조회 실패 시 false(스피너만 안 뜸).
         busy: bool,
     }
     // health 핸들러와 동일 패턴(fail-visible): spawn_blocking JoinError(내부 패닉/취소)를 빈 배열

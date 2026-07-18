@@ -116,6 +116,40 @@ pub struct SendTaskParams {
     pub to_selector: Option<String>,
 }
 
+/// start_discussion 좌석 파라미터(v2-56 mesh 토론).
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct DiscussionSeatParams {
+    /// 좌석 에이전트 uuid(로스터 online 필수, list_agents로 발견).
+    pub agent: String,
+    /// 전사·프롬프트 표기용 라벨(생략 시 로스터 display_name, 그것도 없으면 uuid 앞 8자).
+    pub label: Option<String>,
+    /// 토론 역할(proposer/reviewer/verifier/synthesizer 별칭 포함. 그 외 문자열은 역할 지시문 없이 무시).
+    pub role: Option<String>,
+    /// 좌석별 추가 지시(자유 텍스트, 역할 지시문 뒤에 덧붙는다).
+    pub instruction: Option<String>,
+    /// 라이브 세션 좌석 명시 동의(v2-56 §8-3). 로스터 role=session 에이전트는 true 필수
+    /// (사람이 쓰는 세션을 실수로 토론에 끌어들이는 것 방지).
+    pub live: Option<bool>,
+}
+
+/// start_discussion 툴 파라미터(v2-56 mesh 토론 시작).
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct StartDiscussionParams {
+    /// 토론 주제(모든 라운드 프롬프트에 실린다).
+    pub topic: String,
+    /// 좌석 2~6석. 배열 순서 = 라운드 내 발언 순서(순차-인지: 뒤 좌석이 앞 좌석 답을 본다).
+    pub seats: Vec<DiscussionSeatParams>,
+    /// 라운드 수(기본 3, 1~10로 클램프). 소진 후 synthesizer 종합 1회가 추가로 돈다.
+    pub rounds: Option<u32>,
+}
+
+/// stop_discussion 툴 파라미터(이후 라운드 발행 중단).
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct StopDiscussionParams {
+    /// start_discussion이 반환한 토론 id.
+    pub discussion_id: String,
+}
+
 /// register_agent 툴 파라미터(워커/세션이 뜰 때 로스터에 자기 등록).
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct RegisterAgentParams {
