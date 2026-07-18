@@ -9,13 +9,17 @@ use std::sync::{Arc, Mutex};
 
 use crate::orchestrator::prompt::{PromptContext, build_round_prompt};
 use crate::orchestrator::{Participant, TranscriptWriter};
-use crate::store::a2a::{Message, Part, TaskState};
+use crate::store::a2a::{Artifact, Message, Part, TaskState};
 use crate::store::sqlite::SqliteStore;
 use crate::types::Utterance;
 
 /// 토론 네임스페이스 프리픽스. from_agent와 전사 session_id가 같은 값을 쓴다
 /// (`debate:<discussion_id>`). 기동 고아 sweep(`fail_orphan_debate_tasks`)의 LIKE 술어와 동기 유지.
 pub const DEBATE_NS_PREFIX: &str = "debate:";
+
+/// 게이트 다이제스트·대기 표식 task의 to_agent(좌석이 아니라 driver 자신이 발행·소비). 색인 제외
+/// (mcp/indexing.rs: 다이제스트 요약은 이미 색인된 좌석 발언의 스니펫 중복)와 동기 유지.
+pub const DEBATE_DRIVER_AGENT: &str = "debate-driver";
 
 /// discussion_id → from_agent(=전사 session_id) 네임스페이스 문자열.
 pub fn debate_ns(discussion_id: &str) -> String {
@@ -44,6 +48,9 @@ pub struct DiscussionSpec {
     pub topic: String,
     pub seats: Vec<DiscussionSeat>,
     pub rounds: u32,
+    /// 라운드 간 사람 승인 게이트(이슈 #131, 옵트인). true면 각 성공 라운드 뒤(종합 발행 직전 포함)
+    /// 다이제스트를 인박스로 배달하고 continue_discussion까지 대기한다.
+    pub gate: bool,
 }
 
 /// driver 대기 파라미터. 테스트가 짧은 값으로 주입한다.
@@ -53,6 +60,9 @@ pub struct DriverConfig {
     pub seat_timeout_secs: u64,
     /// get_task 폴링 간격(밀리초).
     pub poll_interval_ms: u64,
+    /// 게이트 대기 표식 task의 lease 연장 주기(초). 워커 자동연장 관례(5분)와 동일, lease 30분보다
+    /// 짧다. 테스트가 0으로 주입해 연장 경로를 통과시킨다.
+    pub sentinel_extend_secs: u64,
 }
 
 impl Default for DriverConfig {
@@ -60,8 +70,30 @@ impl Default for DriverConfig {
         Self {
             seat_timeout_secs: 600,
             poll_interval_ms: 3000,
+            sentinel_extend_secs: 300,
         }
     }
+}
+
+/// 라운드 간 사람 승인 게이트 상태(이슈 #131). registry(ActiveDiscussion)와 driver가 Arc로 공유한다.
+#[derive(Debug, Clone, PartialEq)]
+pub enum GateState {
+    /// 게이트 비대기(라운드 진행 중 또는 gate 미사용 토론).
+    Idle,
+    /// 라운드 완료 후 사람 승인 대기(round/total = 다이제스트·에러 문구 표기용).
+    Waiting { round: u32, total: u32 },
+    /// continue_discussion 수신분(driver가 회수하며 Idle로 되돌린다).
+    Proceed {
+        steer: Option<String>,
+        conclude: bool,
+    },
+}
+
+/// try_begin이 driver에 넘기는 제어 핸들(취소 플래그 + 게이트 셀).
+#[derive(Debug)]
+pub struct DiscussionControl {
+    pub cancel: Arc<AtomicBool>,
+    pub gate: Arc<Mutex<GateState>>,
 }
 
 /// 진행 중 토론 레지스트리(동시 1건 제한, v2-56 MVP). 인메모리라 브로커 재기동 시 자연 소멸하고,
@@ -75,6 +107,7 @@ pub struct DiscussionRegistry {
 struct ActiveDiscussion {
     id: String,
     cancel: Arc<AtomicBool>,
+    gate: Arc<Mutex<GateState>>,
 }
 
 impl DiscussionRegistry {
@@ -82,21 +115,67 @@ impl DiscussionRegistry {
         Self::default()
     }
 
-    /// 새 토론을 점유한다. 이미 진행 중이면 Err(동시 1건 제한). 성공 시 취소 플래그를 반환한다.
-    pub fn try_begin(&self, id: &str) -> Result<Arc<AtomicBool>, String> {
+    /// 새 토론을 점유한다. 이미 진행 중이면 Err(동시 1건 제한). 성공 시 driver 제어 핸들을 반환한다.
+    pub fn try_begin(&self, id: &str) -> Result<DiscussionControl, String> {
         let mut active = self.active.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(a) = active.as_ref() {
+            // 게이트 대기는 타임아웃이 없어 잊힌 토론이 슬롯을 무기한 점유할 수 있다. 거부 문구에
+            // 대기 상태와 해제 명령을 실어 발견·탈출 경로를 준다(설계 적대 검증 minor).
+            let gate_hint = match *a.gate.lock().unwrap_or_else(|e| e.into_inner()) {
+                GateState::Waiting { round, total } => format!(
+                    " - 라운드 {round}/{total} 게이트 대기 중: continue_discussion 또는 stop_discussion으로 해제"
+                ),
+                _ => String::new(),
+            };
             return Err(format!(
-                "이미 진행 중인 토론이 있습니다: {} (MVP=동시 1건, stop_discussion 후 재시도)",
+                "이미 진행 중인 토론이 있습니다: {}{gate_hint} (MVP=동시 1건, stop_discussion 후 재시도)",
                 a.id
             ));
         }
         let cancel = Arc::new(AtomicBool::new(false));
+        let gate = Arc::new(Mutex::new(GateState::Idle));
         *active = Some(ActiveDiscussion {
             id: id.to_string(),
             cancel: cancel.clone(),
+            gate: gate.clone(),
         });
-        Ok(cancel)
+        Ok(DiscussionControl { cancel, gate })
+    }
+
+    /// 게이트 대기 중인 토론을 다음 단계로 진행시킨다(continue_discussion 경로). Waiting일 때만
+    /// Proceed 전이하고 대기 중이던 (round, total)을 반환한다.
+    pub fn continue_active(
+        &self,
+        id: &str,
+        steer: Option<String>,
+        conclude: bool,
+    ) -> Result<(u32, u32), String> {
+        let active = self.active.lock().unwrap_or_else(|e| e.into_inner());
+        match active.as_ref() {
+            Some(a) if a.id == id => {
+                // stop 선행 후 continue가 오면: Proceed를 세워도 driver는 cancel을 먼저 보고 중단하므로
+                // "진행됨" 성공 응답이 거짓이 된다. 여기서 거부한다(설계 적대 검증 minor).
+                if a.cancel.load(Ordering::Relaxed) {
+                    return Err("이미 중단 요청된 토론입니다(stop_discussion 선행)".to_string());
+                }
+                let mut gate = a.gate.lock().unwrap_or_else(|e| e.into_inner());
+                match *gate {
+                    GateState::Waiting { round, total } => {
+                        *gate = GateState::Proceed { steer, conclude };
+                        Ok((round, total))
+                    }
+                    _ => Err(
+                        "게이트 대기 중이 아닙니다(라운드 진행 중이거나 gate 미사용 토론)"
+                            .to_string(),
+                    ),
+                }
+            }
+            Some(a) => Err(format!("진행 중 토론 id 불일치: 현재={}", a.id)),
+            None => Err(
+                "진행 중인 토론이 없습니다(게이트 대기 중 브로커가 재기동되면 토론은 소멸합니다 - 재발의 필요)"
+                    .to_string(),
+            ),
+        }
     }
 
     /// 진행 중 토론의 이후 라운드 발행을 중단시킨다(이미 실행 중인 좌석 러너는 중단 불가).
@@ -186,6 +265,37 @@ fn synthesis_topic(topic: &str) -> String {
     format!("토론을 종료합니다. 지금까지의 논의 전체를 종합해주세요. 원 주제: {topic}")
 }
 
+/// 게이트 다이제스트 본문(순수 함수, 문구 계약 테스트 대상). 선두 줄이 watch-results RESULT 프리뷰
+/// (160자)에 그대로 실리므로 상태와 승인 주체를 앞세운다. 승인 주체=사람 문구는 계약이다: 인박스를
+/// 소비하는 세션이 자율 규약(debate 발신=총괄발과 동일한 자율 수행)에 따라 스스로 continue를 부르면
+/// 게이트가 무력화되므로, "사용자 지시가 있을 때만"을 본문에 못박는다(설계 적대 검증 major).
+pub fn build_gate_digest(
+    discussion_id: &str,
+    round: u32,
+    total: u32,
+    same_round: &[Utterance],
+) -> String {
+    let mut out = format!(
+        "[게이트] 라운드 {round}/{total} 완료·사람 승인 대기. 사용자에게 보고하고 지시가 있을 때만 continue_discussion(discussion_id=\"{discussion_id}\") 또는 stop_discussion을 호출하세요(자율 진행 금지)."
+    );
+    out.push_str("\n\n라운드 발언 요약:");
+    for u in same_round {
+        // 201자만 떠서 초과 여부까지 한 번의 순회로 판정한다(gemini: 이중 순회).
+        let mut preview: String = u.content.chars().take(201).collect();
+        let ellipsis = if preview.chars().count() > 200 {
+            preview = preview.chars().take(200).collect();
+            "…"
+        } else {
+            ""
+        };
+        out.push_str(&format!("\n- {}: {preview}{ellipsis}", u.speaker));
+    }
+    out.push_str(&format!(
+        "\n\n조향: continue_discussion(steer=\"지시\")는 다음 라운드에 [사용자 조향 지시]로 주입 / conclude=true는 남은 라운드를 생략하고 종합 직행.\n전문: read_transcript(session_id=\"{DEBATE_NS_PREFIX}{discussion_id}\")"
+    ));
+    out
+}
+
 /// 좌석 응답 하나의 결과.
 enum SeatOutcome {
     /// 발언 텍스트(completed artifact).
@@ -267,6 +377,248 @@ async fn close_seat_task(
         }
     }
     SeatOutcome::Skipped(marker)
+}
+
+/// 게이트 대기의 산출(라운드 루프가 소비).
+enum GateOutcome {
+    /// continue_discussion 수신: steer(조향 지시)·conclude(남은 라운드 생략, 종합 직행).
+    Proceed {
+        steer: Option<String>,
+        conclude: bool,
+    },
+    /// stop_discussion 수신(기존 중단 경로로 합류).
+    Canceled,
+    /// 다이제스트·표식 발행 실패(store 병증 클래스) - 전사 실패와 동급으로 토론을 중단시킨다.
+    /// Waiting 무통지 대기는 금지이고, 자동 진행 폴백은 사용자가 명시한 승인 게이트를 조용히
+    /// 제거하므로 채택하지 않는다(설계 적대 검증 major 판정).
+    Abort(String),
+}
+
+/// driver 명의 task 발행 + 자가 claim(게이트 다이제스트·대기 표식 공용). from=debate:<id>,
+/// to=DEBATE_DRIVER_AGENT라 watch-results 배달 대상이면서 좌석 소비 경로와는 무관하다.
+async fn issue_driver_task(
+    store: &Arc<Mutex<SqliteStore>>,
+    ns: &str,
+    text: &str,
+) -> Result<String, String> {
+    let from = ns.to_string();
+    let body = text.to_string();
+    with_store(store, move |s| {
+        let message_id = s.new_task_id()?;
+        let t = s.create_task_from_message(
+            &from,
+            DEBATE_DRIVER_AGENT,
+            Message {
+                message_id,
+                role: "user".to_string(),
+                parts: vec![Part {
+                    text: Some(body),
+                    ..Default::default()
+                }],
+                task_id: None,
+                context_id: None,
+            },
+        )?;
+        // claim 실패 시 방금 만든 submitted task를 정리하고 반환한다(안 하면 id를 잃은 열린 task가
+        // 재기동 sweep까지 잔존 - CodeRabbit). 같은 락 안이라 경합 상대는 없고 store 병증 클래스다.
+        if let Err(e) = s.try_claim(&t.id, Some(DEBATE_DRIVER_AGENT), Some(DEBATE_DRIVER_AGENT)) {
+            let _ = s.try_fail(&t.id, None, None);
+            return Err(format!("게이트 driver task claim 실패: {e}"));
+        }
+        Ok(t.id)
+    })
+    .await
+}
+
+/// driver 명의 task를 completed로 마감한다(artifact=본문 = watch-results RESULT 줄에 실림).
+/// working이 아니면(lease 만료 requeue 등) 재claim 후 1회 재시도한다.
+async fn complete_driver_task(
+    store: &Arc<Mutex<SqliteStore>>,
+    task_id: &str,
+    artifact_text: String,
+) -> Result<(), String> {
+    let tid = task_id.to_string();
+    with_store(store, move |s| {
+        let artifact = Artifact {
+            artifact_id: format!("gate-{tid}"),
+            name: None,
+            parts: vec![Part {
+                text: Some(artifact_text),
+                ..Default::default()
+            }],
+        };
+        s.try_complete(
+            &tid,
+            std::slice::from_ref(&artifact),
+            Some(DEBATE_DRIVER_AGENT),
+        )
+        .or_else(|_| {
+            s.try_claim(&tid, Some(DEBATE_DRIVER_AGENT), Some(DEBATE_DRIVER_AGENT))?;
+            s.try_complete(&tid, &[artifact], Some(DEBATE_DRIVER_AGENT))
+        })
+    })
+    .await
+}
+
+/// driver 명의 task(표식·다이제스트)를 failed로 마감한다(중단·통지 실패 경로 = 인박스에 failed 통지).
+/// failer=None(dispatcher 직접 경로)이라 lease 만료 requeue로 submitted가 된 task도 마감된다. 실패는
+/// 로그만: 남은 열린 task는 다음 재기동의 고아 sweep이 정리한다.
+async fn fail_driver_task(store: &Arc<Mutex<SqliteStore>>, task_id: &str, reason: &str) {
+    let tid = task_id.to_string();
+    let msg = reason.to_string();
+    let r = with_store(store, move |s| {
+        let message_id = s.new_task_id()?;
+        s.try_fail(
+            &tid,
+            Some(&Message {
+                message_id,
+                role: "agent".to_string(),
+                parts: vec![Part {
+                    text: Some(msg),
+                    ..Default::default()
+                }],
+                task_id: Some(tid.clone()),
+                context_id: None,
+            }),
+            None,
+        )
+    })
+    .await;
+    if let Err(e) = r {
+        eprintln!("[debate] 게이트 표식 실패 마감 실패(무시): {e}");
+    }
+}
+
+/// 게이트 한 지점의 입력 묶음(gate_wait 인자 - clippy too_many_arguments 해소용 값 묶음).
+struct GateRound {
+    round: u32,
+    total: u32,
+    digest: String,
+}
+
+/// 라운드 간 사람 승인 게이트(#131). 순서가 계약이다: ① Waiting을 먼저 세워 "다이제스트를 보고 즉시
+/// continue를 불렀는데 아직 대기 아님" 레이스를 제거 ② 전사 게이트 마커(다이제스트를 놓쳐도
+/// read_transcript로 상태 재구성) ③ 대기 표식 task(자가 claim으로 working 유지 - 브로커 재기동 시
+/// 고아 sweep이 failed로 마감 = 인박스 통지. 게이트 대기 중 재기동 침묵사를 기존 프리미티브로 봉합)
+/// ④ 다이제스트 task(즉시 completed = watch-results push 통지) ⑤ continue/stop 폴링.
+async fn gate_wait(
+    store: &Arc<Mutex<SqliteStore>>,
+    writer: &Arc<dyn TranscriptWriter>,
+    ns: &str,
+    gr: GateRound,
+    control: &DiscussionControl,
+    cfg: &DriverConfig,
+) -> GateOutcome {
+    // ns = `debate:<id>` 이므로 표기용 id는 프리픽스를 벗겨 얻는다(인자 수 절약).
+    let discussion_id = ns.strip_prefix(DEBATE_NS_PREFIX).unwrap_or(ns);
+    let GateRound {
+        round,
+        total,
+        digest,
+    } = gr;
+    // Waiting을 먼저 세우므로 아래 발행 실패(Abort) 경로가 그 사이 도착한 Proceed를 덮어쓸 수 있다
+    // (continue_discussion은 이미 성공을 반환한 상태). store 병증 + 밀리초 창의 동시 continue라는
+    // 이중 조건이고 Abort 자체가 표식 failed·전사 마커로 통지되므로 수용하되, 폐기를 로그로 남긴다.
+    let set_gate = |st: GateState| {
+        let mut g = control.gate.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = std::mem::replace(&mut *g, st);
+        if matches!(prev, GateState::Proceed { .. }) {
+            eprintln!("[debate] 게이트 종료 경로가 도착해 있던 continue(Proceed)를 폐기합니다");
+        }
+    };
+    set_gate(GateState::Waiting { round, total });
+    if let Err(e) = append_transcript(
+        writer,
+        ns,
+        "debate/driver",
+        &format!("[게이트] 라운드 {round}/{total} 완료, 사람 승인 대기(continue_discussion)"),
+    )
+    .await
+    {
+        set_gate(GateState::Idle);
+        return GateOutcome::Abort(format!("게이트 마커 기록 실패: {e}"));
+    }
+    // 문구 주의: 재기동만 단정하지 않는다 - 절전 등으로 lease 만료·재claim이 반복되면
+    // expire_stale_claims의 attempt 상한 격리로도 이 본문이 실패 사유로 배달될 수 있다(코드 리뷰 minor).
+    let sentinel_text = format!(
+        "[게이트 대기 표식] 토론 {discussion_id} 라운드 {round}/{total} 사람 승인 대기. driver가 이 task를 더 유지하지 못하면(브로커 재기동 등) failed로 마감되어 인박스에 통지됩니다."
+    );
+    let sentinel = match issue_driver_task(store, ns, &sentinel_text).await {
+        Ok(id) => id,
+        Err(e) => {
+            set_gate(GateState::Idle);
+            return GateOutcome::Abort(format!("게이트 표식 발행 실패: {e}"));
+        }
+    };
+    let digest_task = issue_driver_task(
+        store,
+        ns,
+        &format!("[게이트 다이제스트] 라운드 {round}/{total}"),
+    )
+    .await;
+    let digest_result = match &digest_task {
+        Ok(id) => complete_driver_task(store, id, digest).await,
+        Err(e) => Err(e.clone()),
+    };
+    if let Err(e) = digest_result {
+        // 발행됐지만 완료 못한 다이제스트 task도 마감한다(안 하면 재기동 sweep까지 열린 채 잔존
+        // = 헬스 노이즈, 코드 리뷰 minor).
+        if let Ok(id) = &digest_task {
+            fail_driver_task(store, id, "[debate] 게이트 다이제스트 완료 실패로 중단").await;
+        }
+        fail_driver_task(
+            store,
+            &sentinel,
+            "[debate] 게이트 다이제스트 발행 실패로 중단",
+        )
+        .await;
+        set_gate(GateState::Idle);
+        return GateOutcome::Abort(format!("게이트 다이제스트 발행 실패: {e}"));
+    }
+    let mut last_extend = std::time::Instant::now();
+    loop {
+        tokio::time::sleep(std::time::Duration::from_millis(cfg.poll_interval_ms)).await;
+        if control.cancel.load(Ordering::Relaxed) {
+            fail_driver_task(store, &sentinel, "[debate] stop_discussion으로 게이트 중단").await;
+            set_gate(GateState::Idle);
+            return GateOutcome::Canceled;
+        }
+        let taken = {
+            let mut g = control.gate.lock().unwrap_or_else(|e| e.into_inner());
+            if matches!(*g, GateState::Proceed { .. }) {
+                // Proceed 회수와 동시에 Idle 복귀(별도 reset 불요).
+                Some(std::mem::replace(&mut *g, GateState::Idle))
+            } else {
+                None
+            }
+        };
+        if let Some(GateState::Proceed { steer, conclude }) = taken {
+            let note = if conclude {
+                "[게이트 해제] 종합 직행"
+            } else {
+                "[게이트 해제] 진행"
+            };
+            // 표식 마감 실패는 로그만: 사람 승인이 이미 도착했으므로 토론은 계속한다(표식=통지 수단).
+            if let Err(e) = complete_driver_task(store, &sentinel, note.to_string()).await {
+                eprintln!("[debate {discussion_id}] 게이트 표식 마감 실패(무시): {e}");
+            }
+            return GateOutcome::Proceed { steer, conclude };
+        }
+        // 표식 lease 자동연장(워커 관례 답습). 만료 requeue로 submitted가 됐으면 재claim으로 복구.
+        if last_extend.elapsed().as_secs() >= cfg.sentinel_extend_secs {
+            last_extend = std::time::Instant::now();
+            let sid = sentinel.clone();
+            let r = with_store(store, move |s| {
+                s.extend_lease(&sid, DEBATE_DRIVER_AGENT).or_else(|_| {
+                    s.try_claim(&sid, Some(DEBATE_DRIVER_AGENT), Some(DEBATE_DRIVER_AGENT))
+                })
+            })
+            .await;
+            if let Err(e) = r {
+                eprintln!("[debate {discussion_id}] 게이트 표식 lease 연장 실패(무시): {e}");
+            }
+        }
+    }
 }
 
 /// 좌석 발언 상한(자). 프롬프트 조립 캡(prompt.rs MAX_ANSWER_LEN=4000)과 동치. 프리앰블이 이 상한을
@@ -406,9 +758,10 @@ pub async fn run_discussion(
     store: Arc<Mutex<SqliteStore>>,
     writer: Arc<dyn TranscriptWriter>,
     registry: Arc<DiscussionRegistry>,
-    cancel: Arc<AtomicBool>,
+    control: DiscussionControl,
     cfg: DriverConfig,
 ) {
+    let cancel = control.cancel.clone();
     let ns = debate_ns(&spec.id);
     let _guard = FinishGuard {
         registry,
@@ -470,8 +823,63 @@ pub async fn run_discussion(
             prior.extend(same_round);
             break;
         }
+        // 다이제스트는 same_round가 prior로 흡수되기 전에 조립한다(라운드 발언 요약이 내용).
+        let digest = spec
+            .gate
+            .then(|| build_gate_digest(&spec.id, round, spec.rounds, &same_round));
         prior.extend(same_round);
         eprintln!("[debate {}] 라운드 {round}/{} 완료", spec.id, spec.rounds);
+        // 라운드 간 사람 승인 게이트(#131, 옵트인). 전 좌석 실패(aborted) 경로는 위에서 이미 중단하므로
+        // 성공 라운드 뒤에만 선다. 마지막 라운드 뒤에도 서서 synthesizer 발행을 사람이 승인한다
+        // ("synthesizer도 라운드"라는 stop 계약과 일관).
+        if let Some(digest) = digest {
+            match gate_wait(
+                &store,
+                &writer,
+                &ns,
+                GateRound {
+                    round,
+                    total: spec.rounds,
+                    digest,
+                },
+                &control,
+                &cfg,
+            )
+            .await
+            {
+                GateOutcome::Proceed { steer, conclude } => {
+                    if let Some(s) = steer {
+                        // 조향은 전사 debate/user 턴 + prior 포함(순차-인지 그대로). 프리픽스로 피어
+                        // 발언이 아니라 지시임을 명시한다(설계 적대 검증: prior는 화자 권위 구분이 없다).
+                        let content = format!("[사용자 조향 지시] {s}");
+                        if let Err(e) =
+                            append_transcript(&writer, &ns, "debate/user", &content).await
+                        {
+                            eprintln!("[debate {}] 전사 기록 실패로 중단: {e}", spec.id);
+                            return;
+                        }
+                        prior.push(Utterance::new("debate/user", content));
+                    }
+                    if conclude {
+                        eprintln!("[debate {}] conclude: 남은 라운드 생략, 종합 직행", spec.id);
+                        break 'rounds; // canceled/aborted 아님 → synthesizer로 진행.
+                    }
+                }
+                GateOutcome::Canceled => {
+                    canceled = true;
+                    break 'rounds;
+                }
+                GateOutcome::Abort(reason) => {
+                    let marker = format!("[토론 중단: 게이트 통지 실패 - {reason}]");
+                    if let Err(e) = append_transcript(&writer, &ns, "debate/driver", &marker).await
+                    {
+                        eprintln!("[debate {}] 중단 마커 기록 실패(무시): {e}", spec.id);
+                    }
+                    eprintln!("[debate {}] {marker}", spec.id);
+                    return;
+                }
+            }
+        }
     }
 
     // stop이 마지막 좌석 실행 중에 들어온 경우: 좌석 루프는 자연 종료되므로 synthesizer 발행 전에
@@ -544,17 +952,60 @@ mod tests {
     #[test]
     fn registry_enforces_single_active_discussion() {
         let reg = DiscussionRegistry::new();
-        let cancel = reg.try_begin("d1").expect("첫 점유는 성공");
+        let ctl = reg.try_begin("d1").expect("첫 점유는 성공");
         assert!(reg.try_begin("d2").is_err(), "동시 1건 제한");
         assert_eq!(reg.active_id().as_deref(), Some("d1"));
         // 다른 id cancel은 거부, 일치 id는 플래그 설정.
         assert!(reg.cancel("d2").is_err());
         reg.cancel("d1").expect("일치 id cancel");
-        assert!(cancel.load(Ordering::Relaxed));
+        assert!(ctl.cancel.load(Ordering::Relaxed));
         // finish 후 재점유 가능.
         reg.finish("d1");
         assert!(reg.active_id().is_none());
         reg.try_begin("d2").expect("해제 후 점유");
+    }
+
+    #[test]
+    fn registry_continue_requires_waiting_gate() {
+        let reg = DiscussionRegistry::new();
+        // 진행 중 토론 없음.
+        assert!(reg.continue_active("dx", None, false).is_err());
+        let ctl = reg.try_begin("d1").unwrap();
+        // Idle(라운드 진행 중) = 거부.
+        let err = reg.continue_active("d1", None, false).unwrap_err();
+        assert!(err.contains("게이트 대기 중이 아닙니다"), "{err}");
+        // id 불일치 = 거부.
+        assert!(reg.continue_active("d2", None, false).is_err());
+        // Waiting = Proceed 전이 + (round, total) 반환.
+        *ctl.gate.lock().unwrap() = GateState::Waiting { round: 2, total: 3 };
+        let (r, t) = reg
+            .continue_active("d1", Some("조향".to_string()), true)
+            .unwrap();
+        assert_eq!((r, t), (2, 3));
+        assert_eq!(
+            *ctl.gate.lock().unwrap(),
+            GateState::Proceed {
+                steer: Some("조향".to_string()),
+                conclude: true
+            }
+        );
+        // 이미 Proceed(연타) = 거부.
+        assert!(reg.continue_active("d1", None, false).is_err());
+    }
+
+    #[test]
+    fn registry_continue_rejected_after_stop_and_begin_error_carries_gate_hint() {
+        let reg = DiscussionRegistry::new();
+        let ctl = reg.try_begin("d1").unwrap();
+        *ctl.gate.lock().unwrap() = GateState::Waiting { round: 1, total: 2 };
+        // 게이트 대기 중 새 토론 시작 거부 문구에 대기 상태·해제 경로 명시(발견성).
+        let err = reg.try_begin("d2").unwrap_err();
+        assert!(err.contains("게이트 대기 중"), "{err}");
+        assert!(err.contains("continue_discussion"), "{err}");
+        // stop 선행 후 continue = 거부(모순 응답 방지).
+        reg.cancel("d1").unwrap();
+        let err = reg.continue_active("d1", None, false).unwrap_err();
+        assert!(err.contains("중단 요청"), "{err}");
     }
 
     #[test]
@@ -678,6 +1129,9 @@ mod tests {
         DriverConfig {
             seat_timeout_secs: 3,
             poll_interval_ms: 20,
+            // 0 = 게이트 대기 매 폴 회차마다 표식 lease 연장 경로를 통과시킨다(코드 리뷰: 상수라
+            // 테스트 도달 불가였던 분기).
+            sentinel_extend_secs: 0,
         }
     }
 
@@ -687,7 +1141,7 @@ mod tests {
         let cap = Arc::new(CapturingWriter(Mutex::new(Vec::new())));
         let writer: Arc<dyn TranscriptWriter> = cap.clone();
         let registry = Arc::new(DiscussionRegistry::new());
-        let cancel = registry.try_begin("t1").unwrap();
+        let control = registry.try_begin("t1").unwrap();
 
         let recv_a = Arc::new(Mutex::new(Vec::new()));
         let recv_b = Arc::new(Mutex::new(Vec::new()));
@@ -702,13 +1156,14 @@ mod tests {
                 seat("agent-b", "seat-b", Some("reviewer"), false),
             ],
             rounds: 2,
+            gate: false,
         };
         run_discussion(
             spec,
             store.clone(),
             writer.clone(),
             registry.clone(),
-            cancel,
+            control,
             test_cfg(),
         )
         .await;
@@ -743,7 +1198,7 @@ mod tests {
         let cap = Arc::new(CapturingWriter(Mutex::new(Vec::new())));
         let writer: Arc<dyn TranscriptWriter> = cap.clone();
         let registry = Arc::new(DiscussionRegistry::new());
-        let cancel = registry.try_begin("t2").unwrap();
+        let control = registry.try_begin("t2").unwrap();
 
         let recv_a = Arc::new(Mutex::new(Vec::new()));
         let seat_a = spawn_fake_seat(store.clone(), "agent-a", "A", recv_a.clone());
@@ -757,17 +1212,19 @@ mod tests {
                 seat("agent-dead", "seat-dead", None, false),
             ],
             rounds: 1,
+            gate: false,
         };
         let cfg = DriverConfig {
             seat_timeout_secs: 1,
             poll_interval_ms: 20,
+            sentinel_extend_secs: 0,
         };
         run_discussion(
             spec,
             store.clone(),
             writer.clone(),
             registry.clone(),
-            cancel,
+            control,
             cfg,
         )
         .await;
@@ -806,14 +1263,15 @@ mod tests {
         let cap = Arc::new(CapturingWriter(Mutex::new(Vec::new())));
         let writer: Arc<dyn TranscriptWriter> = cap.clone();
         let registry = Arc::new(DiscussionRegistry::new());
-        let cancel = registry.try_begin("t5").unwrap();
+        let control = registry.try_begin("t5").unwrap();
         let spec = DiscussionSpec {
             id: "t5".to_string(),
             topic: "x".to_string(),
             seats: vec![],
             rounds: 1,
+            gate: false,
         };
-        run_discussion(spec, store, writer, registry.clone(), cancel, test_cfg()).await;
+        run_discussion(spec, store, writer, registry.clone(), control, test_cfg()).await;
         assert!(
             cap.0.lock().unwrap().is_empty(),
             "빈 좌석은 전사 기록 없이 종료"
@@ -829,10 +1287,10 @@ mod tests {
         let cap = Arc::new(CapturingWriter(Mutex::new(Vec::new())));
         let writer: Arc<dyn TranscriptWriter> = cap.clone();
         let registry = Arc::new(DiscussionRegistry::new());
-        let cancel = registry.try_begin("t4").unwrap();
+        let control = registry.try_begin("t4").unwrap();
 
         let store2 = store.clone();
-        let cancel2 = cancel.clone();
+        let cancel2 = control.cancel.clone();
         let received = Arc::new(Mutex::new(0usize));
         let received2 = received.clone();
         let seat_task = tokio::spawn(async move {
@@ -866,13 +1324,14 @@ mod tests {
             topic: "취소 재확인 테스트".to_string(),
             seats: vec![seat("agent-a", "seat-a", None, false)],
             rounds: 1,
+            gate: false,
         };
         run_discussion(
             spec,
             store.clone(),
             writer,
             registry.clone(),
-            cancel,
+            control,
             test_cfg(),
         )
         .await;
@@ -889,14 +1348,456 @@ mod tests {
         );
     }
 
+    #[test]
+    fn gate_digest_wording_contract() {
+        // 선두 줄 = watch-results RESULT 프리뷰(160자)에 실리는 계약: 상태·승인 주체(사람)·해제 명령.
+        // "자율 진행 금지"는 인박스 소비 세션의 자율 규약(debate 발신=자율 수행)이 게이트를 무력화하지
+        // 않게 하는 문구 계약이다(설계 적대 검증 major).
+        let long = "발언".repeat(150); // 200자 초과 → 절단 마커.
+        let same = vec![Utterance::new("debate/seat-a", long)];
+        let d = build_gate_digest("abc123def456", 2, 3, &same);
+        let first = d.lines().next().unwrap();
+        assert!(
+            first.chars().count() <= 160,
+            "선두 줄 {}자 > 160",
+            first.chars().count()
+        );
+        assert!(first.contains("라운드 2/3"));
+        assert!(first.contains("사용자"));
+        assert!(first.contains("자율 진행 금지"));
+        assert!(first.contains("continue_discussion(discussion_id=\"abc123def456\")"));
+        assert!(d.contains("debate/seat-a"));
+        assert!(d.contains("…"), "200자 초과 절단 마커");
+        assert!(d.contains("read_transcript(session_id=\"debate:abc123def456\")"));
+        assert!(d.contains("conclude=true"));
+    }
+
+    /// 게이트 승인자 역할: gate 셀이 지정 라운드의 Waiting이 될 때까지 폴링한 뒤 continue_active를
+    /// 부른다(공개 경로 = continue_discussion 툴과 동일).
+    fn spawn_gate_approver(
+        registry: Arc<DiscussionRegistry>,
+        gate: Arc<Mutex<GateState>>,
+        id: &'static str,
+        round: u32,
+        steer: Option<&'static str>,
+        conclude: bool,
+    ) -> tokio::task::JoinHandle<()> {
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(15)).await;
+                let waiting = matches!(
+                    *gate.lock().unwrap_or_else(|e| e.into_inner()),
+                    GateState::Waiting { round: r, .. } if r == round
+                );
+                if waiting {
+                    registry
+                        .continue_active(id, steer.map(String::from), conclude)
+                        .expect("continue_active");
+                    return;
+                }
+            }
+        })
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn gate_waits_and_plain_continue_proceeds_to_synthesizer() {
+        // 마지막 라운드 뒤에도 게이트가 서고(synthesizer도 라운드), plain continue가 종합 발행으로
+        // 이어진다(적대 검증: conclude 직행 테스트로 대체 불가한 별도 경로).
+        let store = Arc::new(Mutex::new(SqliteStore::open_memory().unwrap()));
+        let cap = Arc::new(CapturingWriter(Mutex::new(Vec::new())));
+        let writer: Arc<dyn TranscriptWriter> = cap.clone();
+        let registry = Arc::new(DiscussionRegistry::new());
+        let control = registry.try_begin("g1").unwrap();
+        let gate_cell = control.gate.clone();
+
+        let recv_a = Arc::new(Mutex::new(Vec::new()));
+        let seat_a = spawn_fake_seat(store.clone(), "agent-a", "A", recv_a.clone());
+        let approver = spawn_gate_approver(registry.clone(), gate_cell, "g1", 1, None, false);
+
+        let spec = DiscussionSpec {
+            id: "g1".to_string(),
+            topic: "게이트 테스트".to_string(),
+            seats: vec![seat("agent-a", "seat-a", None, false)],
+            rounds: 1,
+            gate: true,
+        };
+        run_discussion(
+            spec,
+            store.clone(),
+            writer,
+            registry.clone(),
+            control,
+            test_cfg(),
+        )
+        .await;
+        seat_a.abort();
+        approver.abort();
+
+        let rows = cap.0.lock().unwrap();
+        // user + r1 발언 + 게이트 마커 + 종합 = 4행.
+        assert_eq!(rows.len(), 4, "{rows:?}");
+        assert!(
+            rows[2].2.contains("[게이트] 라운드 1/1"),
+            "게이트 마커: {rows:?}"
+        );
+        assert_eq!(rows[3].1, "debate/seat-a", "종합 발행됨");
+        assert_eq!(recv_a.lock().unwrap().len(), 2, "r1 + 종합");
+        // 게이트 task 2건(다이제스트+표식) 전부 completed로 마감, 열린 task 없음.
+        let s = store.lock().unwrap_or_else(|e| e.into_inner());
+        use crate::store::sqlite::ReplayLimit;
+        let done = s
+            .list_tasks_replay(Some("debate:g1"), None, &["completed"], ReplayLimit::All)
+            .unwrap();
+        let driver_tasks: Vec<_> = done
+            .iter()
+            .filter(|t| t.to_agent == DEBATE_DRIVER_AGENT)
+            .collect();
+        assert_eq!(driver_tasks.len(), 2, "다이제스트+표식: {driver_tasks:?}");
+        let texts: Vec<String> = driver_tasks.iter().map(|t| artifacts_text(t)).collect();
+        assert!(
+            texts.iter().any(|t| t.contains("자율 진행 금지")),
+            "다이제스트 문구 계약: {texts:?}"
+        );
+        assert!(
+            texts.iter().any(|t| t.contains("[게이트 해제]")),
+            "표식 해제 마감: {texts:?}"
+        );
+        assert!(
+            s.list_open_tasks_for(DEBATE_DRIVER_AGENT)
+                .unwrap()
+                .is_empty(),
+            "게이트 task 전부 마감"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn gate_steer_lands_in_transcript_and_next_round_prompt() {
+        let store = Arc::new(Mutex::new(SqliteStore::open_memory().unwrap()));
+        let cap = Arc::new(CapturingWriter(Mutex::new(Vec::new())));
+        let writer: Arc<dyn TranscriptWriter> = cap.clone();
+        let registry = Arc::new(DiscussionRegistry::new());
+        let control = registry.try_begin("g2").unwrap();
+        let gate_cell = control.gate.clone();
+
+        let recv_a = Arc::new(Mutex::new(Vec::new()));
+        let seat_a = spawn_fake_seat(store.clone(), "agent-a", "A", recv_a.clone());
+        let ap1 = spawn_gate_approver(
+            registry.clone(),
+            gate_cell.clone(),
+            "g2",
+            1,
+            Some("근거를 더 구체적으로"),
+            false,
+        );
+        let ap2 = spawn_gate_approver(registry.clone(), gate_cell, "g2", 2, None, false);
+
+        let spec = DiscussionSpec {
+            id: "g2".to_string(),
+            topic: "조향 테스트".to_string(),
+            seats: vec![seat("agent-a", "seat-a", None, false)],
+            rounds: 2,
+            gate: true,
+        };
+        run_discussion(
+            spec,
+            store.clone(),
+            writer,
+            registry.clone(),
+            control,
+            test_cfg(),
+        )
+        .await;
+        seat_a.abort();
+        ap1.abort();
+        ap2.abort();
+
+        let rows = cap.0.lock().unwrap();
+        // user + r1 + 게이트1 + 조향 + r2 + 게이트2 + 종합 = 7행.
+        assert_eq!(rows.len(), 7, "{rows:?}");
+        assert_eq!(
+            rows[3].1, "debate/user",
+            "조향은 debate/user 화자: {rows:?}"
+        );
+        assert_eq!(rows[3].2, "[사용자 조향 지시] 근거를 더 구체적으로");
+        let recv = recv_a.lock().unwrap();
+        assert!(
+            recv[1].contains("[사용자 조향 지시] 근거를 더 구체적으로"),
+            "r2 프롬프트에 조향 주입: {}",
+            recv[1]
+        );
+        assert!(
+            recv[2].contains("[사용자 조향 지시]"),
+            "종합 프롬프트에도 prior로 포함"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn gate_conclude_skips_remaining_rounds_to_synthesis() {
+        let store = Arc::new(Mutex::new(SqliteStore::open_memory().unwrap()));
+        let cap = Arc::new(CapturingWriter(Mutex::new(Vec::new())));
+        let writer: Arc<dyn TranscriptWriter> = cap.clone();
+        let registry = Arc::new(DiscussionRegistry::new());
+        let control = registry.try_begin("g3").unwrap();
+        let gate_cell = control.gate.clone();
+
+        let recv_a = Arc::new(Mutex::new(Vec::new()));
+        let seat_a = spawn_fake_seat(store.clone(), "agent-a", "A", recv_a.clone());
+        let ap = spawn_gate_approver(
+            registry.clone(),
+            gate_cell,
+            "g3",
+            1,
+            Some("이대로 충분, 종합"),
+            true,
+        );
+
+        let spec = DiscussionSpec {
+            id: "g3".to_string(),
+            topic: "종합 직행 테스트".to_string(),
+            seats: vec![seat("agent-a", "seat-a", None, false)],
+            rounds: 3,
+            gate: true,
+        };
+        run_discussion(
+            spec,
+            store.clone(),
+            writer,
+            registry.clone(),
+            control,
+            test_cfg(),
+        )
+        .await;
+        seat_a.abort();
+        ap.abort();
+
+        // 라운드 2·3 생략: 좌석 수신 = r1 + 종합 2건뿐.
+        let recv = recv_a.lock().unwrap();
+        assert_eq!(recv.len(), 2, "남은 라운드 생략");
+        assert!(recv[1].contains("종합해주세요"), "종합 직행: {}", recv[1]);
+        assert!(
+            recv[1].contains("[사용자 조향 지시] 이대로 충분, 종합"),
+            "steer+conclude 동시: 종합 프롬프트에 조향 반영"
+        );
+        // 전사: user + r1 + 게이트 마커 + 조향 + 종합 = 5행.
+        let rows = cap.0.lock().unwrap();
+        assert_eq!(rows.len(), 5, "{rows:?}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn gate_stop_during_wait_cancels_and_fails_sentinel() {
+        let store = Arc::new(Mutex::new(SqliteStore::open_memory().unwrap()));
+        let cap = Arc::new(CapturingWriter(Mutex::new(Vec::new())));
+        let writer: Arc<dyn TranscriptWriter> = cap.clone();
+        let registry = Arc::new(DiscussionRegistry::new());
+        let control = registry.try_begin("g4").unwrap();
+        let gate_cell = control.gate.clone();
+
+        let recv_a = Arc::new(Mutex::new(Vec::new()));
+        let seat_a = spawn_fake_seat(store.clone(), "agent-a", "A", recv_a.clone());
+        let reg2 = registry.clone();
+        let stopper = tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(15)).await;
+                let waiting = matches!(
+                    *gate_cell.lock().unwrap_or_else(|e| e.into_inner()),
+                    GateState::Waiting { .. }
+                );
+                if waiting {
+                    reg2.cancel("g4").expect("stop");
+                    return;
+                }
+            }
+        });
+
+        let spec = DiscussionSpec {
+            id: "g4".to_string(),
+            topic: "게이트 중 중단 테스트".to_string(),
+            seats: vec![seat("agent-a", "seat-a", None, false)],
+            rounds: 2,
+            gate: true,
+        };
+        run_discussion(
+            spec,
+            store.clone(),
+            writer,
+            registry.clone(),
+            control,
+            test_cfg(),
+        )
+        .await;
+        seat_a.abort();
+        stopper.abort();
+
+        // 좌석 수신 1건(r1)뿐, 종합 미발행. 전사 = user + r1 + 게이트 마커 + 중단 마커.
+        assert_eq!(recv_a.lock().unwrap().len(), 1);
+        let rows = cap.0.lock().unwrap();
+        assert_eq!(rows.len(), 4, "{rows:?}");
+        assert!(rows[3].2.contains("stop_discussion"), "{rows:?}");
+        // 표식은 failed로 마감(인박스에 중단 통지), 열린 task 없음.
+        let s = store.lock().unwrap_or_else(|e| e.into_inner());
+        use crate::store::sqlite::ReplayLimit;
+        let failed = s
+            .list_tasks_replay(Some("debate:g4"), None, &["failed"], ReplayLimit::All)
+            .unwrap();
+        assert_eq!(failed.len(), 1, "표식 1건만 failed: {failed:?}");
+        let reason = failed[0]
+            .status_message
+            .as_ref()
+            .and_then(|m| m.parts.first())
+            .and_then(|p| p.text.as_deref())
+            .unwrap_or_default();
+        assert!(reason.contains("게이트 중단"), "{reason}");
+        assert!(
+            s.list_open_tasks_for(DEBATE_DRIVER_AGENT)
+                .unwrap()
+                .is_empty(),
+            "게이트 task 전부 마감"
+        );
+        assert!(registry.active_id().is_none(), "점유 해제");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn gate_stands_after_partial_failure_round_with_marker_in_digest() {
+        // 일부 좌석만 실패한 라운드는 성공 라운드다(전 좌석 실패만 중단). 게이트가 서고 다이제스트에
+        // [무응답] 마커 발언이 요약으로 실린다(코드 리뷰: 커버리지 공백).
+        let store = Arc::new(Mutex::new(SqliteStore::open_memory().unwrap()));
+        let cap = Arc::new(CapturingWriter(Mutex::new(Vec::new())));
+        let writer: Arc<dyn TranscriptWriter> = cap.clone();
+        let registry = Arc::new(DiscussionRegistry::new());
+        let control = registry.try_begin("g5").unwrap();
+        let gate_cell = control.gate.clone();
+
+        let recv_a = Arc::new(Mutex::new(Vec::new()));
+        let seat_a = spawn_fake_seat(store.clone(), "agent-a", "A", recv_a.clone());
+        // agent-dead는 아무도 처리하지 않는다(타임아웃 skip 경로).
+        let ap = spawn_gate_approver(registry.clone(), gate_cell, "g5", 1, None, false);
+
+        let spec = DiscussionSpec {
+            id: "g5".to_string(),
+            topic: "부분 실패 게이트 테스트".to_string(),
+            seats: vec![
+                seat("agent-a", "seat-a", None, false),
+                seat("agent-dead", "seat-dead", None, false),
+            ],
+            rounds: 1,
+            gate: true,
+        };
+        let cfg = DriverConfig {
+            seat_timeout_secs: 1,
+            poll_interval_ms: 20,
+            sentinel_extend_secs: 0,
+        };
+        run_discussion(spec, store.clone(), writer, registry.clone(), control, cfg).await;
+        seat_a.abort();
+        ap.abort();
+
+        // 전사: user + seat-a + seat-dead([무응답]) + 게이트 마커 + 종합 = 5행.
+        let rows = cap.0.lock().unwrap();
+        assert_eq!(rows.len(), 5, "{rows:?}");
+        assert!(rows[3].2.contains("[게이트] 라운드 1/1"), "{rows:?}");
+        assert_eq!(rows[4].1, "debate/seat-a", "종합까지 진행");
+        // 다이제스트 요약에 [무응답] 마커가 실린다.
+        let s = store.lock().unwrap_or_else(|e| e.into_inner());
+        use crate::store::sqlite::ReplayLimit;
+        let done = s
+            .list_tasks_replay(Some("debate:g5"), None, &["completed"], ReplayLimit::All)
+            .unwrap();
+        let digest = done
+            .iter()
+            .filter(|t| t.to_agent == DEBATE_DRIVER_AGENT)
+            .map(artifacts_text)
+            .find(|txt| txt.contains("[게이트]"))
+            .expect("다이제스트 존재");
+        assert!(
+            digest.contains("[무응답"),
+            "다이제스트에 skip 마커: {digest}"
+        );
+    }
+
+    /// fail_from(0-기반) 번째 append부터 실패하는 writer(게이트 Abort 경로 검증용).
+    struct FailingWriter {
+        inner: Mutex<Vec<(String, String, String)>>,
+        fail_from: usize,
+    }
+
+    impl TranscriptWriter for FailingWriter {
+        fn append_turn(
+            &self,
+            session_id: &str,
+            speaker: &str,
+            content: &str,
+        ) -> Result<u64, String> {
+            let mut v = self.inner.lock().unwrap();
+            if v.len() >= self.fail_from {
+                return Err("주입된 전사 실패".to_string());
+            }
+            v.push((
+                session_id.to_string(),
+                speaker.to_string(),
+                content.to_string(),
+            ));
+            Ok(v.len() as u64)
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn gate_marker_write_failure_aborts_without_leaks() {
+        // 게이트 마커 기록 실패 = store 병증 클래스 → 토론 중단(Waiting 무통지 대기 금지 정책,
+        // 자동 진행 폴백 비채택). 점유 해제·열린 task 무누수까지 확인(코드 리뷰: Abort 경로 미검증).
+        let store = Arc::new(Mutex::new(SqliteStore::open_memory().unwrap()));
+        // append 순서: user(0)·r1 발언(1) 성공, 게이트 마커(2)부터 실패.
+        let cap = Arc::new(FailingWriter {
+            inner: Mutex::new(Vec::new()),
+            fail_from: 2,
+        });
+        let writer: Arc<dyn TranscriptWriter> = cap.clone();
+        let registry = Arc::new(DiscussionRegistry::new());
+        let control = registry.try_begin("g6").unwrap();
+
+        let recv_a = Arc::new(Mutex::new(Vec::new()));
+        let seat_a = spawn_fake_seat(store.clone(), "agent-a", "A", recv_a.clone());
+
+        let spec = DiscussionSpec {
+            id: "g6".to_string(),
+            topic: "게이트 Abort 테스트".to_string(),
+            seats: vec![seat("agent-a", "seat-a", None, false)],
+            rounds: 2,
+            gate: true,
+        };
+        run_discussion(
+            spec,
+            store.clone(),
+            writer,
+            registry.clone(),
+            control,
+            test_cfg(),
+        )
+        .await;
+        seat_a.abort();
+
+        // r1 이후 중단: 좌석 수신 1건(라운드 2·종합 미발행), 전사는 실패 전 2행뿐.
+        assert_eq!(recv_a.lock().unwrap().len(), 1);
+        assert_eq!(cap.inner.lock().unwrap().len(), 2);
+        // 점유 해제(FinishGuard) + 게이트 마커 실패는 표식·다이제스트 발행 전이라 열린 task 없음.
+        assert!(registry.active_id().is_none(), "점유 해제");
+        let s = store.lock().unwrap_or_else(|e| e.into_inner());
+        assert!(
+            s.list_open_tasks_for(DEBATE_DRIVER_AGENT)
+                .unwrap()
+                .is_empty(),
+            "게이트 task 무누수"
+        );
+        assert!(s.list_open_tasks_for("agent-a").unwrap().is_empty());
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn driver_stops_issuing_after_cancel() {
         let store = Arc::new(Mutex::new(SqliteStore::open_memory().unwrap()));
         let cap = Arc::new(CapturingWriter(Mutex::new(Vec::new())));
         let writer: Arc<dyn TranscriptWriter> = cap.clone();
         let registry = Arc::new(DiscussionRegistry::new());
-        let cancel = registry.try_begin("t3").unwrap();
-        cancel.store(true, Ordering::Relaxed); // 시작 전 취소 = 첫 좌석 발행 전 중단.
+        let control = registry.try_begin("t3").unwrap();
+        control.cancel.store(true, Ordering::Relaxed); // 시작 전 취소 = 첫 좌석 발행 전 중단.
 
         let spec = DiscussionSpec {
             id: "t3".to_string(),
@@ -906,13 +1807,14 @@ mod tests {
                 seat("agent-b", "seat-b", None, false),
             ],
             rounds: 3,
+            gate: false,
         };
         run_discussion(
             spec,
             store.clone(),
             writer.clone(),
             registry.clone(),
-            cancel,
+            control,
             test_cfg(),
         )
         .await;

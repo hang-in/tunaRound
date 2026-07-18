@@ -23,13 +23,23 @@ pub(crate) struct TerminalIndexPayload {
 }
 
 /// 종결(completed/failed) task에서 색인 payload를 뽑는다(§5-7 네임스페이스용). 요청=history[0],
-/// 결과=completed면 artifact·failed면 status_message. **비종결(canceled·열린)만 None**이다.
+/// 결과=completed면 artifact·failed면 status_message. **None = 비종결(canceled·열린) 또는 게이트
+/// driver task(#131, 종결이어도 전면 비색인)**이다.
 /// 결과 텍스트가 없어도 요청문만 있으면 색인한다: 결과 없다고 None을 주면 백필이 색인 없이 indexed_at을
 /// 스탬프하고, P6b prune이 그걸 "mesh에 있음"으로 신뢰해 요청(history)을 영구 삭제해버리는 손실이 생긴다
 /// (적대 리뷰 confirmed). "indexed_at ⟹ 텍스트 내용이 mesh에(또는 애초에 없음)" 불변식을 지킨다.
 pub(crate) fn build_terminal_index_payload(task: &Task) -> Option<TerminalIndexPayload> {
     if !matches!(task.state, TaskState::Completed | TaskState::Failed) {
         return None; // canceled·열린 task는 색인 비대상(§4 P6a).
+    }
+    // #131: 게이트 다이제스트·대기 표식(driver 자가 task)은 전면 비색인. 다이제스트 결과는 이미
+    // 결과로 색인된 좌석 발언의 스니펫 중복이고 표식은 운영 신호일 뿐이다(정본=debate 전사·인박스).
+    if task
+        .from_agent
+        .starts_with(crate::discussion::DEBATE_NS_PREFIX)
+        && task.to_agent == crate::discussion::DEBATE_DRIVER_AGENT
+    {
+        return None;
     }
     // v2-56: 토론 라운드 task의 요청문은 색인하지 않는다. 라운드 프롬프트는 prior 발언 전량 재조립이라
     // task마다 같은 발언이 O(좌석×라운드)배로 FTS에 중복 축적되고, speaker `a2a/debate:<id>`가
@@ -137,8 +147,9 @@ pub(crate) fn backfill_unindexed_terminal_tasks(
         match build_terminal_index_payload(task) {
             Some(payload) => index_terminal_task(writer, a2a_store, &payload),
             None => {
-                // 결과 텍스트 없는 종결(레거시·expire→failed 등): 색인할 것이 없으니 스탬프만 해
-                // 목록에서 제외한다(적대 리뷰 minor: 미스탬프 시 매 기동 무한 재스캔·비수렴).
+                // 색인 비대상 종결(게이트 driver task #131 - 가장 흔한 케이스 / 결과 텍스트 없는
+                // 레거시·expire→failed 등): 색인할 것이 없으니 스탬프만 해 목록에서 제외한다
+                // (적대 리뷰 minor: 미스탬프 시 매 기동 무한 재스캔·비수렴).
                 let store = a2a_store.lock().unwrap_or_else(|e| e.into_inner());
                 let _ = store.mark_task_indexed(&task.id);
             }
@@ -192,5 +203,18 @@ mod tests {
         let p2 = build_terminal_index_payload(&completed_task("win-boss")).unwrap();
         assert!(p2.request_text.is_some());
         assert_eq!(p2.result_text.as_deref(), Some("발언"));
+    }
+
+    #[test]
+    fn gate_driver_tasks_are_not_indexed() {
+        // #131: 게이트 다이제스트·대기 표식(to_agent=debate-driver)은 결과 포함 전면 비색인
+        // (다이제스트 요약 = 이미 색인된 좌석 발언의 스니펫 중복).
+        let mut t = completed_task("debate:abc");
+        t.to_agent = crate::discussion::DEBATE_DRIVER_AGENT.to_string();
+        assert!(build_terminal_index_payload(&t).is_none());
+        // 비-debate 발신이 우연히 같은 to_agent 문자열을 써도 색인은 유지(프리픽스 결합 조건).
+        let mut n = completed_task("win-boss");
+        n.to_agent = crate::discussion::DEBATE_DRIVER_AGENT.to_string();
+        assert!(build_terminal_index_payload(&n).is_some());
     }
 }

@@ -11,7 +11,9 @@ use rmcp::{
 };
 
 use super::TunaSearchServer;
-use super::params::{DiscussionSeatParams, StartDiscussionParams, StopDiscussionParams};
+use super::params::{
+    ContinueDiscussionParams, DiscussionSeatParams, StartDiscussionParams, StopDiscussionParams,
+};
 use crate::discussion::{DiscussionSeat, DiscussionSpec, DriverConfig, debate_ns, run_discussion};
 use crate::store::agents::{AGENT_TTL_SECS, AgentEntry};
 
@@ -95,6 +97,7 @@ impl TunaSearchServer {
             )]));
         };
         let rounds = p.rounds.unwrap_or(3).clamp(1, 10);
+        let gate = p.gate.unwrap_or(false);
         let topic = p.topic.trim().to_string();
         if topic.is_empty() {
             return Ok(CallToolResult::error(vec![Content::text(
@@ -123,7 +126,7 @@ impl TunaSearchServer {
             }
         };
         // 동시 1건 점유(MVP). driver 종료(FinishGuard)가 해제한다.
-        let cancel = match registry.try_begin(&id) {
+        let control = match registry.try_begin(&id) {
             Ok(c) => c,
             Err(e) => {
                 return Ok(CallToolResult::error(vec![Content::text(format!(
@@ -136,6 +139,7 @@ impl TunaSearchServer {
             topic,
             seats,
             rounds,
+            gate,
         };
         let seat_list = spec
             .seats
@@ -149,12 +153,81 @@ impl TunaSearchServer {
             store,
             writer,
             registry,
-            cancel,
+            control,
             DriverConfig::default(),
         ));
+        let gate_note = if gate {
+            format!(
+                "\n게이트: 각 라운드 완료 시 인박스로 다이제스트가 옵니다. 승인 주체는 사람입니다 - 사용자에게 보고하고 지시가 있을 때만 continue_discussion(discussion_id=\"{id}\", steer?, conclude?)를 호출하세요(자율 진행 금지). 게이트 대기 중 브로커가 재기동되면 표식 task가 failed로 인박스에 통지되고 토론은 소멸합니다(재발의 필요)."
+            )
+        } else {
+            String::new()
+        };
         Ok(CallToolResult::success(vec![Content::text(format!(
-            "토론 시작: id={id}\n좌석: {seat_list}\n라운드: {rounds} + 종합 1회(첫 좌석)\n전사: read_transcript(session_id=\"{ns}\")\n결과 수신: tunaround watch-results --core <브로커 URL> --dispatcher {ns} (라운드마다 RESULT 줄, 마지막 완료=종합)\n중단: stop_discussion(discussion_id=\"{id}\")\n비고: 비동기 작업입니다(좌석당 수 분, 좌석 타임아웃 600초). 브로커 재기동 시 진행 중 토론은 실패 처리됩니다."
+            "토론 시작: id={id}\n좌석: {seat_list}\n라운드: {rounds} + 종합 1회(첫 좌석)\n전사: read_transcript(session_id=\"{ns}\")\n결과 수신: tunaround watch-results --core <브로커 URL> --dispatcher {ns} (라운드마다 RESULT 줄, 마지막 완료=종합){gate_note}\n중단: stop_discussion(discussion_id=\"{id}\")\n비고: 비동기 작업입니다(좌석당 수 분, 좌석 타임아웃 600초). 브로커 재기동 시 진행 중 토론은 실패 처리됩니다."
         ))]))
+    }
+
+    #[tool(
+        description = "게이트 대기 중인 mesh 토론을 다음 단계로 진행한다(이슈 #131, start_discussion gate:true 전용). 사람 승인 게이트이므로 사용자 지시가 있을 때만 호출할 것(자율 진행 금지). steer=조향 지시(전사에 [사용자 조향 지시]로 남고 다음 라운드에 주입), conclude=true면 남은 라운드를 건너뛰고 synthesizer 종합 직행."
+    )]
+    pub(crate) async fn continue_discussion(
+        &self,
+        Parameters(p): Parameters<ContinueDiscussionParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let Some(registry) = self.discussions.clone() else {
+            return Ok(CallToolResult::success(vec![Content::text(
+                "mesh 토론 미구성(continue_discussion 비활성)".to_string(),
+            )]));
+        };
+        let steer = p
+            .steer
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty());
+        // 좌석 발언과 같은 4000자 상한(프롬프트 조립 캡과 동치). 사람 지시를 조용히 절단하지 않고
+        // 명시적으로 거부한다(코드 리뷰: 전사·prior 주입이 무캡이던 비대칭).
+        if let Some(s) = &steer {
+            let count = s.chars().count();
+            if count > 4000 {
+                return Ok(CallToolResult::error(vec![Content::text(format!(
+                    "진행 실패: steer가 4000자를 초과합니다({count}자) - 줄여서 다시 호출하세요"
+                ))]));
+            }
+        }
+        let conclude = p.conclude.unwrap_or(false);
+        let steer_echo = steer.clone();
+        match registry.continue_active(&p.discussion_id, steer, conclude) {
+            Ok((round, total)) => {
+                let next = if conclude {
+                    "종합(synthesizer) 직행".to_string()
+                } else if round >= total {
+                    "종합(synthesizer)".to_string()
+                } else {
+                    format!("라운드 {}", round + 1)
+                };
+                let steer_note = match steer_echo {
+                    // 에코는 확인용 프리뷰만(전문은 전사 debate/user 턴에 남는다). 201자만 떠서
+                    // 초과 판정까지 한 번의 순회로(gemini).
+                    Some(s) => {
+                        let mut preview: String = s.chars().take(201).collect();
+                        let ellipsis = if preview.chars().count() > 200 {
+                            preview = preview.chars().take(200).collect();
+                            "…"
+                        } else {
+                            ""
+                        };
+                        format!("\n조향 반영: [사용자 조향 지시] {preview}{ellipsis}")
+                    }
+                    None => String::new(),
+                };
+                Ok(CallToolResult::success(vec![Content::text(format!(
+                    "게이트 해제: 라운드 {round}/{total} → {next}.{steer_note}"
+                ))]))
+            }
+            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
+                "진행 실패: {e}"
+            ))])),
+        }
     }
 
     #[tool(
