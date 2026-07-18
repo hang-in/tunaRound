@@ -59,7 +59,7 @@ cargo install --git https://github.com/hang-in/tunaRound tunaround --features "m
 | 다른 에이전트에게 일을 맡기고 결과를 받고 싶다 | 쓰던 Claude Code에서 바로 위임하고, 완료되면 결과를 받습니다. |
 | 다른 머신의 에이전트에도 맡기고 싶다 | LAN으로 확장해 작업을 큐에 넣고 그쪽 머신이 받아 처리하게 합니다. |
 | 긴 대화에서 이전 결정을 다시 찾고 싶다 | 전사와 문서를 색인해 필요한 맥락만 검색합니다. |
-| 구현 전에 설계를 여럿에게 검토받고 싶다 | 쓰던 세션에서 `start_discussion`으로 mesh 토론을 시작합니다. 여러 머신의 에이전트가 역할을 나눠 라운드로 토론하고 합의문이 돌아옵니다. |
+| 구현 전에 설계를 여럿에게 검토받고 싶다 | 쓰던 세션에서 `start_discussion`으로 mesh 토론을 시작합니다. 여러 머신의 에이전트가 역할을 나눠 라운드로 토론하고 합의문이 돌아옵니다. `gate=true`면 라운드 사이마다 멈춰 사람이 승인·조향합니다. |
 
 완전 자율 swarm을 목표로 하지 않습니다. tunaRound의 기본값은 항상 **사용자 주도**입니다.
 
@@ -98,7 +98,7 @@ cargo install --git https://github.com/hang-in/tunaRound tunaround --features "m
 2. **워커 노드 조정** - `init`이 만든 `node.toml`의 lane(러너·권한·프로젝트)을 편집해 어떤 에이전트가 어떤 일을 받을지 조정합니다. [온보딩 가이드의 설정 파일](docs/reference/onboarding.md#6-설정-파일) 절 참고.
 3. **검색과 기억** - 대화·문서를 SQLite + FTS5로 색인합니다. 한국어 형태소 검색, 선택적 의미 검색, 하이브리드 랭킹은 [온보딩 가이드의 검색 설정](docs/reference/onboarding.md#7-검색-설정) 절.
 4. **웹 대시보드** - 세션·작업 상태·결과 피드를 한 화면(`/dashboard`)에서 관찰합니다. v0.5.0부터 릴리스 바이너리에 포함되어 별도 빌드 없이 바로 동작합니다.
-5. **mesh 토론** - 쓰던 세션에서 tuna-broker MCP의 `start_discussion`으로 여러 머신의 에이전트에 역할을 주고 라운드 토론을 시킵니다. 전사가 저장되고 합의문이 인박스로 돌아옵니다. 사용법은 [A2A 사용법의 mesh 토론](docs/reference/a2a-usage.md#8-mesh-토론) 절. 로컬 즉석 토론은 `tunaround chat`(설계 토론 REPL, 부수 기능)도 그대로 있습니다.
+5. **mesh 토론** - 쓰던 세션에서 tuna-broker MCP의 `start_discussion`으로 여러 머신의 에이전트에 역할을 주고 라운드 토론을 시킵니다. 전사가 저장되고 합의문이 인박스로 돌아옵니다. `gate=true`(옵트인)면 각 라운드 완료 시 다이제스트가 인박스로 오고, 사람이 `continue_discussion`으로 진행을 승인하거나 조향 지시(steer)를 주입하고, 충분하다 싶으면 종합으로 직행(conclude)합니다. 사용법은 [A2A 사용법의 mesh 토론](docs/reference/a2a-usage.md#8-mesh-토론) 절. 로컬 즉석 토론은 `tunaround chat`(설계 토론 REPL, 부수 기능)도 그대로 있습니다.
 
 ## 왜 만들었나
 
