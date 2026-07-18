@@ -2,9 +2,23 @@
 // 접수→진행중→완료(실패)를 같은 카드에서 갱신하고, 클릭하면 그 task 상세(요청·결과·실패 사유·이력)를 펼친다.
 // 필터=검색 + 상태/머신/러너 드롭다운(체크박스 다중선택, 모두 클라이언트 측). 목업 .card.feed 이식.
 import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react'
-import { ChevronDown, Search } from 'lucide-react'
+import { ChevronDown, MessagesSquare, Search } from 'lucide-react'
 import type { Agent, Part, Task, TaskEventMsg } from '../api'
 import { relativeTime } from '../api'
+import Md from './Md'
+
+// mesh 토론(v2-56) task 의 발신 네임스페이스. 브로커 discussion driver 가 from_agent=`debate:<id>` 로
+// 라운드 task 를 발행한다 - 피드에서는 토론 뱃지(+토론 id 축약)로 묶어 보이게 한다.
+const DEBATE_PREFIX = 'debate:'
+
+function isDebateFrom(from: string): boolean {
+  return from.startsWith(DEBATE_PREFIX)
+}
+
+// `debate:<32hex 앞 12자>` → "토론 t-1204" (tid 축약과 같은 4자 규칙).
+function debateLabel(from: string): string {
+  return '토론 t-' + from.slice(DEBATE_PREFIX.length, DEBATE_PREFIX.length + 4)
+}
 
 // 리로드(=SSE 재접속) 시 선행 스냅샷 수와 유지 상한(v2-53: 50→200). 서버 clamp(500) 이내.
 const MAX_TASKS = 200
@@ -127,14 +141,17 @@ function FilterDropdown({
   )
 }
 
-// 펼침 상세의 한 블록(요청/결과/실패 사유). text 가 비면 렌더하지 않는다.
+// 펼침 상세의 한 블록(요청/결과/실패 사유). text 가 비면 렌더하지 않는다. 본문은 markdown 으로
+// 렌더한다(에이전트 발언·결과가 md 로 오는 경우가 많다. raw HTML 미허용 - Md.tsx 참고).
 function DetailBlock({ label, text, tone }: { label: string; text: string; tone?: 'ok' | 'err' }) {
   if (!text.trim()) return null
   const toneClass = tone ? ' ' + tone : ''
   return (
     <div className="tdetail-block">
       <span className={'tdetail-label' + toneClass}>{label}</span>
-      <div className="tdetail-body">{text}</div>
+      <div className="tdetail-body rendered">
+        <Md text={text} />
+      </div>
     </div>
   )
 }
@@ -145,7 +162,7 @@ type Props = {
   agents: Agent[]
 }
 
-type Dim = 'state' | 'machine' | 'runner'
+type Dim = 'state' | 'machine' | 'runner' | 'from'
 
 export default function Feed({ onConnectedChange, onEvent, agents }: Props) {
   const [cards, setCards] = useState<TaskCard[]>([])
@@ -154,6 +171,7 @@ export default function Feed({ onConnectedChange, onEvent, agents }: Props) {
   const [stateFilter, setStateFilter] = useState<Set<string>>(new Set())
   const [machineFilter, setMachineFilter] = useState<Set<string>>(new Set())
   const [runnerFilter, setRunnerFilter] = useState<Set<string>>(new Set())
+  const [fromFilter, setFromFilter] = useState<Set<string>>(new Set())
   const [query, setQuery] = useState('')
   // 한 번에 하나의 드롭다운만 연다. 바깥 클릭으로 닫는다.
   const [openDim, setOpenDim] = useState<Dim | null>(null)
@@ -197,6 +215,11 @@ export default function Feed({ onConnectedChange, onEvent, agents }: Props) {
     [workerMeta],
   )
   const machineOf = useCallback((t: Task) => workerMeta.get(t.toAgent)?.machine || '', [workerMeta])
+  // 발신 표시값: 토론 task 는 토론 뱃지 라벨로 묶고, 그 외는 로스터 이름(총괄/dashboard 등).
+  const fromLabelOf = useCallback(
+    (t: Task) => (isDebateFrom(t.fromAgent) ? debateLabel(t.fromAgent) : nameOf(t.fromAgent)),
+    [nameOf],
+  )
 
   // 필터 후보값 - 현재 피드에 실제 존재하는 값만.
   const states = useMemo(() => distinct(cards.map((c) => c.latest.task.state)), [cards])
@@ -208,8 +231,12 @@ export default function Feed({ onConnectedChange, onEvent, agents }: Props) {
     () => distinct(cards.map((c) => runnerOf(c.latest.task)).filter(Boolean)),
     [cards, runnerOf],
   )
+  const froms = useMemo(
+    () => distinct(cards.map((c) => fromLabelOf(c.latest.task)).filter(Boolean)),
+    [cards, fromLabelOf],
+  )
 
-  // 필터 적용(상태·머신·러너 = Set 포함일치, 텍스트 = id·양끝 이름·요청/결과/실패 사유 부분일치).
+  // 필터 적용(상태·머신·러너·발신 = Set 포함일치, 텍스트 = id·양끝 이름·요청/결과/실패 사유 부분일치).
   const visible = useMemo(() => {
     const q = query.trim().toLowerCase()
     return cards.filter((c) => {
@@ -217,10 +244,11 @@ export default function Feed({ onConnectedChange, onEvent, agents }: Props) {
       if (stateFilter.size > 0 && !stateFilter.has(t.state)) return false
       if (machineFilter.size > 0 && !machineFilter.has(machineOf(t))) return false
       if (runnerFilter.size > 0 && !runnerFilter.has(runnerOf(t))) return false
+      if (fromFilter.size > 0 && !fromFilter.has(fromLabelOf(t))) return false
       if (q) {
         const hay = [
           shortId(t.id),
-          nameOf(t.fromAgent),
+          fromLabelOf(t),
           nameOf(t.toAgent),
           requestText(t),
           resultText(t),
@@ -232,7 +260,7 @@ export default function Feed({ onConnectedChange, onEvent, agents }: Props) {
       }
       return true
     })
-  }, [cards, stateFilter, machineFilter, runnerFilter, query, machineOf, runnerOf, nameOf])
+  }, [cards, stateFilter, machineFilter, runnerFilter, fromFilter, query, machineOf, runnerOf, nameOf, fromLabelOf])
 
   useEffect(() => {
     // replay=200: 접속(리로드 포함) 시 최근 200 task 스냅샷을 라이브에 앞서 선행 수신한다(v2-53).
@@ -330,6 +358,15 @@ export default function Feed({ onConnectedChange, onEvent, agents }: Props) {
             onToggleValue={(v) => toggleIn(setRunnerFilter, v)}
             onClear={() => setRunnerFilter(new Set())}
           />
+          <FilterDropdown
+            label="발신"
+            options={froms}
+            selected={fromFilter}
+            open={openDim === 'from'}
+            onOpen={() => setOpenDim((d) => (d === 'from' ? null : 'from'))}
+            onToggleValue={(v) => toggleIn(setFromFilter, v)}
+            onClear={() => setFromFilter(new Set())}
+          />
         </div>
       ) : null}
       <div className="feed-body">
@@ -348,7 +385,14 @@ export default function Feed({ onConnectedChange, onEvent, agents }: Props) {
                 <button type="button" className="tl" onClick={() => toggle(card.id)} aria-expanded={isOpen}>
                   <span className="tid">{shortId(t.id)}</span>
                   <span className="route">
-                    <span title={t.fromAgent}>{nameOf(t.fromAgent)}</span>
+                    {isDebateFrom(t.fromAgent) ? (
+                      <span className="debate-chip" title={t.fromAgent}>
+                        <MessagesSquare size={11} />
+                        {debateLabel(t.fromAgent)}
+                      </span>
+                    ) : (
+                      <span title={t.fromAgent}>{nameOf(t.fromAgent)}</span>
+                    )}
                     <span className="arrow">→</span>
                     <span title={t.toAgent}>{nameOf(t.toAgent)}</span>
                   </span>
