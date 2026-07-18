@@ -219,21 +219,31 @@ pub(super) async fn dashboard_deregister_handler(
                 .into_response();
         }
     };
-    let ok = tokio::task::spawn_blocking(move || {
+    // spawn_blocking JoinError(내부 패닉/취소)를 "미등록(404)"로 위장하지 않고 500으로 표면화한다
+    // (fail-visible: health·roster 핸들러와 동일 원칙). 정상 Ok(bool) 경로만 등록 여부로 200/404를 가른다.
+    match tokio::task::spawn_blocking(move || {
         let store = store.lock().unwrap_or_else(|e| e.into_inner());
         store.deregister_agent(&req.agent)
     })
     .await
-    .unwrap_or(false);
-    if ok {
-        (axum::http::StatusCode::OK, "ok").into_response()
-    } else {
-        // 미등록(이미 제거됐거나 무장 안 됨). 훅은 성패에 무관하게 통과한다.
-        (
-            axum::http::StatusCode::NOT_FOUND,
-            "미등록 세션(이미 제거됨)",
-        )
-            .into_response()
+    {
+        Ok(true) => (axum::http::StatusCode::OK, "ok").into_response(),
+        Ok(false) => {
+            // 미등록(이미 제거됐거나 무장 안 됨). 훅은 성패에 무관하게 통과한다.
+            (
+                axum::http::StatusCode::NOT_FOUND,
+                "미등록 세션(이미 제거됨)",
+            )
+                .into_response()
+        }
+        Err(e) => {
+            eprintln!("[dashboard/deregister] spawn_blocking 실패: {e}");
+            (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                "등록해제 처리에 실패했습니다.",
+            )
+                .into_response()
+        }
     }
 }
 
@@ -306,7 +316,14 @@ pub(super) async fn dashboard_goal_handler(
         let store = store.lock().unwrap_or_else(|e| e.into_inner());
         let mut created = Vec::new();
         let mut errors = Vec::new();
+        // 같은 uuid가 targets에 중복되면 task를 여러 번 만들지 않는다(체크박스 더블클릭 등 프론트
+        // 중복 제출 방어). 처음 본 순서만 처리하고, 재등장은 task 생성 없이 errors에 기록한다.
+        let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
         for uuid in &req.targets {
+            if !seen.insert(uuid.as_str()) {
+                errors.push(format!("{uuid}: 대상이 중복되었습니다."));
+                continue;
+            }
             let msg_id = match store.new_task_id() {
                 Ok(id) => id,
                 Err(e) => {
