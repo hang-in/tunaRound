@@ -206,7 +206,11 @@ pub(crate) fn run_with_watchdog(spec: &ExecSpec) -> Result<String, RunError> {
     if !status.success() {
         // 쓰기 실패 + 자식 비정상 종료 = 입력이 통째/부분 유실된 실행(#138 A-2). exit 코드보다
         // 근본 원인에 가까우므로 Io로 재분류하고, 남았을 수 있는 손자까지 트리를 정리한다.
+        // 트리 정리는 Unix 한정(gemini HIGH): 여기는 wait() 후 = PID가 이미 회수된 유일한 kill
+        // 지점이라, Windows taskkill /PID는 무의미(루트 사망 = 손자 열거 불가)하고 재사용된 PID를
+        // 오살할 수 있다. Unix는 pgid가 살아있는 동안 PID 재사용이 금지라 그룹 kill이 안전·유효하다.
         if let Err(e) = &stdin_result {
+            #[cfg(unix)]
             kill_pid(pid);
             return Err(RunError::Io(format!(
                 "{} stdin 주입 실패({e}) 후 자식 비정상 종료(exit {:?}): {}",
