@@ -10,6 +10,8 @@
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-07-18
+
 ### Added
 
 - mesh 토론: 쓰던 세션에서 `start_discussion`(tuna-broker MCP)으로 여러 머신의 에이전트에 역할을 나눠 라운드 토론을 시킵니다. 순차-인지 라운드 후 종합 발언이 생성되고, 전사는 `debate:<id>` 세션으로 저장되며 결과는 `watch-results --dispatcher debate:<id>`로 받습니다. `stop_discussion`으로 이후 라운드를 중단할 수 있고, 브로커 재기동 시 진행 중이던 토론은 실패로 정리되어 통지됩니다.
@@ -180,7 +182,8 @@
 
 - AGPL-3.0-only
 
-[Unreleased]: https://github.com/hang-in/tunaRound/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/hang-in/tunaRound/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/hang-in/tunaRound/releases/tag/v0.6.0
 [0.5.0]: https://github.com/hang-in/tunaRound/releases/tag/v0.5.0
 [0.4.0]: https://github.com/hang-in/tunaRound/releases/tag/v0.4.0
 [0.3.0]: https://github.com/hang-in/tunaRound/releases/tag/v0.3.0
