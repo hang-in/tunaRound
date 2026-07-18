@@ -405,7 +405,13 @@ export default function Feed({ onConnectedChange, onEvent, agents }: Props) {
                     <ChevronDown size={13} />
                   </span>
                 </button>
-                {text && !isOpen ? <div className="desc">{text}</div> : null}
+                {text && !isOpen ? (
+                  <div className="desc rendered">
+                    {/* 2줄 미리보기에 수십 KB md 전체 DOM을 만들 이유가 없다(gemini 리뷰): 앞부분만
+                        렌더. 잘린 md 구문(미닫힘 코드펜스 등)은 미리보기라 수용. */}
+                    <Md text={text.length > 600 ? text.slice(0, 600) : text} />
+                  </div>
+                ) : null}
                 {isOpen ? (
                   <div className="tcard-detail">
                     <DetailBlock label="요청" text={requestText(t)} />
