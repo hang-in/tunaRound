@@ -68,11 +68,9 @@ pub fn write_lane_disrupts_node(
     let Some(p) = project else {
         return true; // 작업 디렉터리 미지정 = node cwd에서 write = 위험.
     };
-    let p_abs: std::path::PathBuf = if p.is_absolute() {
-        p.to_path_buf()
-    } else {
-        node_cwd.join(p)
-    };
+    // Path::join은 인자가 절대경로면 base를 버리고 그 절대경로를 그대로 반환하므로(std 계약)
+    // is_absolute 분기 없이 한 줄로 절대화된다(gemini 리뷰 반영).
+    let p_abs = node_cwd.join(p);
     match std::fs::canonicalize(&p_abs) {
         Ok(pc) => {
             let cwd = std::fs::canonicalize(node_cwd).unwrap_or_else(|_| node_cwd.to_path_buf());

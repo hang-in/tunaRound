@@ -530,7 +530,9 @@ fn write_lane_disrupts_node_relative_project_resolves_against_node_cwd_not_proce
     let process_cwd = std::env::current_dir().unwrap();
     let node_cwd =
         std::env::temp_dir().join(format!("tuna-worker-guard-nodecwd-{}", std::process::id()));
-    let _ = std::fs::create_dir_all(&node_cwd);
+    // 생성 실패를 삼키면 canonicalize Err 폴백(어휘 정규화) 경로로 새서 테스트 의도(실경로 실측)가
+    // 무너진다 - 명시 실패(gemini 리뷰 반영).
+    std::fs::create_dir_all(&node_cwd).expect("테스트용 node_cwd temp 디렉터리 생성 실패");
 
     // 방어: 극히 드문 환경에서 temp node_cwd가 프로세스 CWD와 같은 트리에 놓이면(예: TMPDIR이 레포
     // 하위) 이 테스트의 전제(둘이 분리돼야 실측이 됨)가 깨지므로 건너뛴다(기존 테스트들과 동일 패턴).
