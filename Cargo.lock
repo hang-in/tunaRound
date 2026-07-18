@@ -507,9 +507,9 @@ dependencies = [
 
 [[package]]
 name = "daachorse"
-version = "1.0.1"
+version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6f55d7153ba3b507595872a3874803f07a8a81d1e888abed8e5db7da0597d6e2"
+checksum = "db756b5eb7d81d31f31f660f4132f8cf5698de52fca144c143d0ae0cbb5f2e06"
 
 [[package]]
 name = "darling"
@@ -666,70 +666,6 @@ name = "either"
 version = "1.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "91622ff5e7162018101f2fea40d6ebf4a78bbe5a49736a2020649edf9693679e"
-
-[[package]]
-name = "encoding"
-version = "0.2.33"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6b0d943856b990d12d3b55b359144ff341533e516d94098b1d3fc1ac666d36ec"
-dependencies = [
- "encoding-index-japanese",
- "encoding-index-korean",
- "encoding-index-simpchinese",
- "encoding-index-singlebyte",
- "encoding-index-tradchinese",
-]
-
-[[package]]
-name = "encoding-index-japanese"
-version = "1.20141219.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "04e8b2ff42e9a05335dbf8b5c6f7567e5591d0d916ccef4e0b1710d32a0d0c91"
-dependencies = [
- "encoding_index_tests",
-]
-
-[[package]]
-name = "encoding-index-korean"
-version = "1.20141219.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4dc33fb8e6bcba213fe2f14275f0963fd16f0a02c878e3095ecfdf5bee529d81"
-dependencies = [
- "encoding_index_tests",
-]
-
-[[package]]
-name = "encoding-index-simpchinese"
-version = "1.20141219.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d87a7194909b9118fc707194baa434a4e3b0fb6a5a757c73c3adb07aa25031f7"
-dependencies = [
- "encoding_index_tests",
-]
-
-[[package]]
-name = "encoding-index-singlebyte"
-version = "1.20141219.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3351d5acffb224af9ca265f435b859c7c01537c0849754d3db3fdf2bfe2ae84a"
-dependencies = [
- "encoding_index_tests",
-]
-
-[[package]]
-name = "encoding-index-tradchinese"
-version = "1.20141219.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fd0e20d5688ce3cab59eb3ef3a2083a5c77bf496cb798dc6fcdb75f323890c18"
-dependencies = [
- "encoding_index_tests",
-]
-
-[[package]]
-name = "encoding_index_tests"
-version = "0.1.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a246d82be1c9d791c5dfde9a2bd045fc3cbba3fa2b11ad558f27d01712f00569"
 
 [[package]]
 name = "encoding_rs"
@@ -1428,22 +1364,17 @@ dependencies = [
 
 [[package]]
 name = "lindera"
-version = "2.3.4"
+version = "4.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0bb784bf51d22be2350667c35c0796250ca4dd6888ee98fe8a41f16f400f6c9b"
+checksum = "947b566e47adbe67d50c6be170309c3b18259877cb36e7f2c70c7edae8c7282f"
 dependencies = [
  "anyhow",
  "byteorder",
  "csv",
  "daachorse",
  "kanaria",
- "lindera-cc-cedict",
  "lindera-dictionary",
- "lindera-ipadic",
- "lindera-ipadic-neologd",
- "lindera-jieba",
  "lindera-ko-dic",
- "lindera-unidic",
  "log",
  "once_cell",
  "percent-encoding",
@@ -1460,33 +1391,16 @@ dependencies = [
 ]
 
 [[package]]
-name = "lindera-cc-cedict"
-version = "2.3.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5814a81429c4d04d3becd1513fa62548b3ce22f11062e920911ddb205c1792c6"
-dependencies = [
- "anyhow",
- "byteorder",
- "csv",
- "lindera-dictionary",
- "once_cell",
- "rkyv",
- "serde_json",
- "tokio",
-]
-
-[[package]]
 name = "lindera-dictionary"
-version = "2.3.4"
+version = "4.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5cd0aa640fbefa4b4251f8ab001e47f213fdecf7bbbd0ee4a17a27b2cbff5ef1"
+checksum = "6ee9be0de7cbe3f2764b9e7f6715243958e43140703114acdcae8be2b2e6f24d"
 dependencies = [
  "anyhow",
  "byteorder",
  "csv",
  "daachorse",
  "derive_builder",
- "encoding",
  "encoding_rs",
  "encoding_rs_io",
  "flate2",
@@ -1510,82 +1424,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "lindera-ipadic"
-version = "2.3.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "94c8eebbfaee36d6ebd674aa796decbbb186e42c8b7a919f3495ba610cc8fcb6"
-dependencies = [
- "anyhow",
- "byteorder",
- "csv",
- "lindera-dictionary",
- "once_cell",
- "rkyv",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "lindera-ipadic-neologd"
-version = "2.3.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1f1742862984f32c110a5ba88880969d5fcc642452678ec2e3346b69b0651546"
-dependencies = [
- "anyhow",
- "byteorder",
- "csv",
- "lindera-dictionary",
- "once_cell",
- "rkyv",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "lindera-jieba"
-version = "2.3.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9d7cccd7e88ef26c7a31db63079ad226ae7c54325cb3abca1d12ebd97044462d"
-dependencies = [
- "anyhow",
- "byteorder",
- "csv",
- "lindera-dictionary",
- "once_cell",
- "rkyv",
- "serde_json",
- "tokio",
-]
-
-[[package]]
 name = "lindera-ko-dic"
-version = "2.3.4"
+version = "4.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "38f7f33c519e1ad6a9fe66a7520288d4ef117e8ae357fdd64d33c67030e527ea"
+checksum = "175dcd8ea0b925e4cde5711bd70b3af5a92323d9710b78601a6da46bed83fa2e"
 dependencies = [
- "anyhow",
- "byteorder",
- "csv",
  "lindera-dictionary",
- "once_cell",
- "rkyv",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "lindera-unidic"
-version = "2.3.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "65efa76d07bf5ab5b4a81f33238d4c3b8e9dbcf93e0bee96224d21287fb51759"
-dependencies = [
- "anyhow",
- "byteorder",
- "csv",
- "lindera-dictionary",
- "once_cell",
- "rkyv",
- "serde_json",
  "tokio",
 ]
 

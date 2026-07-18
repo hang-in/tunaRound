@@ -23,7 +23,7 @@ toml = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
 futures-util = "0.3"
 kiwi-rs = { version = "0.1", optional = true }
-lindera = { version = "2.3.4", features = ["embed-ko-dic"], optional = true }
+lindera = { version = "4.0.0", features = ["embed-ko-dic"], optional = true }
 rusqlite = { version = "0.31", features = ["bundled"], optional = true }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls", "stream"], optional = true }
 rmcp = { version = "1.8.0", features = ["server", "macros", "schemars", "transport-io"], optional = true }
