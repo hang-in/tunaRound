@@ -8,6 +8,7 @@
 | --- | --- | --- |
 | 처음 설치해서 로컬 왕복 확인(첫 성공) | 로컬 브로커·워커 | `init → node` |
 | 한 머신에서 토론과 검색 | 로컬 REPL | `tunaround chat` |
+| 여러 머신의 에이전트로 라운드 토론 | 브로커 mesh 토론 | `start_discussion`([A2A 사용법 §8](a2a-usage.md#8-mesh-토론)) |
 | 한 머신을 공유 코어로 사용 | 코어·브로커 | `tunaround serve` |
 | 다른 머신에서 원격으로 접속 | 원격 REPL | `tunaround join` |
 | 다른 머신을 작업 노드로 상주시킴 | 워커 노드 | `init → doctor → node` |
@@ -23,8 +24,8 @@
 | 빌드 방식 | 포함되는 기능 |
 | --- | --- |
 | 기본 `cargo build` | REPL, SQLite, 형태소 검색 |
-| 릴리스 바이너리 | 코어, 원격 접속, 워커, 의미 검색, HTTP 러너 |
-| `dashboard` 피처 빌드 | 웹 대시보드 SPA 포함 |
+| 릴리스 바이너리 | 코어, 원격 접속, 워커, 의미 검색, HTTP 러너, 웹 대시보드 SPA(v0.5.0부터) |
+| `dashboard` 피처 빌드 | 소스 빌드에서 웹 대시보드 SPA를 포함할 때 사용 |
 
 컴파일 피처는 실행 옵션이 아닙니다.
 
@@ -100,7 +101,7 @@ tunaround serve 0.0.0.0:8770 \
 - 세션과 워커 로스터
 - 대시보드 이벤트
 
-대시보드는 `/dashboard`에서 열립니다. 릴리스 바이너리는 대시보드 SPA를 포함하지 않으므로, 실제 화면이 필요하면 `dashboard` 피처로 소스 빌드해야 합니다.
+대시보드는 `/dashboard`에서 열립니다. v0.5.0부터 릴리스 바이너리에 SPA가 포함되어 별도 빌드 없이 바로 동작합니다(소스 빌드에서는 `dashboard` 피처 필요).
 
 토큰은 명령행 또는 `TUNA_BROKER_TOKEN` 환경변수로 전달할 수 있습니다. 실제 토큰은 문서, 저장소, 셸 기록에 남기지 않는 편이 안전합니다.
 
@@ -183,7 +184,7 @@ tunaround work \
 
 ### `~/.tunaround/config`
 
-SessionStart 훅과 mesh 재기동 스크립트가 읽는 dotenv 형식의 파일입니다. `TUNA_BROKER_CORE`, `TUNA_BROKER_TOKEN`, `TUNA_MACHINE` 같은 값을 둡니다.
+세션 훅들(SessionStart·UserPromptSubmit·Stop·SessionEnd)과 mesh 재기동 스크립트가 읽는 dotenv 형식의 파일입니다. `TUNA_BROKER_CORE`, `TUNA_BROKER_TOKEN`, `TUNA_MACHINE` 같은 값을 둡니다.
 
 보통은 `tunaround init`이 `node.toml`과 `~/.tunaround/config` 초안을 함께 만들기 때문에, 최초 설정에서는 코어 주소와 토큰만 확인하면 됩니다.
 

@@ -20,7 +20,8 @@ use crate::store::sqlite::SqliteStore;
 mod indexing;
 // server.rs가 `crate::mcp::backfill_unindexed_terminal_tasks` 경로로 호출하므로 재노출(경로 유지).
 pub(crate) use indexing::backfill_unindexed_terminal_tasks;
-// 17개 #[tool] 메서드를 토픽별 서브모듈로 분리하고 named tool_router를 합성한다(동작 불변, v2-52).
+// #[tool] 메서드(19개)를 토픽별 서브모듈로 분리하고 named tool_router를 합성한다(v2-52 분리,
+// v2-56에서 discussion 2개 추가).
 mod discussion;
 mod registry;
 mod search;

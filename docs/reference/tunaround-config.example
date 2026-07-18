@@ -1,6 +1,6 @@
 # tunaRound autoarm 설정 예시. 이 파일을 ~/.tunaround/config 로 복사해서 값을 채운다(레포 밖, home dir).
 #
-# 훅(tuna-autoarm=SessionStart / tuna-session-ping=UserPromptSubmit / tuna-disarm=SessionEnd)이
+# 훅(tuna-autoarm=SessionStart / tuna-session-ping=UserPromptSubmit / tuna-turn-end=Stop / tuna-disarm=SessionEnd)이
 # 런타임에 이 파일을 읽는다. 값 우선순위 = 설정파일 > 환경변수 > 기본값(config-first, 설계 v2-43 §5-1).
 #
 # 왜 파일인가: env는 터미널 launch 시점에 고정돼, setx/토큰 로테이션이 "이미 열린 터미널"에는

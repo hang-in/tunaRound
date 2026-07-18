@@ -8,7 +8,7 @@
 | --- | --- |
 | tunaRound가 무엇인지 | [README](../README.md) |
 | 설치하고 처음 실행하는 방법 | [온보딩 가이드](reference/onboarding.md) |
-| A2A 작업을 보내고 받는 방법 | [A2A 작업 위임 사용법](reference/a2a-usage.md) |
+| A2A 작업을 보내고 받는 방법, mesh 토론 | [A2A 작업 위임 사용법](reference/a2a-usage.md) |
 | 여러 머신과 에이전트가 연결되는 구조 | [mesh 아키텍처](reference/mesh-architecture.md) |
 | macOS와 Windows를 함께 쓰는 방법 | [macOS와 Windows 구성](reference/dev-mac-windows.md) |
 
