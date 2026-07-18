@@ -6,7 +6,15 @@ import remarkGfm from 'remark-gfm'
 export default function Md({ text }: { text: string }) {
   return (
     <div className="md">
-      <ReactMarkdown remarkPlugins={[remarkGfm]}>{text}</ReactMarkdown>
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={{
+          // 링크는 새 탭으로 - 현재 탭 이동은 SSE 연결·피드 상태를 잃는다(gemini 리뷰). noopener 로 역참조 차단.
+          a: ({ node: _node, ...props }) => <a {...props} target="_blank" rel="noopener noreferrer" />,
+        }}
+      >
+        {text}
+      </ReactMarkdown>
     </div>
   )
 }

@@ -11,8 +11,9 @@ import Md from './Md'
 // 라운드 task 를 발행한다 - 피드에서는 토론 뱃지(+토론 id 축약)로 묶어 보이게 한다.
 const DEBATE_PREFIX = 'debate:'
 
-function isDebateFrom(from: string): boolean {
-  return from.startsWith(DEBATE_PREFIX)
+function isDebateFrom(from: string | undefined): boolean {
+  // 타입상 string 이지만 와이어 JSON 이변(누락) 대비 런타임 가드(gemini 리뷰).
+  return typeof from === 'string' && from.startsWith(DEBATE_PREFIX)
 }
 
 // `debate:<32hex 앞 12자>` → "토론 t-1204" (tid 축약과 같은 4자 규칙).
