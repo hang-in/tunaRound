@@ -1042,6 +1042,7 @@ mod tests {
         let result = server
             .get_task(Parameters(GetTaskParams {
                 task_id: "t1".into(),
+                wait_secs: None,
             }))
             .await;
         assert!(result.is_ok());
@@ -1087,6 +1088,7 @@ mod tests {
         let get_result = server
             .get_task(Parameters(GetTaskParams {
                 task_id: seeded_id.clone(),
+                wait_secs: None,
             }))
             .await;
         assert!(get_result.is_ok());
@@ -1108,11 +1110,66 @@ mod tests {
         let result = server
             .get_task(Parameters(GetTaskParams {
                 task_id: "nope".into(),
+                wait_secs: None,
             }))
             .await;
         assert!(result.is_ok());
         let text = format!("{:?}", result.unwrap().content);
         assert!(text.contains("없음"), "미존재 안내 불일치: {text}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn get_task_wait_secs_long_polls_until_terminal() {
+        // v2-54 G7: wait_secs가 있으면 terminal까지 서버가 대기한다. 백그라운드에서 300ms 뒤
+        // claim→complete되는 task를 wait_secs=10으로 조회 → completed로 돌아와야 한다(즉시 반환이면
+        // submitted가 잡힌다).
+        let store = SqliteStore::open_memory().unwrap();
+        let a2a = Arc::new(Mutex::new(store));
+        let server =
+            TunaSearchServer::new(Arc::new(FakeRetriever(vec![]))).with_a2a_store(a2a.clone());
+        let task_id = {
+            let s = a2a.lock().unwrap();
+            seed_task(&s, "lp1", "win", "mac", "2026-07-18 09:00:00");
+            "lp1".to_string()
+        };
+        let a2a2 = a2a.clone();
+        let tid2 = task_id.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            let s = a2a2.lock().unwrap_or_else(|e| e.into_inner());
+            s.try_claim(&tid2, Some("mac"), None).unwrap();
+            s.try_complete(&tid2, &[], Some("mac")).unwrap();
+        });
+        let result = server
+            .get_task(Parameters(GetTaskParams {
+                task_id,
+                wait_secs: Some(10),
+            }))
+            .await;
+        let text = format!("{:?}", result.unwrap().content);
+        assert!(text.contains("state=completed"), "long-poll 미대기: {text}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn get_task_wait_secs_times_out_with_current_state() {
+        // wait 소진 시 그 시점 상태를 그대로 반환한다(에러 아님). 아무도 처리하지 않는 task를
+        // wait_secs=1로 조회 → 약 1초 후 submitted로 반환.
+        let store = SqliteStore::open_memory().unwrap();
+        seed_task(&store, "lp2", "win", "mac", "2026-07-18 09:00:00");
+        let server = server_with_a2a_store(store);
+        let started = std::time::Instant::now();
+        let result = server
+            .get_task(Parameters(GetTaskParams {
+                task_id: "lp2".into(),
+                wait_secs: Some(1),
+            }))
+            .await;
+        let text = format!("{:?}", result.unwrap().content);
+        assert!(text.contains("state=submitted"), "{text}");
+        assert!(
+            started.elapsed() >= std::time::Duration::from_secs(1),
+            "wait_secs만큼 대기해야 함"
+        );
     }
 
     // --- tasks 툴(운영자 전역 조망): MCP 계층(#[tool] 메서드) 테스트 ---
