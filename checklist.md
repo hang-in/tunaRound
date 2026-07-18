@@ -2,14 +2,16 @@
 
 > 규율 #7. task 완료 시 체크. plan 전문은 docs/plans/.
 
-## 세션30: v2-56 mesh 토론 설계 스케치 (2026-07-18, 사용자 발의 "토론을 멀티세션 구조로")
+## 세션30: v2-56 mesh 토론 - 스케치→Phase 0 게이트→Phase 1 구현·머지 (2026-07-18, 사용자 "완료까지 달려보자")
 
-> 스케치만(착수 아님). 병렬 조사 6 + 적대 검증 3렌즈(전부 GO-WITH-FIXES, major 전량 반영: Stage1 폐기·Phase0 게이트 신설·synthesizer '개정' 재분류·driver 폴링 단순화).
+> 병렬 조사 6 + 설계 적대 검증 3렌즈 + 코드 적대 리뷰 3렌즈 + CI 2라운드 + 봇 전수 처분으로 완주.
 
 - [x] 설계 스케치 docs/design/v2-56-mesh-discussion_2026-07-18.md (v2-55 번호는 코드 주석이 선점해 v2-56)
-- [ ] Phase 0 게이트: 운영 레시피(코드 0)로 2좌석 2라운드 크로스머신 토론 도그푸딩 → 가치 판정
-- [ ] 착수 시: §8 열린 결정 7건 확정 → 정본 승격 → Phase 1(브로커 driver + start/stop_discussion)
-- [ ] 착수 시 동반: CLAUDE.md 세션12 "위임 vs 회담" 줄 개정 + 스테일 포인터(a2a-usage §12·§13) 정리
+- [x] Phase 0 게이트 PASS: 운영 레시피(코드 0)로 2좌석 2라운드 크로스머신 토론(mac 라이브+win 워커, 주제=§8-4 자체) - 토론이 설계를 실개선(락 자기모순·침묵사 창 발견, 문서 §4a)
+- [x] §8 확정 7건(권고안 채택) → 정본 승격 → Phase 1 구현: driver(src/discussion.rs)+start/stop_discussion MCP+기동 고아 sweep - PR #127 머지(main ac6126a, 풀피처 722 pass·clippy 0)
+- [x] 코드 적대 리뷰 3렌즈 major 전량 반영(타임아웃=failed 마감으로 인박스 무통지 해소·stop 반응성·debate 색인 중복 차단) + 봇 리뷰 처분(반영 3·근거 기각 2·DeepSource 기각)
+- [x] CLAUDE.md 세션12 "위임 vs 회담" 줄 개정 + 스테일 포인터(a2a-usage §12·§13→§7) 정리
+- [ ] 라이브 E2E: win mesh 새 바이너리 재배포 → start_discussion 실토론(워커+mac 라이브) → 전사·인박스 확인
 
 ## 세션29: v0.5.0 준비 - B-2 대시보드 릴리스 포함 + B-3 라이선스 NOTICE (2026-07-14, 브랜치 build/release-dashboard-and-notices)
 
