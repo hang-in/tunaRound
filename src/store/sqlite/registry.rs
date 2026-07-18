@@ -1074,6 +1074,10 @@ mod tests {
     #[test]
     fn sync_presence_logs_appear_and_disappear() {
         let db = SqliteStore::open_memory().unwrap();
+        // 시각=실시계 상대 ts(#133: sync가 매 호출 도는 gc_presence_events의 30일 창을 고정
+        // 리터럴이 지나면 방금 넣은 이벤트가 같은 호출에서 GC되는 시한폭탄).
+        let t1 = ts(&db, -30);
+        let t2 = ts(&db, -15);
         // 1차 스캔: s1, s2 등장.
         db.sync_presence(
             "win",
@@ -1081,7 +1085,7 @@ mod tests {
                 presence("s1", "claude", Some("tunaRound")),
                 presence("s2", "codex", None),
             ],
-            "2026-07-12 10:00:00",
+            &t1,
         );
         // 2차 스캔: s2 사라짐(stale) + s3 새 등장. s1은 연속.
         db.sync_presence(
@@ -1090,7 +1094,7 @@ mod tests {
                 presence("s1", "claude", Some("tunaRound")),
                 presence("s3", "codex", None),
             ],
-            "2026-07-12 10:00:15",
+            &t2,
         );
         let events = db.list_presence_events(None, 100).unwrap();
         let appears: Vec<&str> = events
@@ -1112,12 +1116,16 @@ mod tests {
     #[test]
     fn register_agent_logs_appear_once_and_sync_does_not_duplicate() {
         let db = SqliteStore::open_memory().unwrap();
+        // 시각=실시계 상대 ts(#133: 30일 gc 시한폭탄 회피).
+        let t_reg = ts(&db, -45);
+        let t_sync = ts(&db, -30);
+        let t_rereg = ts(&db, -15);
         // register(워커·infra 경로) 신규 진입 = appear 1회(deregister의 disappear와 대칭).
         db.register_agent(
             "w1",
             tags(&[("machine", "win"), ("role", "worker")]),
             Some("win-worker".into()),
-            "2026-07-12 10:00:00",
+            &t_reg,
         );
         let appears1 = db
             .list_presence_events(None, 100)
@@ -1127,17 +1135,13 @@ mod tests {
             .count();
         assert_eq!(appears1, 1, "register 신규 진입 = appear 1회");
         // 같은 uuid를 스캐너가 보고해도(이미 roster에 있음) 중복 appear 없음(전이당 1회).
-        db.sync_presence(
-            "win",
-            &[presence("w1", "worker", None)],
-            "2026-07-12 10:00:15",
-        );
+        db.sync_presence("win", &[presence("w1", "worker", None)], &t_sync);
         // 재등록(재기동)도 이미 존재라 appear 추가 없음.
         db.register_agent(
             "w1",
             tags(&[("machine", "win"), ("role", "worker")]),
             None,
-            "2026-07-12 10:00:30",
+            &t_rereg,
         );
         let appears2 = db
             .list_presence_events(None, 100)
@@ -1184,21 +1188,10 @@ mod tests {
     #[test]
     fn sync_presence_does_not_relog_appear_for_continuing_session() {
         let db = SqliteStore::open_memory().unwrap();
-        db.sync_presence(
-            "win",
-            &[presence("s1", "claude", None)],
-            "2026-07-12 10:00:00",
-        );
-        db.sync_presence(
-            "win",
-            &[presence("s1", "claude", None)],
-            "2026-07-12 10:00:15",
-        );
-        db.sync_presence(
-            "win",
-            &[presence("s1", "claude", None)],
-            "2026-07-12 10:00:30",
-        );
+        // 시각=실시계 상대 ts(#133: 30일 gc 시한폭탄 회피).
+        db.sync_presence("win", &[presence("s1", "claude", None)], &ts(&db, -45));
+        db.sync_presence("win", &[presence("s1", "claude", None)], &ts(&db, -30));
+        db.sync_presence("win", &[presence("s1", "claude", None)], &ts(&db, -15));
         let appears = db
             .list_presence_events(None, 100)
             .unwrap()
@@ -1292,23 +1285,14 @@ mod tests {
     #[test]
     fn sync_presence_logs_human_input_on_reported_advance() {
         let db = SqliteStore::open_memory().unwrap();
-        db.sync_presence(
-            "win",
-            &[presence_with_input("c1", "2026-07-12 10:00:05")],
-            "2026-07-12 10:00:10",
-        );
+        // 시각=실시계 상대 ts(#133: 30일 gc + human_input 영속 7일 gc 양쪽 시한폭탄 회피).
+        let input1 = ts(&db, -55);
+        let input2 = ts(&db, -30);
+        db.sync_presence("win", &[presence_with_input("c1", &input1)], &ts(&db, -50));
         // 같은 보고값 재보고 = 전진 아님(스킵).
-        db.sync_presence(
-            "win",
-            &[presence_with_input("c1", "2026-07-12 10:00:05")],
-            "2026-07-12 10:00:20",
-        );
+        db.sync_presence("win", &[presence_with_input("c1", &input1)], &ts(&db, -40));
         // 더 새 보고 = 전진.
-        db.sync_presence(
-            "win",
-            &[presence_with_input("c1", "2026-07-12 10:00:30")],
-            "2026-07-12 10:00:35",
-        );
+        db.sync_presence("win", &[presence_with_input("c1", &input2)], &ts(&db, -25));
         let events = db.list_presence_events(None, 100).unwrap();
         let hi = events
             .iter()
@@ -1322,18 +1306,18 @@ mod tests {
     #[test]
     fn list_presence_events_orders_desc_and_filters_since() {
         let db = SqliteStore::open_memory().unwrap();
-        db.sync_presence(
-            "win",
-            &[presence("s1", "claude", None)],
-            "2026-07-12 10:00:00",
-        );
+        // 시각=실시계 상대 ts(#133: 30일 gc 시한폭탄 회피). since는 두 스캔 사이 시각.
+        let t1 = ts(&db, -300);
+        let t2 = ts(&db, -60);
+        let since = ts(&db, -180);
+        db.sync_presence("win", &[presence("s1", "claude", None)], &t1);
         db.sync_presence(
             "win",
             &[
                 presence("s1", "claude", None),
                 presence("s2", "codex", None),
             ],
-            "2026-07-12 10:05:00",
+            &t2,
         );
         let all = db.list_presence_events(None, 100).unwrap();
         assert_eq!(
@@ -1341,9 +1325,7 @@ mod tests {
             "s2",
             "최신(s2 등장)이 먼저"
         );
-        let recent = db
-            .list_presence_events(Some("2026-07-12 10:01:00"), 100)
-            .unwrap();
+        let recent = db.list_presence_events(Some(&since), 100).unwrap();
         assert_eq!(recent.len(), 1, "since 이후만");
         assert_eq!(recent[0].agent_uuid, "s2");
         let capped = db.list_presence_events(None, 1).unwrap();
