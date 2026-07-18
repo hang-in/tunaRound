@@ -91,23 +91,84 @@ impl Lane {
     }
 }
 
+/// init이 ~/.tunaround/config에 넣는 토큰 placeholder. dotenv 폴백이 이 값을 실토큰으로 오인하지
+/// 않도록 파서가 걸러낸다(스캐폴더 cli_node와 단일 소스).
+pub const TOKEN_PLACEHOLDER: &str = "여기에-실제-토큰-넣기";
+
+/// dotenv 형식(KEY=VALUE, `#` 주석) 텍스트에서 var 값을 찾는다(순수 함수). 빈 값·placeholder는
+/// None(미설정과 동일 취급). **의미론은 같은 파일을 읽는 정본 파서(훅 .claude/hooks/tuna_arm.py·
+/// restart 스크립트)와 정렬한다**(적대 리뷰 major: 파서가 어긋나면 같은 파일에서 훅·데몬과
+/// node/doctor가 다른 토큰을 읽는 조용한 401이 생긴다): ① BOM 제거(Windows 편집기) ② 중복 키는
+/// last-wins ③ 따옴표는 짝 맞는 1쌍만 벗기고 내용 리터럴 보존 ④ 무따옴표 값은 " #" 인라인 주석 절단.
+///
+/// 알려진 quirk(정본과 동일해 의도적으로 유지): 따옴표 값 뒤 인라인 주석(`K="x" # 메모`)은 끝
+/// 따옴표 불일치로 무따옴표 분기에 떨어져 `"x"`(따옴표 포함)가 된다. tuna_arm.py:46-52가 정확히
+/// 같은 결과를 내므로 여기서 단독으로 "고치면" 소비자별 토큰 불일치를 재생산한다(gemini 제안 기각
+/// 근거). 손보려면 세 파서(py·rs·ps1)를 한 변경으로 함께 바꿔야 한다.
+pub fn parse_dotenv_var(content: &str, var: &str) -> Option<String> {
+    let content = content.trim_start_matches('\u{feff}');
+    let mut last: Option<String> = None;
+    for line in content.lines() {
+        let line = line.trim();
+        if line.starts_with('#') {
+            continue;
+        }
+        let Some((k, v)) = line.split_once('=') else {
+            continue;
+        };
+        if k.trim() != var {
+            continue;
+        }
+        let v = v.trim();
+        let quoted = v.len() >= 2
+            && ((v.starts_with('"') && v.ends_with('"'))
+                || (v.starts_with('\'') && v.ends_with('\'')));
+        let val = if quoted {
+            v[1..v.len() - 1].to_string()
+        } else {
+            match v.find(" #") {
+                Some(i) => v[..i].trim_end().to_string(),
+                None => v.to_string(),
+            }
+        };
+        last = Some(val);
+    }
+    last.filter(|v| !v.is_empty() && v != TOKEN_PLACEHOLDER)
+}
+
 /// 토큰 문자열을 해석한다. "@env:NAME"이면 그 환경변수를, 아니면 평문을 그대로 쓴다. None이면 None.
-/// "@env:NAME"인데 그 환경변수가 없거나 비어있으면, 설정하려던 토큰이 해석 안 됐다는 뜻이라
-/// 조용히 None으로 강등되지 않게 eprintln으로 경고한다(호출부가 이 None을 넘기면 브로커가
+/// "@env:NAME"이 환경변수에 없으면 **~/.tunaround/config(dotenv)의 같은 이름을 폴백**으로 읽는다
+/// (v2-54 P2: init이 안내하는 "config에 토큰 채우기"만으로 node/doctor가 동작 - export 단계 불요.
+/// env가 있으면 env가 이긴다 = 명시적 셸 설정 우선). 양쪽 다 없으면, 설정하려던 토큰이 해석 안 됐다는
+/// 뜻이라 조용히 None으로 강등되지 않게 eprintln으로 경고한다(호출부가 이 None을 넘기면 브로커가
 /// 무토큰으로 뜰 수 있음 - 비-loopback 바인드 경고와 함께 가시화, 하드 거부는 하지 않는다).
 pub fn resolve_node_token(token: Option<&str>) -> Option<String> {
+    resolve_node_token_with(token, || {
+        std::fs::read_to_string(crate::config::expand_home("~/.tunaround/config")).ok()
+    })
+}
+
+/// resolve_node_token의 본체(config 파일 읽기를 주입받아 테스트 가능).
+fn resolve_node_token_with(
+    token: Option<&str>,
+    read_config: impl FnOnce() -> Option<String>,
+) -> Option<String> {
     let raw = token?;
     match raw.strip_prefix("@env:") {
         Some(var) => {
-            let resolved = std::env::var(var).ok().filter(|v| !v.is_empty());
-            if resolved.is_none() {
+            let from_env = std::env::var(var).ok().filter(|v| !v.is_empty());
+            if from_env.is_some() {
+                return from_env;
+            }
+            let from_file = read_config().and_then(|c| parse_dotenv_var(&c, var));
+            if from_file.is_none() {
                 eprintln!(
-                    "[node] 경고: token = \"@env:{var}\"이지만 환경변수 {var}가 비어있거나 설정되지 않았습니다. \
-                     브로커가 토큰 없이 기동될 수 있습니다(비-loopback 바인드면 무인증 원격 노출 위험). \
-                     {var}를 설정하세요."
+                    "[node] 경고: token = \"@env:{var}\"이지만 환경변수 {var}도 ~/.tunaround/config의 {var}도 \
+                     비어있거나 설정되지 않았습니다. 브로커가 토큰 없이 기동될 수 있습니다(비-loopback \
+                     바인드면 무인증 원격 노출 위험). 둘 중 한 곳에 {var}를 설정하세요."
                 );
             }
-            resolved
+            from_file
         }
         None => Some(raw.to_string()),
     }
@@ -285,6 +346,95 @@ kind = "supervised"
         unsafe {
             std::env::remove_var("TUNAROUND_TEST_NODE_TOK_EMPTY");
         }
+    }
+
+    #[test]
+    fn parse_dotenv_var_skips_comments_placeholder_and_strips_quotes() {
+        let content =
+            "# 주석 TUNA_BROKER_TOKEN=comment\nTUNA_AUTOARM=1\nTUNA_BROKER_TOKEN=\"real-tok\"\n";
+        assert_eq!(
+            parse_dotenv_var(content, "TUNA_BROKER_TOKEN").as_deref(),
+            Some("real-tok"),
+            "따옴표 벗김 + 주석 스킵"
+        );
+        assert_eq!(parse_dotenv_var(content, "TUNA_MACHINE"), None, "없는 키");
+        // placeholder는 미설정과 동일(실토큰 오인 금지 - init 스캐폴드 미기입 상태).
+        let ph = format!("TUNA_BROKER_TOKEN={TOKEN_PLACEHOLDER}\n");
+        assert_eq!(parse_dotenv_var(&ph, "TUNA_BROKER_TOKEN"), None);
+        // 빈 값도 미설정.
+        assert_eq!(
+            parse_dotenv_var("TUNA_BROKER_TOKEN=\n", "TUNA_BROKER_TOKEN"),
+            None
+        );
+    }
+
+    #[test]
+    fn parse_dotenv_var_matches_hook_parser_semantics() {
+        // 적대 리뷰 major: 훅(tuna_arm.py)·restart 스크립트와 의미론 정렬 3종.
+        // ① 중복 키 = last-wins(토큰 로테이션 시 파일 끝에 새 줄을 추가하는 관용).
+        let dup = "TUNA_BROKER_TOKEN=old-tok\nTUNA_BROKER_TOKEN=new-tok\n";
+        assert_eq!(
+            parse_dotenv_var(dup, "TUNA_BROKER_TOKEN").as_deref(),
+            Some("new-tok")
+        );
+        // ② 무따옴표 값의 " #" 인라인 주석 절단 / 따옴표 값은 리터럴 보존('#' 포함).
+        assert_eq!(
+            parse_dotenv_var("TUNA_BROKER_TOKEN=abc # 메모\n", "TUNA_BROKER_TOKEN").as_deref(),
+            Some("abc")
+        );
+        assert_eq!(
+            parse_dotenv_var("TUNA_BROKER_TOKEN=\"abc # 리터럴\"\n", "TUNA_BROKER_TOKEN")
+                .as_deref(),
+            Some("abc # 리터럴")
+        );
+        // ③ BOM(Windows 편집기)이 첫 키를 오염시키지 않는다.
+        assert_eq!(
+            parse_dotenv_var("\u{feff}TUNA_BROKER_TOKEN=tok\n", "TUNA_BROKER_TOKEN").as_deref(),
+            Some("tok")
+        );
+        // 짝 안 맞는 따옴표는 벗기지 않는다(값 그대로).
+        assert_eq!(
+            parse_dotenv_var("TUNA_BROKER_TOKEN=\"half\n", "TUNA_BROKER_TOKEN").as_deref(),
+            Some("\"half")
+        );
+    }
+
+    #[test]
+    fn resolve_node_token_falls_back_to_config_file_env_wins() {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let file = Some("TUNA_TEST_FALLBACK_TOK=from-file\n".to_string());
+        // env 미설정 → 파일 폴백(v2-54 P2).
+        assert_eq!(
+            resolve_node_token_with(Some("@env:TUNA_TEST_FALLBACK_TOK"), || file.clone()),
+            Some("from-file".to_string())
+        );
+        // env가 있으면 env가 이긴다(명시적 셸 설정 우선).
+        unsafe {
+            std::env::set_var("TUNA_TEST_FALLBACK_TOK", "from-env");
+        }
+        assert_eq!(
+            resolve_node_token_with(Some("@env:TUNA_TEST_FALLBACK_TOK"), || file.clone()),
+            Some("from-env".to_string())
+        );
+        unsafe {
+            std::env::remove_var("TUNA_TEST_FALLBACK_TOK");
+        }
+        // 빈 env는 미설정과 동일 취급이라 파일이 이긴다("비어있지 않은 env가 우선" 계약 고정).
+        unsafe {
+            std::env::set_var("TUNA_TEST_FALLBACK_TOK", "");
+        }
+        assert_eq!(
+            resolve_node_token_with(Some("@env:TUNA_TEST_FALLBACK_TOK"), || file.clone()),
+            Some("from-file".to_string())
+        );
+        unsafe {
+            std::env::remove_var("TUNA_TEST_FALLBACK_TOK");
+        }
+        // 양쪽 다 없으면 None(경고 stderr, 반환값만 검증).
+        assert_eq!(
+            resolve_node_token_with(Some("@env:TUNA_TEST_FALLBACK_TOK"), || None),
+            None
+        );
     }
 
     #[test]

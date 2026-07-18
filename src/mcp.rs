@@ -131,13 +131,13 @@ impl ServerHandler for TunaSearchServer {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_instructions(
                 "토론 맥락을 검색하려면 search_context(query)를, 전사 통째를 읽으려면 read_transcript(session_id?, max_turns?)를 호출하세요. \
-                 작업을 맡기는 쪽(dispatcher)은 send_task(from_agent, to_agent 또는 to_selector, text, context_id?)로 위임하고 get_task(task_id)로 결과를 확인하세요. \
+                 작업을 맡기는 쪽(dispatcher)은 send_task(from_agent, to_agent 또는 to_selector, text, context_id?)로 위임하고 get_task(task_id, wait_secs?)로 결과를 확인하세요(wait_secs를 주면 완료까지 서버가 대기 - 폴링 불요, 최대 120·클라이언트 타임아웃보다 짧게). \
                  작업을 받는 쪽(worker)은 poll_tasks(agent)로 확인하고 claim_task(task_id)로 착수, complete_task(task_id, result)로 완료를 보고하세요. \
                  워커/세션은 register_agent(uuid, tags?, display_name?)로 로스터에 등록하고 heartbeat(uuid)로 주기 갱신하며, \
                  dispatcher는 list_agents(selector?)로 online 에이전트를 발견합니다. \
                  머신당 presence 스캐너는 report_presence(machine, sessions)로 라이브 세션 전집합을 일괄 동기화합니다(v2-44). \
                  브로커 운영자는 tasks()로 전체 열린 task를 미배달(no-consumer?)/고착(stuck?) 주석과 함께 조망할 수 있습니다. \
-                 mesh 토론(v2-56)은 start_discussion(topic, seats, rounds?)으로 시작하고 stop_discussion(discussion_id)으로 중단합니다(전사=debate:<id> 세션)."
+                 mesh 토론(v2-56)은 start_discussion(topic, seats, rounds?, gate?)으로 시작하고 stop_discussion(discussion_id)으로 중단합니다(전사=debate:<id> 세션). gate=true 토론은 라운드 사이에 사람 승인을 기다립니다: 다이제스트를 사용자에게 보고하고 지시가 있을 때만 continue_discussion(discussion_id, steer?, conclude?)를 호출하세요."
                     .to_string(),
             )
     }
@@ -1042,6 +1042,7 @@ mod tests {
         let result = server
             .get_task(Parameters(GetTaskParams {
                 task_id: "t1".into(),
+                wait_secs: None,
             }))
             .await;
         assert!(result.is_ok());
@@ -1087,6 +1088,7 @@ mod tests {
         let get_result = server
             .get_task(Parameters(GetTaskParams {
                 task_id: seeded_id.clone(),
+                wait_secs: None,
             }))
             .await;
         assert!(get_result.is_ok());
@@ -1108,11 +1110,66 @@ mod tests {
         let result = server
             .get_task(Parameters(GetTaskParams {
                 task_id: "nope".into(),
+                wait_secs: None,
             }))
             .await;
         assert!(result.is_ok());
         let text = format!("{:?}", result.unwrap().content);
         assert!(text.contains("없음"), "미존재 안내 불일치: {text}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn get_task_wait_secs_long_polls_until_terminal() {
+        // v2-54 G7: wait_secs가 있으면 terminal까지 서버가 대기한다. 백그라운드에서 300ms 뒤
+        // claim→complete되는 task를 wait_secs=10으로 조회 → completed로 돌아와야 한다(즉시 반환이면
+        // submitted가 잡힌다).
+        let store = SqliteStore::open_memory().unwrap();
+        let a2a = Arc::new(Mutex::new(store));
+        let server =
+            TunaSearchServer::new(Arc::new(FakeRetriever(vec![]))).with_a2a_store(a2a.clone());
+        let task_id = {
+            let s = a2a.lock().unwrap();
+            seed_task(&s, "lp1", "win", "mac", "2026-07-18 09:00:00");
+            "lp1".to_string()
+        };
+        let a2a2 = a2a.clone();
+        let tid2 = task_id.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            let s = a2a2.lock().unwrap_or_else(|e| e.into_inner());
+            s.try_claim(&tid2, Some("mac"), None).unwrap();
+            s.try_complete(&tid2, &[], Some("mac")).unwrap();
+        });
+        let result = server
+            .get_task(Parameters(GetTaskParams {
+                task_id,
+                wait_secs: Some(10),
+            }))
+            .await;
+        let text = format!("{:?}", result.unwrap().content);
+        assert!(text.contains("state=completed"), "long-poll 미대기: {text}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn get_task_wait_secs_times_out_with_current_state() {
+        // wait 소진 시 그 시점 상태를 그대로 반환한다(에러 아님). 아무도 처리하지 않는 task를
+        // wait_secs=1로 조회 → 약 1초 후 submitted로 반환.
+        let store = SqliteStore::open_memory().unwrap();
+        seed_task(&store, "lp2", "win", "mac", "2026-07-18 09:00:00");
+        let server = server_with_a2a_store(store);
+        let started = std::time::Instant::now();
+        let result = server
+            .get_task(Parameters(GetTaskParams {
+                task_id: "lp2".into(),
+                wait_secs: Some(1),
+            }))
+            .await;
+        let text = format!("{:?}", result.unwrap().content);
+        assert!(text.contains("state=submitted"), "{text}");
+        assert!(
+            started.elapsed() >= std::time::Duration::from_secs(1),
+            "wait_secs만큼 대기해야 함"
+        );
     }
 
     // --- tasks 툴(운영자 전역 조망): MCP 계층(#[tool] 메서드) 테스트 ---

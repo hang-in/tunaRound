@@ -226,6 +226,12 @@ pub struct ReportPresenceParams {
 pub struct GetTaskParams {
     /// 조회할 task id.
     pub task_id: String,
+    /// terminal(completed/failed/canceled)까지 최대 이 시간(초) 서버에서 대기 후 반환한다
+    /// (long-poll, v2-54 G7: 호출자가 폴링 간격을 관리하지 않아도 됨). 0 또는 생략=즉시 반환(기존
+    /// 동작), 최대 120. 시간 내 terminal이 안 되면 그 시점 상태를 그대로 반환한다(에러 아님).
+    /// ⚠ 호출 클라이언트의 HTTP/MCP 타임아웃보다 짧게 잡을 것(레포 자체 McpHttpClient는 60초라
+    /// 55 이하 권장 - 길면 서버는 대기 중인데 클라이언트가 먼저 끊는다).
+    pub wait_secs: Option<u64>,
 }
 
 /// tasks 툴 파라미터(필드 없음). 브로커 전역 열린 task 조망은 대상을 지정할 필요가 없다.

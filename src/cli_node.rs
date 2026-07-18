@@ -274,7 +274,7 @@ pub fn run_init(args: &InitArgs) -> i32 {
     if !is_local {
         if config_written {
             println!(
-                "  {step}) ~/.tunaround/config 의 TUNA_BROKER_TOKEN 을 실제 토큰으로 채우기\n     (데몬·훅은 이 파일을 직접 읽습니다. node/doctor를 바로 실행하려면 같은 값을 export {token_env}=... 로도 설정하세요)"
+                "  {step}) ~/.tunaround/config 의 TUNA_BROKER_TOKEN 을 실제 토큰으로 채우기\n     (데몬·훅·node/doctor 전부 이 파일을 읽습니다. 셸 env {token_env}를 설정하면 그쪽이 우선합니다)"
             );
         } else {
             println!(
@@ -323,20 +323,25 @@ fn detect_machine(explicit: Option<&str>) -> String {
 /// 상태이므로 TUNA_BROKER_TOKEN 줄을 주석 처리해 둔다(LAN 확장 시 그대로 발견 가능하게 남겨둠).
 #[cfg(all(feature = "serve", feature = "worker"))]
 fn mesh_config_content(broker_core: &str, machine: &str, bin: &str, local: bool) -> String {
+    // placeholder는 config 계층 const와 단일 소스(dotenv 폴백 파서가 이 값을 걸러낸다).
+    let ph = tunaround::config::TOKEN_PLACEHOLDER;
     let token_block = if local {
-        "# 로컬(loopback) 전용이라 브로커가 무토큰 계약으로 뜹니다. LAN으로 확장하면 아래 주석을 해제하고\n\
-         # 실제 토큰으로 채우세요(node.toml의 @env:TUNA_BROKER_TOKEN도 같은 이름을 씁니다).\n\
-         # TUNA_BROKER_TOKEN=여기에-실제-토큰-넣기\n"
-            .to_string()
+        format!(
+            "# 로컬(loopback) 전용이라 브로커가 무토큰 계약으로 뜹니다. LAN으로 확장하면 아래 주석을 해제하고\n\
+             # 실제 토큰으로 채우세요(node.toml의 @env:TUNA_BROKER_TOKEN도 같은 이름을 씁니다).\n\
+             # TUNA_BROKER_TOKEN={ph}\n"
+        )
     } else {
-        "# 브로커 인증 토큰(평문). 아래를 실제 토큰으로 바꾸세요. node.toml의 @env:TUNA_BROKER_TOKEN도\n\
-         # 이 이름을 씁니다. 파일 권한 제한 권장(mac/linux: chmod 600, Windows: icacls 본인만 R/W).\n\
-         TUNA_BROKER_TOKEN=여기에-실제-토큰-넣기\n"
-            .to_string()
+        format!(
+            "# 브로커 인증 토큰(평문). 아래를 실제 토큰으로 바꾸세요. node.toml의 @env:TUNA_BROKER_TOKEN도\n\
+             # 이 이름을 씁니다. 파일 권한 제한 권장(mac/linux: chmod 600, Windows: icacls 본인만 R/W).\n\
+             TUNA_BROKER_TOKEN={ph}\n"
+        )
     };
     format!(
         "# tunaRound mesh·훅 설정(tunaround init 자동 생성). 값을 채운 뒤 SessionStart 훅과 restart\n\
-         # 스크립트가 읽는다. 형식=KEY=VALUE, 우선순위=이 파일 > env > 기본값. 상세=docs/reference/onboarding.md\n\
+         # 스크립트가 읽는다. 형식=KEY=VALUE. 우선순위(소비자별): 훅·restart 스크립트=이 파일 > env,\n\
+         # node/doctor의 @env: 해석=비어있지 않은 셸 env > 이 파일(폴백). 상세=docs/reference/onboarding.md\n\
          TUNA_AUTOARM=1\n\
          TUNA_BIN={bin}\n\
          TUNA_BROKER_CORE={broker_core}\n\

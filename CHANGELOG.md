@@ -16,6 +16,8 @@
 - mesh 토론 라운드 간 사람 승인 게이트(옵트인): `start_discussion(gate=true)`면 각 라운드 완료 시 다이제스트가 인박스로 오고, `continue_discussion(discussion_id, steer?, conclude?)`로 사람이 진행을 승인합니다. steer는 조향 지시로 다음 라운드에 주입되고, conclude는 남은 라운드를 건너뛰고 종합으로 직행합니다. 게이트 대기 중 브로커가 재기동되면 대기 표식 작업이 failed로 마감되어 인박스에 통지됩니다.
 - 대시보드 피드: 카드 상세와 접힌 미리보기가 markdown으로 렌더됩니다. 토론 작업에는 전용 뱃지가 붙고, 발신(누가 보냈는지) 필터가 추가되었습니다.
 - 대시보드 로스터의 동작 스피너가 A2A 작업 외에 "지금 대화 턴을 처리 중"인 세션에도 켜집니다(claude=턴 시작·종료 훅 쌍, codex=rollout 활동 신선도).
+- `get_task`에 `wait_secs`(1~120) 옵션이 생겼습니다. 지정하면 작업이 끝날 때까지 서버가 대기(long-poll)했다가 반환하므로, 위임한 쪽이 폴링 간격을 관리할 필요가 없습니다.
+- `tunaround node`/`doctor`가 node.toml의 `@env:TUNA_BROKER_TOKEN`을 환경변수에서 못 찾으면 `~/.tunaround/config`의 같은 키를 폴백으로 읽습니다. init이 안내하는 "config에 토큰 채우기"만으로 동작하고, 별도 export 단계가 필요 없습니다(비어있지 않은 환경변수가 있으면 그쪽이 우선).
 
 ### Fixed
 
