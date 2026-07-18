@@ -2391,6 +2391,10 @@ mod tests {
             };
             {
                 let s = store.lock().unwrap();
+                // 시각=실시계 now(#133: sync_presence가 매 호출 gc_presence_events(now-30d)를 돌아
+                // 고정 리터럴은 보존창을 지나는 날짜에 방금 넣은 이벤트가 삭제되는 시한폭탄).
+                // 세 호출이 같은 초를 공유해도 최신순 단언은 id DESC 타이브레이크로 결정적이다.
+                let now = s.now().expect("now");
                 // s1, s2 등장 → s1 사람입력(claude ping) → s2 소멸(stale).
                 s.sync_presence(
                     "win",
@@ -2403,9 +2407,9 @@ mod tests {
                         ),
                         up("s2", "codex", None, None),
                     ],
-                    "2026-07-12 10:00:00",
+                    &now,
                 );
-                s.mark_human_input("s1", "2026-07-12 10:00:05");
+                s.mark_human_input("s1", &now);
                 s.sync_presence(
                     "win",
                     &[up(
@@ -2414,7 +2418,7 @@ mod tests {
                         Some("tunaRound"),
                         Some("win-claude-tunaRound"),
                     )],
-                    "2026-07-12 10:00:15",
+                    &now,
                 );
             }
 
@@ -2452,7 +2456,7 @@ mod tests {
             assert!(types.contains(&"appear"));
             assert!(types.contains(&"human_input"));
             assert!(types.contains(&"disappear"));
-            // 최신순(at DESC): 마지막 이벤트(disappear s2 @10:00:15)가 배열 맨 앞.
+            // 최신순(at DESC, 동시각은 id DESC): 마지막에 기록된 disappear(s2)가 배열 맨 앞.
             assert_eq!(events[0]["event_type"].as_str(), Some("disappear"));
             assert_eq!(events[0]["agent_uuid"].as_str(), Some("s2"));
             assert_eq!(events[0]["detail"].as_str(), Some("stale"));
