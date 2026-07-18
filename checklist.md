@@ -7,9 +7,9 @@
 > 사용자 결정: 게이트=이슈화+바로 구현. 세션 방향=실주제 토론 도그푸딩·#115·v2-54 P2(릴리스는 도그푸딩 후로 유보).
 
 - [x] 이슈 #131 등록(라운드 간 사람 승인 게이트 옵트인: 라운드 다이제스트 인박스 + continue_discussion(id, steer?))
-- [ ] 게이트 설계 스케치 + 적대 검증 3렌즈(코드 정합·결정 정합·스코프)
-- [ ] 구현(브랜치): DiscussionSpec.gate·registry 게이트 상태·driver 라운드 간 대기+다이제스트 task(자가 claim→complete)·continue_discussion MCP·steer=debate/user 전사 주입·테스트
-- [ ] 코드 적대 리뷰 3렌즈 → 중앙검증(fmt·clippy·test) → PR → 3-OS CI → 봇 전수 → 머지 → v2-56 §11 반영
+- [x] 게이트 설계 스케치 + 적대 검증 3렌즈(코드 정합·결정 정합·스코프) - 전부 GO_WITH_FIXES, major 3건이 설계 실변경(표식 task·승인 주체=사람 문구 계약·실패=중단)
+- [x] 구현(브랜치 feat/issue-131-discussion-gate): DiscussionSpec.gate·GateState·driver 게이트 대기+표식+다이제스트·continue_discussion MCP·steer=debate/user 전사 주입·테스트 +10(풀피처 736 pass)
+- [ ] 코드 적대 리뷰 3렌즈(GO×3, minor 반영) → 중앙검증 → PR #132 → 3-OS CI green → 봇 전수 처분 → 머지 → v2-56 §11 반영(동승)
 - [ ] win mesh 재배포 + 실주제 토론 도그푸딩 1회(주제=#115 cargo 메이저 마이그레이션 순서, gate:true = 게이트 검증 겸 #115 조사)
 - [ ] v2-54 P2: get_task wait_secs 롱폴 / node config 토큰 폴백 / watch-results dispatcher 규약 명문화
 - [ ] #115 착수(토론 산출 순서 반영. rmcp 2.2·tungstenite 0.29는 v2-56·relay 코드층 겹침 주의)

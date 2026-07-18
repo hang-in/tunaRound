@@ -750,6 +750,20 @@ mod tests {
         }
     }
 
+    /// 실시계 기준 상대 시각(DB datetime 포맷). gc_human_input/gc_presence_events가 실벽시계
+    /// datetime('now') 기준이라 고정 날짜 리터럴은 보존기간(7일/30일)을 지나는 순간 테스트가 터지는
+    /// 시한폭탄이 된다(2026-07-18 실측: 07-11 리터럴을 쓰던 영속 단언 3건이 정확히 7일째에 폭발).
+    /// gc를 지나 영속 생존을 단언하는 테스트는 이 헬퍼로 now 근방 시각을 쓴다.
+    fn ts(db: &SqliteStore, offset_secs: i64) -> String {
+        db.conn
+            .query_row(
+                "SELECT datetime('now', ?1)",
+                [format!("{offset_secs} seconds")],
+                |r| r.get(0),
+            )
+            .unwrap()
+    }
+
     #[test]
     fn mark_human_input_records_even_when_unregistered() {
         let db = SqliteStore::open_memory().unwrap();
@@ -865,30 +879,29 @@ mod tests {
     fn sync_presence_stale_does_not_delete_persisted_human_input() {
         // #8: stale 제거(스캐너가 한 주기 세션을 놓침)는 영속 ★ 행을 즉시 삭제하지 않는다. 진짜 종료가
         // 아니라면 다음 주기에 로스터 카드는 부활하는데, ★를 그 자리에서 지우면 복원 불가로 증발한다.
+        // 시각은 실시계 상대(ts): sync_presence가 매 호출 gc_human_input(now-7d)을 돌리므로 고정
+        // 리터럴은 시한폭탄이다.
         let db = SqliteStore::open_memory().unwrap();
-        db.sync_presence(
-            "win",
-            &[presence("s1", "claude", None)],
-            "2026-07-11 10:00:00",
-        );
-        db.mark_human_input("s1", "2026-07-11 10:00:05");
+        let t_sync1 = ts(&db, -40);
+        let t_mark = ts(&db, -35);
+        let t_sync2 = ts(&db, -20);
+        let t_sync3 = ts(&db, -10);
+        let t_list = ts(&db, -5);
+        db.sync_presence("win", &[presence("s1", "claude", None)], &t_sync1);
+        db.mark_human_input("s1", &t_mark);
         // s1이 다음 스캔 보고에서 빠짐(한 주기 누락) → 로스터에서는 제거되지만 영속 ★는 남아야 한다.
-        db.sync_presence("win", &[], "2026-07-11 10:00:20");
+        db.sync_presence("win", &[], &t_sync2);
         assert_eq!(
             db.load_human_input("s1").as_deref(),
-            Some("2026-07-11 10:00:05"),
+            Some(t_mark.as_str()),
             "stale 제거는 영속 ★ 행을 지우지 않음(진짜 종료 신호=deregister만 즉시 삭제)"
         );
         // 다음 주기에 재등장하면 ★가 그대로 복원된다(증발하지 않았다는 방증).
-        db.sync_presence(
-            "win",
-            &[presence("s1", "claude", None)],
-            "2026-07-11 10:00:35",
-        );
-        let e = &db.list_agents(&BTreeMap::new(), "2026-07-11 10:00:40", 90)[0];
+        db.sync_presence("win", &[presence("s1", "claude", None)], &t_sync3);
+        let e = &db.list_agents(&BTreeMap::new(), &t_list, 90)[0];
         assert_eq!(
             e.human_input_at.as_deref(),
-            Some("2026-07-11 10:00:05"),
+            Some(t_mark.as_str()),
             "재등장 시 ★ 복원(누락 한 주기로 증발하지 않음)"
         );
     }
@@ -897,27 +910,24 @@ mod tests {
     fn sync_presence_preserves_persisted_signal_across_upsert() {
         let path = temp_db_path("wt");
         let p = path.to_str().unwrap();
+        let mark_at;
         {
             // mark로 테이블에 기록된 ★가 이후 sync upsert를 거쳐도 소실되지 않아야 한다(sync는 인메모리
-            // 값을 그대로 유지하고 테이블을 지우지 않음 - 재기동 후에도 영속 보존).
+            // 값을 그대로 유지하고 테이블을 지우지 않음 - 재기동 후에도 영속 보존). 시각은 실시계
+            // 상대(ts, gc 시한폭탄 회피).
             let db = SqliteStore::open(p).unwrap();
-            db.sync_presence(
-                "win",
-                &[presence("s1", "claude", None)],
-                "2026-07-11 10:00:00",
-            );
-            db.mark_human_input("s1", "2026-07-11 10:00:05");
-            db.sync_presence(
-                "win",
-                &[presence("s1", "claude", None)],
-                "2026-07-11 10:00:15",
-            );
+            let t_sync1 = ts(&db, -30);
+            mark_at = ts(&db, -25);
+            let t_sync2 = ts(&db, -15);
+            db.sync_presence("win", &[presence("s1", "claude", None)], &t_sync1);
+            db.mark_human_input("s1", &mark_at);
+            db.sync_presence("win", &[presence("s1", "claude", None)], &t_sync2);
         }
         {
             let db = SqliteStore::open(p).unwrap();
             assert_eq!(
                 db.load_human_input("s1").as_deref(),
-                Some("2026-07-11 10:00:05"),
+                Some(mark_at.as_str()),
                 "sync upsert가 영속 ★를 보존"
             );
         }
@@ -963,20 +973,20 @@ mod tests {
     fn sync_presence_reported_input_advances_and_persists() {
         let db = SqliteStore::open_memory().unwrap();
         // codex 세션이 첫 등장 + 보고값(사람 입력 시각) → 인메모리·영속 양쪽에 반영.
-        db.sync_presence(
-            "win",
-            &[presence_with_input("c1", "2026-07-11 10:00:05")],
-            "2026-07-11 10:00:10",
-        );
-        let e = &db.list_agents(&BTreeMap::new(), "2026-07-11 10:00:15", 90)[0];
+        // 시각은 실시계 상대(ts, gc 시한폭탄 회피).
+        let input_at = ts(&db, -15);
+        let sync_at = ts(&db, -10);
+        let list_at = ts(&db, -5);
+        db.sync_presence("win", &[presence_with_input("c1", &input_at)], &sync_at);
+        let e = &db.list_agents(&BTreeMap::new(), &list_at, 90)[0];
         assert_eq!(
             e.human_input_at.as_deref(),
-            Some("2026-07-11 10:00:05"),
+            Some(input_at.as_str()),
             "보고값이 로스터에 반영"
         );
         assert_eq!(
             db.load_human_input("c1").as_deref(),
-            Some("2026-07-11 10:00:05"),
+            Some(input_at.as_str()),
             "보고값이 영속에 write-through"
         );
     }

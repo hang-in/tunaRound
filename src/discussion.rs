@@ -280,8 +280,10 @@ pub fn build_gate_digest(
     );
     out.push_str("\n\n라운드 발언 요약:");
     for u in same_round {
-        let preview: String = u.content.chars().take(200).collect();
-        let ellipsis = if u.content.chars().count() > 200 {
+        // 201자만 떠서 초과 여부까지 한 번의 순회로 판정한다(gemini: 이중 순회).
+        let mut preview: String = u.content.chars().take(201).collect();
+        let ellipsis = if preview.chars().count() > 200 {
+            preview = preview.chars().take(200).collect();
             "…"
         } else {
             ""
@@ -417,7 +419,12 @@ async fn issue_driver_task(
                 context_id: None,
             },
         )?;
-        s.try_claim(&t.id, Some(DEBATE_DRIVER_AGENT), Some(DEBATE_DRIVER_AGENT))?;
+        // claim 실패 시 방금 만든 submitted task를 정리하고 반환한다(안 하면 id를 잃은 열린 task가
+        // 재기동 sweep까지 잔존 - CodeRabbit). 같은 락 안이라 경합 상대는 없고 store 병증 클래스다.
+        if let Err(e) = s.try_claim(&t.id, Some(DEBATE_DRIVER_AGENT), Some(DEBATE_DRIVER_AGENT)) {
+            let _ = s.try_fail(&t.id, None, None);
+            return Err(format!("게이트 driver task claim 실패: {e}"));
+        }
         Ok(t.id)
     })
     .await
