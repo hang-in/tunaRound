@@ -294,7 +294,10 @@ impl TunaSearchServer {
         // 오류도 조기 종료 후 아래 최종 조회가 표면화한다). wait=0/생략은 루프 자체를 건너뛰어 기존
         // 경로와 동일하다(store 왕복 추가 없음). lease 만료 sweep은 poll 경로 트리거라 여기 대기가
         // requeue를 만들지는 않는다(관찰만 한다). 락은 매 반복 spawn_blocking 안에서만 잡는다.
-        let wait = p.wait_secs.unwrap_or(0).min(120);
+        let wait = p
+            .wait_secs
+            .unwrap_or(0)
+            .min(crate::a2a_wire::GET_TASK_MAX_WAIT_SECS);
         if wait > 0 {
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(wait);
             loop {

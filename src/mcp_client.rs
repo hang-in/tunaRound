@@ -16,6 +16,27 @@ const ACCEPT_HEADER: &str = "application/json, text/event-stream";
 /// 일시적 오류(네트워크·5xx) 재시도 백오프 스케줄(ms, #6): 1차 재시도 전 200ms, 2차 재시도 전 500ms.
 const RETRY_BACKOFF_MS: [u64; 2] = [200, 500];
 
+/// 클라이언트 전역 요청 타임아웃(초). MCP 툴 호출은 단문이라는 전제의 값이며, 이 전제를 깨는 유일한
+/// 예외인 get_task long-poll(wait_secs ≤ 120 > 60)은 per-request 타임아웃으로 따로 상향한다(#138 A-1).
+const DEFAULT_REQUEST_TIMEOUT_SECS: u64 = 60;
+
+/// get_task long-poll 요청의 per-request 타임아웃 여유분(초). 서버가 wait_secs를 꽉 채워 대기해도
+/// 클라이언트가 그보다 늦게 끊도록 서버 상한에 더해진다(네트워크·직렬화 지연 흡수).
+const GET_TASK_TIMEOUT_MARGIN_SECS: u64 = 30;
+
+/// get_task(wait_secs) 요청에 적용할 per-request 타임아웃(순수 함수). wait를 서버 상한
+/// (`GET_TASK_MAX_WAIT_SECS`)으로 먼저 clamp한 뒤 여유분을 더하므로, 서버가 허용하는 어떤 대기보다
+/// 항상 길다(계약 = 아래 테스트가 단언).
+fn get_task_request_timeout(wait_secs: u64) -> std::time::Duration {
+    let wait = wait_secs.min(crate::a2a_wire::GET_TASK_MAX_WAIT_SECS);
+    std::time::Duration::from_secs(wait + GET_TASK_TIMEOUT_MARGIN_SECS)
+}
+
+// 이 상향 로직의 존재 이유를 컴파일 타임 계약으로 고정한다: 서버 대기 상한(120)이 클라이언트 전역
+// 기본(60)을 넘는 동안만 per-request 상향이 필요하다. 전역 기본을 상한 초과로 올려 이 관계가
+// 뒤집히면 상향 로직이 잉여가 되므로, 그때 이 단언이 함께 재검토를 강제한다(#138 A-1).
+const _: () = assert!(crate::a2a_wire::GET_TASK_MAX_WAIT_SECS > DEFAULT_REQUEST_TIMEOUT_SECS);
+
 /// 원격 코어 `/mcp` 엔드포인트에 세션을 맺고 tools/call을 반복 호출하는 클라이언트.
 pub struct McpHttpClient {
     http: reqwest::Client,
@@ -97,9 +118,10 @@ impl McpHttpClient {
         // 타임아웃 없는 기본 클라이언트는 응답이 멎은 코어(방화벽 drop 등)에 무기한 대기해
         // 상주 데몬(presence-scan·poll) 전체를 정지시킨다(봇리뷰 Major). MCP 툴 호출은 단문이라
         // 60초면 충분히 관대하고, 연결 수립은 10초로 짧게 끊어 재시도 루프가 살아 있게 한다.
+        // 단문 전제를 깨는 get_task long-poll만 요청 단위 타임아웃으로 이 값을 덮어쓴다(#138 A-1).
         let http = reqwest::Client::builder()
             .connect_timeout(std::time::Duration::from_secs(10))
-            .timeout(std::time::Duration::from_secs(60))
+            .timeout(std::time::Duration::from_secs(DEFAULT_REQUEST_TIMEOUT_SECS))
             .build()
             .map_err(|e| format!("HTTP 클라이언트 구성 실패: {e}"))?;
         let session_id = Self::handshake(&http, &mcp_url, &token).await?;
@@ -129,10 +151,12 @@ impl McpHttpClient {
 
     /// tools/call 한 번의 시도를 수행한다(재시도 로직 없이 순수 단발 호출). 현재 session_id 스냅샷을
     /// 읽어 헤더에 싣고, 실패 시 상태코드를 함께 반환해 호출부가 재연결 여부를 판단하게 한다.
+    /// timeout이 Some이면 이 요청에 한해 클라이언트 전역 타임아웃(60초)을 덮어쓴다(get_task long-poll용).
     async fn try_call_once(
         &self,
         name: &str,
         args: &Value,
+        timeout: Option<std::time::Duration>,
     ) -> Result<String, (reqwest::StatusCode, String)> {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let body = json!({
@@ -154,6 +178,9 @@ impl McpHttpClient {
             .header("mcp-session-id", &session_id);
         if let Some(tok) = &self.token {
             req = req.header("Authorization", format!("Bearer {tok}"));
+        }
+        if let Some(t) = timeout {
+            req = req.timeout(t);
         }
         let resp = req.body(body.to_string()).send().await.map_err(|e| {
             (
@@ -185,7 +212,19 @@ impl McpHttpClient {
     /// first-completer-wins 가드가 있어 이중 완료가 무해하므로 재시도해도 안전하다). 그 외(4xx 등)는
     /// 즉시 실패로 반환한다. 재귀 호출이 아니라 순차 코드 흐름이라 무한 루프가 될 수 없다.
     pub async fn call_tool(&self, name: &str, args: Value) -> Result<String, String> {
-        match self.try_call_once(name, &args).await {
+        self.call_tool_with_timeout(name, args, None).await
+    }
+
+    /// call_tool과 동일하되 이 호출의 모든 시도(재시도 포함)에 per-request 타임아웃을 적용한다.
+    /// 전역 60초보다 오래 걸리는 게 정상인 호출(get_task long-poll)이 서버 정상 대기 중에
+    /// 클라이언트 선실패로 끊기지 않게 한다(#138 A-1).
+    async fn call_tool_with_timeout(
+        &self,
+        name: &str,
+        args: Value,
+        timeout: Option<std::time::Duration>,
+    ) -> Result<String, String> {
+        match self.try_call_once(name, &args, timeout).await {
             Ok(text) => Ok(text),
             Err((status, first_err)) => {
                 if Self::is_session_expired(status) {
@@ -193,7 +232,9 @@ impl McpHttpClient {
                     return match Self::handshake(&self.http, &self.mcp_url, &self.token).await {
                         Ok(new_session_id) => {
                             *self.session_id.lock().unwrap() = new_session_id;
-                            self.try_call_once(name, &args).await.map_err(|(_, e)| e)
+                            self.try_call_once(name, &args, timeout)
+                                .await
+                                .map_err(|(_, e)| e)
                         }
                         Err(reconnect_err) => {
                             Err(format!("{first_err} (재연결 시도도 실패: {reconnect_err})"))
@@ -212,7 +253,7 @@ impl McpHttpClient {
                 let mut last_err = first_err;
                 for backoff_ms in RETRY_BACKOFF_MS {
                     tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
-                    match self.try_call_once(name, &args).await {
+                    match self.try_call_once(name, &args, timeout).await {
                         Ok(text) => return Ok(text),
                         Err((_, retry_err)) => last_err = retry_err,
                     }
@@ -308,10 +349,25 @@ impl McpHttpClient {
         .await
     }
 
-    /// get_task(task_id) 얇은 래퍼(task 상태·결과 확인, `tunaround task get`용).
-    pub async fn get_task(&self, task_id: &str) -> Result<String, String> {
-        self.call_tool("get_task", json!({ "task_id": task_id }))
-            .await
+    /// get_task(task_id, wait_secs?) 얇은 래퍼(task 상태·결과 확인, `tunaround task get`용).
+    /// wait_secs(1~120)를 주면 서버가 terminal까지 long-poll하므로(v2-54 G7), 그 요청에 한해
+    /// per-request 타임아웃을 wait+여유분으로 상향한다 - 전역 60초 기본이면 wait_secs≥60에서
+    /// 서버 정상 대기 중 클라이언트가 먼저 끊긴다(#138 A-1). 0/None은 기존 즉시 조회 경로 그대로.
+    pub async fn get_task(&self, task_id: &str, wait_secs: Option<u64>) -> Result<String, String> {
+        let wait = wait_secs
+            .unwrap_or(0)
+            .min(crate::a2a_wire::GET_TASK_MAX_WAIT_SECS);
+        if wait == 0 {
+            return self
+                .call_tool("get_task", json!({ "task_id": task_id }))
+                .await;
+        }
+        self.call_tool_with_timeout(
+            "get_task",
+            json!({ "task_id": task_id, "wait_secs": wait }),
+            Some(get_task_request_timeout(wait)),
+        )
+        .await
     }
 
     /// extend_task_lease(task_id, agent) 얇은 래퍼(워커가 실행 중 자기 task의 lease를 주기 연장,
@@ -641,5 +697,87 @@ mod tests {
         let out =
             parse_jsonrpc_sse(text, "poll_tasks", 3).expect("plain JSON 바디 폴백이 성공해야 함");
         assert_eq!(out, "plain");
+    }
+
+    // --- #138 A-1: get_task long-poll 타임아웃 계약(순수 함수 + 라이브 왕복) ---
+
+    #[test]
+    fn get_task_timeout_contract_always_exceeds_server_wait() {
+        // 계약: 서버가 wait를 꽉 채워 대기해도(상한 GET_TASK_MAX_WAIT_SECS로 clamp됨) per-request
+        // 타임아웃이 항상 그보다 길어야 "서버 정상 대기 중 클라이언트 선실패"가 없다. 상한 초과
+        // 입력(u64::MAX)은 clamp가 오버플로 없이 흡수해야 한다.
+        for wait in [
+            1,
+            DEFAULT_REQUEST_TIMEOUT_SECS,
+            crate::a2a_wire::GET_TASK_MAX_WAIT_SECS,
+            u64::MAX,
+        ] {
+            let effective_wait = wait.min(crate::a2a_wire::GET_TASK_MAX_WAIT_SECS);
+            let timeout = get_task_request_timeout(wait);
+            assert!(
+                timeout > std::time::Duration::from_secs(effective_wait),
+                "wait={wait}: per-request 타임아웃({timeout:?})이 서버 대기({effective_wait}s)보다 길어야 함"
+            );
+        }
+        // "상한(120) > 전역 기본(60)"이라는 존재 이유 자체는 모듈의 컴파일 타임 단언(const _)이 고정한다.
+    }
+
+    /// wait_secs가 실제 wire로 전송되어 서버가 long-poll하는지 검증한다: 아무도 처리하지 않는
+    /// task를 wait=1로 조회 → 약 1초 대기 후 submitted 반환(즉시 반환이면 wait_secs 미전송 회귀).
+    /// wait=None은 기존 즉시 조회 경로 그대로임을 함께 확인한다.
+    #[tokio::test]
+    async fn get_task_wait_secs_is_wired_to_server_long_poll() {
+        let url = spawn_test_server(None).await;
+        let client = McpHttpClient::connect(url, None)
+            .await
+            .expect("connect 성공해야 함");
+
+        let send_text = client
+            .call_tool(
+                "send_task",
+                json!({
+                    "from_agent": "dispatcher",
+                    "to_agent": "nobody",
+                    "text": "long-poll wire 테스트",
+                }),
+            )
+            .await
+            .expect("send_task 성공해야 함");
+        let task_id = send_text
+            .split("task_id=")
+            .nth(1)
+            .and_then(|rest| rest.split_whitespace().next())
+            .expect("task_id 파싱 실패")
+            .to_string();
+
+        // 즉시 조회 경로(wait 없음): 대기 없이 현재 상태.
+        let started = std::time::Instant::now();
+        let instant_text = client
+            .get_task(&task_id, None)
+            .await
+            .expect("get_task(None) 성공해야 함");
+        assert!(
+            instant_text.contains("state=submitted"),
+            "즉시 조회 상태 불일치: {instant_text}"
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(1),
+            "wait 없는 조회는 대기하면 안 됨"
+        );
+
+        // long-poll 경로: wait_secs=1이 서버까지 전달되어야 약 1초 대기가 관측된다.
+        let started = std::time::Instant::now();
+        let polled_text = client
+            .get_task(&task_id, Some(1))
+            .await
+            .expect("get_task(wait=1) 성공해야 함");
+        assert!(
+            polled_text.contains("state=submitted"),
+            "long-poll 소진 후 상태 불일치: {polled_text}"
+        );
+        assert!(
+            started.elapsed() >= std::time::Duration::from_secs(1),
+            "wait_secs가 wire로 전송되지 않았다(서버 무대기 = 즉시 반환 회귀)"
+        );
     }
 }

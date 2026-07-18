@@ -445,6 +445,10 @@ pub enum TaskAction {
     Get {
         /// 조회할 task id.
         task_id: String,
+        /// terminal(completed/failed/canceled)까지 서버가 최대 N초 대기(long-poll, 1~120).
+        /// 폴링 루프 없이 완료를 기다릴 때 사용. 생략/0 = 즉시 현재 상태 반환.
+        #[arg(long)]
+        wait: Option<u64>,
     },
     /// task를 완료 보고한다.
     Complete {
