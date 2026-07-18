@@ -2,6 +2,15 @@
 
 > 규율 #7. task 완료 시 체크. plan 전문은 docs/plans/.
 
+## 세션30: v2-56 mesh 토론 설계 스케치 (2026-07-18, 사용자 발의 "토론을 멀티세션 구조로")
+
+> 스케치만(착수 아님). 병렬 조사 6 + 적대 검증 3렌즈(전부 GO-WITH-FIXES, major 전량 반영: Stage1 폐기·Phase0 게이트 신설·synthesizer '개정' 재분류·driver 폴링 단순화).
+
+- [x] 설계 스케치 docs/design/v2-56-mesh-discussion_2026-07-18.md (v2-55 번호는 코드 주석이 선점해 v2-56)
+- [ ] Phase 0 게이트: 운영 레시피(코드 0)로 2좌석 2라운드 크로스머신 토론 도그푸딩 → 가치 판정
+- [ ] 착수 시: §8 열린 결정 7건 확정 → 정본 승격 → Phase 1(브로커 driver + start/stop_discussion)
+- [ ] 착수 시 동반: CLAUDE.md 세션12 "위임 vs 회담" 줄 개정 + 스테일 포인터(a2a-usage §12·§13) 정리
+
 ## 세션29: v0.5.0 준비 - B-2 대시보드 릴리스 포함 + B-3 라이선스 NOTICE (2026-07-14, 브랜치 build/release-dashboard-and-notices)
 
 > 최종 검증은 실 릴리스 run 몫(v0.5.0 태그 때). 이 PR은 설정을 미리 깔아 릴리스 세션을 가볍게 한다.
