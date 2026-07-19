@@ -1,0 +1,603 @@
+{
+  "tools": [
+    {
+      "description": "열린 task를 취소한다(-> canceled). 잘못 보냈거나 더 필요 없는 task 정리용. 이미 종료된 task는 거부한다.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "reason": {
+            "description": "취소 사유(선택, 로그·표시용). 상태는 canceled로만 전이하고 사유는 별도 저장하지 않는다.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "task_id": {
+            "description": "취소할 task id.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "task_id"
+        ],
+        "type": "object"
+      },
+      "name": "cancel_task"
+    },
+    {
+      "description": "task에 착수했음을 표시한다(submitted/input_required -> working).",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "agent": {
+            "description": "착수하는 에이전트 id(lease 소유자 표시, first-completer-wins 판별용). 생략 시(하위호환, raw\ncurl 등) None → claimed_by는 NULL로 남고 completer 가드는 무력화된다.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "runner": {
+            "description": "처리하는 러너 종류(claude/codex 등), 트레이스용. 생략 가능.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "task_id": {
+            "description": "착수할 task id.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "task_id"
+        ],
+        "type": "object"
+      },
+      "name": "claim_task"
+    },
+    {
+      "description": "task 결과를 보고하고 완료 처리한다(-> completed, 결과는 텍스트 Artifact로 저장).",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "agent": {
+            "description": "완료 보고하는 에이전트 id(first-completer-wins: claimed_by와 불일치하면 거부). 생략 시(하위호환)\nNone → 가드 무력화(기존 동작).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "result": {
+            "description": "결과 텍스트(단일 텍스트 Artifact로 감싸 저장한다).",
+            "type": "string"
+          },
+          "task_id": {
+            "description": "완료할 task id.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "task_id",
+          "result"
+        ],
+        "type": "object"
+      },
+      "name": "complete_task"
+    },
+    {
+      "description": "게이트 대기 중인 mesh 토론을 다음 단계로 진행한다(이슈 #131, start_discussion gate:true 전용). 사람 승인 게이트이므로 사용자 지시가 있을 때만 호출할 것(자율 진행 금지). steer=조향 지시(전사에 [사용자 조향 지시]로 남고 다음 라운드에 주입), conclude=true면 남은 라운드를 건너뛰고 synthesizer 종합 직행.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "conclude": {
+            "description": "true면 남은 라운드를 건너뛰고 synthesizer 종합으로 직행한다(사람의 \"충분\" 판단).",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "discussion_id": {
+            "description": "start_discussion이 반환한 토론 id.",
+            "type": "string"
+          },
+          "steer": {
+            "description": "조향 지시(선택). 전사에 debate/user 턴(\"[사용자 조향 지시]\" 프리픽스)으로 남고 다음 라운드\n프롬프트에 주입된다.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "discussion_id"
+        ],
+        "type": "object"
+      },
+      "name": "continue_discussion"
+    },
+    {
+      "description": "claim한 task의 lease를 연장한다(장시간 실행 중 requeue 방지, 워커가 주기 호출).",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "agent": {
+            "description": "연장하는 에이전트 id(claimed_by와 일치해야 성공, 소유자 확인용).",
+            "type": "string"
+          },
+          "task_id": {
+            "description": "lease를 연장할 task id.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "task_id",
+          "agent"
+        ],
+        "type": "object"
+      },
+      "name": "extend_task_lease"
+    },
+    {
+      "description": "task 실행이 실패했음을 보고한다(-> failed, 사유는 상태 메시지로 저장). completed와 구분되어 dispatcher가 실패를 인지한다.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "agent": {
+            "description": "실패 보고하는 에이전트 id(first-completer-wins: claimed_by와 불일치하면 거부). 생략 시(하위호환)\nNone → 가드 무력화(기존 동작).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reason": {
+            "description": "실패 사유(상태 메시지로 저장해 dispatcher가 읽는다).",
+            "type": "string"
+          },
+          "task_id": {
+            "description": "실패 처리할 task id.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "task_id",
+          "reason"
+        ],
+        "type": "object"
+      },
+      "name": "fail_task"
+    },
+    {
+      "description": "현재 토론 참가자(좌석) 구성을 조회한다.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "session_id": {
+            "description": "세션 id(현재는 단일 로스터라 참고용).",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "name": "get_roster"
+    },
+    {
+      "description": "위임한 A2A task의 상태를 조회한다(completed면 결과 텍스트도 함께 반환, dispatcher용). wait_secs(1~120)를 주면 terminal까지 그 시간만큼 서버가 대기(long-poll)해 폴링 관리가 불필요하다.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "task_id": {
+            "description": "조회할 task id.",
+            "type": "string"
+          },
+          "wait_secs": {
+            "description": "terminal(completed/failed/canceled)까지 최대 이 시간(초) 서버에서 대기 후 반환한다\n(long-poll, v2-54 G7: 호출자가 폴링 간격을 관리하지 않아도 됨). 0 또는 생략=즉시 반환(기존\n동작), 최대 120. 시간 내 terminal이 안 되면 그 시점 상태를 그대로 반환한다(에러 아님).\n⚠ 호출 클라이언트의 HTTP/MCP 타임아웃보다 짧게 잡을 것(레포 자체 McpHttpClient는 60초라\n55 이하 권장 - 길면 서버는 대기 중인데 클라이언트가 먼저 끊는다).",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "task_id"
+        ],
+        "type": "object"
+      },
+      "name": "get_task"
+    },
+    {
+      "description": "로스터에 자기 존재를 갱신한다(online 유지, 주기 호출).",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "uuid": {
+            "description": "heartbeat를 갱신할 에이전트 id.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "uuid"
+        ],
+        "type": "object"
+      },
+      "name": "heartbeat"
+    },
+    {
+      "description": "online 에이전트를 발견한다(selector 태그로 필터, dispatcher 라우팅용).",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "selector": {
+            "description": "태그 셀렉터 \"k=v,k=v\"(부분집합 매칭). 생략 시 online 전부.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "name": "list_agents"
+    },
+    {
+      "description": "내 앞으로 온 A2A task 목록을 조회한다(열린 상태: submitted/working/input_required).",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "agent": {
+            "description": "조회할 에이전트 id(A2A task의 to_agent).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "agent"
+        ],
+        "type": "object"
+      },
+      "name": "poll_tasks"
+    },
+    {
+      "description": "토론에 발언을 추가한다(원격 참가자가 코어 전사에 자기 턴을 씀).",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "content": {
+            "description": "발언 본문.",
+            "type": "string"
+          },
+          "session_id": {
+            "description": "세션 id(기본 \"default\").",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "speaker": {
+            "description": "발언자 라벨(예: \"claude/proposer\").",
+            "type": "string"
+          }
+        },
+        "required": [
+          "speaker",
+          "content"
+        ],
+        "type": "object"
+      },
+      "name": "post_turn"
+    },
+    {
+      "description": "현재 토론 전사를 읽는다(활성 경로). 검색이 아니라 통째 맥락이 필요할 때.",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "max_turns": {
+            "description": "마지막 N턴만(생략=전체).",
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "session_id": {
+            "description": "세션 id(기본 \"default\").",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "name": "read_transcript"
+    },
+    {
+      "description": "이 에이전트를 브로커 로스터에 등록한다(uuid+태그, 워커/세션 자기 등록용).",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "display_name": {
+            "description": "로스터 가독용 표시 이름(생략 가능).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tags": {
+            "description": "발견용 태그 \"k=v,k=v\"(예: \"machine=win,runner=claude,role=worker\"). 생략 가능.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "uuid": {
+            "description": "에이전트 고유 id(워커 자가 발급 uuid 권장, 라우팅 키).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "uuid"
+        ],
+        "type": "object"
+      },
+      "name": "register_agent"
+    },
+    {
+      "description": "머신당 presence 스캐너가 라이브 세션 전집합을 일괄 보고한다(upsert+소유분 제거, v2-44).",
+      "inputSchema": {
+        "$defs": {
+          "PresenceSessionInput": {
+            "description": "report_presence 툴의 라이브 세션 한 건(presence 스캐너가 보고, 설계 v2-44 §6).",
+            "properties": {
+              "active_at": {
+                "default": null,
+                "description": "스캐너가 관측한 마지막 활동 시각(이슈 #123, codex rollout mtime). DB datetime 포맷.\n생략 가능(claude=turn-ping 훅 경로). 브로커가 인메모리 turn_active_at과 max-merge한다.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "display_name": {
+                "description": "로스터 가독용 표시 이름(예: win-claude-tunaRound). 생략 가능.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "human_input_at": {
+                "default": null,
+                "description": "스캐너가 관측한 마지막 사람 입력 시각(v2-45 P5, codex rollout user_message). DB datetime 포맷.\n생략 가능(claude 세션·신호 없음). 브로커가 인메모리·영속과 max-merge한다.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "project": {
+                "description": "추정 프로젝트(불명이면 생략).",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "runner": {
+                "description": "러너 종류(claude | codex).",
+                "type": "string"
+              },
+              "uuid": {
+                "description": "세션 id(claude=jsonl stem, codex=rollout uuid). roster uuid와 같은 공간.",
+                "type": "string"
+              }
+            },
+            "required": [
+              "uuid",
+              "runner"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "machine": {
+            "description": "이 스캐너의 머신 식별자(win|mac|unix).",
+            "type": "string"
+          },
+          "sessions": {
+            "description": "이 머신의 라이브 세션 전집합.",
+            "items": {
+              "$ref": "#/$defs/PresenceSessionInput"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "machine",
+          "sessions"
+        ],
+        "type": "object"
+      },
+      "name": "report_presence"
+    },
+    {
+      "description": "토론 맥락 검색: 과거·다른 분기의 관련 발언을 찾는다",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "limit": {
+            "description": "최대 결과(기본 10).",
+            "format": "uint",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "query": {
+            "description": "검색 질의.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "type": "object"
+      },
+      "name": "search_context"
+    },
+    {
+      "description": "다른 에이전트에게 새 A2A task를 위임한다(생성 즉시 submitted 상태, dispatcher용).",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "context_id": {
+            "description": "대화 맥락 id(생략 가능).",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "from_agent": {
+            "description": "보내는 에이전트 id(A2A task의 from_agent).",
+            "type": "string"
+          },
+          "text": {
+            "description": "작업 지시 본문.",
+            "type": "string"
+          },
+          "to_agent": {
+            "description": "받는 에이전트 id(A2A task의 to_agent). to_selector와 배타적.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "to_selector": {
+            "description": "태그 셀렉터 \"k=v,k=v\"(발견 후 uuid로 라우팅). to_agent와 배타적.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "from_agent",
+          "text"
+        ],
+        "type": "object"
+      },
+      "name": "send_task"
+    },
+    {
+      "description": "mesh 토론을 시작한다(v2-56). 좌석=로스터 online 에이전트 2~6석(라이브 세션 좌석은 live:true 필수), 유한 라운드(기본 3, 최대 10, 순차-인지) 후 synthesizer(기본=첫 좌석) 종합 1회. 전사=debate:<id> 세션(read_transcript로 열람), 결과 수신=watch-results --dispatcher debate:<id>. 비동기 작업이다(좌석당 수 분).",
+      "inputSchema": {
+        "$defs": {
+          "DiscussionSeatParams": {
+            "description": "start_discussion 좌석 파라미터(v2-56 mesh 토론).",
+            "properties": {
+              "agent": {
+                "description": "좌석 에이전트 uuid(로스터 online 필수, list_agents로 발견).",
+                "type": "string"
+              },
+              "instruction": {
+                "description": "좌석별 추가 지시(자유 텍스트, 역할 지시문 뒤에 덧붙는다).",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "label": {
+                "description": "전사·프롬프트 표기용 라벨(생략 시 로스터 display_name, 그것도 없으면 uuid 앞 8자).",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "live": {
+                "description": "라이브 세션 좌석 명시 동의(v2-56 §8-3). 로스터 role=session 에이전트는 true 필수\n(사람이 쓰는 세션을 실수로 토론에 끌어들이는 것 방지).",
+                "type": [
+                  "boolean",
+                  "null"
+                ]
+              },
+              "role": {
+                "description": "토론 역할(proposer/reviewer/verifier/synthesizer 별칭 포함. 그 외 문자열은 역할 지시문 없이 무시).",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [
+              "agent"
+            ],
+            "type": "object"
+          }
+        },
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "gate": {
+            "description": "라운드 간 사람 승인 게이트(이슈 #131, 옵트인·기본 false). true면 각 라운드 완료 시(종합 직전\n포함) 다이제스트가 인박스로 배달되고 continue_discussion까지 대기한다. 승인 주체는 사람이다.",
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "rounds": {
+            "description": "라운드 수(기본 3, 1~10로 클램프). 소진 후 synthesizer 종합 1회가 추가로 돈다.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "seats": {
+            "description": "좌석 2~6석. 배열 순서 = 라운드 내 발언 순서(순차-인지: 뒤 좌석이 앞 좌석 답을 본다).",
+            "items": {
+              "$ref": "#/$defs/DiscussionSeatParams"
+            },
+            "type": "array"
+          },
+          "topic": {
+            "description": "토론 주제(모든 라운드 프롬프트에 실린다).",
+            "type": "string"
+          }
+        },
+        "required": [
+          "topic",
+          "seats"
+        ],
+        "type": "object"
+      },
+      "name": "start_discussion"
+    },
+    {
+      "description": "진행 중 mesh 토론의 이후 라운드 발행을 중단한다. 이미 실행 중인 좌석 러너는 중단되지 않는다(취소는 상태 전이일 뿐, 늦은 완료는 무시됨).",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "properties": {
+          "discussion_id": {
+            "description": "start_discussion이 반환한 토론 id.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "discussion_id"
+        ],
+        "type": "object"
+      },
+      "name": "stop_discussion"
+    },
+    {
+      "description": "브로커 전역에서 열려 있는 A2A task를 to_agent 무관하게 전부 조회한다(운영자 조망용, 미배달/고착 의심 주석 포함).",
+      "inputSchema": {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "object"
+      },
+      "name": "tasks"
+    }
+  ]
+}
