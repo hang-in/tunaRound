@@ -325,7 +325,7 @@ get_task task_id=<위에서 받은 id>
 
 `send_task` 직후 반드시 `get_task`로 상태를 확인하세요. `submitted`로 남아 있다면 그 좌석을 폴링하는 세션이 없다는 뜻입니다(주소 오기 등으로 아무도 안 듣는 좌석에 조용히 쌓이는 것을 막는 발신자 측 체크입니다 - Stage 1에는 서버 쪽 배달 확인이 없으므로 이 확인이 유일한 안전망입니다). `get_task`는 기존 도구를 그대로 재사용하므로 서버 변경이 없습니다.
 
-**수신 쪽 배선(자동)**: `tuna-autoarm.py`(SessionStart)와 `tuna-session-ping.py`(기존 세션 재주입)가 세션의 `cwd`에서 머신·프로젝트를 파생해, Monitor로 띄우는 `tunaround poll` 명령에 `--also-agent "mbox:machine=<m>,project=<slug>"`를 자동으로 덧붙입니다. 세션은 기본 uuid 폴과 좌석 폴 **두 주소를 동시에** 감시하며, 알림 줄에 어느 주소로 왔는지 표기됩니다(`TASK <id> :: ... (via mbox:machine=win,project=tunaRound)`). 파생이 안 되면(예: cwd 불명) 플래그 자체가 생략되어 기존 단일 agent 수신과 동일하게 동작합니다.
+**수신 쪽 배선(자동)**: `tuna-autoarm.py`(SessionStart)와 `tuna-session-ping.py`(기존 세션 재주입)가 세션의 `cwd`에서 머신·프로젝트를 파생해, Monitor로 띄우는 `tunaround poll` 명령에 `--also-agent "mbox:machine=<m>,project=<slug>"`를 자동으로 덧붙입니다. 세션은 기본 uuid 폴과 좌석 폴 **두 주소를 동시에** 감시하며, 알림 줄에 어느 주소로 왔는지 표기됩니다(`TASK <id> :: ... (via mbox:machine=win,project=tunaRound)`). 파생이 안 되면(예: cwd 불명) 플래그 자체가 생략되어 기존 단일 agent 수신과 동일하게 동작합니다. 훅 세 파일(`tuna_arm.py`·`tuna-autoarm.py`·`tuna-session-ping.py`)은 좌석 파생을 공유하므로 배포 시 **세 파일을 함께 교체**하세요 - 일부만 신판이면 파생 실패가 조용히 삼켜져 좌석 수신이 빠질 수 있습니다.
 
 **동시 다중 세션 = first-claim이 정상입니다.** 같은 좌석 주소를 여러 온라인 세션이 동시에 폴링하면, 먼저 `claim_task`를 호출한 세션이 가져갑니다(기존 CAS 경합과 동일 - 좌석 내부의 자연스러운 로드밸런싱이지 버그가 아닙니다).
 

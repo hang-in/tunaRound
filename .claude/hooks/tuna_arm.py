@@ -100,18 +100,20 @@ def state_dir() -> Path:
 
 
 def derive_machine() -> str:
-    """호스트 머신 식별자. rust discover.rs::default_machine과 동일 규약.
+    """호스트 머신 식별자 = 스캐너 실효값 파이프라인 정렬(적대 검증 정정 반영).
 
-    TUNA_MACHINE 설정값(cfg, 파일 우선) -> 없으면 OS로 추정(Windows="win", macOS="mac", 그
-    외="unix"). rust는 컴파일 타깃(cfg!(target_os))으로 추정하지만, 이 훅은 tunaround 바이너리와
-    같은 호스트에서 실행되므로 런타임 OS 판정이 사실상 같은 값을 낸다. 폴백 체인이 항상 값을 주므로
-    실사용에서 "판정 불가"는 사실상 없다(rust와 동일).
+    정본 관계를 정확히 적으면: rust discover.rs::default_machine은 env 전용(TUNA_MACHINE
+    env, 공백 trim, 없으면 OS 추정)이다. 그러나 스캐너(presence-scan)는 restart 스크립트가
+    ~/.tunaround/config의 TUNA_*를 env로 **덮어써** 기동하므로, 로스터에 실제로 찍히는
+    machine 태그의 실효 우선순위 = config > (기존 env) > OS 추정이다. 좌석 주소는 그 로스터
+    실효값과 일치해야 하므로 이 훅은 rust 함수가 아니라 **배포 파이프라인의 실효값**을
+    미러링한다(cfg = 파일 우선 → env 폴백, v2-43 §5-1). rust처럼 공백값은 버린다(trim 필터).
 
     >>> import os
     >>> derive_machine() in ("win", "mac", "unix") or bool(cfg("TUNA_MACHINE", ""))
     True
     """
-    m = cfg("TUNA_MACHINE", "")
+    m = (cfg("TUNA_MACHINE", "") or "").strip()
     if m:
         return m
     if os.name == "nt":
@@ -178,6 +180,10 @@ def derive_seat_address(cwd: str) -> str:
     machine·project 둘 다 확정돼야 주소를 만든다(계약: machine= v1 필수 - project 단독은
     basename 충돌 footgun). 파생 불가는 None(안전 폴백).
 
+    주소는 Monitor 명령 문자열에 작은따옴표로 감싸여 삽입되므로, 따옴표·제어문자가 섞인
+    슬러그(예: 디렉터리명에 ')는 명령 파손을 막기 위해 주소를 포기한다(None = --also-agent
+    생략 = 기존 단일 poll 동작, 적대 검증 minor 반영).
+
     >>> derive_seat_address("") is None
     True
     """
@@ -187,7 +193,10 @@ def derive_seat_address(cwd: str) -> str:
     machine = derive_machine()
     if not machine:
         return None
-    return f"mbox:machine={machine},project={project}"
+    addr = f"mbox:machine={machine},project={project}"
+    if "'" in addr or any(ord(c) < 32 for c in addr):
+        return None
+    return addr
 
 
 # tombstone(.ctx="dead") GC 임계값(분): 시간창 게이트(240분)+여유. 이보다 오래된 것만 지운다 - 같은
