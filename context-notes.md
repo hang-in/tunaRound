@@ -2,6 +2,13 @@
 
 > 작업 중 결정과 근거. 계속 append. (규율 #7) 다음 세션이 결정을 재유도하지 않게.
 
+## 2026-07-19 세션32 말미: Kiwi 백엔드·버전 정책 (재론 금지)
+
+- **버전 정책(사용자 교정)**: 다음 릴리스 = **0.6.1 patch**. Cargo 0.x 세맨틱에서 파괴 변경만 minor(0.y) 범프를 요구 - 가산 기능·수정은 patch. minor는 굵은 표면·계약 변화에만(0.5.0·0.6.0은 예외적으로 정당). 메모리 [[release-version-policy-patch-first]].
+- **serve 토큰화 판정 기법**: "브로커가 Kiwi냐"는 추론 말고 **프로세스 모듈 검사**(PowerShell Get-Process .Modules에 kiwi.dll 매핑 여부)가 결정적 - kiwi.dll은 init 성공 시에만 로드된다. 실측: win 브로커(rmcp 2.2 재배포분)에 %LOCALAPPDATA%\kiwi\lib\kiwi.dll 매핑 = 공유 검색은 Kiwi(env 아닌 kiwi-rs 자체발견 경로가 serve에도 적용).
+- **Kiwi 스크립트 교훈(PR #158~#160)**: 업스트림 자산명은 릴리스별로 실확인(v0.22.2는 전부 v 포함 - v 벗긴 패턴은 다운로드 0건인데 기존 설치의 멱등 체크가 가림). 아카이브 내부 배치도 실측(zip=lib/kiwi.dll, 모델 tgz=models/cong/base 3계층). kiwi-rs 캐시 규칙은 소스 판정: macOS=XDG 무시·~/Library/Caches 고정·유일 override=KIWI_RS_CACHE_DIR. KIWI_LIBRARY_PATH=dll 파일 경로(디렉터리는 126).
+- **오너 결정 대기 2건(#151 종결 조건)**: mac KIWI_RS_VERSION=v0.22.2 지속 배선 위치(env vs 소스핀) / 소스핀 시 재빌드·재배포 시점 - homelab 세션에서 판단 중, 총괄 임의 진행 금지 지시 있었음.
+
 ## 2026-07-19 세션32 후반: 전 백로그 스윕 결정·교훈 (재론 금지)
 
 - **설계 토론을 게이트 카운터와 겸하는 패턴 확립**: 실주제(=백로그 설계 결정)를 mesh 토론에 태우면 산출(합의 계약)과 ④류 이벤트 게이트 충족이 동시에 나온다. 좌석은 유휴 세션으로(사용 중인 사용자 세션 회피), 역할 교차(같은 두 세션이 토론마다 proposer/critic 스왑)가 관성 편향을 줄였다.
