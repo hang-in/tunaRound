@@ -64,7 +64,10 @@ if command -v unzip &>/dev/null; then
   unzip -j -o "$ZIP_FILE" "lib/kiwi.dll" -d "$LIB_DIR"
 else
   EXTRACT_DIR="$TMPDIR_WORK/zip-extract"
-  powershell.exe -NoProfile -Command "Expand-Archive -LiteralPath '$(cygpath -w "$ZIP_FILE" 2>/dev/null || echo "$ZIP_FILE")' -DestinationPath '$(cygpath -w "$EXTRACT_DIR" 2>/dev/null || echo "$EXTRACT_DIR")' -Force"
+  # PS 단일따옴표 문자열 규약: 경로 내 '는 ''로 이스케이프(O'Connor류 사용자명 파싱 파손 방지, gemini).
+  ZIP_W="$(cygpath -w "$ZIP_FILE" 2>/dev/null || echo "$ZIP_FILE")"; ZIP_W="${ZIP_W//'/''}"
+  EXT_W="$(cygpath -w "$EXTRACT_DIR" 2>/dev/null || echo "$EXTRACT_DIR")"; EXT_W="${EXT_W//'/''}"
+  powershell.exe -NoProfile -Command "Expand-Archive -LiteralPath '$ZIP_W' -DestinationPath '$EXT_W' -Force"
   cp "$EXTRACT_DIR/lib/kiwi.dll" "$LIB_DIR/kiwi.dll"
 fi
 
