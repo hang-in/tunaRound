@@ -247,7 +247,7 @@ type WsRead = futures_util::stream::SplitStream<WsStreamInner>;
 
 /// JSON 값 하나를 텍스트 프레임 하나로 전송한다(ws는 프레임 1개=JSON-RPC 객체 1개, 설계 §6 가정).
 async fn send_json(sink: &mut WsSink, v: &Value) -> Result<(), String> {
-    sink.send(Message::Text(v.to_string()))
+    sink.send(Message::Text(v.to_string().into()))
         .await
         .map_err(|e| format!("codex-inject: ws 전송 실패: {e}"))
 }

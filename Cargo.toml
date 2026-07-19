@@ -33,7 +33,7 @@ rust-embed = { version = "8", optional = true }
 a2a-client = { version = "0.2", optional = true }
 a2a-types = { version = "0.2", optional = true }
 # codex app-server ws 클라이언트(codex-inject)용. 접속 대상이 항상 로컬 ws://이라 TLS 백엔드는 불요.
-tokio-tungstenite = { version = "0.24", optional = true }
+tokio-tungstenite = { version = "0.30", optional = true }
 
 # watchdog가 프로세스 그룹 전체에 SIGKILL을 보내는 killpg 용(외부 kill의 음수 PID 인자 이식성 회피).
 [target.'cfg(unix)'.dependencies]
