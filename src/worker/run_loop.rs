@@ -209,15 +209,78 @@ pub(crate) fn session_marker_terminated(path: &std::path::Path) -> bool {
     }
 }
 
+/// TASK 알림 한 줄의 포맷팅(순수 함수, 이슈 #147 Stage 1). `via`가 있으면 어느 보조 좌석 주소로
+/// 왔는지 줄 끝에 표기한다("mbox:machine=..,project=.." 등). `via=None`(기본 agent 경로)은 기존
+/// 포맷("TASK {id} :: {preview}")과 완전히 동일해, `--also-agent` 미사용 시 출력이 한 글자도
+/// 바뀌지 않는다(하위호환 계약). Monitor는 이 줄 전체를 이벤트 텍스트로 그대로 사용하므로
+/// prefix("TASK {id} ::")는 절대 바꾸지 않는다(#136 수신 규약 참고 문서 a2a-usage.md).
+pub(super) fn format_task_notification(id: &str, preview: &str, via: Option<&str>) -> String {
+    match via {
+        Some(addr) => format!("TASK {id} :: {preview} (via {addr})"),
+        None => format!("TASK {id} :: {preview}"),
+    }
+}
+
+/// 새 task 알림 1건을 stdout에 찍고(포맷=[`format_task_notification`]) `on_task`가 있으면 그 명령을
+/// 실행한다(블로킹 동안 `register` 워커는 heartbeat로 online을 유지). run_poll_loop의 기본 agent
+/// 경로와 좌석(mbox) 보조 경로가 이 헬퍼를 공유해, 알림·on-task 글루 동작이 두 경로에서 동일하다.
+async fn notify_one_task(
+    client: &McpHttpClient,
+    agent: &str,
+    register: bool,
+    on_task: Option<&str>,
+    t: &ParsedTask,
+    via: Option<&str>,
+) {
+    use std::io::Write;
+    // Monitor 이벤트 = stdout 한 줄. 파이프는 블록 버퍼라 flush로 즉시 전달한다.
+    let preview: String = t
+        .msg
+        .chars()
+        .take(80)
+        .collect::<String>()
+        .replace('\n', " ");
+    println!("{}", format_task_notification(&t.id, &preview, via));
+    let _ = std::io::stdout().flush();
+    // on-task 글루: 블로킹 명령(codex exec resume 등)이라 spawn_blocking으로 await한다
+    // (reactor는 안 막으면서 순차 처리 - 책임자는 한 번에 하나씩 다룬다).
+    // 이 명령은 ON_TASK_TIMEOUT_SECS(최대 30분)까지 블로킹할 수 있어, 그동안도
+    // run_one_pass의 lease keepalive와 동일한 이유(AGENT_TTL_SECS=90초)로 roster
+    // heartbeat가 끊기면 워커가 offline 처리된다. register 모드(수신 전용이 아닐 때)에서만
+    // TTL보다 촘촘한 주기(HEARTBEAT_KEEPALIVE_SECS=60초)로 heartbeat를 곁들인다.
+    if let Some(cmd) = on_task {
+        let (cmd, id, msg) = (cmd.to_string(), t.id.clone(), t.msg.clone());
+        let handle = tokio::task::spawn_blocking(move || run_on_task(&cmd, &id, &msg));
+        tokio::pin!(handle);
+        loop {
+            tokio::select! {
+                r = &mut handle => { let _ = r; break; }
+                _ = tokio::time::sleep(Duration::from_secs(HEARTBEAT_KEEPALIVE_SECS)), if register => {
+                    if let Err(e) = client.heartbeat(agent).await {
+                        eprintln!("[poll] on-task 실행 중 heartbeat 실패(무시): {e}");
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// 감시 전용 루프: agent 앞 새 submitted task만 알린다(claim은 하지 않는다).
 /// Claude Code 세션이 이 커맨드를 Monitor로 감싸면, task 도착이 stdout 이벤트로 세션을 깨워 스스로
 /// claim/처리하게 할 수 있다(감독 레인을 유휴 0토큰으로 운용). Monitor가 없는 하네스(codex 등)를 위해
 /// `on_task`가 있으면 task마다 그 명령을 실행한다(외부 wake 글루). 이미 알린 id는 HashSet으로 디듑한다
 /// (task는 claim 전까지 submitted로 남아 매 폴마다 재등장하므로 중복 알림을 막는다).
-/// run_worker_loop와 동일하게 로스터 자기 등록(1회) + 매 패스 heartbeat로 online을 유지한다
+/// run_worker_loop와 동일하게 로스터 자기 등록(1회) + 매 패스 heartbeat로 온라인을 유지한다
 /// (감독도 AGENT_TTL_SECS를 넘기지 않아야 to_selector 발견 대상에서 stale로 빠지지 않는다).
 /// `session_marker`가 있으면(이슈 #118) 매 패스 시작 시 [`session_marker_terminated`]로 종료를
 /// 판정한다 - /clear·창닫기로 세션이 사라져도 마커가 남아 유령 poll이 영구 잔존하던 것을 없앤다.
+/// `also_agents`(이슈 #147 Stage 1: 좌석 수신함)는 기본 `agent`와 별개로 매 주기 poll_tasks를
+/// 추가로 조회할 주소 목록이다(예: "mbox:machine=win,project=tunaRound"). 서버는 무변경 - to_agent
+/// 정확일치 큐(poll_tasks)를 그대로 재사용한다. 각 주소는 **독립 seen 세트**를 쓴다(공유하면 한
+/// 주소의 active 집합이 다른 주소의 이미-알린 id를 `collect_new_submitted`의 retain에서 지워, 아직
+/// claim 안 된 task가 매 주기 재알림되는 버그가 생긴다). 좌석 주소는 등록·heartbeat 대상이
+/// 아니다(에이전트 신원이 아니라 durable 큐 주소라 로스터에 얹지 않는다, mesh 토론 합의 §Stage1).
+/// `also_agents`가 비어 있으면 기본 agent 경로의 출력·타이밍은 이 파라미터 도입 전과 완전히 같다.
 #[allow(clippy::too_many_arguments)] // CLI 인자를 그대로 받는 배선 함수(구조체화는 T4.7에서).
 pub async fn run_poll_loop(
     client: &McpHttpClient,
@@ -229,9 +292,13 @@ pub async fn run_poll_loop(
     display_name: Option<&str>,
     register: bool,
     session_marker: Option<std::path::PathBuf>,
+    also_agents: &[String],
 ) -> Result<(), String> {
     use std::io::Write;
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // 좌석 주소별 독립 seen(위 함수 doc 참고). also_agents는 루프 내내 불변이라 인덱스 정렬이 안정적이다.
+    let mut also_seen: Vec<std::collections::HashSet<String>> =
+        also_agents.iter().map(|_| Default::default()).collect();
 
     // 로스터 자기 등록(1회). 실패해도 폴링은 계속한다(레지스트리 없는 구 코어 하위호환).
     // 등록 성공 시 last_heartbeat가 now로 세팅되므로 첫 패스의 heartbeat는 건너뛴다(중복 요청 회피,
@@ -292,41 +359,24 @@ pub async fn run_poll_loop(
         match client.poll_tasks(agent).await {
             Ok(text) => {
                 for t in collect_new_submitted(&text, &mut seen) {
-                    // Monitor 이벤트 = stdout 한 줄. 파이프는 블록 버퍼라 flush로 즉시 전달한다.
-                    let preview: String = t
-                        .msg
-                        .chars()
-                        .take(80)
-                        .collect::<String>()
-                        .replace('\n', " ");
-                    println!("TASK {} :: {preview}", t.id);
-                    let _ = std::io::stdout().flush();
-                    // on-task 글루: 블로킹 명령(codex exec resume 등)이라 spawn_blocking으로 await한다
-                    // (reactor는 안 막으면서 순차 처리 - 책임자는 한 번에 하나씩 다룬다).
-                    // 이 명령은 ON_TASK_TIMEOUT_SECS(최대 30분)까지 블로킹할 수 있어, 그동안도
-                    // run_one_pass의 lease keepalive와 동일한 이유(AGENT_TTL_SECS=90초)로 roster
-                    // heartbeat가 끊기면 워커가 offline 처리된다. register 모드(수신 전용이 아닐 때)에서만
-                    // TTL보다 촘촘한 주기(HEARTBEAT_KEEPALIVE_SECS=60초)로 heartbeat를 곁들인다.
-                    if let Some(cmd) = on_task {
-                        let (cmd, id, msg) = (cmd.to_string(), t.id.clone(), t.msg.clone());
-                        let handle =
-                            tokio::task::spawn_blocking(move || run_on_task(&cmd, &id, &msg));
-                        tokio::pin!(handle);
-                        loop {
-                            tokio::select! {
-                                r = &mut handle => { let _ = r; break; }
-                                _ = tokio::time::sleep(Duration::from_secs(HEARTBEAT_KEEPALIVE_SECS)), if register => {
-                                    if let Err(e) = client.heartbeat(agent).await {
-                                        eprintln!("[poll] on-task 실행 중 heartbeat 실패(무시): {e}");
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    notify_one_task(client, agent, register, on_task, &t, None).await;
                 }
             }
             // 폴 실패는 이벤트가 아니라 stderr로(Monitor 이벤트 오염 방지). 루프는 죽지 않는다.
             Err(e) => eprintln!("[poll] poll_tasks 실패: {e}"),
+        }
+        // 이슈 #147 Stage 1: 좌석 수신함 이중폴. 서버는 무변경 - 각 주소를 그대로 poll_tasks
+        // 재사용한다. 한 주소의 poll 실패는 그 주기만 건너뛰고(stderr 로그) 기본 agent·다른
+        // 좌석 주소 수신에는 영향 없다(주소별 독립 실패 격리).
+        for (addr, addr_seen) in also_agents.iter().zip(also_seen.iter_mut()) {
+            match client.poll_tasks(addr).await {
+                Ok(text) => {
+                    for t in collect_new_submitted(&text, addr_seen) {
+                        notify_one_task(client, agent, register, on_task, &t, Some(addr)).await;
+                    }
+                }
+                Err(e) => eprintln!("[poll] poll_tasks({addr}) 실패: {e}"),
+            }
         }
         if once {
             return Ok(());

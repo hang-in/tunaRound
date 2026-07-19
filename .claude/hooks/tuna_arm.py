@@ -10,6 +10,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import tempfile
 import time
 import urllib.request
@@ -84,6 +85,109 @@ def state_dir() -> Path:
     d = Path.home() / ".tunaround" / "autoarm"
     d.mkdir(parents=True, exist_ok=True)
     return d
+
+
+# --- 이슈 #147 Stage 1: 좌석(mbox) 수신함 주소 파생 ---
+#
+# "mesh 토론 합의" 계약(이슈 #147 코멘트, debate:39a438949e9c): 주소 = "mbox:machine=<m>,project=<slug>".
+# <m>·<slug> 파생은 **rust 정본과 의미론 정렬이 계약**이라, 여기서는 rust 함수를 그대로 미러링한다
+# (재구현이 아니라 같은 규칙의 파이썬 번역). 정본:
+#   - machine  = src/discover.rs::default_machine (TUNA_MACHINE env/설정 우선 -> OS 추정)
+#   - project  = src/presence_scan.rs::project_from_cwd_normalized
+#                (cwd==home -> "home", 아니면 src/discover.rs::project_from_cwd = 마지막 경로 조각)
+# 파생 불가(주로 cwd 미상)는 None을 반환해 안전 폴백한다 - 호출부는 --also-agent 플래그 자체를
+# 생략해 이 기능 도입 전과 동일하게 동작한다(계약: "파생 불가면 --also-agent 생략").
+
+
+def derive_machine() -> str:
+    """호스트 머신 식별자. rust discover.rs::default_machine과 동일 규약.
+
+    TUNA_MACHINE 설정값(cfg, 파일 우선) -> 없으면 OS로 추정(Windows="win", macOS="mac", 그
+    외="unix"). rust는 컴파일 타깃(cfg!(target_os))으로 추정하지만, 이 훅은 tunaround 바이너리와
+    같은 호스트에서 실행되므로 런타임 OS 판정이 사실상 같은 값을 낸다. 폴백 체인이 항상 값을 주므로
+    실사용에서 "판정 불가"는 사실상 없다(rust와 동일).
+
+    >>> import os
+    >>> derive_machine() in ("win", "mac", "unix") or bool(cfg("TUNA_MACHINE", ""))
+    True
+    """
+    m = cfg("TUNA_MACHINE", "")
+    if m:
+        return m
+    if os.name == "nt":
+        return "win"
+    if sys.platform == "darwin":
+        return "mac"
+    return "unix"
+
+
+def project_slug_for(cwd: str, home) -> str:
+    """project 슬러그 파생(순수 함수, home을 인자로 받아 결정적/테스트 가능). rust
+    presence_scan.rs::project_from_cwd_normalized + discover.rs::project_from_cwd을 그대로
+    미러링한다: cwd가 home과 같으면(구분자 정규화 + 대소문자 무시 비교) "home", 아니면 cwd를
+    '/'나 '\\\\'로 쪼갠 마지막 비어있지 않은 조각(원문 대소문자 보존, home 판정 자체만 대소문자
+    무시). cwd가 비었거나 조각이 없으면 None.
+
+    대표 케이스(rust 고정 테스트 벡터를 그대로 옮김 - discover.rs
+    project_from_cwd_extracts_last_segment):
+
+    >>> project_slug_for("D:\\\\privateProject\\\\tunaRound", None)
+    'tunaRound'
+    >>> project_slug_for("/home/u/folkProject/my-harness", None)
+    'my-harness'
+    >>> project_slug_for("/home/u/proj/", None)
+    'proj'
+    >>> project_slug_for("", None) is None
+    True
+    >>> project_slug_for("/", None) is None
+    True
+    >>> project_slug_for("/Users/d9ng", "/Users/d9ng")
+    'home'
+    >>> project_slug_for("/Users/d9ng/", "/Users/d9ng")
+    'home'
+    >>> project_slug_for("C:\\\\Users\\\\d9ng", "c:/users/d9ng")
+    'home'
+    >>> project_slug_for("/Users/d9ng/repo", "/Users/d9ng")
+    'repo'
+    """
+    if not cwd:
+        return None
+    if home:
+
+        def norm(s: str) -> str:
+            return str(s).replace("\\", "/").rstrip("/").lower()
+
+        if norm(cwd) == norm(home):
+            return "home"
+    parts = [p for p in re.split(r"[/\\]", cwd) if p]
+    return parts[-1] if parts else None
+
+
+def derive_project_slug(cwd: str) -> str:
+    """project_slug_for의 실사용 래퍼: 이 머신의 홈 디렉터리를 자동으로 채운다."""
+    try:
+        home = str(Path.home())
+    except Exception:
+        home = None
+    return project_slug_for(cwd, home)
+
+
+def derive_seat_address(cwd: str) -> str:
+    """좌석(mbox) 수신함 주소 전체("mbox:machine=<m>,project=<slug>") 파생.
+
+    machine·project 둘 다 확정돼야 주소를 만든다(계약: machine= v1 필수 - project 단독은
+    basename 충돌 footgun). 파생 불가는 None(안전 폴백).
+
+    >>> derive_seat_address("") is None
+    True
+    """
+    project = derive_project_slug(cwd)
+    if not project:
+        return None
+    machine = derive_machine()
+    if not machine:
+        return None
+    return f"mbox:machine={machine},project={project}"
 
 
 # tombstone(.ctx="dead") GC 임계값(분): 시간창 게이트(240분)+여유. 이보다 오래된 것만 지운다 - 같은

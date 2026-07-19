@@ -310,6 +310,31 @@ tunaround codex-relay --ws ws://127.0.0.1:<PORT>
 
 새 thread가 생기는 것을 피하려면 기존 세션을 반드시 `resume`으로 여세요.
 
+## 4.3 좌석(seat) 수신함 (mbox, 이슈 #147 Stage 1)
+
+세션 uuid는 세션마다 바뀌므로, "이 머신의 이 프로젝트 자리"로 보내고 싶어도 매번 최신 uuid를 알아내야 하는 문제가 있었습니다. **좌석 수신함**은 세션 uuid 대신 안정적인 주소로 보낼 수 있게 합니다. 스키마·서버는 변경 없이 기존 `to_agent` 정확일치 큐를 그대로 재사용합니다(mesh 토론 합의, `read_transcript(session_id="debate:39a438949e9c")`).
+
+**주소 형식**: `mbox:machine=<m>,project=<slug>` (예: `mbox:machine=win,project=tunaRound`). `machine=`은 v1에서 필수입니다 - `project` 단독이면 서로 다른 머신의 동명 프로젝트가 충돌합니다(basename 충돌 footgun). 좌석은 "미래에 특정 PID가 받는다"는 뜻이 아니라 안정된 자리 정체성입니다.
+
+**발신 절차(보상 체크 필수)**:
+
+```text
+send_task from_agent=<내 이름> to_agent="mbox:machine=win,project=tunaRound" text="..."
+get_task task_id=<위에서 받은 id>
+```
+
+`send_task` 직후 반드시 `get_task`로 상태를 확인하세요. `submitted`로 남아 있다면 그 좌석을 폴링하는 세션이 없다는 뜻입니다(주소 오기 등으로 아무도 안 듣는 좌석에 조용히 쌓이는 것을 막는 발신자 측 체크입니다 - Stage 1에는 서버 쪽 배달 확인이 없으므로 이 확인이 유일한 안전망입니다). `get_task`는 기존 도구를 그대로 재사용하므로 서버 변경이 없습니다.
+
+**수신 쪽 배선(자동)**: `tuna-autoarm.py`(SessionStart)와 `tuna-session-ping.py`(기존 세션 재주입)가 세션의 `cwd`에서 머신·프로젝트를 파생해, Monitor로 띄우는 `tunaround poll` 명령에 `--also-agent "mbox:machine=<m>,project=<slug>"`를 자동으로 덧붙입니다. 세션은 기본 uuid 폴과 좌석 폴 **두 주소를 동시에** 감시하며, 알림 줄에 어느 주소로 왔는지 표기됩니다(`TASK <id> :: ... (via mbox:machine=win,project=tunaRound)`). 파생이 안 되면(예: cwd 불명) 플래그 자체가 생략되어 기존 단일 agent 수신과 동일하게 동작합니다.
+
+**동시 다중 세션 = first-claim이 정상입니다.** 같은 좌석 주소를 여러 온라인 세션이 동시에 폴링하면, 먼저 `claim_task`를 호출한 세션이 가져갑니다(기존 CAS 경합과 동일 - 좌석 내부의 자연스러운 로드밸런싱이지 버그가 아닙니다).
+
+**거버넌스 정합**: 좌석 주소는 3장의 `to_selector`(다중매칭=사람선택) 대상이 아니라 `to_agent`로 지정하는 정확일치 주소입니다. 그래서 다중매칭 정책이 끼어들지 않고, `to_agent` 경로라 §5.1의 `⚠no-consumer?` 진단도 그대로 적용됩니다 - 위 발신자 보상 체크와 별개로, 오래 아무도 안 듣는 좌석은 피드에서도 드러납니다.
+
+**좌석 fungibility 가정에 주의하세요.** 좌석 주소는 "이 머신·프로젝트의 아무 세션이나 받아도 무방한 작업"을 전제합니다. 특정 세션의 로컬 상태(열린 파일, 진행 중이던 대화 맥락 등)를 요하는 지시는 좌석으로 보내지 말고, 그 세션의 uuid를 `to_agent`로 직접 지정하세요(`to_agent=<uuid>` 탈출구는 항상 열려 있습니다).
+
+**Stage 2는 백로그입니다**(2번째 실사례가 트리거): 발신자 좌석 앞 비actionable ack(자동 completed 또는 watch-results 편승)와 submitted TTL sweeper. Stage 1은 발신자가 `get_task`로 직접 확인하는 수동 보상 체크만 제공합니다.
+
 ---
 
 # 5. 운영과 장애 진단

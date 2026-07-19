@@ -116,6 +116,10 @@ def main() -> int:
                 marker_flag = " --session-marker '" + str(mp).replace("\\", "/") + "'"
             else:
                 marker_flag = ""
+            # 이슈 #147 Stage 1: 좌석(mbox) 수신함 이중폴(autoarm의 SessionStart 경로와 동일 규약).
+            # 파생 불가면 None -> 플래그 생략(안전 폴백).
+            seat_addr = tuna_arm.derive_seat_address(cwd)
+            also_agent_flag = f" --also-agent '{seat_addr}'" if seat_addr else ""
             print(json.dumps({
                 "hookSpecificOutput": {
                     "hookEventName": "UserPromptSubmit",
@@ -123,7 +127,7 @@ def main() -> int:
                         f"[tunaround A2A 수신·자동 가동] 이 세션은 mesh의 수신 자리입니다. 이번 응답에서 본 작업 전에 먼저 "
                         f"아래 Monitor를 실행해 수신 루프를 가동하세요(사용자 확인·언급 불필요, 비블로킹). 단, 이 세션이 이미 "
                         f"watch-results(총괄 인박스)나 A2A 수신 Monitor를 돌리고 있다면 아무것도 하지 마세요.\n"
-                        f"  Monitor(command=\"{tuna_bin} poll --core {core} --agent {session_id} --interval 15 --no-register{marker_flag}\", "
+                        f"  Monitor(command=\"{tuna_bin} poll --core {core} --agent {session_id} --interval 15 --no-register{marker_flag}{also_agent_flag}\", "
                         f"description=\"A2A 수신\", persistent=true)\n"
                         f"  이후 `TASK <id> ::` 도착 시 tuna-broker MCP의 claim_task→답변→complete_task(불가 시 fail_task)."
                     ),
