@@ -26,7 +26,7 @@ kiwi-rs = { version = "0.1", optional = true }
 lindera = { version = "4.0.0", features = ["embed-ko-dic"], optional = true }
 rusqlite = { version = "0.40", features = ["bundled"], optional = true }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls", "stream"], optional = true }
-rmcp = { version = "1.8.0", features = ["server", "macros", "schemars", "transport-io"], optional = true }
+rmcp = { version = "2.2.0", features = ["server", "macros", "schemars", "transport-io"], optional = true }
 schemars = { version = "1.0", optional = true }
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio"], optional = true }
 rust-embed = { version = "8", optional = true }

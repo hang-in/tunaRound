@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use rmcp::{
     ErrorData as McpError,
     handler::server::wrapper::Parameters,
-    model::{CallToolResult, Content},
+    model::{CallToolResult, ContentBlock},
     tool, tool_router,
 };
 
@@ -91,7 +91,7 @@ impl TunaSearchServer {
             self.a2a_store.clone(),
             self.writer.clone(),
         ) else {
-            return Ok(CallToolResult::success(vec![Content::text(
+            return Ok(CallToolResult::success(vec![ContentBlock::text(
                 "mesh 토론 미구성(start_discussion 비활성: 브로커 serve 경로에서만 지원)"
                     .to_string(),
             )]));
@@ -100,7 +100,7 @@ impl TunaSearchServer {
         let gate = p.gate.unwrap_or(false);
         let topic = p.topic.trim().to_string();
         if topic.is_empty() {
-            return Ok(CallToolResult::error(vec![Content::text(
+            return Ok(CallToolResult::error(vec![ContentBlock::text(
                 "주제가 비어 있습니다".to_string(),
             )]));
         }
@@ -120,7 +120,7 @@ impl TunaSearchServer {
         let (seats, id) = match outcome {
             Ok(v) => v,
             Err(e) => {
-                return Ok(CallToolResult::error(vec![Content::text(format!(
+                return Ok(CallToolResult::error(vec![ContentBlock::text(format!(
                     "토론 시작 실패: {e}"
                 ))]));
             }
@@ -129,7 +129,7 @@ impl TunaSearchServer {
         let control = match registry.try_begin(&id) {
             Ok(c) => c,
             Err(e) => {
-                return Ok(CallToolResult::error(vec![Content::text(format!(
+                return Ok(CallToolResult::error(vec![ContentBlock::text(format!(
                     "토론 시작 실패: {e}"
                 ))]));
             }
@@ -163,7 +163,7 @@ impl TunaSearchServer {
         } else {
             String::new()
         };
-        Ok(CallToolResult::success(vec![Content::text(format!(
+        Ok(CallToolResult::success(vec![ContentBlock::text(format!(
             "토론 시작: id={id}\n좌석: {seat_list}\n라운드: {rounds} + 종합 1회(첫 좌석)\n전사: read_transcript(session_id=\"{ns}\")\n결과 수신: tunaround watch-results --core <브로커 URL> --dispatcher {ns} (라운드마다 RESULT 줄, 마지막 완료=종합){gate_note}\n중단: stop_discussion(discussion_id=\"{id}\")\n비고: 비동기 작업입니다(좌석당 수 분, 좌석 타임아웃 600초). 브로커 재기동 시 진행 중 토론은 실패 처리됩니다."
         ))]))
     }
@@ -176,7 +176,7 @@ impl TunaSearchServer {
         Parameters(p): Parameters<ContinueDiscussionParams>,
     ) -> Result<CallToolResult, McpError> {
         let Some(registry) = self.discussions.clone() else {
-            return Ok(CallToolResult::success(vec![Content::text(
+            return Ok(CallToolResult::success(vec![ContentBlock::text(
                 "mesh 토론 미구성(continue_discussion 비활성)".to_string(),
             )]));
         };
@@ -189,7 +189,7 @@ impl TunaSearchServer {
         if let Some(s) = &steer {
             let count = s.chars().count();
             if count > 4000 {
-                return Ok(CallToolResult::error(vec![Content::text(format!(
+                return Ok(CallToolResult::error(vec![ContentBlock::text(format!(
                     "진행 실패: steer가 4000자를 초과합니다({count}자) - 줄여서 다시 호출하세요"
                 ))]));
             }
@@ -220,11 +220,11 @@ impl TunaSearchServer {
                     }
                     None => String::new(),
                 };
-                Ok(CallToolResult::success(vec![Content::text(format!(
+                Ok(CallToolResult::success(vec![ContentBlock::text(format!(
                     "게이트 해제: 라운드 {round}/{total} → {next}.{steer_note}"
                 ))]))
             }
-            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
+            Err(e) => Ok(CallToolResult::error(vec![ContentBlock::text(format!(
                 "진행 실패: {e}"
             ))])),
         }
@@ -238,16 +238,16 @@ impl TunaSearchServer {
         Parameters(p): Parameters<StopDiscussionParams>,
     ) -> Result<CallToolResult, McpError> {
         let Some(registry) = self.discussions.clone() else {
-            return Ok(CallToolResult::success(vec![Content::text(
+            return Ok(CallToolResult::success(vec![ContentBlock::text(
                 "mesh 토론 미구성(stop_discussion 비활성)".to_string(),
             )]));
         };
         match registry.cancel(&p.discussion_id) {
-            Ok(()) => Ok(CallToolResult::success(vec![Content::text(format!(
+            Ok(()) => Ok(CallToolResult::success(vec![ContentBlock::text(format!(
                 "토론 {} 중단 요청됨: 이후 라운드는 발행되지 않습니다. 이미 실행 중인 좌석 러너는 끝까지 돌 수 있으나 그 task는 failed로 마감되어 늦은 완료가 무시됩니다.",
                 p.discussion_id
             ))])),
-            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
+            Err(e) => Ok(CallToolResult::error(vec![ContentBlock::text(format!(
                 "중단 실패: {e}"
             ))])),
         }

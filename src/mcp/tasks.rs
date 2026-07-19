@@ -3,7 +3,7 @@
 use rmcp::{
     ErrorData as McpError,
     handler::server::wrapper::Parameters,
-    model::{CallToolResult, Content},
+    model::{CallToolResult, ContentBlock},
     tool, tool_router,
 };
 
@@ -28,7 +28,7 @@ impl TunaSearchServer {
         Parameters(p): Parameters<PollTasksParams>,
     ) -> Result<CallToolResult, McpError> {
         let Some(store) = self.a2a_store.clone() else {
-            return Ok(CallToolResult::success(vec![Content::text(
+            return Ok(CallToolResult::success(vec![ContentBlock::text(
                 "A2A task 저장소 미구성(poll_tasks 비활성)".to_string(),
             )]));
         };
@@ -45,8 +45,8 @@ impl TunaSearchServer {
         // 툴과 달리 이 조회 툴만 success 본문 텍스트로 감춰서, 워커(McpHttpClient::parse_jsonrpc_sse는
         // isError=true만 Err로 매핑)가 DB 장애를 "빈 큐"로 오인해 무로그로 조용히 재폴링하던 결함 수정.
         match outcome {
-            Ok(t) => Ok(CallToolResult::success(vec![Content::text(t)])),
-            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
+            Ok(t) => Ok(CallToolResult::success(vec![ContentBlock::text(t)])),
+            Err(e) => Ok(CallToolResult::error(vec![ContentBlock::text(format!(
                 "poll_tasks 실패: {e}"
             ))])),
         }
@@ -58,7 +58,7 @@ impl TunaSearchServer {
         Parameters(p): Parameters<ClaimTaskParams>,
     ) -> Result<CallToolResult, McpError> {
         let Some(store) = self.a2a_store.clone() else {
-            return Ok(CallToolResult::success(vec![Content::text(
+            return Ok(CallToolResult::success(vec![ContentBlock::text(
                 "A2A task 저장소 미구성(claim_task 비활성)".to_string(),
             )]));
         };
@@ -74,8 +74,8 @@ impl TunaSearchServer {
         // R1: 내부 실패(전이충돌 포함)를 success로 위장하지 않는다. isError=true라야 클라(McpHttpClient::
         // parse_jsonrpc_sse)가 Err로 인식하고, 워커(run_one_pass)가 claim 실패로 보고 러너를 안 돌린다.
         match outcome {
-            Ok(t) => Ok(CallToolResult::success(vec![Content::text(t)])),
-            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
+            Ok(t) => Ok(CallToolResult::success(vec![ContentBlock::text(t)])),
+            Err(e) => Ok(CallToolResult::error(vec![ContentBlock::text(format!(
                 "착수 실패: {e}"
             ))])),
         }
@@ -89,7 +89,7 @@ impl TunaSearchServer {
         Parameters(p): Parameters<CompleteTaskParams>,
     ) -> Result<CallToolResult, McpError> {
         let Some(store) = self.a2a_store.clone() else {
-            return Ok(CallToolResult::success(vec![Content::text(
+            return Ok(CallToolResult::success(vec![ContentBlock::text(
                 "A2A task 저장소 미구성(complete_task 비활성)".to_string(),
             )]));
         };
@@ -123,9 +123,9 @@ impl TunaSearchServer {
                         index_terminal_task(&writer, &a2a, &payload)
                     });
                 }
-                Ok(CallToolResult::success(vec![Content::text(t)]))
+                Ok(CallToolResult::success(vec![ContentBlock::text(t)]))
             }
-            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
+            Err(e) => Ok(CallToolResult::error(vec![ContentBlock::text(format!(
                 "완료 처리 실패: {e}"
             ))])),
         }
@@ -139,7 +139,7 @@ impl TunaSearchServer {
         Parameters(p): Parameters<FailTaskParams>,
     ) -> Result<CallToolResult, McpError> {
         let Some(store) = self.a2a_store.clone() else {
-            return Ok(CallToolResult::success(vec![Content::text(
+            return Ok(CallToolResult::success(vec![ContentBlock::text(
                 "A2A task 저장소 미구성(fail_task 비활성)".to_string(),
             )]));
         };
@@ -172,9 +172,9 @@ impl TunaSearchServer {
                         index_terminal_task(&writer, &a2a, &payload)
                     });
                 }
-                Ok(CallToolResult::success(vec![Content::text(t)]))
+                Ok(CallToolResult::success(vec![ContentBlock::text(t)]))
             }
-            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
+            Err(e) => Ok(CallToolResult::error(vec![ContentBlock::text(format!(
                 "실패 처리 실패: {e}"
             ))])),
         }
@@ -188,7 +188,7 @@ impl TunaSearchServer {
         Parameters(p): Parameters<ExtendLeaseParams>,
     ) -> Result<CallToolResult, McpError> {
         let Some(store) = self.a2a_store.clone() else {
-            return Ok(CallToolResult::success(vec![Content::text(
+            return Ok(CallToolResult::success(vec![ContentBlock::text(
                 "A2A task 저장소 미구성(extend_task_lease 비활성)".to_string(),
             )]));
         };
@@ -202,8 +202,8 @@ impl TunaSearchServer {
         .unwrap_or_else(|e| Err(format!("작업 실패: {e}")));
         // 대상이 아니면(종료·재claim) isError=true라야 워커가 Err로 인지한다(claim_task와 동일 계약).
         match outcome {
-            Ok(t) => Ok(CallToolResult::success(vec![Content::text(t)])),
-            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
+            Ok(t) => Ok(CallToolResult::success(vec![ContentBlock::text(t)])),
+            Err(e) => Ok(CallToolResult::error(vec![ContentBlock::text(format!(
                 "lease 연장 실패: {e}"
             ))])),
         }
@@ -217,7 +217,7 @@ impl TunaSearchServer {
         Parameters(p): Parameters<CancelTaskParams>,
     ) -> Result<CallToolResult, McpError> {
         let Some(store) = self.a2a_store.clone() else {
-            return Ok(CallToolResult::success(vec![Content::text(
+            return Ok(CallToolResult::success(vec![ContentBlock::text(
                 "A2A task 저장소 미구성(cancel_task 비활성)".to_string(),
             )]));
         };
@@ -230,8 +230,8 @@ impl TunaSearchServer {
         .await
         .unwrap_or_else(|e| Err(format!("작업 실패: {e}")));
         match outcome {
-            Ok(t) => Ok(CallToolResult::success(vec![Content::text(t)])),
-            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
+            Ok(t) => Ok(CallToolResult::success(vec![ContentBlock::text(t)])),
+            Err(e) => Ok(CallToolResult::error(vec![ContentBlock::text(format!(
                 "취소 실패: {e}"
             ))])),
         }
@@ -245,7 +245,7 @@ impl TunaSearchServer {
         Parameters(p): Parameters<SendTaskParams>,
     ) -> Result<CallToolResult, McpError> {
         let Some(store) = self.a2a_store.clone() else {
-            return Ok(CallToolResult::success(vec![Content::text(
+            return Ok(CallToolResult::success(vec![ContentBlock::text(
                 "A2A task 저장소 미구성(send_task 비활성)".to_string(),
             )]));
         };
@@ -273,7 +273,7 @@ impl TunaSearchServer {
             Ok(t) => t,
             Err(e) => format!("전송 실패: {e}"),
         };
-        Ok(CallToolResult::success(vec![Content::text(text)]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(text)]))
     }
 
     #[tool(
@@ -284,7 +284,7 @@ impl TunaSearchServer {
         Parameters(p): Parameters<GetTaskParams>,
     ) -> Result<CallToolResult, McpError> {
         let Some(store) = self.a2a_store.clone() else {
-            return Ok(CallToolResult::success(vec![Content::text(
+            return Ok(CallToolResult::success(vec![ContentBlock::text(
                 "A2A task 저장소 미구성(get_task 비활성)".to_string(),
             )]));
         };
@@ -326,7 +326,7 @@ impl TunaSearchServer {
             Ok(t) => t,
             Err(e) => format!("조회 실패: {e}"),
         };
-        Ok(CallToolResult::success(vec![Content::text(text)]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(text)]))
     }
 
     #[tool(
@@ -337,7 +337,7 @@ impl TunaSearchServer {
         Parameters(_p): Parameters<ListTasksParams>,
     ) -> Result<CallToolResult, McpError> {
         let Some(store) = self.a2a_store.clone() else {
-            return Ok(CallToolResult::success(vec![Content::text(
+            return Ok(CallToolResult::success(vec![ContentBlock::text(
                 "A2A task 저장소 미구성(tasks 비활성)".to_string(),
             )]));
         };
@@ -352,6 +352,6 @@ impl TunaSearchServer {
             Ok(t) => t,
             Err(e) => format!("조회 실패: {e}"),
         };
-        Ok(CallToolResult::success(vec![Content::text(text)]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(text)]))
     }
 }

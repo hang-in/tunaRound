@@ -5,7 +5,7 @@ use std::sync::Arc;
 use rmcp::{
     ErrorData as McpError,
     handler::server::wrapper::Parameters,
-    model::{CallToolResult, Content},
+    model::{CallToolResult, ContentBlock},
     tool, tool_router,
 };
 
@@ -34,7 +34,7 @@ impl TunaSearchServer {
         let hits = match outcome {
             Ok(h) => h,
             Err(e) => {
-                return Ok(CallToolResult::error(vec![Content::text(format!(
+                return Ok(CallToolResult::error(vec![ContentBlock::text(format!(
                     "검색 실패: {e}"
                 ))]));
             }
@@ -47,7 +47,7 @@ impl TunaSearchServer {
                 .collect::<Vec<_>>()
                 .join("\n\n")
         };
-        Ok(CallToolResult::success(vec![Content::text(text)]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(text)]))
     }
 
     #[tool(
@@ -58,7 +58,7 @@ impl TunaSearchServer {
         Parameters(p): Parameters<TranscriptParams>,
     ) -> Result<CallToolResult, McpError> {
         let Some(reader) = &self.reader else {
-            return Ok(CallToolResult::success(vec![Content::text(
+            return Ok(CallToolResult::success(vec![ContentBlock::text(
                 "전사 리더 미연결".to_string(),
             )]));
         };
@@ -75,7 +75,7 @@ impl TunaSearchServer {
         let utts = match outcome {
             Ok(u) => u,
             Err(e) => {
-                return Ok(CallToolResult::error(vec![Content::text(format!(
+                return Ok(CallToolResult::error(vec![ContentBlock::text(format!(
                     "전사 읽기 실패: {e}"
                 ))]));
             }
@@ -88,7 +88,7 @@ impl TunaSearchServer {
                 .collect::<Vec<_>>()
                 .join("\n\n")
         };
-        Ok(CallToolResult::success(vec![Content::text(text)]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(text)]))
     }
 
     #[tool(description = "토론에 발언을 추가한다(원격 참가자가 코어 전사에 자기 턴을 씀).")]
@@ -97,7 +97,7 @@ impl TunaSearchServer {
         Parameters(p): Parameters<PostTurnParams>,
     ) -> Result<CallToolResult, McpError> {
         let Some(writer) = &self.writer else {
-            return Ok(CallToolResult::success(vec![Content::text(
+            return Ok(CallToolResult::success(vec![ContentBlock::text(
                 "전사 writer 미연결(post_turn 비활성)".to_string(),
             )]));
         };
@@ -118,10 +118,10 @@ impl TunaSearchServer {
         // claim/complete/fail·registry와 동일 계약. 조회족 poll/send/get/tasks는 별개로 success-with-error-text
         // 유지). "writer 미연결"(위 None)은 미배선이라 실패 아님 → success 유지.
         match outcome {
-            Ok(id) => Ok(CallToolResult::success(vec![Content::text(format!(
+            Ok(id) => Ok(CallToolResult::success(vec![ContentBlock::text(format!(
                 "추가됨: session={sid} msg_id={id}"
             ))])),
-            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
+            Err(e) => Ok(CallToolResult::error(vec![ContentBlock::text(format!(
                 "추가 실패: {e}"
             ))])),
         }
@@ -144,6 +144,6 @@ impl TunaSearchServer {
                 .collect::<Vec<_>>()
                 .join("\n"),
         };
-        Ok(CallToolResult::success(vec![Content::text(text)]))
+        Ok(CallToolResult::success(vec![ContentBlock::text(text)]))
     }
 }
