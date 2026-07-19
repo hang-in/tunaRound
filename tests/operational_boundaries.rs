@@ -17,6 +17,10 @@ mod flaky_retry {
     use tunaround::mcp_client::McpHttpClient;
 
     fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+        // windows(0)은 패닉이라 빈 needle을 선방어한다(gemini 리뷰: 유틸 안정성).
+        if needle.is_empty() {
+            return Some(0);
+        }
         haystack.windows(needle.len()).position(|w| w == needle)
     }
 
@@ -164,7 +168,8 @@ mod flaky_retry {
                 tokio::spawn(handle_conn(socket, counter.clone(), fail_count));
             }
         });
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        // bind가 이미 완료된 뒤라 OS 백로그가 연결을 큐잉하므로 accept 루프 기동 대기가 불필요하다
+        // (gemini 리뷰: sleep 제거로 테스트 단축).
         (format!("http://127.0.0.1:{port}/mcp"), tool_call_count)
     }
 
