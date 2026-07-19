@@ -2,6 +2,7 @@
    shell 레이아웃(sticky 헤더 + 사이드바 로스터 + main 피드 + fixed 푸터 헬스). 라이트/다크 이중지원. */
 
 :root {
+  color-scheme: light;
   --ground: #eef1f2; --panel: #ffffff; --panel-2: #f6f8f9; --border: #d6dde0;
   --border-soft: #e4e9eb; --text: #16211f; --muted: #61726f; --faint: #8595a1;
   --accent: #12938c; --accent-soft: #d3ecea; --good: #2f8f57; --warn: #b47613;
@@ -14,6 +15,7 @@
 }
 @media (prefers-color-scheme: dark) {
   :root {
+    color-scheme: dark;
     --ground: #0d1417; --panel: #141d21; --panel-2: #10181b; --border: #24323a;
     --border-soft: #1c272c; --text: #e4edf0; --muted: #8ba0a6; --faint: #64777e;
     --accent: #38cabf; --accent-soft: #12312f; --good: #56c17e; --warn: #d6a13d;
@@ -21,17 +23,24 @@
   }
 }
 :root[data-theme="dark"] {
+  color-scheme: dark;
   --ground: #0d1417; --panel: #141d21; --panel-2: #10181b; --border: #24323a;
   --border-soft: #1c272c; --text: #e4edf0; --muted: #8ba0a6; --faint: #64777e;
   --accent: #38cabf; --accent-soft: #12312f; --good: #56c17e; --warn: #d6a13d;
   --err: #e0655f; --star: #e2b23f; --debate: #a98ae8; --debate-soft: #2a2145;
 }
 :root[data-theme="light"] {
+  color-scheme: light;
   --ground: #eef1f2; --panel: #ffffff; --panel-2: #f6f8f9; --border: #d6dde0;
   --border-soft: #e4e9eb; --text: #16211f; --muted: #61726f; --faint: #8595a1;
   --accent: #12938c; --accent-soft: #d3ecea; --good: #2f8f57; --warn: #b47613;
   --err: #c4453f; --star: #b78412; --debate: #7a4fd0; --debate-soft: #ece4f9;
 }
+
+/* 스크롤바 테마 연동: color-scheme(위)이 네이티브 위젯을 테마에 맞추고, scrollbar-color가
+   팔레트 토큰으로 트랙·썸을 통일한다(Firefox + Chromium 121+, html에서 전 스크롤 영역 상속).
+   ::-webkit-scrollbar 수동 스타일은 scrollbar-color와 혼용 시 비일관이라 쓰지 않는다. */
+html { scrollbar-color: var(--border) transparent; }
 
 * { box-sizing: border-box; }
 body { margin: 0; background: var(--ground); color: var(--text); font-family: var(--sans); font-size: 14px; line-height: 1.5; }
