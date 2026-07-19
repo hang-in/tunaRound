@@ -15,8 +15,15 @@ set -euo pipefail
 KIWI_VERSION="v0.22.2"
 KIWI_VER_BARE="${KIWI_VERSION#v}"   # 캐시 디렉터리는 v 없는 버전(0.22.2)을 쓴다.
 
+if ! command -v gh &>/dev/null; then
+  echo "[kiwi-install] 오류: gh CLI가 필요합니다(자산 다운로드). https://cli.github.com 설치 후 재실행하세요." >&2
+  exit 1
+fi
+
 # kiwi-rs 캐시 루트: ~/Library/Caches/kiwi-rs/<version>/downloads/
-CACHE_ROOT="${XDG_CACHE_HOME:-$HOME/Library/Caches}/kiwi-rs/$KIWI_VER_BARE"
+# (kiwi-rs 0.1.4 resolve_cache_root 실소스 기준: macOS는 XDG_CACHE_HOME을 보지 않고 $HOME/Library/Caches
+#  고정, 유일한 override는 KIWI_RS_CACHE_DIR - 스크립트도 정확히 그 규칙만 미러링한다. gemini 리뷰 반영.)
+CACHE_ROOT="${KIWI_RS_CACHE_DIR:-$HOME/Library/Caches}/kiwi-rs/$KIWI_VER_BARE"
 DOWNLOADS_DIR="$CACHE_ROOT/downloads"
 
 # 아키텍처 분기(arm64 / x86_64).
