@@ -41,28 +41,30 @@ trap 'rm -rf "$TMPDIR_WORK"' EXIT
 echo "[kiwi-install] $KIWI_VERSION 다운로드 중..."
 gh release download "$KIWI_VERSION" \
   --repo bab2min/Kiwi \
-  --pattern "kiwi_win_x64_${KIWI_VERSION#v}.zip" \
-  --pattern "kiwi_model_${KIWI_VERSION#v}_base.tgz" \
+  --pattern "kiwi_win_x64_${KIWI_VERSION}.zip" \
+  --pattern "kiwi_model_${KIWI_VERSION}_base.tgz" \
   --dir "$TMPDIR_WORK" \
   --clobber
 
 # ── dll 추출 ──────────────────────────────────────────────────────────────────
-ZIP_FILE="$TMPDIR_WORK/kiwi_win_x64_${KIWI_VERSION#v}.zip"
+ZIP_FILE="$TMPDIR_WORK/kiwi_win_x64_${KIWI_VERSION}.zip"
 if [ ! -f "$ZIP_FILE" ]; then
   echo "[kiwi-install] 오류: zip 파일을 찾을 수 없습니다: $ZIP_FILE" >&2
   exit 1
 fi
 echo "[kiwi-install] kiwi.dll 추출 중..."
-unzip -j -o "$ZIP_FILE" "kiwi.dll" -d "$LIB_DIR"
+# zip 내부 배치는 lib/kiwi.dll(v0.22.2 실측). -j로 경로를 벗겨 $LIB_DIR/kiwi.dll로 놓는다.
+unzip -j -o "$ZIP_FILE" "lib/kiwi.dll" -d "$LIB_DIR"
 
 # ── 모델 추출 ─────────────────────────────────────────────────────────────────
-TGZ_FILE="$TMPDIR_WORK/kiwi_model_${KIWI_VERSION#v}_base.tgz"
+TGZ_FILE="$TMPDIR_WORK/kiwi_model_${KIWI_VERSION}_base.tgz"
 if [ ! -f "$TGZ_FILE" ]; then
   echo "[kiwi-install] 오류: 모델 파일을 찾을 수 없습니다: $TGZ_FILE" >&2
   exit 1
 fi
 echo "[kiwi-install] base 모델 추출 중..."
-tar -xzf "$TGZ_FILE" -C "$MODEL_DIR" --strip-components=1
+# tgz 내부 배치는 models/cong/base/<파일들>(3계층, v0.22.2 실측) - 3계층을 벗겨 $MODEL_DIR 바로 아래에 놓는다.
+tar -xzf "$TGZ_FILE" -C "$MODEL_DIR" --strip-components=3
 
 echo "[kiwi-install] 완료."
 echo "  dll: $LIB_DIR/kiwi.dll"
