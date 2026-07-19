@@ -177,6 +177,7 @@ pub fn poll(rt: &tokio::runtime::Runtime, a: PollArgs) {
             a.display_name.as_deref(),
             !a.no_register,
             session_marker,
+            &a.also_agent,
         )
         .await
     });

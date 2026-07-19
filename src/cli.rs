@@ -296,6 +296,13 @@ pub struct PollArgs {
     /// 블로킹(최대 30분)으로 종료가 지연될 수 있다.
     #[arg(long = "session-marker")]
     pub session_marker: Option<String>,
+    /// 좌석 수신함(mbox) 보조 폴 주소(반복 가능, 이슈 #147 Stage 1: "mesh 토론 합의" 계약).
+    /// 기본 `--agent`(세션 uuid) 폴과 별개로 이 주소들도 매 주기 poll_tasks로 조회해, 도착한 task를
+    /// 어느 주소로 왔는지 표기해 알린다(예: `--also-agent "mbox:machine=win,project=tunaRound"`).
+    /// 서버 무변경(to_agent 정확일치 큐 재사용) - 좌석 주소는 로스터에 등록·heartbeat되지 않는다
+    /// (에이전트 신원이 아니라 durable 주소). 생략하면 기존 단일 agent 경로와 동작이 완전히 같다.
+    #[arg(long = "also-agent")]
+    pub also_agent: Vec<String>,
 }
 
 /// `watch-results` 서브커맨드(worker 피처 전용): 총괄이 던진 task의 완료/실패를 브로커 SSE로 받아

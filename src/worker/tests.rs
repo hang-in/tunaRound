@@ -326,6 +326,79 @@ fn collect_new_submitted_preserves_seen_on_soft_error_text() {
     assert!(seen.is_empty(), "진짜 빈 큐는 seen을 정리해야 함");
 }
 
+// --- 이슈 #147 Stage 1: 좌석(seat) 수신함 이중폴 ---
+
+#[test]
+fn format_task_notification_default_matches_legacy_format() {
+    // via=None(기본 agent 경로)은 --also-agent 도입 전 리터럴 포맷("TASK {id} :: {preview}")과
+    // 완전히 동일해야 한다(하위호환 계약: also 비면 출력이 한 글자도 안 바뀜).
+    let id = "a".repeat(32);
+    assert_eq!(
+        format_task_notification(&id, "미리보기", None),
+        format!("TASK {id} :: 미리보기")
+    );
+}
+
+#[test]
+fn format_task_notification_via_appends_address() {
+    // via가 있으면(좌석 mbox 경로) 어느 주소로 왔는지 줄 끝에 표기하되, prefix("TASK {id} ::")는
+    // 그대로 유지한다(Monitor·#136 수신 규약이 이 prefix로 이벤트를 인식).
+    let id = "b".repeat(32);
+    let line =
+        format_task_notification(&id, "좌석 도착", Some("mbox:machine=win,project=tunaRound"));
+    assert!(
+        line.starts_with(&format!("TASK {id} :: 좌석 도착")),
+        "prefix 보존 안 됨: {line}"
+    );
+    assert!(
+        line.contains("mbox:machine=win,project=tunaRound"),
+        "주소 표기 누락: {line}"
+    );
+}
+
+#[test]
+fn dual_poll_addresses_use_independent_seen_sets() {
+    // 이중폴은 주소별 독립 seen을 써야 한다. 공유 seen을 오용하면 한 주소의 poll이 다른 주소의
+    // 이미-알린 id를 collect_new_submitted의 retain()에서 지워, 아직 claim 안 된 task가 매 주기
+    // 재알림되는 버그가 생긴다(원 사건: 유령 poll의 무장 없는 재등록이 로스터를 덮던 것과 같은 급의
+    // "조용한 재발" 클래스). run_poll_loop는 also_agents마다 별도 HashSet을 두어 이를 피한다.
+    let id_primary = "1".repeat(32);
+    let id_mbox = "2".repeat(32);
+    let primary_text = format!("[{id_primary}] from=disp state=submitted msg=기본 큐");
+    let mbox_text = format!("[{id_mbox}] from=disp state=submitted msg=좌석 큐");
+
+    // 설계대로: 주소별 독립 seen.
+    let mut primary_seen = std::collections::HashSet::new();
+    let mut mbox_seen = std::collections::HashSet::new();
+    assert_eq!(
+        collect_new_submitted(&primary_text, &mut primary_seen).len(),
+        1
+    );
+    assert_eq!(collect_new_submitted(&mbox_text, &mut mbox_seen).len(), 1);
+    // 다음 주기: 둘 다 여전히 submitted(=미claim)지만 독립 seen 덕에 재알림 없음.
+    assert!(collect_new_submitted(&primary_text, &mut primary_seen).is_empty());
+    assert!(collect_new_submitted(&mbox_text, &mut mbox_seen).is_empty());
+
+    // 대조(회귀 문서화): 하나의 공유 seen을 오용하면 무슨 일이 나는지.
+    let mut shared_seen = std::collections::HashSet::new();
+    assert_eq!(
+        collect_new_submitted(&primary_text, &mut shared_seen).len(),
+        1
+    );
+    assert_eq!(
+        collect_new_submitted(&mbox_text, &mut shared_seen).len(),
+        1,
+        "mbox 자신의 새 task는 공유 seen이라도 정상 포착됨"
+    );
+    assert_eq!(
+        collect_new_submitted(&primary_text, &mut shared_seen).len(),
+        1,
+        "버그 재현: 공유 seen을 쓰면 mbox 폴의 active 집합(id_mbox만)이 retain()에서 \
+         id_primary를 지워 다음 primary 폴에서 재알림된다 - 그래서 run_poll_loop는 주소별 \
+         독립 seen을 쓴다"
+    );
+}
+
 #[test]
 fn resolve_project_path_uses_map_then_falls_back() {
     let mut map = std::collections::HashMap::new();

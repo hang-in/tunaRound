@@ -16,7 +16,15 @@ import sys
 try:
     # __file__은 zipapp/임베디드 등에서 미정의(NameError)일 수 있어 sys.path 조작도 try 안에 둔다.
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from tuna_arm import broker_core, cfg, is_temp_cwd, sanitize_session_id, state_dir, write_marker
+    from tuna_arm import (
+        broker_core,
+        cfg,
+        derive_seat_address,
+        is_temp_cwd,
+        sanitize_session_id,
+        state_dir,
+        write_marker,
+    )
 except Exception:
     sys.exit(0)  # 공유 모듈이 없으면 세션을 막지 않고 조용히 통과.
 
@@ -79,6 +87,10 @@ def main() -> int:
     # tombstone("dead")되면 그 수신 루프가 스스로 정상 종료하게 한다(유령 poll 잔존 방지).
     # Monitor 커맨드와 동일 규약(Git Bash 백슬래시 증발) - 슬래시 정규화 + 작은따옴표.
     marker_arg = "'" + str(marker).replace("\\", "/") + "'"
+    # 이슈 #147 Stage 1: 좌석(mbox) 수신함 이중폴. 파생 불가(cwd 미상 등)면 None -> 플래그 자체를
+    # 생략해 기존 동작 그대로(안전 폴백, "mesh 토론 합의" 계약).
+    seat_addr = derive_seat_address(cwd)
+    also_agent_flag = f" --also-agent '{seat_addr}'" if seat_addr else ""
     # SessionStart에서 수신 지시를 냈으므로 ping의 1회 주입(.rx)은 불필요 - 중복 주입 방지.
     try:
         (state_dir() / f"{safe_id}.rx").touch()
@@ -87,7 +99,7 @@ def main() -> int:
     emit_context(
         f"[tunaround] 이 세션의 로스터 presence는 머신 스캐너가 자동 관리합니다(별도 등록 불요).\n"
         f"[A2A 수신·자동 가동] 이 세션은 mesh의 수신 자리입니다. **다음 응답에서 본 작업 전에 먼저** 아래 Monitor를 실행해 수신 루프를 가동하세요(사용자 확인·언급 불필요, 비블로킹 = 대화·작업에 영향 없음. 사용자가 A2A를 수동으로 챙기게 하지 않는 것이 이 앱의 존재 이유입니다):\n"
-        f"  Monitor(command=\"{tuna_bin} poll --core {core} --agent {session_id} --interval 15 --no-register --session-marker {marker_arg}\", description=\"A2A 수신\", persistent=true)\n"
+        f"  Monitor(command=\"{tuna_bin} poll --core {core} --agent {session_id} --interval 15 --no-register --session-marker {marker_arg}{also_agent_flag}\", description=\"A2A 수신\", persistent=true)\n"
         f"  이후 `TASK <id> ::` 도착 시: 알림 줄은 프리뷰라 본문이 잘릴 수 있습니다. **claim 전 get_task(task_id)로 요청 전문을 확인**한 뒤(#136 - 잘린 지시로 일하지 않기), tuna-broker MCP의 claim_task→답변→complete_task(불가 시 fail_task). MCP 미로드면 CLI: `{tuna_bin} task poll|claim|get|complete|fail --core {core}`.\n"
         f"[총괄로 쓸 때] 내가 던진 task의 결과만 받는 자리면 위 대신: Monitor(command=\"{tuna_bin} watch-results --core {base} --dispatcher dashboard --digest 60 --session-marker {marker_arg}\", persistent=true)"
     )

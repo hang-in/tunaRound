@@ -35,6 +35,8 @@ use guard::{normalize_lexically, paths_overlap};
 #[cfg(test)]
 use parsing::find_header_starts;
 #[cfg(test)]
+use run_loop::format_task_notification;
+#[cfg(test)]
 use run_loop::substitute_task_placeholders;
 
 #[cfg(test)]
