@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use rmcp::{
     ErrorData as McpError,
     handler::server::wrapper::Parameters,
-    model::{CallToolResult, Content},
+    model::{CallToolResult, ContentBlock},
     tool, tool_router,
 };
 
@@ -24,7 +24,7 @@ impl TunaSearchServer {
         Parameters(p): Parameters<RegisterAgentParams>,
     ) -> Result<CallToolResult, McpError> {
         let Some(store) = self.a2a_store.clone() else {
-            return Ok(CallToolResult::success(vec![Content::text(
+            return Ok(CallToolResult::success(vec![ContentBlock::text(
                 "A2A task 저장소 미구성(register_agent 비활성)".to_string(),
             )]));
         };
@@ -48,8 +48,8 @@ impl TunaSearchServer {
         .unwrap_or_else(|e| Err(format!("작업 실패: {e}")));
         // R1: 등록 실패(now/parse_tags 오류)를 success로 위장하지 않는다(클라가 감지하게 isError).
         match outcome {
-            Ok(t) => Ok(CallToolResult::success(vec![Content::text(t)])),
-            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
+            Ok(t) => Ok(CallToolResult::success(vec![ContentBlock::text(t)])),
+            Err(e) => Ok(CallToolResult::error(vec![ContentBlock::text(format!(
                 "등록 실패: {e}"
             ))])),
         }
@@ -61,7 +61,7 @@ impl TunaSearchServer {
         Parameters(p): Parameters<HeartbeatParams>,
     ) -> Result<CallToolResult, McpError> {
         let Some(store) = self.a2a_store.clone() else {
-            return Ok(CallToolResult::success(vec![Content::text(
+            return Ok(CallToolResult::success(vec![ContentBlock::text(
                 "A2A task 저장소 미구성(heartbeat 비활성)".to_string(),
             )]));
         };
@@ -81,8 +81,8 @@ impl TunaSearchServer {
         // R1: 실제 실패(now 오류)만 isError. "미등록..."은 클로저에서 Ok라 success로 남아 워커의
         // 재등록 로직(needs_reregister)이 그 텍스트를 받는다(정상 흐름, 실패 아님).
         match outcome {
-            Ok(t) => Ok(CallToolResult::success(vec![Content::text(t)])),
-            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
+            Ok(t) => Ok(CallToolResult::success(vec![ContentBlock::text(t)])),
+            Err(e) => Ok(CallToolResult::error(vec![ContentBlock::text(format!(
                 "heartbeat 실패: {e}"
             ))])),
         }
@@ -94,7 +94,7 @@ impl TunaSearchServer {
         Parameters(p): Parameters<ListAgentsParams>,
     ) -> Result<CallToolResult, McpError> {
         let Some(store) = self.a2a_store.clone() else {
-            return Ok(CallToolResult::success(vec![Content::text(
+            return Ok(CallToolResult::success(vec![ContentBlock::text(
                 "A2A task 저장소 미구성(list_agents 비활성)".to_string(),
             )]));
         };
@@ -113,8 +113,8 @@ impl TunaSearchServer {
         .unwrap_or_else(|e| Err(format!("작업 실패: {e}")));
         // R1: 조회 실패(now/parse_tags 오류)를 success로 위장하지 않는다(클라가 감지하게 isError).
         match outcome {
-            Ok(t) => Ok(CallToolResult::success(vec![Content::text(t)])),
-            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
+            Ok(t) => Ok(CallToolResult::success(vec![ContentBlock::text(t)])),
+            Err(e) => Ok(CallToolResult::error(vec![ContentBlock::text(format!(
                 "조회 실패: {e}"
             ))])),
         }
@@ -128,7 +128,7 @@ impl TunaSearchServer {
         Parameters(p): Parameters<ReportPresenceParams>,
     ) -> Result<CallToolResult, McpError> {
         let Some(store) = self.a2a_store.clone() else {
-            return Ok(CallToolResult::success(vec![Content::text(
+            return Ok(CallToolResult::success(vec![ContentBlock::text(
                 "A2A task 저장소 미구성(report_presence 비활성)".to_string(),
             )]));
         };
@@ -156,8 +156,8 @@ impl TunaSearchServer {
         .unwrap_or_else(|e| Err(format!("작업 실패: {e}")));
         // 동기화 실패(now 오류)를 success로 위장하지 않는다(R1 계약과 동일).
         match outcome {
-            Ok(t) => Ok(CallToolResult::success(vec![Content::text(t)])),
-            Err(e) => Ok(CallToolResult::error(vec![Content::text(format!(
+            Ok(t) => Ok(CallToolResult::success(vec![ContentBlock::text(t)])),
+            Err(e) => Ok(CallToolResult::error(vec![ContentBlock::text(format!(
                 "presence 동기화 실패: {e}"
             ))])),
         }
