@@ -3,6 +3,11 @@
 
 set -euo pipefail
 
+if ! command -v gh &>/dev/null; then
+  echo "[kiwi-install] 오류: gh CLI가 필요합니다(자산 다운로드). https://cli.github.com 설치 후 재실행하세요." >&2
+  exit 1
+fi
+
 KIWI_VERSION="v0.22.2"
 # Windows LOCALAPPDATA를 bash 경로로 변환.
 # Git Bash/MSYS2: $LOCALAPPDATA는 환경에 있음. 없으면 기본 경로 추정.
@@ -54,7 +59,14 @@ if [ ! -f "$ZIP_FILE" ]; then
 fi
 echo "[kiwi-install] kiwi.dll 추출 중..."
 # zip 내부 배치는 lib/kiwi.dll(v0.22.2 실측). -j로 경로를 벗겨 $LIB_DIR/kiwi.dll로 놓는다.
-unzip -j -o "$ZIP_FILE" "lib/kiwi.dll" -d "$LIB_DIR"
+# unzip이 없는 Git Bash 배포판이 있어 PowerShell Expand-Archive 폴백을 둔다(gemini 리뷰).
+if command -v unzip &>/dev/null; then
+  unzip -j -o "$ZIP_FILE" "lib/kiwi.dll" -d "$LIB_DIR"
+else
+  EXTRACT_DIR="$TMPDIR_WORK/zip-extract"
+  powershell.exe -NoProfile -Command "Expand-Archive -LiteralPath '$(cygpath -w "$ZIP_FILE" 2>/dev/null || echo "$ZIP_FILE")' -DestinationPath '$(cygpath -w "$EXTRACT_DIR" 2>/dev/null || echo "$EXTRACT_DIR")' -Force"
+  cp "$EXTRACT_DIR/lib/kiwi.dll" "$LIB_DIR/kiwi.dll"
+fi
 
 # ── 모델 추출 ─────────────────────────────────────────────────────────────────
 TGZ_FILE="$TMPDIR_WORK/kiwi_model_${KIWI_VERSION}_base.tgz"
