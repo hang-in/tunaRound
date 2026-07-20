@@ -372,6 +372,20 @@ pub fn presence_scan(rt: &tokio::runtime::Runtime, a: PresenceScanArgs) {
                         .cloned(),
                 );
             }
+            // 이슈 #161: claude 데몬(bg slash)의 fork 세션과, fork가 resume하며 jsonl mtime만 갱신한
+            // 소스 세션(NoMarker 한정)을 제외한다. fresh·유휴 부활·캐시 세 경로가 모두 이 지점을
+            // 지나므로 단일 관문으로 충분하다. roster.json 부재·파싱 실패는 빈 집합 = 필터 미적용.
+            if let Some(h) = &home {
+                let droster = tunaround::presence_scan::read_daemon_roster(
+                    &h.join(".claude").join("daemon").join("roster.json"),
+                );
+                let marker_dir = h.join(".tunaround").join("autoarm");
+                sessions = tunaround::presence_scan::filter_daemon_bg_sessions(
+                    sessions,
+                    &droster,
+                    &marker_dir,
+                );
+            }
             // 스캐너 자신도 로스터에 등록(설계 v2-44 §3: 스캐너 heartbeat = 머신 도달성 신호).
             // register는 last_heartbeat를 now로 덮으므로 매 주기 호출 = heartbeat 겸용.
             let self_uuid = format!("{machine}-presence-scan");
