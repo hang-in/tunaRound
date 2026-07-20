@@ -477,6 +477,7 @@ pub fn apply_process_gate(
 // (`use super::*`)의 기존 경로가 그대로 해석된다.
 mod claude;
 mod codex;
+mod daemon;
 mod report;
 
 pub use claude::enumerate_claude_live;
@@ -485,6 +486,9 @@ pub use codex::{
     enumerate_codex_sessions, load_codex_input_cache_from_disk, normalize_iso_to_db_datetime,
     parse_codex_last_user_input, parse_codex_meta_line, save_codex_input_cache_to_disk,
     system_time_to_db_datetime,
+};
+pub use daemon::{
+    DaemonRoster, filter_daemon_bg_sessions, parse_daemon_roster, read_daemon_roster,
 };
 pub use report::to_report_json;
 // codex.rs의 pub(super) 헬퍼(CODEX_TAIL_BYTES·message_is_human_input)는 원래도 이 파일 내부·테스트

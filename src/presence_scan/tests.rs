@@ -974,3 +974,157 @@ fn presence_pipeline_composes_gates_in_cli_daemons_order() {
 
     std::fs::remove_dir_all(&marker_dir).ok();
 }
+
+// ---- 이슈 #161: claude 데몬(bg slash) 유령 필터 ----
+
+/// 데몬 필터 테스트용 최소 LiveSession.
+fn daemon_live(uuid: &str, runner: &str) -> LiveSession {
+    LiveSession {
+        uuid: uuid.to_string(),
+        runner: runner.to_string(),
+        project: None,
+        human_input_at: None,
+        created_at: None,
+        active_at: None,
+    }
+}
+
+#[test]
+fn parse_daemon_roster_extracts_fork_and_resume_source() {
+    // 2026-07-20 win 실측 roster.json 구조의 축약(fork bg 세션 + resume 소스 jsonl 경로).
+    let text = r#"{
+      "proto": 1,
+      "supervisorPid": 46040,
+      "workers": {
+        "458f042a": {
+          "pid": 38640,
+          "sessionId": "458f042a-3a32-41ee-8836-e401bf548e3c",
+          "dispatch": {
+            "source": "slash",
+            "launch": {
+              "mode": "resume",
+              "sessionId": "C:\\Users\\u\\.claude\\projects\\C--Users-u\\005b8b24-0e03-441f-b7c4-b0ae816941c0.jsonl",
+              "fork": true
+            }
+          }
+        }
+      }
+    }"#;
+    let r = parse_daemon_roster(text);
+    assert!(
+        r.fork_uuids
+            .contains("458f042a-3a32-41ee-8836-e401bf548e3c")
+    );
+    // win 백슬래시 경로여도 어느 OS에서든 stem = 소스 uuid.
+    assert!(
+        r.resume_source_uuids
+            .contains("005b8b24-0e03-441f-b7c4-b0ae816941c0")
+    );
+}
+
+#[test]
+fn parse_daemon_roster_fails_open() {
+    // CC 내부 포맷 취약성 흡수: 어떤 실패든 빈 집합(필터 미적용)이어야 한다.
+    assert_eq!(parse_daemon_roster("not json"), DaemonRoster::default());
+    assert_eq!(
+        parse_daemon_roster(r#"{"proto": 2, "workers": {"a": {"sessionId": "x-1"}}}"#),
+        DaemonRoster::default(),
+        "proto 불일치 = 전체 무시"
+    );
+    assert_eq!(
+        parse_daemon_roster(r#"{"proto": 1}"#),
+        DaemonRoster::default(),
+        "workers 부재 = 빈 집합"
+    );
+    // mode!=resume 또는 fork!=true면 소스는 잡지 않는다(fork uuid는 잡는다).
+    let r = parse_daemon_roster(
+        r#"{"proto": 1, "workers": {"a": {"sessionId": "aaaa-1",
+            "dispatch": {"launch": {"mode": "new", "sessionId": "bbbb-2.jsonl", "fork": true}}},
+          "b": {"sessionId": "cccc-3",
+            "dispatch": {"launch": {"mode": "resume", "sessionId": "dddd-4.jsonl", "fork": false}}}}}"#,
+    );
+    assert!(r.fork_uuids.contains("aaaa-1") && r.fork_uuids.contains("cccc-3"));
+    assert!(r.resume_source_uuids.is_empty());
+    // 신뢰 경계 밖 값: 허용 문자 밖(경로 이탈 등) uuid는 버린다.
+    let r = parse_daemon_roster(r#"{"proto": 1, "workers": {"a": {"sessionId": "../evil"}}}"#);
+    assert!(r.fork_uuids.is_empty(), "허용 밖 문자 uuid 거부: {r:?}");
+}
+
+#[test]
+fn filter_daemon_bg_sessions_rules() {
+    let marker_dir = std::env::temp_dir().join(format!(
+        "tuna-daemon-filter-{}-{}",
+        std::process::id(),
+        line!()
+    ));
+    std::fs::create_dir_all(&marker_dir).unwrap();
+    // fork 세션은 bg 훅이 쓴 Pid 마커가 있어도 무조건 제외(유휴 부활 경로 차단 - 실측).
+    std::fs::write(marker_dir.join("fork-1.ctx"), "4242").unwrap();
+    // resume 소스: NoMarker(src-nomarker) vs 실제 TUI로도 열린 세션(Pid 마커).
+    std::fs::write(marker_dir.join("src-live.ctx"), "5252").unwrap();
+    std::fs::write(marker_dir.join("src-unknown.ctx"), "").unwrap();
+
+    let mut roster = DaemonRoster::default();
+    roster.fork_uuids.insert("fork-1".to_string());
+    for u in ["src-nomarker", "src-live", "src-unknown"] {
+        roster.resume_source_uuids.insert(u.to_string());
+    }
+    let sessions = vec![
+        daemon_live("fork-1", "claude"),
+        daemon_live("src-nomarker", "claude"),
+        daemon_live("src-live", "claude"),
+        daemon_live("src-unknown", "claude"),
+        daemon_live("unrelated", "claude"),
+        daemon_live("fork-1", "codex"), // 러너 경계: claude 전용 필터.
+    ];
+    let kept: Vec<(String, String)> = filter_daemon_bg_sessions(sessions, &roster, &marker_dir)
+        .into_iter()
+        .map(|s| (s.uuid, s.runner))
+        .collect();
+    assert!(
+        !kept.contains(&("fork-1".into(), "claude".into())),
+        "fork는 마커 있어도 제외"
+    );
+    assert!(
+        !kept.contains(&("src-nomarker".into(), "claude".into())),
+        "NoMarker 소스 제외"
+    );
+    assert!(
+        kept.contains(&("src-live".into(), "claude".into())),
+        "Pid 마커 소스 유지(실제 열림)"
+    );
+    assert!(
+        kept.contains(&("src-unknown".into(), "claude".into())),
+        "Unknown 마커는 보수적 유지"
+    );
+    assert!(kept.contains(&("unrelated".into(), "claude".into())));
+    assert!(
+        kept.contains(&("fork-1".into(), "codex".into())),
+        "codex 러너는 무영향"
+    );
+
+    std::fs::remove_dir_all(&marker_dir).ok();
+}
+
+#[test]
+fn filter_daemon_bg_sessions_empty_roster_is_passthrough() {
+    let marker_dir = std::env::temp_dir().join(format!(
+        "tuna-daemon-empty-{}-{}",
+        std::process::id(),
+        line!()
+    ));
+    // 빈 roster = 마커 디렉토리가 없어도 그대로 통과(파일 IO 자체를 안 탄다).
+    let sessions = vec![daemon_live("a-1", "claude")];
+    let kept = filter_daemon_bg_sessions(sessions.clone(), &DaemonRoster::default(), &marker_dir);
+    assert_eq!(kept, sessions);
+}
+
+#[test]
+fn read_daemon_roster_missing_file_is_empty() {
+    let p = std::env::temp_dir().join(format!(
+        "tuna-daemon-noent-{}-{}/roster.json",
+        std::process::id(),
+        line!()
+    ));
+    assert_eq!(read_daemon_roster(&p), DaemonRoster::default());
+}
